@@ -1,25 +1,15 @@
 package cli
 
-// Tests for herdrPluginDoctor — specifically the ABI file check branch which
-// requires HERDR_PLUGIN_ROOT to be set and could not be reached in a plain
-// test environment before these tests were added.
-//
-// MUTATION PROOF: change `if expected == herdrPluginABIVersion {` to `if true {`
-// in herdrPluginDoctor. TestHerdrPluginDoctor_ABIMismatch stops seeing "MISMATCH"
-// in the output → RED.
-
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHerdrPluginDoctor_ABIMatch(t *testing.T) {
-	// When the abi file in HERDR_PLUGIN_ROOT matches herdrPluginABIVersion,
-	// the output must contain "ABI file check: ok".
-	// MUTATION PROOF: change the match branch to always report MISMATCH.
-	// RED: "ABI file check: ok" not found in output.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "abi"), []byte(herdrPluginABIVersion+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -30,17 +20,12 @@ func TestHerdrPluginDoctor_ABIMatch(t *testing.T) {
 	if err := herdrPluginDoctor(&w); err != nil {
 		t.Fatalf("herdrPluginDoctor: %v", err)
 	}
-	got := w.String()
-	if !strings.Contains(got, "ABI file check: ok") {
-		t.Errorf("expected 'ABI file check: ok' in output; got:\n%s", got)
+	if !strings.Contains(w.String(), "ABI file check: ok") {
+		t.Errorf("expected 'ABI file check: ok'; got:\n%s", w.String())
 	}
 }
 
 func TestHerdrPluginDoctor_ABIMismatch(t *testing.T) {
-	// When the abi file in HERDR_PLUGIN_ROOT does NOT match herdrPluginABIVersion,
-	// the output must contain "MISMATCH".
-	// MUTATION PROOF: change `if expected == herdrPluginABIVersion {` to `if true {`.
-	// The mismatch branch is never taken; "MISMATCH" absent → RED.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "abi"), []byte("999\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -53,24 +38,104 @@ func TestHerdrPluginDoctor_ABIMismatch(t *testing.T) {
 	}
 	got := w.String()
 	if !strings.Contains(got, "MISMATCH") {
-		t.Errorf("expected 'MISMATCH' in output when abi file disagrees; got:\n%s", got)
+		t.Errorf("expected 'MISMATCH'; got:\n%s", got)
 	}
 	if !strings.Contains(got, "999") {
-		t.Errorf("expected the mismatched abi value '999' in output; got:\n%s", got)
+		t.Errorf("expected mismatched value '999'; got:\n%s", got)
 	}
 }
 
 func TestHerdrPluginDoctor_ABIRootUnset(t *testing.T) {
-	// When HERDR_PLUGIN_ROOT is unset, the ABI file check must report the
-	// "unset" status rather than "ok" or "MISMATCH".
 	t.Setenv("HERDR_PLUGIN_ROOT", "")
 
 	var w strings.Builder
 	if err := herdrPluginDoctor(&w); err != nil {
 		t.Fatalf("herdrPluginDoctor: %v", err)
 	}
-	got := w.String()
-	if !strings.Contains(got, "HERDR_PLUGIN_ROOT unset") {
-		t.Errorf("expected 'HERDR_PLUGIN_ROOT unset' status when env is empty; got:\n%s", got)
+	if !strings.Contains(w.String(), "HERDR_PLUGIN_ROOT unset") {
+		t.Errorf("expected 'HERDR_PLUGIN_ROOT unset'; got:\n%s", w.String())
+	}
+}
+
+func TestHerdrProcessesCheck_DuplicateServer_Warns(t *testing.T) {
+	older := HerdrProc{PID: 100, Start: time.Unix(1000, 0), Kind: HerdrServer, Session: "agents"}
+	newer := HerdrProc{PID: 200, Start: time.Unix(2000, 0), Kind: HerdrServer, Session: "agents"}
+	lister := func(_ context.Context) ([]HerdrProc, error) {
+		return []HerdrProc{older, newer}, nil
+	}
+
+	cr := checkHerdrProcesses(context.Background(), lister)
+
+	if cr.OK {
+		t.Error("expected WARN (OK=false) for duplicate herdr server")
+	}
+	if !strings.Contains(cr.Remediation, "100") {
+		t.Errorf("remediation must name stale pid 100; got: %s", cr.Remediation)
+	}
+	if strings.Contains(cr.Remediation, "200") {
+		t.Errorf("live pid 200 must not appear in remediation; got: %s", cr.Remediation)
+	}
+	if !strings.Contains(cr.Remediation, "herdr --session agents server stop") {
+		t.Errorf("remediation must include 'herdr --session agents server stop'; got: %s", cr.Remediation)
+	}
+}
+
+func TestHerdrProcessesCheck_SingleServer_OK(t *testing.T) {
+	lister := func(_ context.Context) ([]HerdrProc, error) {
+		return []HerdrProc{{PID: 100, Start: time.Unix(1000, 0), Kind: HerdrServer, Session: "agents"}}, nil
+	}
+	cr := checkHerdrProcesses(context.Background(), lister)
+	if !cr.OK {
+		t.Errorf("single herdr server must be OK; got detail: %s", cr.Detail)
+	}
+}
+
+func TestHerdrProcessesCheck_DuplicateClientAgent_WarnsOlder(t *testing.T) {
+	older := HerdrProc{PID: 10, Start: time.Unix(100, 0), Kind: Nexus3ClientAgent}
+	newer := HerdrProc{PID: 20, Start: time.Unix(200, 0), Kind: Nexus3ClientAgent}
+	lister := func(_ context.Context) ([]HerdrProc, error) {
+		return []HerdrProc{older, newer}, nil
+	}
+
+	cr := checkHerdrProcesses(context.Background(), lister)
+
+	if cr.OK {
+		t.Error("expected WARN (OK=false) for duplicate nexus3-client-agent")
+	}
+	if !strings.Contains(cr.Remediation, "10") {
+		t.Errorf("remediation must name stale pid 10; got: %s", cr.Remediation)
+	}
+	if strings.Contains(cr.Remediation, "20") {
+		t.Errorf("live pid 20 must not appear in remediation; got: %s", cr.Remediation)
+	}
+}
+
+func TestHerdrProcessesCheck_InDoctorJSON(t *testing.T) {
+	fixture := []HerdrProc{
+		{PID: 10, Start: time.Unix(100, 0), Kind: Nexus3ClientAgent},
+		{PID: 20, Start: time.Unix(200, 0), Kind: Nexus3ClientAgent},
+	}
+	p := probes{
+		goos:           "darwin",
+		listHerdrProcs: func(_ context.Context) ([]HerdrProc, error) { return fixture, nil },
+	}
+	checks, _ := runAllChecks(p)
+	jsonChecks := toDoctorChecksJSON(checks)
+
+	var found bool
+	for _, c := range jsonChecks {
+		if c.Name == "herdr_processes" {
+			found = true
+			if c.OK {
+				t.Error("herdr_processes check must be !ok with duplicate agents")
+			}
+			if c.Remediation == "" {
+				t.Error("herdr_processes check must carry non-empty remediation")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("herdr_processes check not found in doctor JSON checks")
 	}
 }

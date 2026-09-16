@@ -22,56 +22,33 @@ import (
 )
 
 // SubstrateError is returned by SelectSubstrate when no usable substrate
-// driver can be configured. Msg names the specific check that failed so the
-// operator has actionable context. Unwrap returns service.ErrNoSubstrate so
-// errors.Is and sandboxCodeFor both map this to no_substrate without any
-// special-casing in the callers.
+// driver can be configured. Unwrap returns service.ErrNoSubstrate so
+// errors.Is maps this to no_substrate.
 type SubstrateError struct {
-	// Msg is the human-readable failure reason, naming the specific check.
-	Msg string
-	// Remediation is actionable guidance for the operator; may be empty.
+	Msg         string
 	Remediation string
 }
 
 func (e *SubstrateError) Error() string { return e.Msg }
 
-// Unwrap implements the multi-error interface (Go 1.20+). Returning
-// service.ErrNoSubstrate makes errors.Is(serr, service.ErrNoSubstrate) true,
-// which in turn makes sandboxCodeFor emit no_substrate without any extra
-// special-casing.
 func (e *SubstrateError) Unwrap() []error { return []error{service.ErrNoSubstrate} }
 
-// CheckResult is the outcome of a single capability probe. cmd_doctor.go uses
-// a []CheckResult to produce its full report; substrate selection consumes the
-// same slice to return the first failed check as a SubstrateError.
+// CheckResult is the outcome of a single capability probe.
 type CheckResult struct {
-	// Name is a stable identifier for the check (e.g. "platform", "binary", "kvm").
-	Name string
-	// Description is a human-readable label for what was probed.
+	Name        string
 	Description string
-	// OK is true if the check passed.
-	OK bool
-	// Detail is the observed value (OK=true) or the failure reason (OK=false).
-	Detail string
-	// Remediation is actionable text when OK is false; empty when OK is true.
+	OK          bool
+	Detail      string
 	Remediation string
 }
 
-// probes holds the environment-query functions used by selectWith and
-// runAllChecks. Tests replace individual fields to simulate non-Linux
-// platforms, missing binaries, or inaccessible devices without requiring root
-// access or a real hypervisor binary. The production path uses defaultProbes.
 type probes struct {
-	// goos is the operating-system name as Go reports it (e.g. "linux", "darwin").
-	goos string
-	// lookPath resolves a command name to an absolute path; mirrors exec.LookPath.
-	lookPath func(string) (string, error)
-	// openKVM opens /dev/kvm for read-write access and closes it immediately.
-	// Returns nil on success; the caller distinguishes fs.ErrNotExist (device
-	// absent) from fs.ErrPermission (group membership required) from other errors.
-	openKVM           func() error
-	listImages        func(context.Context) ([]domain.Image, error)
-	registryReachable func(string) error
+	goos               string
+	lookPath           func(string) (string, error)
+	openKVM            func() error
+	listImages         func(context.Context) ([]domain.Image, error)
+	registryReachable  func(string) error
+	listHerdrProcs     func(context.Context) ([]HerdrProc, error)
 }
 
 func defaultProbes() probes {
@@ -106,34 +83,19 @@ func defaultProbes() probes {
 			_, err = remote.Head(r, remote.WithContext(ctx))
 			return err
 		},
+		listHerdrProcs: ListHerdrProcesses,
 	}
 }
 
 // SelectSubstrate selects and returns a usable driver.Driver based on
 // capability probes and the NEXUS3_SUBSTRATE environment variable.
-//
-// Invariant: a non-nil driver is always a real substrate driver. The noop
-// driver is never returned — callers that need a no-op fallback (cmd_sandbox.go)
-// substitute it themselves on a non-nil error.
-//
-// NEXUS3_SUBSTRATE controls selection:
-//   - unset or "cloudhypervisor": run every capability check; return the CH driver if they all pass.
-//   - "none": skip checks and return a SubstrateError (useful for testing store-only verbs).
-//   - any other value: return a SubstrateError naming the invalid value.
-//
-// "fake" is intentionally not an accepted value. Inject the fake driver
-// directly in Go test code; do not expose it via the environment where it
-// could be used accidentally against real data.
 func SelectSubstrate() (driver.Driver, *SubstrateError) {
 	return selectWith(defaultProbes(), os.Getenv("NEXUS3_SUBSTRATE"))
 }
 
 // runAllChecks runs every capability probe and returns all results.
-// It always runs all three checks (platform, binary, kvm) regardless of
-// intermediate failures so that cmd_doctor.go can report every issue at once.
 // drv is non-nil only when all checks pass.
 func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
-	// ── Check 1: Platform ────────────────────────────────────────────────────
 	platOK := p.goos == "linux"
 	platCheck := CheckResult{
 		Name:        "platform",
@@ -148,7 +110,6 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 	}
 	checks = append(checks, platCheck)
 
-	// ── Check 2: Binary ──────────────────────────────────────────────────────
 	var binaryPath string
 	binCheck := CheckResult{
 		Name:        "binary",
@@ -171,7 +132,6 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 	}
 	checks = append(checks, binCheck)
 
-	// ── Check 3: KVM ─────────────────────────────────────────────────────────
 	kvmCheck := CheckResult{
 		Name:        "kvm",
 		Description: "/dev/kvm is present and openable by this user",
@@ -200,29 +160,12 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 	}
 	checks = append(checks, kvmCheck)
 
-	// ── Construct driver if all checks passed ─────────────────────────────────
 	if platOK && binCheck.OK && kvmCheck.OK {
-		// Resolve the per-sandbox disk directory so that sandbox start can find
-		// <diskDir>/<id>.raw for sandboxes created by sandbox create --file.
 		var diskDir string
 		if storeRoot, derr := store.DefaultRoot(); derr == nil {
 			diskDir = storeRoot + "/disks"
 		}
 
-		// ── Check 4: Kernel ──────────────────────────────────────────────────
-		// Validate the kernel path before driver construction. kernelPathFor()
-		// is intentionally NOT used here: it swallows the resolution error and
-		// returns a best-effort non-existent path, which causes cloudhypervisor.New
-		// to succeed (path is not validated at construction time) and defer the
-		// failure to VM boot, where CH emits an opaque "Cannot open kernel file"
-		// error instead of a legible NEXUS3_KERNEL_PATH message.
-		//
-		// cmd_doctor calls runAllChecks and reports every check — including this
-		// one — without aborting, so adding it here is additive for doctor.
-		// selectWith (→ SelectSubstrate → operational start/recover paths) uses
-		// the returned drv; when kernelErr != nil we return (checks, nil) so
-		// selectWith surfaces this check as a SubstrateError with the actionable
-		// kernel message.
 		kernelPath, kernelErr := resolveKernelPath()
 		kernelCheck := CheckResult{
 			Name:        "kernel",
@@ -233,7 +176,10 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 			kernelCheck.Detail = kernelErr.Error()
 			kernelCheck.Remediation = "run: nexus3 kernel install"
 			checks = append(checks, kernelCheck)
-			return checks, nil // drv stays nil; selectWith will return a SubstrateError
+			if p.listHerdrProcs != nil {
+				checks = append(checks, checkHerdrProcesses(context.Background(), p.listHerdrProcs))
+			}
+			return checks, nil
 		}
 		kernelCheck.OK = true
 		kernelCheck.Detail = kernelPath
@@ -268,10 +214,6 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 			checks = append(checks, baseImgCheck)
 		}
 
-		// ── Check 5: Virtiofsd ───────────────────────────────────────────────
-		// Informational only — virtiofsd is required only when --mount is used.
-		// A host without virtiofsd can still create sandboxes without --mount.
-		// Absence does NOT block driver construction or selectWith.
 		virtiofsdCheck := CheckResult{
 			Name:        "virtiofsd",
 			Description: "virtiofsd binary for live directory mounts (--mount)",
@@ -304,15 +246,17 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		}
 	}
 
+	if p.listHerdrProcs != nil {
+		checks = append(checks, checkHerdrProcesses(context.Background(), p.listHerdrProcs))
+	}
+
 	return checks, drv
 }
 
-// selectWith is the testable substrate selection logic. Tests inject a probes
-// struct instead of relying on the real OS environment.
+// selectWith is the testable substrate selection logic.
 func selectWith(p probes, envVal string) (driver.Driver, *SubstrateError) {
 	switch envVal {
 	case "", "cloudhypervisor":
-		// fall through to capability detection
 
 	case "none":
 		return nil, &SubstrateError{
@@ -335,9 +279,6 @@ func selectWith(p probes, envVal string) (driver.Driver, *SubstrateError) {
 		return drv, nil
 	}
 
-	// Return the first failed check as the SubstrateError so the message is
-	// specific about which check failed. If somehow all checks passed but drv
-	// is nil (driver_init check was appended), that last check is the failure.
 	for _, c := range checks {
 		if !c.OK {
 			return nil, &SubstrateError{
@@ -347,7 +288,6 @@ func selectWith(p probes, envVal string) (driver.Driver, *SubstrateError) {
 		}
 	}
 
-	// Unreachable: drv is nil only when at least one check failed.
 	return nil, &SubstrateError{
 		Msg: "substrate unavailable: driver initialization failed (run nexus3 doctor for details)",
 	}
