@@ -3591,6 +3591,30 @@ func herdrWorktreeGroundworkMount(worktreePath string) string {
 	return groundwork + ":" + groundwork
 }
 
+// herdrWorktreePluginMounts returns read-only mount specs for ~/.claude/plugins
+// symlinks whose targets live outside ~/.claude (e.g. plugins/nexus3 -> a repo
+// checkout). ~/.claude itself is live-mounted into the guest (D-1), so those
+// links dangle unless their targets are mounted at the same host path. Warnings
+// (dangling links) are passed to warn; hostHome=="" → os.UserHomeDir().
+//
+// Returns nil when the home dir cannot be resolved or there is nothing to mount.
+func herdrWorktreePluginMounts(hostHome string, warn func(string)) []string {
+	if hostHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		hostHome = home
+	}
+	specs, warnings := service.ResolvePluginSymlinkMounts(hostHome)
+	if warn != nil {
+		for _, msg := range warnings {
+			warn(msg)
+		}
+	}
+	return specs
+}
+
 // buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
 // egress.policy and egress.secrets sections of the checkout's .nexus/config.yaml.
 //
@@ -3977,6 +4001,12 @@ func herdrWorktreeSandbox(
 	if gwMount := herdrWorktreeGroundworkMount(info.Path); gwMount != "" {
 		extraMounts = append(extraMounts, gwMount)
 	}
+	// Host ~/.claude is live-mounted at /root/.claude, but ~/.claude/plugins/*
+	// symlinks pointing outside ~/.claude dangle in the guest. Mount their
+	// targets read-only at the same host path so the plugin/skills resolve.
+	extraMounts = append(extraMounts, herdrWorktreePluginMounts("", func(msg string) {
+		fmt.Fprintf(w, "worktree-sandbox: warning: %s\n", msg)
+	})...)
 
 	// Two concurrent callers for the same worktree workspace both pass the
 	// unlocked step-1 idempotency check before either writes a binding.  A
