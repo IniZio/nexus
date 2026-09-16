@@ -11,3 +11,5 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
+  new-from-rev: 47884b2b54d4390ef28d2dbf4f26ed5464e9d37c
+  whole-files: false
