@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/portfwd"
@@ -89,6 +90,18 @@ var ForwarderRunner portfwd.Runner = portfwd.OSRunner // tests swap it
 type FocusResolverFunc func(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (handle string, fallback bool)
 
 var DefaultFocusResolver FocusResolverFunc = resolveFocusedHandle // tests swap it
+
+var fallbackWarned sync.Map // key: "target\x00kind" → struct{}{}
+
+func warnFallbackOnce(target, kind, msg string, args ...any) {
+	if _, loaded := fallbackWarned.LoadOrStore(target+"\x00"+kind, struct{}{}); !loaded {
+		slog.Warn(msg, args...)
+	}
+}
+
+func clearFallback(target, kind string) {
+	fallbackWarned.Delete(target + "\x00" + kind)
+}
 
 func filterToFocused(forwards []RemoteForwardEntry, handle string, fallback bool) []RemoteForwardEntry {
 	if fallback {
@@ -208,17 +221,20 @@ func ReadRemoteForwardsState(ctx context.Context, ctlPath, target string) (*Remo
 func resolveFocusedHandle(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (string, bool) {
 	workspaceID, err := resolveFocusedWorkspaceID(ctx, herdrBin, session)
 	if err != nil {
-		slog.Warn("portfwd focus: workspace list failed, using all rows", "target", target, "err", err)
+		warnFallbackOnce(target, "workspace", "portfwd focus: workspace list failed, using all rows", "target", target, "err", err)
 		return "", true
 	}
+	clearFallback(target, "workspace")
 	if workspaceID == "" {
+		slog.Debug("portfwd focus: no focused workspace, no forwards", "target", target)
 		return "", false
 	}
 	handle, err := resolveRemoteHandleForWorkspace(ctx, ctlPath, target, workspaceID, runner)
 	if err != nil {
-		slog.Warn("portfwd focus: remote handle lookup failed, using all rows", "target", target, "workspace_id", workspaceID, "err", err)
+		warnFallbackOnce(target, "handle", "portfwd focus: remote handle lookup failed, using all rows", "target", target, "workspace_id", workspaceID, "err", err)
 		return "", true
 	}
+	clearFallback(target, "handle")
 	return handle, false
 }
 
@@ -254,8 +270,15 @@ func parseFocusedWorkspaceID(data []byte) (string, error) {
 	return "", nil
 }
 
+// remoteNexus3HerdrListCmd returns the shell command to run `nexus3 herdr list`
+// over non-interactive SSH. Tries $HOME/.local/bin/nexus3 first (absent from
+// non-interactive PATH on Debian/Ubuntu), then falls back to the bare name.
+func remoteNexus3HerdrListCmd() string {
+	return `"$HOME/.local/bin/nexus3" herdr list 2>/dev/null || nexus3 herdr list`
+}
+
 func resolveRemoteHandleForWorkspace(ctx context.Context, ctlPath, target, workspaceID string, runner portfwd.Runner) (string, error) {
-	argv := ExecArgv(target, ctlPath, "nexus3 herdr list")
+	argv := ExecArgv(target, ctlPath, remoteNexus3HerdrListCmd())
 	stdout, _, code, err := runner(ctx, argv)
 	if err != nil {
 		return "", fmt.Errorf("nexus3 herdr list: %w", err)

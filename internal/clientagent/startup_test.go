@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -296,4 +297,64 @@ func TestResolveFocusedWorkspaceID_SessionArgs(t *testing.T) {
 			t.Errorf("empty session: --session must not appear in args %v", capturedArgs)
 		}
 	}
+}
+
+func TestRemoteNexus3HerdrListCmd_PathFallback(t *testing.T) {
+	cmd := remoteNexus3HerdrListCmd()
+	if !strings.Contains(cmd, `"$HOME/.local/bin/nexus3"`) {
+		t.Errorf("command does not try $HOME/.local/bin/nexus3 first: %q", cmd)
+	}
+	if !strings.Contains(cmd, "|| nexus3 herdr list") {
+		t.Errorf("command has no bare-name fallback: %q", cmd)
+	}
+}
+
+func TestParseHandleFromSpaceList_ContractFixture(t *testing.T) {
+	data, err := os.ReadFile("testdata/herdr-list.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parseHandleFromSpaceList(string(data), "ws-abc"); got != "project/worktree-feature" {
+		t.Errorf("contract ws-abc: got %q, want %q", got, "project/worktree-feature")
+	}
+	if got := parseHandleFromSpaceList(string(data), "ws-def"); got != "other/worktree-main" {
+		t.Errorf("contract ws-def: got %q, want %q", got, "other/worktree-main")
+	}
+	if got := parseHandleFromSpaceList(string(data), "ws-missing"); got != "" {
+		t.Errorf("missing workspace: got %q, want empty", got)
+	}
+}
+
+func TestParseFocusedWorkspaceID_ContractFixture(t *testing.T) {
+	data, err := os.ReadFile("testdata/workspace-list.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := parseFocusedWorkspaceID(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "ws-def" {
+		t.Errorf("contract: got %q, want %q", id, "ws-def")
+	}
+}
+
+func TestWarnFallbackOnce_FiresOnce(t *testing.T) {
+	var warned int
+	target, kind := t.Name(), "workspace"
+	fallbackWarned.Delete(target + "\x00" + kind)
+
+	for i := 0; i < 3; i++ {
+		warnFallbackOnce(target, kind, "test warn", "i", i)
+	}
+
+	if _, ok := fallbackWarned.Load(target + "\x00" + kind); !ok {
+		t.Error("fallbackWarned key should be set after first warn")
+	}
+
+	clearFallback(target, kind)
+	if _, ok := fallbackWarned.Load(target + "\x00" + kind); ok {
+		t.Error("fallbackWarned key should be cleared after clearFallback")
+	}
+	_ = warned
 }

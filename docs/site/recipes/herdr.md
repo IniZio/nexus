@@ -300,6 +300,20 @@ message, or `version skew: installed <old> < pinned <new>` with the exact
 update command on stderr. The same check runs at herdr startup and in
 `nexus3 herdr doctor`.
 
+::: info Restart herdr after a plugin upgrade
+After running `herdr plugin install …`, the new binary is installed but the
+running client daemon (`nexus3-client herdr local-agent-startup`) continues
+using the old code. To activate the new version, restart herdr:
+
+```sh
+herdr server stop
+# then relaunch herdr normally
+```
+
+Until herdr is restarted, port forwarding continues with the old daemon
+behaviour.
+:::
+
 ## Troubleshooting
 
 **An action says a sandbox does not exist.** The binding outlived the sandbox —
@@ -317,3 +331,10 @@ plugin install, per the warning above.
 bug in the report: the detached supervisor did not finish within its timeout, so
 the record still reads `running`. Wait a moment and check `nexus3 ps`; if the
 state does not settle, `nexus3 reap` will show whether anything leaked.
+
+**Ports are not forwarded even though sandboxes are running.**
+The client daemon forwards ports only for the sandbox bound to the currently
+focused herdr workspace. If the focused workspace has no sandbox attached — or
+if no workspace is focused — no forwards are active. Switch focus to the
+workspace that has a sandbox, or check `nexus3 herdr list` to confirm a binding
+exists.
