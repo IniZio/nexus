@@ -221,30 +221,19 @@ The working tree is **not** baked into the image — nexus3 mounts it live at ru
 
 ## Step 5 — Validate the config before proposing it
 
-nexus3 has no standalone `config show` command. Validate by triggering any nexus3 operation that reads the config from the repo directory. The simplest is `image build` with a nonexistent context, which exits early but parses the config first:
+Run `nexus3 config validate <path-to-repo>` (add `--json` for machine-readable output). It applies the exact same loader every other nexus3 command uses: walks up from the given directory to the nearest `.git` boundary looking for `.nexus/config.yaml`, rejects unknown keys, checks the `version` range, and rejects any host that appears in both `egress.allow` and `egress.policy`/`egress.secrets`.
 
-```sh
-~/.local/bin/nexus3 image build -workspace <path-to-repo> 2>&1 | head -5
+On success, exit 0 and human output:
+
+```text
+ok: /path/to/repo/.nexus/config.yaml
+  version:       1
+  image:         ghcr.io/owner/app:dev
+  containerfile: /path/to/repo/.nexus/Containerfile
+  egress:        mode=policy-gated allow=3 policy=4 secrets=1
 ```
 
-A parse error prints the offending key and exits nonzero. A missing `.nexus/config.yaml` is not an error (the binary proceeds without it). A present but malformed file is a hard error.
-
-Alternatively, use Python with `pip install pyyaml` to confirm the YAML is structurally valid before the binary sees it:
-
-```sh
-python3 - << 'EOF'
-import sys, yaml
-with open(".nexus/config.yaml") as f:
-    d = yaml.safe_load(f)
-assert d.get("version") == 1, "missing version: 1"
-top_known = {"version","egress","sandbox","image","builder"}
-assert not set(d) - top_known, f"unknown keys: {set(d) - top_known}"
-egress_known = {"allow","policy","secrets"}
-e = d.get("egress", {}) or {}
-assert not set(e) - egress_known, f"unknown egress keys: {set(e) - egress_known}"
-print("OK")
-EOF
-```
+A parse error — unknown key, out-of-range version, or allow/policy overlap — prints the offending key or host on stderr and exits 1. A missing `.nexus/config.yaml` is also exit 1 here (unlike other commands where absence is a no-op); this verb exists to confirm the file is present and valid.
 
 Do not use the `./nexus3` binary in the nexus3 repo root — it is a leftover from an earlier explicit build and may be arbitrarily stale.
 
@@ -273,6 +262,6 @@ Before opening the PR:
 - [ ] `api.github.com` paths are scoped to `/repos/OWNER/REPO/...` — no `/**` at root
 - [ ] `/graphql` is absent from all `api.github.com` paths
 - [ ] `egress.allow` entries have a Dockerfile/compose comment justifying each host
-- [ ] Step 5 validation passes (no parse error from the binary; the YAML check prints `OK`)
+- [ ] Step 5 validation passes (`nexus3 config validate <path-to-repo>` exits 0)
 - [ ] `.nexus/Containerfile` exists (or the operator has confirmed no custom image is needed)
 - [ ] PR description includes: "This config takes effect for new worktree sandboxes on the next create."

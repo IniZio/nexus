@@ -126,6 +126,28 @@ For policy-gated `github.com`, public archive and release downloads (`/<owner>/<
 
 `sandbox.mounts` is **replaced** by any explicit `--mount` flag on the command line. To use both, list all mounts in `.nexus/config.yaml` and omit `--mount` on the command line.
 
+### Validating the file
+
+```sh
+nexus3 config validate [dir] [--json]
+```
+
+`dir` defaults to the current directory. The command walks up to the nearest `.git` boundary, loads `.nexus/config.yaml`, and applies the same checks every other nexus3 command applies at load time: strict unknown-key rejection, `version` range check, and the egress allow/policy host-overlap rejection.
+
+Exit 0 on success:
+
+```text
+ok: /path/to/repo/.nexus/config.yaml
+  version:       1
+  image:         ghcr.io/owner/app:dev
+  containerfile: /path/to/repo/.nexus/Containerfile
+  egress:        mode=policy-gated allow=3 policy=4 secrets=1
+```
+
+`image` prints `(unset)` when `sandbox.image` is absent; `containerfile` prints `(absent)` when `.nexus/Containerfile` does not exist. `egress mode` is `default` (no egress keys), `allow-only`, or `policy-gated`. Exit 1 with the loader error on stderr for any parse failure. A missing `.nexus/config.yaml` is also exit 1 — unlike other commands where absence is a no-op; this verb exists to confirm the file is present and valid.
+
+`--json` emits `{"schema_version":1,"kind":"config_validate","data":{"path":"...","version":1,"image":"...","containerfile":"...","containerfile_present":true,"egress":{"mode":"policy-gated","allow_hosts":3,"policy_hosts":4,"secrets_hosts":1}}}` on success, or the standard error envelope on failure.
+
 ### Config source for worktree sandboxes
 
 Worktree sandboxes (auto-created by the herdr plugin) read `.nexus/config.yaml` from the worktree's own checkout — the same file the `--file` build reads. Egress policy, brokered secrets, and `sandbox.nested` all come from that file. A change takes effect on the next worktree-sandbox create for that checkout; no push to the default branch is needed. A checkout without the file gets no egress policy and no nested opt-in; a malformed file is an error. See the [agent skill](https://github.com/IniZio/nexus3/blob/main/plugins/claude/skills/nexus3/SKILL.md) for the authoring workflow.
