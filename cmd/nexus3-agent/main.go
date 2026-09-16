@@ -303,7 +303,7 @@ func mountGuestFS() {
 		tryMount("cgroup2", "/sys/fs/cgroup", "cgroup2", "")
 	}
 
-	tryMount("tmpfs", "/tmp", "tmpfs", "size=32m")
+	tryMount("tmpfs", "/tmp", "tmpfs", "mode=1777,size=32m")
 }
 
 // openConsole opens /dev/console (nil if unavailable).

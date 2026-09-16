@@ -3,8 +3,12 @@
 package main
 
 import (
+	"os"
 	"strings"
+	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestMountGuestFS_includesTmpfsTmp verifies that mountGuestFS unconditionally
@@ -40,10 +44,48 @@ func TestMountGuestFS_includesTmpfsTmp(t *testing.T) {
 					"size=0 (unlimited) makes currentTmpCapBytes() huge and "+
 					"the resizer can never grow it; calls: %v", calls)
 			}
+			if !strings.Contains(c.data, "mode=1777") {
+				t.Fatalf("mountGuestFS: /tmp tmpfs options %q lack mode=1777; "+
+					"a /tmp without the sticky bit is rejected as a socket dir "+
+					"by Claude Code cross-session messaging", c.data)
+			}
 			return // PASS: tmpfs on /tmp with a size option found
 		}
 	}
 	t.Fatalf("mountGuestFS did not mount tmpfs on /tmp; captured mounts: %v", calls)
+}
+
+// TestWipeMountScratchDisk_TmpIsSticky1777 drives the real wipeMountScratchDisk
+// with mkfs/unmount/mount stubbed and the mount point redirected to a temp dir,
+// then stats the directory: the observed symptom was a 0777 (no sticky bit)
+// /tmp on every scratch-disk sandbox, because os.Chmod(path, 0o1777) masks
+// off the raw sticky bit.
+func TestWipeMountScratchDisk_TmpIsSticky1777(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origMount, origMkfs, origUnmount, origMountFn := scratchDiskGuestMount, scratchMkfsFunc, scratchUnmountFunc, scratchMountFunc
+	t.Cleanup(func() {
+		scratchDiskGuestMount, scratchMkfsFunc, scratchUnmountFunc, scratchMountFunc = origMount, origMkfs, origUnmount, origMountFn
+	})
+	scratchDiskGuestMount = dir
+	scratchMkfsFunc = func(string) ([]byte, error) { return nil, nil }
+	scratchUnmountFunc = func(string, int) error { return syscall.EINVAL }
+	scratchMountFunc = func(string, string, string, uintptr, string) error { return nil }
+
+	if err := wipeMountScratchDisk("/dev/vdz", nil); err != nil {
+		t.Fatalf("wipeMountScratchDisk: %v", err)
+	}
+
+	var st unix.Stat_t
+	if err := unix.Stat(dir, &st); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Mode & 0o7777; got != 0o1777 {
+		t.Fatalf("scratch /tmp mode = %04o, want 1777 (sticky bit required)", got)
+	}
 }
 
 // TestMountGuestFS_includesTmpfsDevShm verifies that mountGuestFS mounts a
