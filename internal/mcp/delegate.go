@@ -231,6 +231,44 @@ func parseHerdrListBinding(out, workspaceID string) (handle, sandboxID string, o
 	return "", "", false
 }
 
+// parseHerdrListBindingByRef matches ref against handle= or a sandbox_id= prefix.
+func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID string, ok bool) {
+	if ref == "" {
+		return "", "", "", false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		var ws, h, sb string
+		for _, f := range strings.Split(strings.TrimSpace(line), "\t") {
+			if v, found := strings.CutPrefix(f, "workspace_id="); found {
+				ws = v
+			} else if v, found := strings.CutPrefix(f, "handle="); found {
+				h = v
+			} else if v, found := strings.CutPrefix(f, "sandbox_id="); found {
+				sb = v
+			}
+		}
+		if ws == "" {
+			continue
+		}
+		if h == ref || (sb != "" && strings.HasPrefix(sb, ref)) {
+			return ws, h, sb, true
+		}
+	}
+	return "", "", "", false
+}
+
+// sandboxListed reports whether `nexus3 sandbox list` still shows handle or sandboxID.
+func sandboxListed(psOut, handle, sandboxID string) bool {
+	for _, line := range strings.Split(psOut, "\n") {
+		for _, tok := range strings.Fields(line) {
+			if (handle != "" && tok == handle) || (sandboxID != "" && tok == sandboxID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // parseHerdrWorktreePath returns the checkout path of the worktree on branch
 // from `herdr worktree list --json`; empty when not found.
 func parseHerdrWorktreePath(out, branch string) string {
@@ -389,16 +427,54 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 	})
 
 	gosdk.AddTool(srv, &gosdk.Tool{
-		Name:        "delegate_teardown",
-		Description: "Remove a worktree sandbox after its slice is complete. Returns {removed, output}.",
+		Name: "delegate_teardown",
+		Description: "Reverse delegate_worktree_create: resolve the herdr workspace bound to the sandbox (`nexus3 herdr list`), " +
+			"run `herdr worktree remove --workspace <ws>` (closes the workspace, removes the git worktree, and reaps the sandbox via the worktree.removed hook), " +
+			"then verify the sandbox is gone. Falls back to `nexus3 sandbox rm <ref>` only when no workspace is bound or the sandbox is still listed afterwards. " +
+			"Returns {removed, workspace_id, handle, sandbox_id, output}.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateTeardownArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
 			return errorResult(fmt.Errorf("ref is required")), nil, nil
 		}
-		out, runErr := runHostCLI(ctx, "sandbox", "rm", args.Ref)
-		if runErr != nil {
-			return errorResult(fmt.Errorf("delegate_teardown: %w\n%s", runErr, out)), nil, nil
+		listOut, err := runHostCLI(ctx, "herdr", "list")
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_teardown: nexus3 herdr list: %w\n%s", err, listOut)), nil, nil
 		}
-		return successResult(map[string]interface{}{"removed": true, "output": out}), nil, nil
+		ws, handle, sandboxID, bound := parseHerdrListBindingByRef(listOut, args.Ref)
+		if !bound {
+			out, runErr := runHostCLI(ctx, "sandbox", "rm", args.Ref)
+			if runErr != nil {
+				return errorResult(fmt.Errorf("delegate_teardown: sandbox rm: %w\n%s", runErr, out)), nil, nil
+			}
+			return successResult(map[string]interface{}{"removed": true, "output": out}), nil, nil
+		}
+		herdrBin, err := resolveHerdrBin()
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_teardown: %w; workspace %s is bound to %s and must be removed through herdr", err, ws, args.Ref)), nil, nil
+		}
+		rmOut, err := runHerdrCLI(ctx, herdrBin, "worktree", "remove", "--workspace", ws)
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_teardown: herdr worktree remove --workspace %s: %w\n%s", ws, err, rmOut)), nil, nil
+		}
+
+		psOut, err := runHostCLI(ctx, "sandbox", "list")
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_teardown: nexus3 sandbox list: %w\n%s", err, psOut)), nil, nil
+		}
+		out := rmOut
+		if sandboxListed(psOut, handle, sandboxID) {
+			fallbackOut, runErr := runHostCLI(ctx, "sandbox", "rm", args.Ref)
+			if runErr != nil {
+				return errorResult(fmt.Errorf("delegate_teardown: sandbox %s still listed after herdr worktree remove; sandbox rm: %w\n%s", handle, runErr, fallbackOut)), nil, nil
+			}
+			out += fallbackOut
+		}
+		return successResult(map[string]interface{}{
+			"removed":      true,
+			"workspace_id": ws,
+			"handle":       handle,
+			"sandbox_id":   sandboxID,
+			"output":       out,
+		}), nil, nil
 	})
 }

@@ -148,8 +148,6 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 
 	// net.Conn I/O does not observe ctx: on ctx.Done close dataConn to
 	// unblock every ReadFrame/Write, then report ctx.Err() via pumpErr.
-	// The guest (handleDataConn) sees EOF and closes the child's stdin pipe;
-	// it does NOT kill the child — the session stays attachable via Attach.
 	go func() {
 		select {
 		case <-ctx.Done():

@@ -416,3 +416,149 @@ func TestDelegateAgentDispatch_PrependsStandingOrders(t *testing.T) {
 		t.Fatalf("standing orders missing or empty")
 	}
 }
+
+func runDelegateTeardown(t *testing.T, canned map[string]string, ref string) (*hostCLIRecorder, map[string]any, string, bool) {
+	t.Helper()
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	rec := installHostCLIRecorder(t, canned)
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_teardown", map[string]any{"ref": ref})
+	text := resultText(t, res)
+	if res.IsError {
+		return rec, nil, text, true
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("data unmarshal: %v (text=%q)", err, text)
+	}
+	return rec, data, text, false
+}
+
+const teardownBindingLines = "label=x\tworkspace_id=wOTHER\thandle=repo/other\tsandbox_id=sb-9\tpane_id=\n" +
+	"label=x\tworkspace_id=wNEW\thandle=repo/branch\tsandbox_id=sb-1\tpane_id=\n"
+
+// Bound ref: teardown reverses delegate_worktree_create through herdr and
+// must NOT run `nexus3 sandbox rm` (the hook already reaped the sandbox).
+func TestDelegateTeardown_BoundWorkspace_RemovesViaHerdr(t *testing.T) {
+	rec, data, text, isErr := runDelegateTeardown(t, map[string]string{
+		"herdr list":      teardownBindingLines,
+		"worktree remove": "removed\n",
+		"sandbox list":    "HANDLE  STATE  ID\nrepo/other  running  sb-9\n",
+	}, "repo/branch")
+	if isErr {
+		t.Fatalf("teardown errored: %s", text)
+	}
+	rm, ok := rec.find("worktree remove")
+	if !ok {
+		t.Fatalf("herdr worktree remove never ran: %+v", rec.calls)
+	}
+	if rm.bin != "/fake/herdr" {
+		t.Errorf("worktree remove ran through %q, want the herdr binary", rm.bin)
+	}
+	if want := []string{"worktree", "remove", "--workspace", "wNEW"}; !argsEqual(rm.args, want) {
+		t.Errorf("worktree remove argv = %q, want %q", rm.args, want)
+	}
+	if c, found := rec.find("sandbox rm"); found {
+		t.Errorf("sandbox rm ran for a bound workspace: %q", c.args)
+	}
+	if data["workspace_id"] != "wNEW" || data["handle"] != "repo/branch" || data["sandbox_id"] != "sb-1" {
+		t.Errorf("result = %v, want workspace_id=wNEW handle=repo/branch sandbox_id=sb-1", data)
+	}
+	if data["removed"] != true {
+		t.Errorf("removed = %v, want true", data["removed"])
+	}
+}
+
+func TestDelegateTeardown_BoundBySandboxIDPrefix(t *testing.T) {
+	rec, _, text, isErr := runDelegateTeardown(t, map[string]string{
+		"herdr list":      teardownBindingLines,
+		"worktree remove": "removed\n",
+		"sandbox list":    "HANDLE  STATE  ID\n",
+	}, "sb-1")
+	if isErr {
+		t.Fatalf("teardown errored: %s", text)
+	}
+	rm, ok := rec.find("worktree remove")
+	if !ok || !containsToken(rm.args, "wNEW") {
+		t.Fatalf("worktree remove did not target wNEW: %+v", rec.calls)
+	}
+	if _, found := rec.find("sandbox rm"); found {
+		t.Errorf("sandbox rm ran for a bound workspace: %+v", rec.calls)
+	}
+}
+
+// Unbound ref: no herdr workspace to close, so only `nexus3 sandbox rm` runs.
+func TestDelegateTeardown_Unbound_FallsBackToSandboxRm(t *testing.T) {
+	rec, data, text, isErr := runDelegateTeardown(t, map[string]string{
+		"herdr list": teardownBindingLines,
+		"sandbox rm": "removed sb-5\n",
+	}, "repo/loose")
+	if isErr {
+		t.Fatalf("teardown errored: %s", text)
+	}
+	if _, found := rec.find("worktree remove"); found {
+		t.Errorf("herdr worktree remove ran with no binding: %+v", rec.calls)
+	}
+	rm, ok := rec.find("sandbox rm")
+	if !ok {
+		t.Fatalf("sandbox rm never ran: %+v", rec.calls)
+	}
+	if want := []string{"sandbox", "rm", "repo/loose"}; !argsEqual(rm.args, want) {
+		t.Errorf("sandbox rm argv = %q, want %q", rm.args, want)
+	}
+	if data["removed"] != true {
+		t.Errorf("removed = %v, want true", data["removed"])
+	}
+}
+
+// Hook did not reap: the sandbox is still listed after the herdr remove, so
+// teardown falls back to `nexus3 sandbox rm` and still reports success.
+func TestDelegateTeardown_StillListed_FallsBackToSandboxRm(t *testing.T) {
+	rec, data, text, isErr := runDelegateTeardown(t, map[string]string{
+		"herdr list":      teardownBindingLines,
+		"worktree remove": "removed\n",
+		"sandbox list":    "HANDLE  STATE  ID\nrepo/branch  running  sb-1\n",
+		"sandbox rm":      "removed sb-1\n",
+	}, "repo/branch")
+	if isErr {
+		t.Fatalf("teardown errored: %s", text)
+	}
+	if _, ok := rec.find("worktree remove"); !ok {
+		t.Fatalf("herdr worktree remove never ran: %+v", rec.calls)
+	}
+	rm, ok := rec.find("sandbox rm")
+	if !ok {
+		t.Fatalf("sandbox rm never ran after sandbox stayed listed: %+v", rec.calls)
+	}
+	if !argsEqual(rm.args, []string{"sandbox", "rm", "repo/branch"}) {
+		t.Errorf("sandbox rm argv = %q", rm.args)
+	}
+	if data["removed"] != true {
+		t.Errorf("removed = %v, want true", data["removed"])
+	}
+}
+
+func TestDelegateTeardown_HerdrRemoveFails_NoSandboxRm(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	rec := installHostCLIRecorder(t, map[string]string{"herdr list": teardownBindingLines})
+	origHerdr := runHerdrCLI
+	runHerdrCLI = func(_ context.Context, bin string, argv ...string) (string, error) {
+		rec.calls = append(rec.calls, hostCall{bin: bin, args: argv})
+		return "error: worktree dirty\n", fmt.Errorf("exit 1")
+	}
+	t.Cleanup(func() { runHerdrCLI = origHerdr })
+
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_teardown", map[string]any{"ref": "repo/branch"})
+	if !res.IsError {
+		t.Fatalf("expected error, got success: %s", resultText(t, res))
+	}
+	if text := resultText(t, res); !strings.Contains(text, "worktree dirty") {
+		t.Errorf("error text %q does not surface herdr output", text)
+	}
+	if _, found := rec.find("sandbox rm"); found {
+		t.Errorf("sandbox rm ran after herdr remove failed: %+v", rec.calls)
+	}
+}

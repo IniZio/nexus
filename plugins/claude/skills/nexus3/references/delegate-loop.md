@@ -132,24 +132,28 @@ tests" is a claim, not evidence — verify independently.
 
 ## 5. Reclaim
 
-**MCP tool — `delegate_teardown`** removes the sandbox and guest disk, but NOT
-the host git worktree:
+**MCP tool — `delegate_teardown`** reverses `delegate_worktree_create` in one
+call: it resolves the herdr workspace bound to the sandbox (`nexus3 herdr
+list`), runs `herdr worktree remove --workspace <ws-id>` — which closes the
+workspace, removes the git worktree, and reaps the sandbox and its disks
+through the `worktree.removed` hook — then verifies the sandbox is gone from
+`nexus3 ps`. It falls back to `nexus3 rm <ref>` only when no workspace is
+bound to the ref, or when the sandbox is still listed after the herdr remove.
 
 ```json
 { "ref": "project/name" }
 ```
 
-After teardown (or instead, if something is wrong), close the worktree via CLI:
-
-```bash
-herdr worktree remove --workspace <ws-id>
-```
+Returns `{removed, workspace_id, handle, sandbox_id, output}`. No CLI step is
+needed afterwards — the workspace is already closed, so a manual
+`herdr worktree remove` would fail with `workspace_not_found`.
 
 **CLI equivalent for teardown:**
 
 ```bash
-herdr worktree remove --workspace <ws-id>   # first — while workspace still exists
-~/.local/bin/nexus3 rm <handle>             # then the sandbox and its disks
+herdr worktree remove --workspace <ws-id>   # closes workspace, removes worktree, reaps sandbox
+~/.local/bin/nexus3 ps                      # confirm the handle is gone
+~/.local/bin/nexus3 rm <handle>             # only if it is still listed
 ```
 
 Order matters: `nexus3 rm` closes the herdr workspace as a side effect. Running
