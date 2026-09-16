@@ -1404,3 +1404,73 @@ func TestHerdrSpaceBinding_LegacyJSON_DecodesCleanly(t *testing.T) {
 		t.Errorf("RepoRoot = %q; want empty string for legacy binding", bindings[0].RepoRoot)
 	}
 }
+
+func TestHerdrInstallDefaultShell_BackupRemovedOnConfigCheckFail(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	fakeHerdr := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(fakeHerdr, []byte("#!/bin/sh\ncase \"$*\" in\n  \"config check\") echo 'bad config' >&2; exit 1 ;;\n  *) exit 0 ;;\nesac\n"), 0o755); err != nil {
+		t.Fatalf("write fake herdr: %v", err)
+	}
+	t.Setenv("HERDR_BIN_PATH", fakeHerdr)
+
+	cfgFile := filepath.Join(t.TempDir(), "config.toml")
+	origContent := []byte("[terminal]\ndefault_shell = \"/old/shell\"\n")
+	if err := os.WriteFile(cfgFile, origContent, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("HERDR_CONFIG_PATH", cfgFile)
+
+	out := &Output{w: &strings.Builder{}}
+	_ = runHerdrInstallDefaultShell(context.Background(), []string{"--write-config"}, out)
+
+	dir := filepath.Dir(cfgFile)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".bak.") {
+			t.Errorf("backup file not removed after config restore: %s", e.Name())
+		}
+	}
+
+	got, err := os.ReadFile(cfgFile)
+	if err != nil {
+		t.Fatalf("read restored config: %v", err)
+	}
+	if string(got) != string(origContent) {
+		t.Errorf("config not restored: got %q, want %q", string(got), string(origContent))
+	}
+}
+
+func TestHerdrInstallDefaultShell_ForeignNexus3GuestShellNotChained(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	fakeHerdr := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(fakeHerdr, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake herdr: %v", err)
+	}
+	t.Setenv("HERDR_BIN_PATH", fakeHerdr)
+
+	cfgFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgFile, []byte("[terminal]\ndefault_shell = \"/some/other/path/nexus3-guest-shell\"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("HERDR_CONFIG_PATH", cfgFile)
+
+	out := &Output{w: &strings.Builder{}}
+	if err := runHerdrInstallDefaultShell(context.Background(), []string{"--write-config"}, out); err != nil {
+		t.Fatalf("install-default-shell: %v", err)
+	}
+
+	outStr := out.w.(*strings.Builder).String()
+	if strings.Contains(outStr, "Chained guest shell") {
+		t.Errorf("output contains 'Chained guest shell' — nexus3-guest-shell was chained when it must not be: %s", outStr)
+	}
+	if !strings.Contains(outStr, "nexus3-guest-shell") {
+		t.Errorf("output missing note about nexus3-guest-shell: %s", outStr)
+	}
+}

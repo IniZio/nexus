@@ -838,7 +838,9 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 		}
 		configBackupPath = bkp
 		if foreign != "" && nextShell == "" {
-			if st, stErr := os.Stat(foreign); stErr == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			if filepath.Base(foreign) == "nexus3-guest-shell" {
+				fmt.Fprintf(out.w, "Note: existing default_shell is nexus3-guest-shell (%s); overwriting it.\n\n", foreign)
+			} else if st, stErr := os.Stat(foreign); stErr == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
 				nextShell = foreign
 			}
 		}
@@ -910,7 +912,7 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 				} else {
 					_ = os.Remove(configPath)
 				}
-				_ = configBackupPath
+				_ = os.Remove(configBackupPath)
 				fmt.Fprintf(out.w, "Add to %s:\n\n", configPath)
 				fmt.Fprintf(out.w, "[terminal]\ndefault_shell = %q\n", installPath)
 				return fmt.Errorf("install-default-shell: herdr config check failed (config restored): %s",

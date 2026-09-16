@@ -172,6 +172,13 @@ if [ "$USE_LOCAL" = "0" ]; then
     fi
 
     if [ "$SKIP_DOWNLOAD" = "0" ]; then
+        _pre_ver=""
+        if [ -x "$NEXUS3" ]; then
+            _pre_ver="$("$NEXUS3" version 2>/dev/null \
+                | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9._]+)?' \
+                | head -1)" || true
+        fi
+
         WORK_DIR="$(mktemp -d)"
         trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -191,8 +198,11 @@ if [ "$USE_LOCAL" = "0" ]; then
 
         mkdir -p "$INSTALL_DIR"
         install -m 0755 "$WORK_DIR/$ASSET_NAME" "$NEXUS3"
-        echo "nexus3 plugin: installed -> $NEXUS3"
-        echo "nexus3 plugin: installed ${VERSION}"
+        if [ -n "$_pre_ver" ]; then
+            echo "nexus3 plugin: upgraded ${_pre_ver} -> ${VERSION#v}"
+        else
+            echo "nexus3 plugin: installed ${VERSION#v}"
+        fi
     fi
 
     _ids_exit=0

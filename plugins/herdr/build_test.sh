@@ -329,6 +329,54 @@ grep -q "^kernel install$" "$_kd_l" 2>/dev/null || { echo "  kernel install not 
     || fail "D2: kernel install / base URL test failed"
 rm -rf "$_kd_w"
 
+_ac3u_work="$(mktemp -d)"
+_ac3u_plug="$_ac3u_work/plugin" _ac3u_inst="$_ac3u_work/install"
+_ac3u_shim="$_ac3u_work/shim"  _ac3u_rel="$_ac3u_work/release"
+mkdir -p "$_ac3u_plug" "$_ac3u_inst" "$_ac3u_shim" "$_ac3u_rel"
+cp "$SCRIPT_DIR/abi" "$_ac3u_plug/abi"
+echo "v0.2.0" > "$_ac3u_plug/nexus3-version"
+make_fake_nexus3 "$_ac3u_inst/nexus3"
+make_fake_linux_release "$_ac3u_rel" "v0.2.0"
+_ac3u_exit=0
+_ac3u_out="$(env \
+    HERDR_PLUGIN_ROOT="$_ac3u_plug" \
+    INSTALL_DIR="$_ac3u_inst" \
+    NEXUS3_SHIM_DIR="$_ac3u_shim" \
+    NEXUS3_RELEASE_BASE_URL="file://${_ac3u_rel}" \
+    FAKE_NEXUS3_VER="v0.1.5" \
+    FAKE_VC_EXIT=10 \
+    FAKE_IDS_EXIT=0 FAKE_KI_EXIT=0 FAKE_DOCTOR_EXIT=0 \
+    sh "$BUILD_SH" 2>/dev/null)" || _ac3u_exit=$?
+if [ "$_ac3u_exit" = "0" ] && echo "$_ac3u_out" | grep -q 'upgraded '; then
+    ok "AC-3: upgrade path prints 'upgraded <old> -> <new>'"
+else
+    fail "AC-3: upgrade path should print 'upgraded' (exit=$_ac3u_exit, out=$_ac3u_out)"
+fi
+rm -rf "$_ac3u_work"
+
+_ac3f_work="$(mktemp -d)"
+_ac3f_plug="$_ac3f_work/plugin" _ac3f_inst="$_ac3f_work/install"
+_ac3f_shim="$_ac3f_work/shim"  _ac3f_rel="$_ac3f_work/release"
+mkdir -p "$_ac3f_plug" "$_ac3f_inst" "$_ac3f_shim" "$_ac3f_rel"
+cp "$SCRIPT_DIR/abi" "$_ac3f_plug/abi"
+echo "v0.2.0" > "$_ac3f_plug/nexus3-version"
+make_fake_linux_release "$_ac3f_rel" "v0.2.0"
+_ac3f_exit=0
+_ac3f_out="$(env \
+    HERDR_PLUGIN_ROOT="$_ac3f_plug" \
+    INSTALL_DIR="$_ac3f_inst" \
+    NEXUS3_SHIM_DIR="$_ac3f_shim" \
+    NEXUS3_RELEASE_BASE_URL="file://${_ac3f_rel}" \
+    FAKE_NEXUS3_VER="v0.2.0" \
+    FAKE_IDS_EXIT=0 FAKE_KI_EXIT=0 FAKE_DOCTOR_EXIT=0 \
+    sh "$BUILD_SH" 2>/dev/null)" || _ac3f_exit=$?
+if [ "$_ac3f_exit" = "0" ] && echo "$_ac3f_out" | grep -q 'installed '; then
+    ok "AC-3: fresh install path prints 'installed <new>'"
+else
+    fail "AC-3: fresh install path should print 'installed' (exit=$_ac3f_exit, out=$_ac3f_out)"
+fi
+rm -rf "$_ac3f_work"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ] && exit 0 || exit 1
