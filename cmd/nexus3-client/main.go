@@ -1,8 +1,4 @@
-// nexus3-client is the laptop-side companion to nexus3 for herdr remote
-// clients. It carries only the pieces that must run where the full nexus3
-// CLI cannot build (macOS): the herdr startup hook that mirrors a nexus3
-// host's auto port-forwards onto 127.0.0.1 of the client, and the ABI probe
-// plugins/herdr/build.sh uses at install time.
+// nexus3-client: laptop-side companion for herdr remote clients (macOS port-forward mirror + ABI probe).
 package main
 
 import (
@@ -15,8 +11,9 @@ import (
 	"github.com/IniZio/nexus3/internal/clientagent"
 )
 
-// abi mirrors plugins/herdr/abi; build.sh compares the two.
 const abi = "3"
+
+var version = "dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -38,7 +35,7 @@ func run(args []string) error {
 		}
 	}
 	if len(args) == 1 && args[0] == "version" {
-		fmt.Println("nexus3-client (herdr remote-client companion)")
+		fmt.Println("nexus3-client " + version)
 		return nil
 	}
 	return fmt.Errorf("usage: nexus3-client herdr <abi|local-agent-startup> | version")

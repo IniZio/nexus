@@ -19,18 +19,18 @@ herdr plugin install IniZio/nexus3/plugins/herdr
 `build.sh` (the plugin's build hook) reads `plugins/herdr/nexus3-version` for a
 pinned release tag, downloads `nexus3-linux-amd64` and `SHA256SUMS` from GitHub
 Releases, verifies the checksum, installs the binary to `~/.local/bin/nexus3`,
-ABI-probes it, then runs `nexus3 herdr install-default-shell` to hard-link the
-guest shell and print the one config line you still need to paste.
+ABI-probes it, then runs `nexus3 herdr install-default-shell --write-config` to
+hard-link the guest shell and wire `config.toml` automatically.
 
-**One remaining manual step.** `install-default-shell` prints a line like:
+**Manual fallback.** If `install-default-shell --write-config` is skipped or
+fails the `herdr config check` step, it prints the line to paste:
 
 ```
 [terminal]
 default_shell = ~/.local/bin/nexus3-guest-shell
 ```
 
-Paste it into `~/.config/herdr/config.toml`. herdr's config is user-owned and
-is not written automatically.
+Paste it into `~/.config/herdr/config.toml` and run `herdr server reload-config`.
 
 Confirm the plugin loaded:
 
@@ -42,18 +42,27 @@ herdr plugin list
 
 | Platform | Status |
 |---|---|
-| Linux x86-64 | **supported** — binary downloaded and installed by `build.sh` |
-| macOS (any arch) | no released binary — build from source (see below) |
+| Linux x86-64 | **supported** — `nexus3` binary downloaded and installed by `build.sh` |
+| macOS arm64 | **supported** — `nexus3-client` downloaded from the pinned release by `build.sh` |
+| macOS amd64 | **supported** — `nexus3-client` downloaded from the pinned release by `build.sh` |
 | Linux arm64 | no released binary — build from source (see below) |
 
-For macOS and Linux arm64, `build.sh` exits with a clear message. Build and
-wire the shell manually:
+macOS users run the same install command as Linux:
+
+```sh
+herdr plugin install IniZio/nexus3/plugins/herdr
+```
+
+`build.sh` detects the platform, downloads the matching `nexus3-client` binary
+from the pinned release, verifies its checksum, and installs it to
+`~/.local/bin/nexus3-client`. No Go toolchain required.
+
+For Linux arm64, `build.sh` exits with a clear message. Build and wire manually:
 
 ```sh
 git clone https://github.com/IniZio/nexus3
 cd nexus3 && go build -o ~/.local/bin/nexus3 ./cmd/nexus3
-nexus3 herdr install-default-shell
-# then paste the printed line into ~/.config/herdr/config.toml
+nexus3 herdr install-default-shell --write-config
 ```
 
 Then install the plugin pointing at a local clone so the build hook skips the
@@ -261,6 +270,29 @@ the sandbox, the workspace, and the binding together. Verify nothing leaked:
 ```sh
 nexus3 reap
 ```
+
+## Update the plugin <Badge type="tip" text="built" />
+
+To upgrade nexus3 to the version pinned in the plugin's `nexus3-version` file,
+re-run the same install command:
+
+```sh
+herdr plugin install IniZio/nexus3/plugins/herdr
+```
+
+The build hook (`build.sh`) compares the installed binary against the pin. It
+upgrades an older release build, and leaves a `-dev` build or a binary newer
+than the pin in place. To check whether your installed version matches the pin,
+run:
+
+```sh
+nexus3 herdr version-check
+```
+
+This prints one of: `version ok: <ver> (matches pin)`, a kept-newer or dev
+message, or `version skew: installed <old> < pinned <new>` with the exact
+update command on stderr. The same check runs at herdr startup and in
+`nexus3 herdr doctor`.
 
 ## Troubleshooting
 

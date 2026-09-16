@@ -153,16 +153,71 @@ jobs:
           OUTFILE="nexus3-${{ matrix.goos }}-${{ matrix.goarch }}"
           gh release upload "$TAG" "$OUTFILE" --clobber
 
+  # ── Build nexus3-client binaries (pure Go, cross-compiled) ─────────────
+  # nexus3-client is CGO_ENABLED=0 so it cross-compiles from ubuntu-latest
+  # for all three targets without native runners.
+  release-build-client:
+    name: Build client (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [release-create]
+    if: needs.release-create.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build nexus3-client binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.release-create.outputs.version }}
+        run: |
+          set -euo pipefail
+          OUTFILE="nexus3-client-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "ERROR: invalid version '$VERSION' — expected semver"
+            exit 1
+          fi
+          LDFLAGS="-s -w -X 'github.com/IniZio/nexus3/cmd/nexus3-client.version=${VERSION}'"
+          go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus3-client
+          echo "Built $OUTFILE ($(du -sh "$OUTFILE" | cut -f1))"
+
+      - name: Upload binary to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-create.outputs.tag }}
+        run: |
+          set -euo pipefail
+          OUTFILE="nexus3-client-${{ matrix.goos }}-${{ matrix.goarch }}"
+          gh release upload "$TAG" "$OUTFILE" --clobber
+
   # ── Publish: compute checksums ──────────────────────────────────────────
-  # Fail-closed gate: `needs: [release-build]` means GitHub Actions skips
-  # this job if any release-build leg fails (fail-fast is disabled, so a
-  # partial upload would otherwise produce a release with incomplete assets).
-  # With fail-fast disabled, partial asset uploads would otherwise leave a
-  # published release advertising platforms whose binaries are missing from
-  # SHA256SUMS. The needs dependency is the enforcement mechanism.
+  # Fail-closed gate: `needs: [release-build, release-build-client]` means
+  # GitHub Actions skips this job if any build leg fails (fail-fast is
+  # disabled, so a partial upload would otherwise produce a release with
+  # incomplete assets). With fail-fast disabled, partial asset uploads would
+  # otherwise leave a published release advertising platforms whose binaries
+  # are missing from SHA256SUMS. The needs dependency is the enforcement
+  # mechanism.
   release-publish:
     name: Publish release assets
-    needs: [release-create, release-build]
+    needs: [release-create, release-build, release-build-client]
     if: needs.release-create.outputs.released == 'true'
     runs-on: ubuntu-latest
     steps:

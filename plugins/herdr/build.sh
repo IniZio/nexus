@@ -11,6 +11,7 @@ GITHUB_REPO="nexus3"
 ASSET_NAME="nexus3-linux-amd64"
 DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+VERSION_FILE="$PLUGIN_DIR/nexus3-version"
 
 # ── Shim target ───────────────────────────────────────────────────────────
 # The shim is what herdr's hooks exec.  It lives in the plugin dir (the
@@ -33,17 +34,96 @@ SHIM="$SHIM_DIR/nexus3-shim.sh"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
-    CLIENT="${NEXUS3_CLIENT:-$(command -v nexus3-client 2>/dev/null || true)}"
-    if [ -z "$CLIENT" ] || [ ! -x "$CLIENT" ]; then
-        echo "nexus3 plugin: ${OS}/${ARCH} is a remote client and needs nexus3-client on PATH (or NEXUS3_CLIENT=<path>)." >&2
-        echo "Build it on any machine with Go:  GOOS=$(echo "$OS" | tr '[:upper:]' '[:lower:]') GOARCH=<arch> go build -o nexus3-client ./cmd/nexus3-client" >&2
-        exit 1
+    USE_LOCAL_CLIENT=0
+    if [ -n "${NEXUS3_LOCAL:-}" ]; then
+        echo "nexus3 plugin: NEXUS3_LOCAL set — skipping download, using NEXUS3_CLIENT / PATH binary."
+        USE_LOCAL_CLIENT=1
+    elif [ ! -f "$VERSION_FILE" ]; then
+        echo "nexus3 plugin: $VERSION_FILE absent — falling back to NEXUS3_CLIENT / PATH binary." >&2
+        USE_LOCAL_CLIENT=1
     fi
+
+    if [ "$USE_LOCAL_CLIENT" = "1" ]; then
+        CLIENT="${NEXUS3_CLIENT:-$(command -v nexus3-client 2>/dev/null || true)}"
+        if [ -z "$CLIENT" ] || [ ! -x "$CLIENT" ]; then
+            echo "nexus3 plugin: ${OS}/${ARCH} is a remote client and needs nexus3-client on PATH (or NEXUS3_CLIENT=<path>)." >&2
+            echo "Run: herdr plugin install IniZio/nexus3/plugins/herdr" >&2
+            exit 1
+        fi
+    else
+        VERSION="$(cat "$VERSION_FILE")"
+
+        case "$OS" in
+            Darwin) GOOS="darwin" ;;
+            Linux)  GOOS="linux"  ;;
+            *) echo "nexus3 plugin: ${OS}/${ARCH} is not a supported remote-client platform" >&2; exit 1 ;;
+        esac
+        case "$ARCH" in
+            arm64|aarch64) GOARCH="arm64" ;;
+            x86_64)        GOARCH="amd64" ;;
+            *) echo "nexus3 plugin: ${ARCH} is not a supported remote-client architecture" >&2; exit 1 ;;
+        esac
+        CLIENT_ASSET="nexus3-client-${GOOS}-${GOARCH}"
+        CLIENT_BIN="$INSTALL_DIR/nexus3-client"
+        BASE_URL="${NEXUS3_RELEASE_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${VERSION}}"
+
+        SKIP_CLIENT_DOWNLOAD=0
+        if [ -z "${NEXUS3_FORCE_DOWNLOAD:-}" ] && [ -x "$CLIENT_BIN" ]; then
+            EXISTING_VER="$("$CLIENT_BIN" version 2>/dev/null \
+                | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9._]+)?' \
+                | head -1)" || true
+            if echo "${EXISTING_VER:-}" | grep -q -- '-dev'; then
+                echo "nexus3 plugin: $CLIENT_BIN ($EXISTING_VER) is a dev build — keeping it (set NEXUS3_FORCE_DOWNLOAD=1 to override)."
+                SKIP_CLIENT_DOWNLOAD=1
+            elif [ -n "$EXISTING_VER" ]; then
+                HIGHEST="$(printf '%s\n%s\n' "$VERSION" "$EXISTING_VER" | sort -V | tail -1)"
+                if [ "$HIGHEST" = "$EXISTING_VER" ] && [ "$EXISTING_VER" != "$VERSION" ]; then
+                    echo "nexus3 plugin: $CLIENT_BIN ($EXISTING_VER) is newer than release $VERSION — keeping it (set NEXUS3_FORCE_DOWNLOAD=1 to override)."
+                    SKIP_CLIENT_DOWNLOAD=1
+                fi
+            fi
+        fi
+
+        if [ "$SKIP_CLIENT_DOWNLOAD" = "0" ]; then
+            _sha256_check() {
+                _asset="$1" _sums_file="$2"
+                if command -v sha256sum >/dev/null 2>&1; then
+                    grep "$_asset" "$_sums_file" | sha256sum --check --status
+                else
+                    grep "$_asset" "$_sums_file" | shasum -a 256 --check --status
+                fi
+            }
+
+            WORK_DIR="$(mktemp -d)"
+            trap 'rm -rf "$WORK_DIR"' EXIT
+
+            echo "nexus3 plugin: downloading ${CLIENT_ASSET} ${VERSION} …"
+            curl --fail --location --silent --show-error \
+                -o "$WORK_DIR/$CLIENT_ASSET" \
+                "${BASE_URL}/${CLIENT_ASSET}"
+            curl --fail --location --silent --show-error \
+                -o "$WORK_DIR/SHA256SUMS" \
+                "${BASE_URL}/SHA256SUMS"
+
+            echo "nexus3 plugin: verifying checksum …"
+            (cd "$WORK_DIR" && _sha256_check "$CLIENT_ASSET" SHA256SUMS) || {
+                echo "nexus3: error: checksum mismatch for ${CLIENT_ASSET}" >&2
+                exit 1
+            }
+
+            mkdir -p "$INSTALL_DIR"
+            install -m 0755 "$WORK_DIR/$CLIENT_ASSET" "$CLIENT_BIN"
+            echo "nexus3 plugin: installed -> $CLIENT_BIN"
+        fi
+        CLIENT="$CLIENT_BIN"
+    fi
+
     CLIENT="$(cd "$(dirname "$CLIENT")" && pwd)/$(basename "$CLIENT")"
     EXPECTED_ABI="$(cat "$PLUGIN_DIR/abi" 2>/dev/null)" || { echo "nexus3: error: $PLUGIN_DIR/abi not found" >&2; exit 1; }
     GOT_ABI="$("$CLIENT" herdr abi 2>/dev/null)" || { echo "nexus3: error: nexus3-client herdr abi probe failed" >&2; exit 1; }
     if [ "$GOT_ABI" != "$EXPECTED_ABI" ]; then
         echo "nexus3: error: ABI mismatch: plugin expects ${EXPECTED_ABI}, nexus3-client reports ${GOT_ABI}" >&2
+        echo "Reinstall: herdr plugin install ${GITHUB_OWNER}/${GITHUB_REPO}/plugins/herdr" >&2
         exit 1
     fi
     printf '#!/bin/sh\nexec "%s" "$@"\n' "$CLIENT" > "$SHIM"
@@ -53,8 +133,6 @@ if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
 fi
 
 # ── Decide: download or fall back to PATH ─────────────────────────────────
-# Local dev: set NEXUS3_LOCAL=1, or omit plugins/herdr/nexus3-version.
-VERSION_FILE="$PLUGIN_DIR/nexus3-version"
 USE_LOCAL=0
 if [ -n "${NEXUS3_LOCAL:-}" ]; then
     echo "nexus3 plugin: NEXUS3_LOCAL set — skipping download, using PATH binary."
