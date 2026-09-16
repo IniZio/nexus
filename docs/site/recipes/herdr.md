@@ -75,6 +75,12 @@ NEXUS3_LOCAL=1 herdr plugin install /path/to/nexus3/plugins/herdr
 `build.sh` uses the binary already on `PATH` and runs the same probes without
 touching the download path.
 
+`build.sh` writes the shim next to the plugin files (`plugins/herdr/nexus3-shim.sh`
+in a checkout install), and that shim is what every live hook execs. Override
+`INSTALL_DIR` for a throwaway run only together with `NEXUS3_SHIM_DIR=<dir>`;
+without it `build.sh` refuses rather than repoint the live shim at a temporary
+binary.
+
 ::: warning Rebuild the binary, not just the plugin
 The shim records the absolute path of the installed binary. If you install a new
 binary to a different location, re-run the install so the shim is rewritten. A

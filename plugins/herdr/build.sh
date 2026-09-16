@@ -9,7 +9,25 @@ PLUGIN_DIR="${HERDR_PLUGIN_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
 GITHUB_OWNER="IniZio"
 GITHUB_REPO="nexus3"
 ASSET_NAME="nexus3-linux-amd64"
-INSTALL_DIR="${HOME}/.local/bin"
+DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
+INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+
+# ── Shim target ───────────────────────────────────────────────────────────
+# The shim is what herdr's hooks exec.  It lives in the plugin dir (the
+# checkout) by default, so a proof run that points INSTALL_DIR at a temp dir
+# would repoint the LIVE shim at a binary that is about to be deleted and
+# break every hook (exit 127).  Such runs must also redirect the shim via
+# NEXUS3_SHIM_DIR; otherwise abort before touching anything.
+SHIM_DIR="${NEXUS3_SHIM_DIR:-$PLUGIN_DIR}"
+if [ "$INSTALL_DIR" != "$DEFAULT_INSTALL_DIR" ] && [ -z "${NEXUS3_SHIM_DIR:-}" ]; then
+    echo "nexus3: error: INSTALL_DIR=$INSTALL_DIR is not the default ($DEFAULT_INSTALL_DIR)," >&2
+    echo "  but the shim would still be written to the checkout at $PLUGIN_DIR/nexus3-shim.sh," >&2
+    echo "  repointing the live plugin at a non-default binary.  Set NEXUS3_SHIM_DIR=<dir>" >&2
+    echo "  to write the shim elsewhere for this run." >&2
+    exit 1
+fi
+mkdir -p "$SHIM_DIR"
+SHIM="$SHIM_DIR/nexus3-shim.sh"
 
 # ── Platform guard ────────────────────────────────────────────────────────
 OS="$(uname -s)"
@@ -28,7 +46,6 @@ if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
         echo "nexus3: error: ABI mismatch: plugin expects ${EXPECTED_ABI}, nexus3-client reports ${GOT_ABI}" >&2
         exit 1
     fi
-    SHIM="$PLUGIN_DIR/nexus3-shim.sh"
     printf '#!/bin/sh\nexec "%s" "$@"\n' "$CLIENT" > "$SHIM"
     chmod +x "$SHIM"
     echo "nexus3 plugin: remote client — shim written -> $SHIM (nexus3-client)"
@@ -147,7 +164,6 @@ if [ -n "$HERDR_VER" ]; then
 fi
 
 # ── Write the shim (absolute path so herdr's minimal launchd PATH doesn't matter) ──
-SHIM="$PLUGIN_DIR/nexus3-shim.sh"
 printf '#!/bin/sh\nexec "%s" "$@"\n' "$NEXUS3" > "$SHIM"
 chmod +x "$SHIM"
 
