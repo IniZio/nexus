@@ -993,6 +993,19 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		return errSandbox("sandbox create", err)
 	}
 
+	var agentBytes []byte
+	var agentBytesLoadErr error
+	{
+		ab, lookErr := exec.LookPath("nexus3-agent")
+		if lookErr != nil {
+			ab = filepath.Join(filepath.Dir(kernelPath), "nexus3-agent")
+		}
+		agentBytes, agentBytesLoadErr = os.ReadFile(ab)
+		if agentBytesLoadErr != nil {
+			agentBytesLoadErr = fmt.Errorf("agent binary %q: %w", ab, agentBytesLoadErr)
+		}
+	}
+
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
 		return errSandbox("sandbox create", fmt.Errorf("resolve state directory: %w", err))
@@ -1073,13 +1086,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
 		}
 
-		agentBin, err := exec.LookPath("nexus3-agent")
-		if err != nil {
-			agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus3-agent")
-		}
-		agentBytes, err := os.ReadFile(agentBin)
-		if err != nil {
-			return errSandbox("sandbox create", fmt.Errorf("--file: read agent binary %q: %w", agentBin, err))
+		if len(agentBytes) == 0 {
+			return errSandbox("sandbox create", fmt.Errorf("--file: %w", agentBytesLoadErr))
 		}
 
 		taskTimeout := buildTaskTimeout()
@@ -1578,6 +1586,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			Volumes:                 namedVS,                                      // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts:       namedMounts,
 			LiveMounts:              bootLiveMounts, // D-PD-53: populated from --mount flags
+			AgentBytes:              agentBytes,
 		},
 	)
 	if err != nil {

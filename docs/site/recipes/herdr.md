@@ -225,7 +225,7 @@ them asks you to type a handle.
 A sandbox made in a terminal is a first-class herdr citizen:
 
 ```sh
-nexus3 create demo/api --image nexus3-agent-base
+nexus3 create demo/api --image ghcr.io/inizio/nexus3-base:latest
 ```
 
 It appears in the overlay immediately, because the listing is unfiltered. The
@@ -253,7 +253,7 @@ Run `nexus3 herdr list` to see the current bindings.
 
 ```sh
 # create a sandbox with your repo mounted live
-nexus3 create demo/api --image nexus3-agent-base --mount "$PWD:/work"
+nexus3 create demo/api --image ghcr.io/inizio/nexus3-base:latest --mount "$PWD:/work"
 
 # see it
 nexus3 ps

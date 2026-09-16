@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
@@ -852,5 +853,90 @@ func TestCreateAndBoot_LiveMounts_ReadOnly_EndToEnd(t *testing.T) {
 	}
 	if !sb.LiveMounts[1].ReadOnly {
 		t.Error("LiveMounts[1].ReadOnly: got false, want true")
+	}
+}
+
+func TestResolveExt4_ImageRefCacheMiss(t *testing.T) {
+	const fakeRef = "ghcr.io/inizio/nexus3-base:v0.1.1"
+	const fakeAgent = "fakeagentbytes"
+
+	cacheDir := t.TempDir()
+	cache, err := image.NewCache(cacheDir)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	var pulled string
+	old := ociPullAndCacheFn
+	defer func() { ociPullAndCacheFn = old }()
+	ociPullAndCacheFn = func(ctx context.Context, ociRef string, c *image.Cache, agentBytes []byte) (string, error) {
+		pulled = ociRef
+		if string(agentBytes) != fakeAgent {
+			return "", fmt.Errorf("unexpected agentBytes: got %q", agentBytes)
+		}
+		f, err := os.CreateTemp("", "fake-ext4-*")
+		if err != nil {
+			return "", err
+		}
+		if _, err := f.WriteString("fakecontent"); err != nil {
+			f.Close()
+			return "", err
+		}
+		f.Close()
+		defer os.Remove(f.Name())
+		rf, err := os.Open(f.Name())
+		if err != nil {
+			return "", err
+		}
+		defer rf.Close()
+		img := domain.Image{
+			Digest:    "sha256:4a7d58c01bcfbcda5dd06f5ceec249337f2387067b29136f492d6595882620fd",
+			Ref:       ociRef,
+			Kind:      domain.KindBase,
+			CreatedAt: time.Now(),
+		}
+		if err := c.Put(ctx, img, rf); err != nil {
+			return "", fmt.Errorf("fake Put: %w", err)
+		}
+		return string(img.Digest), nil
+	}
+
+	spec := ImageSpec{Ref: fakeRef}
+	ext4Path, digest, err := resolveExt4(context.Background(), spec, cache, cacheDir, []byte(fakeAgent))
+	if err != nil {
+		t.Fatalf("resolveExt4: %v", err)
+	}
+	if pulled != fakeRef {
+		t.Errorf("puller called with ref %q, want %q", pulled, fakeRef)
+	}
+	if ext4Path == "" {
+		t.Error("ext4Path is empty")
+	}
+	if digest == "" {
+		t.Error("digest is empty")
+	}
+}
+
+func TestResolveExt4_ImageRefCacheMiss_NoAgentBytes(t *testing.T) {
+	cacheDir := t.TempDir()
+	cache, err := image.NewCache(cacheDir)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	old := ociPullAndCacheFn
+	defer func() { ociPullAndCacheFn = old }()
+	ociPullAndCacheFn = func(_ context.Context, _ string, _ *image.Cache, _ []byte) (string, error) {
+		t.Fatal("puller must not be called when agentBytes is nil")
+		return "", nil
+	}
+
+	spec := ImageSpec{Ref: "ghcr.io/inizio/nexus3-base:latest"}
+	_, _, err = resolveExt4(context.Background(), spec, cache, cacheDir, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrAgentBytesRequired) {
+		t.Errorf("expected ErrAgentBytesRequired, got: %v", err)
 	}
 }

@@ -28,6 +28,8 @@ import (
 // guest agent does not become reachable within the configured timeout.
 var ErrAgentUnreachable = errors.New("service: guest agent did not answer after VM boot")
 
+var ociPullAndCacheFn = builderimage.PullAndCacheOCI
+
 // ErrAgentBytesRequired is returned by CreateAndBoot when an OCI pull is
 // required but no agent binary was supplied in CreateAndBootOptions.
 var ErrAgentBytesRequired = errors.New("no agent binary available for OCI pull (set AgentBytes in CreateAndBootOptions)")
@@ -1279,7 +1281,7 @@ func resolveExt4(
 			if len(agentBytes) == 0 {
 				return "", "", fmt.Errorf("resolve image: no cached image with ref %q: %w", spec.Ref, ErrAgentBytesRequired)
 			}
-			digest, pullErr := builderimage.PullAndCacheOCI(ctx, spec.Ref, cache, agentBytes)
+			digest, pullErr := ociPullAndCacheFn(ctx, spec.Ref, cache, agentBytes)
 			if pullErr != nil {
 				return "", "", fmt.Errorf("resolve image: pull OCI %q: %w", spec.Ref, pullErr)
 			}

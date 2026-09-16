@@ -8,6 +8,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -135,4 +136,13 @@ func TestHerdrResolveWorktreeImage(t *testing.T) {
 			t.Errorf("got (%q,%q), want (--image, %q) — walk escaped the .git boundary", flag, val, herdrDefaultImage)
 		}
 	})
+}
+
+func TestHerdrDefaultImage_IsGHCRRef(t *testing.T) {
+	const wantPrefix = "ghcr.io/inizio/nexus3-base:"
+	if !strings.HasPrefix(herdrDefaultImage, wantPrefix) {
+		t.Errorf("herdrDefaultImage = %q; want prefix %q\n"+
+			"The default image must be a published OCI ref, not a local cache tag.",
+			herdrDefaultImage, wantPrefix)
+	}
 }
