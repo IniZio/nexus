@@ -1,18 +1,5 @@
 //go:build herdr_live
 
-// Package cli — Layer 4 of the herdr+nexus3 test strategy.
-//
-// This file requires a live herdr session and a nexus3 binary build.
-// It is excluded from the default test run and from CI; it must be
-// explicitly tagged to execute.
-//
-// Run with:
-//
-//	TMPDIR=/tmp go test -count=1 -tags herdr_live ./internal/cli/ -run TestHerdrPlugin_L4
-//
-// Prerequisites:
-//   - herdr must be running (herdr workspace list must succeed)
-//   - The test creates and closes its own scratch workspace.
 //     It never touches the operator's existing workspaces.
 package cli
 
@@ -56,15 +43,12 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 	probeHome, _ := startIsolatedHerdr(t)
 	_ = probeHome
 
-	// Safety: record before-state so the operator can confirm their
-	// workspaces are untouched after the run.
 	beforeWorkspaces := herdrWorkspaceList(t)
 	t.Logf("BEFORE: %s", beforeWorkspaces)
 	if !strings.Contains(beforeWorkspaces, "workspace_list") {
 		liveSkip(t, "herdr workspace list did not return a workspace_list (isolated session may not be ready)")
 	}
 
-	// --- 1. Build the binary. ---
 	binDir := t.TempDir()
 	binary := filepath.Join(binDir, "nexus3-l4")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
@@ -73,7 +57,6 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
 
-	// Read the expected ABI value from the canonical source so this file
 	// never re-introduces a hardcoded copy that silently drifts.
 	abiDecl, abiDeclErr := os.ReadFile(filepath.Join("..", "..", "plugins", "herdr", "abi"))
 	if abiDeclErr != nil {
@@ -81,17 +64,11 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 	}
 	wantABI := strings.TrimSpace(string(abiDecl))
 
-	// --- 2. Primary assertion: exec the binary directly. ---
-	//
-	// `herdr pane wait-output` cannot distinguish the ABI value from shell-prompt
-	// noise, so we exec the binary as a subprocess and check stdout
 	// directly. This is both deterministic and mutation-sensitive.
 	abiCmd := exec.Command(binary, "__herdr-plugin", "abi")
 	abiOut, abiErr := abiCmd.Output()
 	if abiErr != nil {
 		// On mutation (verb renamed or deleted), the binary exits 2 with
-		// "error: unknown command: __herdr-plugin". Report the stderr so
-		// the operator can tell whether the verb registration was lost.
 		var stderr []byte
 		if ee, ok := abiErr.(*exec.ExitError); ok {
 			stderr = ee.Stderr
@@ -104,41 +81,18 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 	}
 	t.Logf("nexus3 __herdr-plugin abi stdout: %q", got)
 
-	// --- 3. herdr pane smoke test. ---
-	//
-	// Run the same binary inside a real herdr workspace pane. This confirms
-	// the binary works in herdr's execution context. The pane output is
-	// logged; the assertion is wait-output success, which confirms the ABI
-	// value read from plugins/herdr/abi appeared (even if other content also
-	// appeared before the shell reset). Do NOT restate the number here — it
 	// was hardcoded as "1" and silently went stale when the ABI moved to 2.
 	label := fmt.Sprintf("nexus3-l4-probe-%d", time.Now().UnixMilli())
-	// Register cleanup by label BEFORE createL4ScratchWorkspace so that a
-	// t.Fatal inside the helper (e.g. at JSON parse, after herdr has already
-	// created the workspace) still triggers cleanup. findL4WorkspaceIDByLabel
 	// re-resolves the workspace from the live list; if the workspace was never
-	// created or is already gone, it returns "" and closeL4ScratchWorkspace
-	// returns early without touching anything.
 	t.Cleanup(func() {
 		id := findL4WorkspaceIDByLabel(t, label)
 		closeL4ScratchWorkspace(t, id, label)
-		// Assert the cleanup actually happened.  Without this the closure can
-		// silently no-op (as it did when the list response was decoded with the
-		// wrong JSON field tag) and the test still passes while leaking a live
-		// workspace into the operator's session.
 		afterWorkspaces := herdrWorkspaceList(t)
-		// Guard: if the list command itself failed (herdr died, empty output),
-		// the absence of the label is meaningless — the workspace may be
-		// stranded and invisible. Fail loudly so the operator knows to check.
 		if !strings.Contains(afterWorkspaces, "workspace_list") {
 			t.Errorf("herdr workspace list after cleanup did not return a workspace_list (got %q) — leak check inconclusive; check manually", afterWorkspaces)
 		} else {
-			// Deliberately a raw-substring check on the list output rather than a
 			// call to findL4WorkspaceIDByLabel: this assertion must not share a
-			// decoding mechanism with the resolver it is checking.  An earlier
-			// version used the resolver, and when the resolver decoded the list
 			// with the wrong JSON field tag both the close AND the leak check
-			// silently no-opped, so the test passed while leaking a workspace.
 			if strings.Contains(afterWorkspaces, label) {
 				t.Errorf("scratch workspace (label %q) survived cleanup; list: %s", label, afterWorkspaces)
 			}
@@ -152,10 +106,6 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 		t.Fatalf("herdr pane run: %v\n%s", err, runOut)
 	}
 
-	// wait-output confirms the pane produced the ABI value before the subprocess
-	// exited. Shell-prompt noise may also match, but here we are using this
-	// only as a smoke test that herdr's pane machinery ran the binary — the
-	// direct-exec assertion above is the real gate.
 	waitOut, err := herdrExec(
 		"pane", "wait-output",
 		paneID,
@@ -167,25 +117,19 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 		readOut, _ := herdrExec("pane", "read", paneID, "--source", "visible", "--lines", "10").CombinedOutput()
 		t.Logf("herdr pane wait-output did not find %q within 10 s: %v\n%s\npane (visible):\n%s",
 			wantABI, err, waitOut, readOut)
-		// Non-fatal: the primary assertion (direct exec) already passed.
 	} else {
 		readOut, _ := herdrExec("pane", "read", paneID, "--source", "visible", "--lines", "5").CombinedOutput()
 		t.Logf("pane smoke test passed; visible: %s", strings.TrimSpace(string(readOut)))
 	}
 }
 
-// herdrWorkspaceList runs `herdr workspace list` and returns the raw JSON.
-// Never fails the test — used for before/after safety logging only.
 func herdrWorkspaceList(t *testing.T) string {
 	t.Helper()
 	out, _ := herdrExec("workspace", "list").CombinedOutput()
 	return string(out)
 }
 
-// findL4WorkspaceIDByLabel scans `herdr workspace list` for a workspace whose
-// label matches exactly and returns its workspace_id, or "" if not found or on
 // any error. Never fails the test — used by the pre-create cleanup closure so
-// that a fatal inside createL4ScratchWorkspace still lets cleanup close the
 // workspace by label even though wsID was never returned.
 func findL4WorkspaceIDByLabel(t *testing.T, label string) string {
 	t.Helper()
@@ -214,8 +158,6 @@ func findL4WorkspaceIDByLabel(t *testing.T, label string) string {
 	return ""
 }
 
-// createL4ScratchWorkspace creates a herdr workspace (--no-focus) and returns
-// the workspace ID and root pane ID from the JSON response.
 func createL4ScratchWorkspace(t *testing.T, label string) (wsID, paneID string) {
 	t.Helper()
 	out, err := herdrExec(
@@ -250,9 +192,6 @@ func createL4ScratchWorkspace(t *testing.T, label string) (wsID, paneID string) 
 	return wsID, paneID
 }
 
-// closeL4ScratchWorkspace re-resolves the workspace by ID, asserts the label
-// matches what we created, then closes it. Refuses to close and fails the
-// test if the label does not match — prevents closing a workspace we did not
 // create. Safe to call multiple times (idempotent).
 func closeL4ScratchWorkspace(t *testing.T, wsID, expectedLabel string) {
 	t.Helper()
@@ -262,7 +201,6 @@ func closeL4ScratchWorkspace(t *testing.T, wsID, expectedLabel string) {
 
 	getOut, err := herdrExec("workspace", "get", wsID).CombinedOutput()
 	if err != nil {
-		// Workspace may already be gone — log and return.
 		t.Logf("workspace get %s: %v (may already be closed)", wsID, err)
 		return
 	}
@@ -299,20 +237,7 @@ func closeL4ScratchWorkspace(t *testing.T, wsID, expectedLabel string) {
 	t.Logf("closed scratch workspace %s", wsID)
 }
 
-// liveSkip is how every herdr_live test declines to run when a precondition is
-// absent (no /dev/kvm, no herdr, no kernel image).
-//
 // It exists because `go test` reports a package whose only live test skipped as
-// "ok", with no indication on the default (non -v) output that nothing ran.
-// That is this repo's signature failure mode wearing a new hat: a green that
-// asserts nothing. It has already been observed here — a live AC test was
-// believed to be passing when NEXUS3_KERNEL_PATH simply was not set.
-//
-// Setting NEXUS3_LIVE_REQUIRED=1 turns every such skip into a failure, so
-// "were the live tests actually exercised?" becomes a switch rather than a
-// question you answer by squinting at -v output. Use it in any context that
-// intends the live layer to run — a release check, or a session that just
-// changed the code these tests cover.
 func liveSkip(t *testing.T, format string, args ...any) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)

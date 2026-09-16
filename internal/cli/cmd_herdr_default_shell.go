@@ -22,68 +22,28 @@ import (
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
-// herdrSidecarSuffix is the filename extension appended to the installed
 // binary path to form the companion sidecar. A single source-of-truth constant
-// prevents the writer, reader, and tests from silently diverging.
 const herdrSidecarSuffix = ".nexus3bin"
 
-// herdrExecFn is the syscall.Exec signature used by herdrDefaultShellCore.
-// Replaced in tests so the test drives the real decision logic without
-// actually exec-replacing the test process.
 type herdrExecFn func(argv0 string, argv []string, envv []string) error
 
-// sandboxDialer is an optional extension of sandboxGetter that can probe
-// whether a guest is reachable via vsock. *service.Service implements it;
-// simple test fakes that only exercise the record-fetch path do not need to.
-// herdrDefaultShellCore performs a type-assertion and skips the check when
-// the concrete svc does not implement this interface.
 type sandboxDialer interface {
 	sandboxGetter
 	DialGuest(ctx context.Context, ref string, port uint32) (net.Conn, error)
 }
 
-// herdrGuestShellExecFn is the exec seam for RunHerdrGuestShell and
-// herdrGuestShellFallback. Production code uses syscall.Exec; tests replace
-// this to capture exec calls without replacing the test process.
 var herdrGuestShellExecFn herdrExecFn = syscall.Exec
 
-// herdrGuestShellExitFn is the os.Exit seam for RunHerdrGuestShell.
-// Tests replace this to prevent the test process from exiting.
 var herdrGuestShellExitFn = os.Exit
 
-// herdrSkipInstallProbeForTest disables the install-time probe in
-// runHerdrInstallDefaultShell. Set to true in tests where the installed binary
-// is the test runner and lacks the argv[0] dispatch.
 var herdrSkipInstallProbeForTest bool
 
 // herdrAutoCreateTimeout is the outer deadline for the auto-create subprocess
-// launched by herdrDefaultShellCore when a workspace has no binding yet.
-// The subprocess runs "nexus3 herdr worktree-sandbox --auto <wsID>". Its
-// worst case is NOT its own create (herdrWorktreeCreateTimeout, 240s): the
-// first tab of a fresh worktree workspace races the worktree.created hook pane
-// for the same handle, loses the per-handle create-intent lock, and waits up
-// to herdrWorktreeCreateLockTimeout (330s) for the winner's build before it
-// re-checks and finds the binding. The old 120s bound SIGKILLed that waiter
-// mid-wait on every cold build, which dropped the first tab into a host shell
-// while the sandbox was still (successfully) provisioning next door.
 const herdrAutoCreateTimeout = herdrWorktreeCreateLockTimeout + 30*time.Second
 
-// herdrGuestShellNextEnv names the guest shell nexus3-guest-shell hands a pane
-// to when the workspace has no nexus3 binding (and auto-create does not
-// produce one). herdr has exactly one [terminal] default_shell slot; when a
-// second plugin (herdr-plugin-msb) also wants it, whichever binary is
-// configured wins and the other plugin's spaces silently get host shells. The
-// chain lets nexus3-guest-shell own the slot and defer to the other plugin's
-// guest shell for everything that is not a nexus3 space. Stamped into the
 // sidecar (line 3) by "nexus3 herdr install-default-shell --next <path>"; an
-// explicit env value wins over the stamped one.
 const herdrGuestShellNextEnv = "NEXUS3_GUEST_SHELL_NEXT"
 
-// herdrGuestShellArgsFn returns the pane shell's own arguments — what herdr
-// appended after default_shell (a login flag, or "-c <cmd>"). They exist only
-// under the argv[0] dispatch (main.go routes "nexus3-guest-shell" here); for
-// the "nexus3 herdr default-shell" verb os.Args[1:] are verb words, not shell
-// words, so the seam yields nothing. Replaced in tests.
 var herdrGuestShellArgsFn = func() []string {
 	if filepath.Base(os.Args[0]) != "nexus3-guest-shell" {
 		return nil
@@ -91,34 +51,15 @@ var herdrGuestShellArgsFn = func() []string {
 	return os.Args[1:]
 }
 
-// herdrDefaultShellAutoCreateFn is the seam for the auto-create subprocess.
-// Replaced in tests to prevent live herdr/nexus3 calls.
 var herdrDefaultShellAutoCreateFn = herdrDefaultShellAutoCreate
 
-// herdrWtChildRunnerFn runs the guest shell as a supervised child process for
-// wt/ (auto-bound worktree) panes and waits for it to exit.  The child
-// inherits stdin/stdout/stderr so it holds the controlling TTY and is the
-// terminal foreground.  Replaced in tests.
 var herdrWtChildRunnerFn func(ctx context.Context, nexus3Bin string, argv []string) error = herdrWtChildRunner
 
-// herdrWtPaneListerFn returns the count of panes in workspaceID that are NOT
-// ownPaneID.  Returns (0, nil) when no other panes remain.  Replaced in tests.
 var herdrWtPaneListerFn func(ctx context.Context, workspaceID, ownPaneID string) (int, error) = herdrWtPaneLister
 
-// herdrWtSandboxRemoverFn removes the sandbox by handle.  Called only when
-// all panes in the workspace have closed.  Replaced in tests.
 var herdrWtSandboxRemoverFn func(ctx context.Context, handle string) error = herdrWtSandboxRemover
 
-// herdrAutoCreatePredicateFn gates auto-create attempts in herdrDefaultShellCore.
-//
-// Returns true only when (b) the current working directory is inside a linked
-// worktree AND either (c) a binding in the file carries a RepoRoot matching that
-// linked worktree's main repo (bindings with empty RepoRoot are NO MATCH) or
-// (d) the checkout itself is nexus3-onboarded (.nexus/config.yaml or
-// .nexus/Containerfile), so the FIRST worktree of an onboarded repo engages.
 // False on any I/O error (FAIL-OPEN toward host shell).
-//
-// Replaced in tests to avoid filesystem fixtures in integration tests.
 var herdrAutoCreatePredicateFn = func(allBindings []HerdrSpaceBinding) bool {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -127,16 +68,6 @@ var herdrAutoCreatePredicateFn = func(allBindings []HerdrSpaceBinding) bool {
 	return herdrAutoCreatePredicateWith(cwd, allBindings, os.Stat, os.ReadFile)
 }
 
-// herdrAutoCreatePredicateWith is the injectable core of herdrAutoCreatePredicateFn.
-// Accepts cwd and fs functions so unit tests can drive it with t.TempDir() fixtures.
-//
-// (b) Walks up from cwd, bounded to herdrGitSearchDepth levels, looking for a
-// .git entry. A linked worktree's .git is a regular FILE ("gitdir: <path>");
-// a main checkout's .git is a DIRECTORY. Anything else → false.
-//
-// (c) Only when (b) holds: the main repo path derived from the .git file must
-// match the RepoRoot of at least one binding. Bindings with an empty RepoRoot
-// are treated as NO MATCH (legacy bindings, or bindings from non-worktree
 // flows). False on any I/O error (FAIL-OPEN toward host shell).
 func herdrAutoCreatePredicateWith(
 	cwd string,
@@ -148,17 +79,10 @@ func herdrAutoCreatePredicateWith(
 	if mainRepo == "" {
 		return false
 	}
-	// (c) Same rule as worktree-sandbox --auto (herdrWorktreeAutoBindDecision):
-	// a bound sibling in the repo OR a nexus3-onboarded checkout. Without the
 	// second arm the FIRST worktree of a repo never engaged here even though
-	// the worktree.created hook was provisioning it in the next pane.
 	return herdrRepoHasBoundSandbox(mainRepo, allBindings) || herdrRepoHasNexus3ConfigWith(worktreeRoot, statFn)
 }
 
-// herdrLinkedWorktreeFromCwd walks up from cwd (bounded) looking for a .git
-// entry. A linked worktree's .git is a regular FILE ("gitdir: <path>"); a main
-// checkout's .git is a DIRECTORY. Returns (worktreeRoot, mainRepo) for a linked
-// worktree and ("", "") for anything else, including any I/O error.
 func herdrLinkedWorktreeFromCwd(
 	cwd string,
 	statFn func(string) (os.FileInfo, error),
@@ -192,8 +116,6 @@ func herdrLinkedWorktreeFromCwd(
 	return "", ""
 }
 
-// herdrRepoHasNexus3ConfigWith is herdrRepoHasNexus3Config with an injectable
-// stat so the predicate stays testable against t.TempDir() fixtures.
 func herdrRepoHasNexus3ConfigWith(dir string, statFn func(string) (os.FileInfo, error)) bool {
 	if dir == "" {
 		return false
@@ -206,9 +128,6 @@ func herdrRepoHasNexus3ConfigWith(dir string, statFn func(string) (os.FileInfo, 
 	return false
 }
 
-// herdrLinkedWorktreeReasonFn reports whether the pane's cwd is inside a linked
-// worktree, for the one-line reason printed when auto-create does not engage
-// there. Replaced in tests.
 var herdrLinkedWorktreeReasonFn = func() bool {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -218,10 +137,7 @@ var herdrLinkedWorktreeReasonFn = func() bool {
 	return mainRepo != ""
 }
 
-// herdrGuestShellNext returns the chained guest shell from getenv, or "" when
-// none is configured, it does not exist, or it is this very binary (an exec
 // loop). The self check is by inode: the installed hard link and the build
-// output share one.
 func herdrGuestShellNext(getenv func(string) string) string {
 	next := getenv(herdrGuestShellNextEnv)
 	if next == "" {
@@ -239,17 +155,8 @@ func herdrGuestShellNext(getenv func(string) string) string {
 	return next
 }
 
-// herdrMainRepoFromGitdir parses a linked worktree's .git file and returns the
-// main repo root path.
-//
-// The file contains a single line: "gitdir: <main>/.git/worktrees/<name>"
-// Returns "" if the content doesn't match the expected shape.
-//
-// Known limitation: newer Git can write relative gitdir: paths
 // (worktree.useRelativePaths). A relative path returned here will never match
-// an absolute RepoRoot, so the predicate silently returns false and falls
 // through to the host shell. This is fail-open (safe) but means auto-create
-// will not engage on repos configured that way.
 func herdrMainRepoFromGitdir(content string) string {
 	line := strings.TrimSpace(content)
 	const prefix = "gitdir: "
@@ -257,8 +164,6 @@ func herdrMainRepoFromGitdir(content string) string {
 		return ""
 	}
 	target := strings.TrimSpace(line[len(prefix):])
-	// Expect: <main>/.git/worktrees/<name>
-	// Trim the last three path components to reach <main>.
 	worktreesDir := filepath.Dir(target) // <main>/.git/worktrees
 	gitDir := filepath.Dir(worktreesDir) // <main>/.git
 	if filepath.Base(worktreesDir) != "worktrees" || filepath.Base(gitDir) != ".git" {
@@ -267,43 +172,16 @@ func herdrMainRepoFromGitdir(content string) string {
 	return filepath.Dir(gitDir) // <main>
 }
 
-// herdrWtCreateLogPath is the per-workspace provisioning log that
-// plugins/herdr/bin/pane.sh (worktree-sandbox case) tees the winner's
 // "nexus3 herdr worktree-sandbox" output into. The two formulas MUST agree:
-// the shell side is
-//
-//	${XDG_STATE_HOME:-$HOME/.local/state}/nexus3/herdr-wt-create-ws-$HERDR_WORKSPACE_ID.log
-//
-// (store.DefaultRoot resolves the same directory). TestHerdrDefaultShell_
-// PaneScriptWritesCreateLogAtGoPath pins the agreement.
-//
-// Why a file: the worktree.created hook opens a provisioning pane and runs the
-// build there, so the build output has exactly one sink — that pane's terminal.
-// A tab opened while the build runs (the workspace's first tab included) runs
-// its own worktree-sandbox, loses the per-handle create-intent lock, and used
-// to block on it in silence for minutes. Tailing this file into the waiting
-// pane is what turns that silence into the live build/boot log.
 func herdrWtCreateLogPath(storeRoot, wsID string) string {
 	return filepath.Join(storeRoot, "herdr-wt-create-ws-"+wsID+".log")
 }
 
-// herdrWtCreateLogPollInterval is how often the waiting pane looks for new
-// bytes in the provisioning log. Replaced in tests.
 var herdrWtCreateLogPollInterval = 500 * time.Millisecond
 
-// herdrWtCreateLogStaleAfter bounds what counts as THIS run's log. herdr
-// reuses workspace IDs, so a log left by an earlier workspace with the same ID
-// can exist before the hook pane truncates it for this run; content last
-// written longer ago than this is skipped rather than replayed. The window is
 // wide because a cold build can go quiet for a while (image pull) between
-// the hook pane's last write and a new tab's first look.
 const herdrWtCreateLogStaleAfter = 10 * time.Minute
 
-// herdrTailFileUntil copies bytes appended to path into w until done is
-// closed, then drains once more so nothing written just before the writer
-// finished is lost. A missing file is not an error (the hook pane may not
-// have started yet); a shrunken file means a new run truncated it and the
-// tail restarts from the beginning.
 func herdrTailFileUntil(path string, w io.Writer, done <-chan struct{}, interval, staleAfter time.Duration) {
 	var off int64 = -1 // -1: not positioned yet
 	drain := func() {
@@ -347,9 +225,6 @@ func herdrTailFileUntil(path string, w io.Writer, done <-chan struct{}, interval
 	}
 }
 
-// herdrDefaultShellAutoCreate runs "nexus3 herdr worktree-sandbox --auto <wsID>"
-// as a subprocess, waits for it to finish, then re-reads the binding store.
-// Returns the binding and true on success; (zero, false) on any error so the
 // caller falls through to execHostShell (FAIL-OPEN).
 func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin string, w io.Writer) (HerdrSpaceBinding, bool) {
 	if nexus3Bin == "" {
@@ -372,14 +247,6 @@ func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin
 		<-tailDone
 	}()
 	// A non-zero exit is REPORTED but is not by itself a verdict, because
-	// worktree-sandbox writes the binding BEFORE it opens the guest pane and now
-	// returns non-zero when only the pane fails (see the openPane block in
-	// herdrWorktreeSandbox: a pane failure must surface so the provisioning pane
-	// holds itself open). The sandbox is live and the binding is committed in
-	// that case, so discarding it here would drop the operator into a host shell
-	// for a sandbox that is perfectly usable.
-	//
-	// The binding lookup is the actual predicate, and it FAILS CLOSED on its own
 	// terms: no binding → (zero, false) → execHostShell, exactly as before.
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(w, "nexus3-guest-shell: auto-create: %v\n", err)
@@ -388,17 +255,10 @@ func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin
 	return b, ok
 }
 
-// herdrDefaultShellCore is the testable core of "nexus3 herdr default-shell".
-//
-// It reads HERDR_WORKSPACE_ID from getenv, resolves the binding, determines
 // the guest cwd, then calls execFn to replace the current process with either
-// the guest shell (inside the nexus3 sandbox) or the host shell (on any error
-// path).
-//
 // FAIL-OPEN contract: every code path that cannot confirm a live sandbox
 // binding returns execHostShell. All failure modes reach it through explicit
 // early returns — any new check must call return execHostShell() explicitly.
-// The guest exec is inside an explicit block near the end of the function;
 // if it fails, execHostShell() is returned immediately.
 func herdrDefaultShellCore(
 	ctx context.Context,
@@ -411,7 +271,6 @@ func herdrDefaultShellCore(
 	shellArgs := herdrGuestShellArgsFn()
 
 	// execHostShell replaces the current process with the operator's host shell.
-	// Prefer $SHELL; fall back to /bin/sh. Never returns on success.
 	execHostShell := func() error {
 		sh := getenv("SHELL")
 		if sh == "" {
@@ -420,9 +279,6 @@ func herdrDefaultShellCore(
 		return execFn(sh, append([]string{sh}, shellArgs...), os.Environ())
 	}
 
-	// execUnboundShell is the fallback for a pane that is NOT a nexus3 space:
-	// the chained guest shell of another herdr plugin when one is configured
-	// (see herdrGuestShellNextEnv), else the host shell.
 	execUnboundShell := func() error {
 		if next := herdrGuestShellNext(getenv); next != "" {
 			if err := execFn(next, append([]string{next}, shellArgs...), os.Environ()); err != nil {
@@ -434,30 +290,24 @@ func herdrDefaultShellCore(
 		return execHostShell()
 	}
 
-	// Escape hatch: operator forces host shell regardless of workspace binding.
 	if getenv("NEXUS3_HOST_SHELL") != "" {
 		return execHostShell()
 	}
 
-	// No workspace ID → not in a herdr pane or not a nexus3 space.
 	wsID := getenv("HERDR_WORKSPACE_ID")
 	if wsID == "" {
 		return execUnboundShell()
 	}
 
-	// Store root unavailable → cannot locate bindings file.
 	if storeRoot == "" {
 		return execUnboundShell()
 	}
 
-	// Read all bindings from disk once. Any parse error → fall through.
-	// A missing file is not an error (no bindings yet → empty slice).
 	allBindings, readErr := herdrSpaceReadAll(storeRoot)
 	if readErr != nil {
 		return execUnboundShell()
 	}
 
-	// Find this workspace's binding in the full list.
 	var binding HerdrSpaceBinding
 	found := false
 	for _, b := range allBindings {
@@ -469,9 +319,6 @@ func herdrDefaultShellCore(
 	}
 
 	if !found {
-		// Gate: only engage auto-create when (b) the cwd is inside a linked
-		// worktree AND (c) the repo is nexus3-bound or nexus3-onboarded. Pure
-		// local filesystem reads — no subprocess, no herdr call. False on any
 		// error (FAIL-OPEN toward the unbound shell).
 		if !herdrAutoCreatePredicateFn(allBindings) {
 			if herdrLinkedWorktreeReasonFn() {
@@ -487,25 +334,13 @@ func herdrDefaultShellCore(
 		}
 	}
 
-	// Guard: empty nexus3Bin means the delivery mechanism could not locate the
 	// nexus3 binary (e.g. sidecar missing after install). Fall back rather than
 	// exec'ing an empty path into a dead pane. (CRITICAL 1)
 	if nexus3Bin == "" {
 		return execHostShell()
 	}
 
-	// Verify sandbox is running and dialable before the exec point of no return.
-	// After syscall.Exec the process is replaced; a non-running sandbox
-	// (paused/stopped/error) cannot attach, so the pane would be dead.
-	//
 	// CRITICAL: "State == Running" is not the condition that fails. The real
-	// failure is in substrate/driver resolution inside nexus3 exec — if PATH
-	// lacks the hypervisor binary (e.g. a systemd unit with a lean PATH), nexus3
-	// exec returns `driver "none" does not support guest dialing` AFTER replacing
-	// the process, leaving a dead pane with no shell to recover from. The dial
-	// check here catches that before the point of no return.
-	//
-	// When svc is nil (daemon unreachable), skip both checks and use /root cwd —
 	// the existing fail-open behaviour for daemon-unreachable is preserved.
 	// (CRITICAL 4 + CRITICAL 5)
 	cwd := "/root"
@@ -514,11 +349,6 @@ func herdrDefaultShellCore(
 		if sbErr != nil || sb.State != domain.Running {
 			return execHostShell()
 		}
-		// Probe actual dialability: attempt a vsock connection with a short
-		// timeout. If substrate/driver resolution fails the error is immediate
-		// (no I/O roundtrip); if the guest is up the connection is local and
-		// fast. Only performed when svc implements sandboxDialer — real service
-		// does, simple test fakes do not.
 		if d, ok := svc.(sandboxDialer); ok {
 			dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			conn, dialErr := d.DialGuest(dialCtx, binding.SandboxHandle, driver.AgentControlPort)
@@ -532,28 +362,12 @@ func herdrDefaultShellCore(
 		cwd = herdrShellCwdFromSandbox(sb)
 	}
 
-	// Guest exec: all checks above passed.
-	//
-	// Re-exec this process as "nexus3 exec --pty ..." so the new nexus3
-	// process manages the PTY and the pane lifecycle is driven by the guest
-	// shell's exit, not ours.
-	//
-	// Guest shell: nexus3 guest images carry bash; /bin/bash --login sources
-	// the login profile. This matches the assumption in cmd_shell.go and
-	// pane.sh's final exec leg.
-	//
 	// FAIL-OPEN: execFn is syscall.Exec in production. If it returns — either
 	// because exec itself failed, or because a test seam replaced it — the
 	// process was NOT replaced. An exec failure is logged and execHostShell is
-	// returned immediately. A test seam returning nil falls through to return nil.
 	argv := []string{nexus3Bin, "exec", "--pty", "--cwd", cwd, binding.SandboxHandle, "/bin/bash", "--login"}
 
-	// Worktree-bound panes use supervised mode: the parent survives the
 	// pane-close SIGHUP (sent to the process group by herdr) so it can run
-	// last-pane teardown after the child exits.
-	//
-	// Non-worktree panes keep the original exec-replace behaviour: syscall.Exec
-	// replaces this process entirely so no cleanup code ever runs.
 	if binding.IsWorktreeManaged() {
 		return herdrWtSupervisedShell(ctx, nexus3Bin, binding, argv)
 	}
@@ -562,14 +376,9 @@ func herdrDefaultShellCore(
 		slog.Warn("nexus3-guest-shell: exec failed; falling back to host shell", "err", err)
 		return execHostShell()
 	}
-	// Reached only by test seams that return nil (production syscall.Exec
-	// replaced the process and this line is unreachable in the live path).
 	return nil
 }
 
-// herdrShellCwdFromSandbox extracts the guest cwd from an already-fetched
-// domain.Sandbox, avoiding a second svc.Get call. Mirrors herdrShellCwd
-// priority: first live mount, then mounted volume, then /root.
 func herdrShellCwdFromSandbox(sb domain.Sandbox) string {
 	for _, m := range sb.LiveMounts {
 		if m.GuestPath != "" {
@@ -584,10 +393,6 @@ func herdrShellCwdFromSandbox(sb domain.Sandbox) string {
 	return "/root"
 }
 
-// herdrDefaultShellLookup reads the bindings file and returns the binding for
-// wsID. Uses (HerdrSpaceBinding{}, false, nil) when the binding is absent;
-// (HerdrSpaceBinding{}, false, err) on file or parse errors; (b, true, nil)
-// when found.
 func herdrDefaultShellLookup(storeRoot, wsID string) (HerdrSpaceBinding, bool, error) {
 	path := filepath.Join(storeRoot, "herdr-space-bindings.json")
 	data, err := os.ReadFile(path)
@@ -633,8 +438,6 @@ func RunHerdrGuestShell() {
 
 	ctx := context.Background()
 
-	// Detached-reaper mode: this process was re-exec'd by
-	// herdrWtSpawnDetachedReap in a new session to outlive herdr's pane-close
 	// SIGKILL.  Run teardown and exit — never open a shell.
 	if binding, ok := herdrWtReapBindingFromEnv(os.Getenv); ok {
 		runHerdrWtDetachedReap(ctx, binding)
@@ -649,11 +452,7 @@ func RunHerdrGuestShell() {
 
 	// Read the sidecar for the real nexus3 binary path and the stamped kernel
 	// path. CRITICAL 1: the hard link installs into ~/.local/bin which has no
-	// images/ sibling, so resolveKernelPath falls through to cwd — which is
-	// /home/<user> when herdr opens a pane, not the repo root. Setting
 	// NEXUS3_KERNEL_PATH from the install-time-stamped value in the sidecar
-	// makes substrate selection (SelectSubstrate → resolveKernelPath) succeed
-	// regardless of the pane's starting cwd.
 	nexus3Bin, kernelPath, nextShell := herdrReadSidecar()
 	herdrApplyKernelPath(kernelPath, os.Getenv, os.Setenv)
 	herdrApplyGuestShellNext(nextShell, os.Getenv, os.Setenv)
@@ -666,8 +465,6 @@ func RunHerdrGuestShell() {
 	if err := herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexus3Bin, herdrGuestShellExecFn); err != nil {
 		slog.Warn("nexus3-guest-shell: exec failed; retrying host shell", "err", err)
 	}
-	// Reached only when syscall.Exec failed to replace the process (rare).
-	// herdrDefaultShellCore already attempted execHostShell; try once more.
 	sh := os.Getenv("SHELL")
 	if sh == "" {
 		sh = "/bin/sh"
@@ -676,16 +473,9 @@ func RunHerdrGuestShell() {
 	herdrGuestShellExitFn(0)
 }
 
-// herdrApplyKernelPath publishes the install-time-stamped kernel path into the
-// environment so substrate selection succeeds regardless of the pane's cwd.
-//
 // This is the CRITICAL 1 fix in isolated form. It exists as a separate function
 // because the inline version had no test: disabling it left the entire suite
-// green while the feature was dead from herdr's actual pane cwd (/home/<user>),
-// and the only thing that caught it was a live run from the right directory.
-//
 // An explicit NEXUS3_KERNEL_PATH always wins — the operator's override must not
-// be clobbered by the stamped value.
 func herdrApplyKernelPath(kernelPath string, getenv func(string) string, setenv func(string, string) error) {
 	if kernelPath == "" {
 		return
@@ -696,7 +486,6 @@ func herdrApplyKernelPath(kernelPath string, getenv func(string) string, setenv 
 	_ = setenv("NEXUS3_KERNEL_PATH", kernelPath)
 }
 
-// herdrApplyGuestShellNext publishes the install-time-stamped chained guest
 // shell (sidecar line 3) unless the operator already set it in the environment.
 func herdrApplyGuestShellNext(nextShell string, getenv func(string) string, setenv func(string, string) error) {
 	if nextShell == "" || getenv(herdrGuestShellNextEnv) != "" {
@@ -706,23 +495,11 @@ func herdrApplyGuestShellNext(nextShell string, getenv func(string) string, sete
 }
 
 // herdrReadSidecar reads the companion sidecar written by
-// "nexus3 herdr install-default-shell" and returns (nexus3Bin, kernelPath).
-//
 // Sidecar format (two newline-separated lines):
-//
-//	<real nexus3 binary path>
 //	<kernel image path stamped at install time>   ← may be absent (old sidecar)
-//
 // The sidecar is necessary because os.Executable() inside the hard-linked
 // binary returns the hard link's own path. Using that as nexus3Bin would cause
-// an exec loop (argv[0] == "nexus3-guest-shell" → RunHerdrGuestShell again).
-// The kernel path is stamped at install time to break the cwd dependency in
 // resolveKernelPath (CRITICAL 1): herdr opens panes from the user's home dir,
-// not the repo root, so the cwd fallback in resolveKernelPath always misses.
-//
-// Line 3, when present, is the chained guest shell (herdrGuestShellNextEnv).
-//
-// Returns ("", "", "") on any error; callers fall back to host shell on empty nexus3Bin.
 func herdrReadSidecar() (nexus3Bin, kernelPath, nextShell string) {
 	self, err := os.Executable()
 	if err != nil {
@@ -757,18 +534,12 @@ func herdrParseSidecar(data []byte) (nexus3Bin, kernelPath, nextShell string) {
 	return nexus3Bin, kernelPath, nextShell
 }
 
-// runHerdrDefaultShell is the production entry point for
-// "nexus3 herdr default-shell". Used when invoked directly via the CLI;
-// the preferred path is the argv[0] dispatch through RunHerdrGuestShell.
-// Every failure path falls through to the host shell.
 func runHerdrDefaultShell(ctx context.Context, _ []string, _ *Output) error {
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
 		storeRoot = "" // soft error: core falls back to host shell
 	}
 
-	// Connect to the nexus3 daemon for cwd resolution and sandbox state check.
-	// A failure means svc=nil; core skips state check and uses /root cwd.
 	var svc sandboxGetter
 	if s, err := newSandboxService(); err == nil {
 		svc = s
@@ -782,19 +553,13 @@ func runHerdrDefaultShell(ctx context.Context, _ []string, _ *Output) error {
 	return herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexus3Bin, syscall.Exec)
 }
 
-// runHerdrInstallDefaultShell hard-links the nexus3 binary to
 // ~/.local/bin/nexus3-guest-shell and writes a companion sidecar file with the
-// real nexus3 binary path. herdr's [terminal] default_shell is set to the
-// install path.
-//
 // Hard link vs wrapper script:
 //   - No PATH lookup at runtime — the installed path IS the binary (CRITICAL 1).
 //   - Hard link survives rebuilds: "go build" creates a new inode; the hard
 //     link holds the installed inode until re-install (CRITICAL 2).
-//   - The binary's argv[0] dispatch (main.go) routes to RunHerdrGuestShell
 //     which has a top-level panic recovery (CRITICAL 3).
 //   - The sidecar stores the real nexus3 binary path so the exec leg does not
-//     loop back into the guest-shell dispatch (avoids execve self-loop).
 func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) error {
 	nextShell, writeConfig, err := herdrInstallDefaultShellParseArgs(args)
 	if err != nil {
@@ -809,8 +574,6 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 		return fmt.Errorf("install-default-shell: create ~/.local/bin: %w", err)
 	}
 
-	// Resolve the real path of this binary. EvalSymlinks is required before
-	// os.Link — hard links cannot cross symlink boundaries.
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("install-default-shell: resolve own binary: %w", err)
@@ -848,30 +611,18 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 
 	// Hard-link this binary to the install path. A hard link means the
 	// installed entry point IS this binary's inode: no PATH lookup, no stale
-	// subcommand, survives rebuilds until re-install.
 	if err := os.Link(self, installPath); err != nil {
-		// Cross-device or unsupported filesystem: copy the binary instead.
 		if err2 := herdrCopyBinary(self, installPath); err2 != nil {
 			return fmt.Errorf("install-default-shell: install binary (link: %v; copy: %w)", err, err2)
 		}
 	}
 
 	// Sidecar: two-line file storing the real nexus3 binary path (line 1) and
-	// the kernel image path (line 2). The kernel path is stamped at install time
-	// so RunHerdrGuestShell can set NEXUS3_KERNEL_PATH before substrate selection,
 	// breaking the cwd dependency in resolveKernelPath (CRITICAL 1). If kernel
-	// resolution fails at install time (kernel not yet present), line 2 is empty
 	// and the pane falls back to host shell — fail-open is preserved.
-	//
 	// Version skew: the hard link freezes the DECISION binary at install time;
 	// the sidecar always names the latest-built nexus3 for the EXEC leg. If the
 	// exec verb's CLI surface changes after a rebuild, the stale decision binary
-	// builds an argv that the new exec binary rejects — AFTER syscall.Exec
-	// replaces the process. The symptom is a visible error in the pane (not a
-	// silent dead pane), and recovery is "nexus3 herdr install-default-shell".
-	// A build-ID stamp was considered and rejected: it requires embedding a
-	// timestamp (complicates reproducibility) or computing a content hash
-	// (startup cost), for an error that is visible and self-documenting.
 	sidecarPath := installPath + herdrSidecarSuffix
 	kernelLine := ""
 	if kp, kErr := resolveKernelPath(); kErr == nil {
@@ -886,10 +637,7 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 		return fmt.Errorf("install-default-shell: write sidecar: %w", err)
 	}
 
-	// Probe: run the installed binary as "nexus3-guest-shell" with
-	// NEXUS3_HOST_SHELL=1 and SHELL=/bin/true. A working install exec-replaces
 	// itself with /bin/true (exit 0). A stale binary without the argv[0]
-	// dispatch routes to the CLI and exits non-zero.
 	if !herdrSkipInstallProbeForTest {
 		if err := herdrInstallProbeCmd(installPath).Run(); err != nil {
 			_ = os.Remove(installPath)
@@ -929,7 +677,6 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 }
 
 // herdrConfigTOMLPath returns the path to herdr's config.toml.
-// Resolution order: HERDR_CONFIG_PATH env var, then
 // $XDG_CONFIG_HOME/herdr/config.toml, then ~/.config/herdr/config.toml.
 func herdrConfigTOMLPath() (string, error) {
 	if p := os.Getenv("HERDR_CONFIG_PATH"); p != "" {
@@ -946,19 +693,8 @@ func herdrConfigTOMLPath() (string, error) {
 	return filepath.Join(base, "herdr", "config.toml"), nil
 }
 
-// herdrWriteConfigTOML idempotently writes `default_shell = <installPath>`
 // under the [terminal] section of herdr's config.toml at configPath.
-//
 // Four states (per D-4):
-//  1. File absent → create with [terminal] section and key.
-//  2. File present, key absent → insert key under [terminal] (create section at
-//     EOF if [terminal] is missing).
-//  3. File present, key equals installPath exactly → no-op (byte-identical).
-//  4. File present, key set to a different path → backup to
-//     configPath.bak.<UTC-timestamp>, rewrite only the default_shell line.
-//
-// Returns (changed, backupPath, foreignShell, err). backupPath is non-empty only
-// in state 4. foreignShell is the previous value in state 4.
 func herdrWriteConfigTOML(configPath, installPath string) (changed bool, backupPath string, foreignShell string, err error) {
 	wantLine := fmt.Sprintf("default_shell = %q", installPath)
 
@@ -1044,7 +780,6 @@ func herdrWriteConfigTOML(configPath, installPath string) (changed bool, backupP
 	return true, "", "", nil
 }
 
-// herdrInstallDefaultShellParseArgs accepts --next <path> (chain a foreign guest
 // shell for non-nexus3 panes) and --write-config (idempotently write config.toml).
 func herdrInstallDefaultShellParseArgs(args []string) (nextShell string, writeConfig bool, err error) {
 	for i := 0; i < len(args); i++ {
@@ -1076,17 +811,6 @@ func herdrInstallDefaultShellParseArgs(args []string) (nextShell string, writeCo
 	return nextShell, writeConfig, nil
 }
 
-// herdrInstallProbeCmd returns the probe command used by
-// runHerdrInstallDefaultShell to verify the installed binary responds to the
-// argv[0] dispatch. Extracted so tests can inspect the command structure
-// without running it.
-//
-// The probe runs installPath as "nexus3-guest-shell" with NEXUS3_HOST_SHELL=1
-// and SHELL=/bin/true. A correctly installed binary exec-replaces itself with
-// /bin/true (exit 0). The key invariants:
-//   - Args[0] == "nexus3-guest-shell" triggers the argv[0] dispatch in main.go
-//   - NEXUS3_HOST_SHELL=1 causes herdrDefaultShellCore to exec $SHELL immediately
-//   - SHELL=/bin/true exits 0, confirming the dispatch and escape-hatch work
 func herdrInstallProbeCmd(installPath string) *osexec.Cmd {
 	return &osexec.Cmd{
 		Path: installPath,
@@ -1095,8 +819,6 @@ func herdrInstallProbeCmd(installPath string) *osexec.Cmd {
 	}
 }
 
-// herdrCopyBinary copies the file at src to dst with the same permissions.
-// Used as a cross-device fallback when os.Link fails.
 func herdrCopyBinary(src, dst string) error {
 	srcF, err := os.Open(src)
 	if err != nil {
@@ -1118,42 +840,14 @@ func herdrCopyBinary(src, dst string) error {
 
 // ── wt/ supervised shell (Mechanism 2) ───────────────────────────────────────
 
-// herdrPaneCloseSignals is the set of signals herdr delivers to a pane's
-// process group when the pane (or its workspace) is closed.  The parent
-// nexus3-guest-shell must absorb ALL of them, or it dies at a default
-// disposition before it can hand off teardown.
-//
-// MEASURED (herdr 0.8.0, live probe 2026-08-29, two runs) for `pane close` on
-// the last pane of a workspace:
-//
 //	t+0ms    SIGHUP  → process group  (the child dies here)
 //	t+14ms   SIGHUP  → process group  (repeat)
 //	t+279ms  SIGTERM → process group  (killed the parent: only SIGHUP was armed)
 //	t+~515ms SIGKILL → process group  (uncatchable — see the detached reaper)
-//
-// SIGINT is included defensively: an interactive Ctrl-C reaches the group, and
-// a parent that dies there would abandon supervision while the child lives on.
 var herdrPaneCloseSignals = []os.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT}
 
-// installParentSighupAbsorber arms a signal.Notify handler for every signal in
-// herdrPaneCloseSignals and returns a stop function the caller must defer.
-//
-// Why Notify, not signal.Ignore: signal.Ignore installs SIG_IGN in the
-// kernel's signal table.  SIG_IGN IS inherited across execve, so any child
 // the caller forks would also ignore the signal and never exit when herdr
-// sends pane-close to the process group — cmd.Wait() would block forever and
-// teardown would be unreachable.
-//
-// A handler installed via signal.Notify is reset to SIG_DFL at the child's
-// execve (Go/kernel semantics), so the child receives and dies on pane-close
-// while the parent (which has the handler active) absorbs the signal and
-// proceeds to hand off teardown.
-//
 // Absorbing is necessary but NOT sufficient: herdr escalates to SIGKILL about
-// 515 ms after pane close, which no handler can absorb.  In-process teardown
-// (`svc.Remove` shuts a VM down — seconds, not milliseconds) would be killed
-// half-done.  That is why herdrWtSupervisedShell hands teardown to a detached
-// session instead of running it here.
 func installParentSighupAbsorber() (stop func()) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, herdrPaneCloseSignals...)
@@ -1164,42 +858,21 @@ func installParentSighupAbsorber() (stop func()) {
 	return func() { signal.Stop(ch); close(ch) }
 }
 
-// herdrWtSupervisedShell runs the guest shell as a supervised child for an
-// auto-bound worktree pane.  It replaces the exec-replace path so the parent
 // process survives pane-close (herdr sends SIGHUP to the process group) and
-// can run last-pane teardown.
-//
 // FAIL-OPEN contract: every error after the child exits is logged and
-// swallowed — a bug here would freeze every new pane on the machine, which is
-// strictly worse than leaking a sandbox VM (Mechanism 1 / prune backstop
-// catches those).
 func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding HerdrSpaceBinding, argv []string) error {
 	// Absorb SIGHUP via a Notify handler (NOT signal.Ignore) so the parent
-	// survives herdr's pane-close signal while the child exits on its own.
-	// See installParentSighupAbsorber for why Notify is required here.
 	stopSighup := installParentSighupAbsorber()
 	defer stopSighup()
 
-	// Run the guest shell as a child.  The child inherits stdin/stdout/stderr
-	// so it holds the controlling TTY; job control and Ctrl-C pass through.
 	if err := herdrWtChildRunnerFn(ctx, nexus3Bin, argv); err != nil {
-		// Non-fatal: the child can exit non-zero (user typed "exit 1", agent
 		// aborted, SIGHUP from pane-close, etc.).  Continue to the last-pane
-		// check regardless.
 		slog.Warn("nexus3-guest-shell: wt/ child exited with error", "handle", binding.SandboxHandle, "err", err)
 	}
 
-	// Hand the last-pane check and teardown to a DETACHED session.
-	//
-	// Why not inline: herdr SIGKILLs this process group ~515 ms after pane
-	// close (see herdrPaneCloseSignals).  A VM shutdown takes seconds, so an
-	// in-process teardown is killed part-way — worse than not running at all,
 	// because the store record can be left mid-mutation.  A setsid'd child is
-	// in a different process group and session, so herdr's group-directed
 	// SIGKILL never reaches it.
-	//
 	// FAIL-OPEN: a spawn failure is logged and swallowed; the prune backstop
-	// (Mechanism 1) reaps the sandbox on its next run.
 	if err := herdrWtSpawnDetachedReapFn(binding); err != nil {
 		slog.Warn("nexus3-guest-shell: wt/ detached reap spawn failed; prune will catch it",
 			"handle", binding.SandboxHandle, "err", err)
@@ -1209,9 +882,6 @@ func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding Herdr
 
 // ── Detached wt/ reaper ──────────────────────────────────────────────────────
 
-// Environment keys that put an argv[0]-dispatched nexus3-guest-shell into
-// detached-reaper mode instead of shell mode.  The handle key doubles as the
-// mode flag: non-empty means "reap", not "open a shell".
 const (
 	herdrWtReapHandleEnv    = "NEXUS3_WT_REAP_HANDLE"
 	herdrWtReapWorkspaceEnv = "NEXUS3_WT_REAP_WORKSPACE"
@@ -1219,19 +889,11 @@ const (
 	herdrWtReapSandboxIDEnv = "NEXUS3_WT_REAP_SANDBOX_ID"
 )
 
-// herdrWtReapSettle is how long the detached reaper waits before asking herdr
-// which panes remain.  herdr closes the workspace and reaps the pane
-// asynchronously around the signal burst, so an immediate `pane list` can still
-// see the pane that is on its way out.  The reaper is detached, so this delay
-// costs the operator nothing.
 var herdrWtReapSettle = 1500 * time.Millisecond
 
-// herdrWtSpawnDetachedReapFn spawns the detached reaper.  Replaced in tests.
 var herdrWtSpawnDetachedReapFn = herdrWtSpawnDetachedReap
 
-// herdrWtSpawnDetachedReap re-execs this binary in detached-reaper mode in a
 // NEW SESSION (Setsid), so herdr's process-group SIGKILL cannot reach it, and
-// returns without waiting.
 func herdrWtSpawnDetachedReap(binding HerdrSpaceBinding) error {
 	self, err := os.Executable()
 	if err != nil {
@@ -1247,19 +909,13 @@ func herdrWtSpawnDetachedReap(binding HerdrSpaceBinding) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("wt/ detached reap: start: %w", err)
 	}
-	// Do not Wait: the reaper outlives this process by design.
 	return nil
 }
 
-// herdrWtDetachedReapCmd builds the detached-reaper command.  Extracted so
-// tests can assert the two properties the fix depends on without spawning a
 // real reaper: Setsid (escapes herdr's process-group SIGKILL) and the binding
-// carried through the environment.
 func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.File) *osexec.Cmd {
 	return &osexec.Cmd{
 		Path: self,
-		// argv[0] must stay "nexus3-guest-shell" so main.go's argv[0]
-		// dispatch routes into RunHerdrGuestShell, where reaper mode is read.
 		Args: []string{"nexus3-guest-shell"},
 		Env: append(os.Environ(),
 			herdrWtReapHandleEnv+"="+binding.SandboxHandle,
@@ -1270,13 +926,10 @@ func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.
 		Stdin:  devNull,
 		Stdout: devNull,
 		Stderr: devNull,
-		// Setsid: new session AND new process group — out of herdr's kill scope.
 		SysProcAttr: &syscall.SysProcAttr{Setsid: true},
 	}
 }
 
-// herdrWtReapBindingFromEnv reconstructs the reaper's binding from the
-// environment, reporting false when this process is not in reaper mode.
 func herdrWtReapBindingFromEnv(getenv func(string) string) (HerdrSpaceBinding, bool) {
 	handle := getenv(herdrWtReapHandleEnv)
 	if handle == "" {
@@ -1290,15 +943,10 @@ func herdrWtReapBindingFromEnv(getenv func(string) string) (HerdrSpaceBinding, b
 	}, true
 }
 
-// runHerdrWtDetachedReap is the detached reaper body: settle, last-pane check,
-// then teardown.  It runs in its own session, so it is free to take seconds.
-//
 // FAIL-OPEN throughout: every failure leaves the sandbox for the prune backstop.
 func runHerdrWtDetachedReap(ctx context.Context, binding HerdrSpaceBinding) {
 	time.Sleep(herdrWtReapSettle)
 
-	// Last-pane check: if other panes remain in this workspace, the user is
-	// still active — skip teardown.
 	remaining, err := herdrWtPaneListerFn(ctx, binding.HerdrWorkspaceID, binding.GuestPaneID)
 	if err != nil {
 		// FAIL-OPEN: herdr unreachable, parse error, etc.
@@ -1307,15 +955,12 @@ func runHerdrWtDetachedReap(ctx context.Context, binding HerdrSpaceBinding) {
 		return
 	}
 	if remaining > 0 {
-		// Other panes still alive — not the last one.
 		return
 	}
 
-	// Last pane: tear down the space (VM + workspace + binding) atomically.
 	storeRoot, storeErr := store.DefaultRoot()
 	herdrBin, _ := resolveHerdrBin()
 	if storeErr != nil {
-		// storeRoot unavailable: fall back to VM-only removal.
 		slog.Warn("nexus3-guest-shell: wt/ store root unavailable; falling back to VM-only reap",
 			"handle", binding.SandboxHandle, "err", storeErr)
 		if err := herdrWtSandboxRemoverFn(ctx, binding.SandboxHandle); err != nil {
@@ -1327,8 +972,6 @@ func runHerdrWtDetachedReap(ctx context.Context, binding HerdrSpaceBinding) {
 	herdrWtTeardownFn(ctx, storeRoot, binding.SandboxHandle, herdrBin, binding.SandboxID)
 }
 
-// herdrWtTeardownFn performs the atomic wt/ space teardown after the last pane
-// closes.  Replaced in tests to avoid live store/herdr calls.
 var herdrWtTeardownFn = func(ctx context.Context, storeRoot, handle, herdrBin, sandboxID string) {
 	deps := txnDeps{
 		svcRemove: func(ctx context.Context, ref string) error {
@@ -1347,9 +990,6 @@ var herdrWtTeardownFn = func(ctx context.Context, storeRoot, handle, herdrBin, s
 	}
 }
 
-// herdrWtChildRunner is the production implementation of herdrWtChildRunnerFn.
-// It runs argv[0] with argv[1:] as a child process, inheriting the controlling
-// TTY, and waits for it to exit.
 func herdrWtChildRunner(_ context.Context, _ string, argv []string) error {
 	cmd := osexec.Command(argv[0], argv[1:]...)
 	cmd.Stdin = os.Stdin
@@ -1361,9 +1001,6 @@ func herdrWtChildRunner(_ context.Context, _ string, argv []string) error {
 	return cmd.Wait()
 }
 
-// herdrWtPaneLister is the production implementation of herdrWtPaneListerFn.
-// It calls `herdr pane list --workspace <workspaceID>` and counts panes whose
-// pane_id is not ownPaneID.
 func herdrWtPaneLister(ctx context.Context, workspaceID, ownPaneID string) (int, error) {
 	herdrBin, err := resolveHerdrBin()
 	if err != nil {
@@ -1372,23 +1009,11 @@ func herdrWtPaneLister(ctx context.Context, workspaceID, ownPaneID string) (int,
 	if herdrBin == "" {
 		return 0, fmt.Errorf("wt/ pane-list: herdr binary not available (HERDR_BIN_PATH unset and herdr not on PATH)")
 	}
-	// NOTE: the workspace is passed via --workspace; herdr rejects a bare
-	// positional ("unknown option"). Output is {"result":{"panes":[...]}} on
-	// success and {"error":{"code":...}} on failure, both with the error body
-	// on stdout even when the exit status is non-zero — so parse before trusting
-	// cmdErr.
 	out, cmdErr := osexec.CommandContext(ctx, herdrBin, "pane", "list", "--workspace", workspaceID).CombinedOutput()
 	return parseWtPaneListRemaining(out, cmdErr, ownPaneID)
 }
 
-// parseWtPaneListRemaining interprets `herdr pane list --workspace` output into
-// the count of panes OTHER than ownPaneID.
-//
-// A workspace_not_found error means the workspace is gone — which is the common
-// "closed the whole worktree workspace" case — so it maps to 0 remaining panes
 // (the sandbox SHOULD be reaped), NOT to a fail-open error. Any other command
-// failure (herdr unreachable, unparseable output) propagates as an error so the
-// caller fails open and leaves the sandbox for the prune backstop.
 func parseWtPaneListRemaining(out []byte, cmdErr error, ownPaneID string) (int, error) {
 	var resp struct {
 		Result struct {
@@ -1400,7 +1025,6 @@ func parseWtPaneListRemaining(out []byte, cmdErr error, ownPaneID string) (int, 
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	// herdr prints a JSON body (result or error) on both success and failure.
 	if jsonErr := json.Unmarshal(out, &resp); jsonErr == nil {
 		if resp.Error != nil {
 			if resp.Error.Code == "workspace_not_found" {
@@ -1416,16 +1040,12 @@ func parseWtPaneListRemaining(out []byte, cmdErr error, ownPaneID string) (int, 
 		}
 		return count, nil
 	}
-	// Unparseable output: if the command also failed, surface that (herdr down);
-	// otherwise report the parse failure.
 	if cmdErr != nil {
 		return 0, fmt.Errorf("wt/ pane-list: herdr pane list: %w: %s", cmdErr, strings.TrimSpace(string(out)))
 	}
 	return 0, fmt.Errorf("wt/ pane-list: parse output: %q", strings.TrimSpace(string(out)))
 }
 
-// herdrWtSandboxRemover is the production implementation of herdrWtSandboxRemoverFn.
-// It removes the sandbox VM via the local service.
 func herdrWtSandboxRemover(ctx context.Context, handle string) error {
 	svc, err := newSandboxService()
 	if err != nil {

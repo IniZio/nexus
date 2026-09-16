@@ -15,7 +15,6 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver"
 )
 
-// fakeDefaultShellGetter implements sandboxGetter for tests.
 type fakeDefaultShellGetter struct {
 	sb  domain.Sandbox
 	err error
@@ -25,15 +24,8 @@ func (f *fakeDefaultShellGetter) Get(_ context.Context, _ string) (domain.Sandbo
 	return f.sb, f.err
 }
 
-// fakeDialableGetter extends fakeDefaultShellGetter with DialGuest support.
 // Used to test the substrate-dialability check added for the CRITICAL gap where
-// "State == Running" is insufficient — the substrate/driver may be unreachable.
-//
-// dialedRef and dialedPort record the exact arguments passed to DialGuest so
-// tests can assert IDENTITY (right sandbox, right port), not just EXISTENCE.
 // Mutation proof: changing the ref or port in herdrDefaultShellCore to wrong
-// values still dials and "succeeds" — without recording the args the fake
-// discards them and the test stays green. With them the assertion fails RED.
 type fakeDialableGetter struct {
 	fakeDefaultShellGetter
 	dialErr    error
@@ -49,14 +41,12 @@ func (f *fakeDialableGetter) DialGuest(_ context.Context, ref string, port uint3
 	if f.dialErr != nil {
 		return nil, f.dialErr
 	}
-	// Return a connected pipe for the success path; caller closes it.
 	c1, c2 := net.Pipe()
 	c2.Close()
 	return c1, nil
 }
 
 // capturedExec records the most recent execFn call. It never actually replaces
-// the process, so the test continues normally after the call.
 type capturedExec struct {
 	argv0 string
 	argv  []string
@@ -72,7 +62,6 @@ func (c *capturedExec) fn(argv0 string, argv []string, envv []string) error {
 	return nil
 }
 
-// makeBindings writes a bindings JSON file into storeRoot and returns the path.
 func makeBindings(t *testing.T, storeRoot string, bindings []HerdrSpaceBinding) {
 	t.Helper()
 	data, err := json.Marshal(bindings)
@@ -84,7 +73,6 @@ func makeBindings(t *testing.T, storeRoot string, bindings []HerdrSpaceBinding) 
 	}
 }
 
-// testBinding is a canonical binding used across tests.
 var testBinding = HerdrSpaceBinding{
 	SpaceLabel:       "nexus3:ac3/testbox",
 	HerdrWorkspaceID: "wXX",
@@ -92,8 +80,6 @@ var testBinding = HerdrSpaceBinding{
 	SandboxID:        "sb-TESTID",
 }
 
-// runCore is a convenience wrapper that calls herdrDefaultShellCore with a
-// fake nexus3 binary path.
 func runCore(
 	ctx context.Context,
 	getenv func(string) string,
@@ -115,7 +101,6 @@ func TestHerdrDefaultShell_BoundWorkspace(t *testing.T) {
 	root := t.TempDir()
 	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
 
-	// Sandbox is running with a live mount at /work — that becomes the cwd.
 	svc := &fakeDefaultShellGetter{
 		sb: domain.Sandbox{
 			State:      domain.Running,
@@ -141,25 +126,19 @@ func TestHerdrDefaultShell_BoundWorkspace(t *testing.T) {
 		t.Fatalf("exec called %d times, want 1", cap.calls)
 	}
 
-	// argv0 must be the nexus3 binary — we are re-exec'ing nexus3.
 	if cap.argv0 != "/fake/nexus3" {
 		t.Errorf("argv0 = %q, want /fake/nexus3 (nexus3 binary for re-exec)", cap.argv0)
 	}
-	// argv[1] must be "exec" (the nexus3 subcommand).
 	if len(cap.argv) < 2 || cap.argv[1] != "exec" {
 		t.Errorf("argv[1] = %q, want \"exec\"", safeIdx(cap.argv, 1))
 	}
-	// "--pty" must be present.
 	if !argvContains(cap.argv, "--pty") {
 		t.Errorf("argv %v missing --pty flag", cap.argv)
 	}
-	// "--cwd" followed by "/work" must be present — cwd resolved from live mount.
 	cwdIdx := argvIndexOf(cap.argv, "--cwd")
 	if cwdIdx < 0 || cwdIdx+1 >= len(cap.argv) || cap.argv[cwdIdx+1] != "/work" {
 		t.Errorf("argv %v: expected --cwd /work", cap.argv)
 	}
-	// The exact sandbox handle must appear in argv — identity, not just
-	// "some string after --cwd".
 	if !argvContains(cap.argv, testBinding.SandboxHandle) {
 		t.Errorf("argv %v missing sandbox handle %q", cap.argv, testBinding.SandboxHandle)
 	}
@@ -178,8 +157,6 @@ func TestHerdrDefaultShell_BoundWorkspace(t *testing.T) {
 // that case, causing the mutant to exec the guest shell and fail the assertion.
 func TestHerdrDefaultShell_NoWorkspaceID(t *testing.T) {
 	root := t.TempDir()
-	// The empty-ID binding ensures the wsID=="" guard removal is detectable:
-	// without the guard, lookup finds this binding and exec's the guest shell.
 	makeBindings(t, root, []HerdrSpaceBinding{
 		testBinding,
 		{HerdrWorkspaceID: "", SandboxHandle: "dummy/empty-id"},
@@ -236,7 +213,6 @@ func TestHerdrDefaultShell_WorkspaceNotInBindings(t *testing.T) {
 // must be nil from runCore.
 func TestHerdrDefaultShell_BindingsFileMissing(t *testing.T) {
 	root := t.TempDir()
-	// No bindings file written.
 
 	cap := &capturedExec{}
 	getenv := func(k string) string {
@@ -283,7 +259,6 @@ func TestHerdrDefaultShell_BindingsFileMalformed(t *testing.T) {
 	if err := runCore(context.Background(), getenv, root, nil, cap.fn); err != nil {
 		t.Fatalf("malformed bindings must not return error to operator, got: %v", err)
 	}
-	// exec must have been called exactly once with the host shell.
 	assertHostShell(t, cap, "/bin/zsh")
 }
 
@@ -298,7 +273,6 @@ func TestHerdrDefaultShell_BindingsFileMalformed(t *testing.T) {
 // workspace ID.
 func TestHerdrDefaultShell_PlainNexus3WorkspaceNoBinding(t *testing.T) {
 	root := t.TempDir()
-	// Bindings exist for a nexus3 space, but NOT for the operator's own workspace.
 	makeBindings(t, root, []HerdrSpaceBinding{
 		{
 			SpaceLabel:       "nexus3:ac3/testbox",
@@ -381,7 +355,6 @@ func TestHerdrDefaultShellLookup_ReturnsCorrectBinding(t *testing.T) {
 	if !found {
 		t.Fatal("expected binding found=true for wBB")
 	}
-	// Identity assertion: the exact handle, not just any non-zero binding.
 	if got.SandboxHandle != "proj/beta" {
 		t.Errorf("SandboxHandle = %q, want %q", got.SandboxHandle, "proj/beta")
 	}
@@ -408,7 +381,6 @@ func TestHerdrDefaultShell_NilServiceFallsBackToCwd(t *testing.T) {
 	if err := runCore(context.Background(), getenv, root, nil /* svc=nil */, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should exec the guest shell (not host shell) using /root as cwd.
 	if cap.argv0 != "/fake/nexus3" {
 		t.Errorf("argv0 = %q, want /fake/nexus3 (guest exec)", cap.argv0)
 	}
@@ -419,8 +391,6 @@ func TestHerdrDefaultShell_NilServiceFallsBackToCwd(t *testing.T) {
 }
 
 // assertHostShell checks that execFn was called once with the host shell.
-// The shell identity is checked against wantShell — catching mutations that
-// pass the wrong shell or forget the exec entirely.
 func assertHostShell(t *testing.T, cap *capturedExec, wantShell string) {
 	t.Helper()
 	if cap.calls != 1 {
@@ -429,7 +399,6 @@ func assertHostShell(t *testing.T, cap *capturedExec, wantShell string) {
 	if cap.argv0 != wantShell {
 		t.Errorf("argv0 = %q, want %q (host shell)", cap.argv0, wantShell)
 	}
-	// argv[0] must also match — shell convention (process name in argv[0]).
 	if len(cap.argv) == 0 || cap.argv[0] != wantShell {
 		t.Errorf("argv[0] = %q, want %q", safeIdx(cap.argv, 0), wantShell)
 	}
@@ -439,7 +408,6 @@ func assertHostShell(t *testing.T, cap *capturedExec, wantShell string) {
 	}
 }
 
-// safeIdx returns argv[i] or "" if i is out of range.
 func safeIdx(argv []string, i int) string {
 	if i < len(argv) {
 		return argv[i]
@@ -447,7 +415,6 @@ func safeIdx(argv []string, i int) string {
 	return ""
 }
 
-// argvContains reports whether s appears in argv.
 func argvContains(argv []string, s string) bool {
 	for _, a := range argv {
 		if a == s {
@@ -457,7 +424,6 @@ func argvContains(argv []string, s string) bool {
 	return false
 }
 
-// argvIndexOf returns the index of s in argv, or -1 if absent.
 func argvIndexOf(argv []string, s string) int {
 	for i, a := range argv {
 		if a == s {
@@ -512,14 +478,11 @@ func TestHerdrDefaultShell_GuestNotDialable(t *testing.T) {
 	if err := runCore(context.Background(), getenv, root, svc, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Dial failed → must exec host shell, not nexus3 exec.
 	assertHostShell(t, cap, "/bin/bash")
 	if !svc.dialed {
 		t.Error("DialGuest was never called — dialability check not exercised")
 	}
-	// Verify IDENTITY: the dial targeted the correct sandbox on the correct port.
 	// Mutation proof: changing the ref or port in herdrDefaultShellCore to wrong
-	// values still dials, but these assertions fail RED.
 	if svc.dialedRef != testBinding.SandboxHandle {
 		t.Errorf("DialGuest ref = %q, want %q (sandbox handle)", svc.dialedRef, testBinding.SandboxHandle)
 	}
@@ -546,7 +509,6 @@ func TestHerdrDefaultShell_GuestDialable(t *testing.T) {
 				LiveMounts: []domain.LiveMount{{GuestPath: "/work"}},
 			},
 		},
-		// dialErr nil → dial succeeds
 	}
 
 	cap := &capturedExec{}
@@ -563,14 +525,12 @@ func TestHerdrDefaultShell_GuestDialable(t *testing.T) {
 	if err := runCore(context.Background(), getenv, root, svc, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Dial succeeded → must exec the guest shell (nexus3 exec), not host shell.
 	if cap.argv0 != "/fake/nexus3" {
 		t.Errorf("argv0 = %q, want /fake/nexus3 (guest exec after successful dial)", cap.argv0)
 	}
 	if !svc.dialed {
 		t.Error("DialGuest was never called — dialability check not exercised")
 	}
-	// Verify IDENTITY: the dial targeted the correct sandbox on the correct port.
 	if svc.dialedRef != testBinding.SandboxHandle {
 		t.Errorf("DialGuest ref = %q, want %q (sandbox handle)", svc.dialedRef, testBinding.SandboxHandle)
 	}
@@ -627,7 +587,6 @@ func TestHerdrInstallDefaultShell_ProbeStructure(t *testing.T) {
 // unset, /bin/sh is used as the host shell.
 func TestHerdrDefaultShell_ShellFallbackToSlashSh(t *testing.T) {
 	root := t.TempDir()
-	// No bindings — this workspace ID is unknown.
 	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
 
 	cap := &capturedExec{}
@@ -641,7 +600,6 @@ func TestHerdrDefaultShell_ShellFallbackToSlashSh(t *testing.T) {
 	if err := runCore(context.Background(), getenv, root, nil, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// $SHELL unset → /bin/sh
 	if cap.argv0 != "/bin/sh" {
 		t.Errorf("argv0 = %q, want /bin/sh (fallback when $SHELL unset)", cap.argv0)
 	}
@@ -666,7 +624,6 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 	installPath := filepath.Join(tmpHome, ".local", "bin", "nexus3-guest-shell")
 	sidecarPath := installPath + herdrSidecarSuffix // MAJOR 8: single constant, no divergence
 
-	// Installed binary must exist and be executable.
 	info, err := os.Stat(installPath)
 	if err != nil {
 		t.Fatalf("installed binary not created: %v", err)
@@ -677,8 +634,6 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 
 	// Installed file must NOT be a shell script (not a plain-text wrapper).
 	// Mutation proof: if runHerdrInstallDefaultShell writes a shell script
-	// (e.g. "#!/bin/sh\nexec nexus3 herdr default-shell\n"), the file starts
-	// with "#!" and this check fails RED — catching the broken-wrapper regression.
 	{
 		f, openErr := os.Open(installPath)
 		if openErr != nil {
@@ -699,7 +654,6 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 			self, _ = filepath.EvalSymlinks(self)
 			selfStat, selfStatErr := os.Stat(self)
 			if selfStatErr == nil && !os.SameFile(info, selfStat) {
-				// Cross-device copy path: acceptable — verify non-zero size.
 				if info.Size() == 0 {
 					t.Error("installed binary is zero-length (neither hard-link nor copy succeeded)")
 				}
@@ -708,11 +662,7 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 	}
 
 	// Sidecar must exist and line 1 must equal the real nexus3 binary path
-	// (the installer writes os.Executable() as line 1). Non-emptiness alone is
-	// not sufficient: a wrong-but-executable path (e.g. "/bin/echo") passes the
-	// empty check, but syscall.Exec replaces the process with echo and leaves a
 	// dead pane — the only unsafe corruption that bypasses fail-open.
-	// Line 2 carries the kernel path and may be empty if unresolved at install.
 	sidecarData, err := os.ReadFile(sidecarPath)
 	if err != nil {
 		t.Fatalf("sidecar not created: %v", err)
@@ -728,7 +678,6 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 		}(), expectedBin)
 	}
 
-	// Output must include the config snippet pointing at the install path.
 	snippet := out.w.(*strings.Builder).String()
 	if !strings.Contains(snippet, "default_shell") {
 		t.Errorf("output %q missing default_shell key", snippet)
@@ -763,11 +712,9 @@ func TestHerdrDefaultShell_EmptyNexus3Bin(t *testing.T) {
 		return ""
 	}
 
-	// nexus3Bin="" with svc=nil: binding found, but empty binary path → host shell.
 	if err := herdrDefaultShellCore(context.Background(), getenv, root, nil, "" /* nexus3Bin */, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Must exec the host shell, NOT an empty argv0.
 	assertHostShell(t, cap, "/bin/zsh")
 }
 
@@ -861,11 +808,9 @@ func TestRunHerdrGuestShell_PanicRecovery(t *testing.T) {
 	herdrGuestShellExecFn = func(argv0 string, argv []string, envv []string) error {
 		calls++
 		if calls == 1 {
-			// First exec call (host shell from NEXUS3_HOST_SHELL=1 path):
 			// panic to simulate an unexpected bug mid-resolution.
 			panic("simulated panic for CRITICAL 3")
 		}
-		// Second call: inside the recover block — capture it.
 		return cap.fn(argv0, argv, envv)
 	}
 
@@ -874,7 +819,6 @@ func TestRunHerdrGuestShell_PanicRecovery(t *testing.T) {
 
 	// NEXUS3_HOST_SHELL=1 routes herdrDefaultShellCore to execHostShell early,
 	// ensuring the first execFn call happens with minimal setup so the panic
-	// is predictable.
 	t.Setenv("NEXUS3_HOST_SHELL", "1")
 	t.Setenv("SHELL", "/bin/bash")
 
@@ -933,10 +877,6 @@ func TestHerdrApplyKernelPath(t *testing.T) {
 
 			herdrApplyKernelPath(tc.kernelPath, getenv, setenv)
 
-			// Pin the exact env key so a typo in the production lookup (e.g.
-			// "NEXUS3_KERNEL_PATH_TYPO") turns RED: getenv would return "" for
-			// the wrong key and setenv would be called even when tc.existing is
-			// set, failing the wantSet:false "operator override wins" case.
 			if tc.kernelPath != "" && askedKey != "NEXUS3_KERNEL_PATH" {
 				t.Errorf("getenv called with key %q, want %q", askedKey, "NEXUS3_KERNEL_PATH")
 			}
@@ -980,15 +920,12 @@ func TestRunHerdrGuestShell_KernelPathPublished(t *testing.T) {
 		herdrGuestShellExitFn = origExit
 	})
 
-	// Capture exec calls so RunHerdrGuestShell does not actually exec-replace.
 	herdrGuestShellExecFn = func(argv0 string, argv []string, envv []string) error {
 		return nil // captured; process continues
 	}
 	herdrGuestShellExitFn = func(int) {} // suppress os.Exit
 
 	// Write a sidecar next to the test binary so herdrReadSidecar finds it.
-	// Line 1 = os.Executable() (must stat-check clean).
-	// Line 2 = stamped kernel path under test.
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
@@ -1000,10 +937,8 @@ func TestRunHerdrGuestShell_KernelPathPublished(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Remove(sidecarPath) })
 
-	// Clear NEXUS3_KERNEL_PATH so herdrApplyKernelPath has something to set.
 	t.Setenv("NEXUS3_KERNEL_PATH", "")
 	// Route herdrDefaultShellCore to execHostShell immediately — keeps the rest
-	// of the resolution simple and predictable.
 	t.Setenv("NEXUS3_HOST_SHELL", "1")
 	t.Setenv("SHELL", "/bin/bash")
 
@@ -1018,14 +953,10 @@ func TestRunHerdrGuestShell_KernelPathPublished(t *testing.T) {
 // ── auto-create in herdrDefaultShellCore ─────────────────────────────────────
 
 func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
-	// An unbound workspace that succeeds auto-create must run the guest shell
-	// via herdrWtChildRunnerFn (supervised mode), not the host shell.
 	// wt/ handles take the supervised path so execFn is not called.
-	//
 	// MUTATION PROOF: remove the herdrDefaultShellAutoCreateFn call in
 	// herdrDefaultShellCore → auto-create never fires → workspace stays unbound
 	// → execHostShell is returned → herdrWtChildRunnerFn never called. RED.
-	//
 	// MUTATION PROOF (wt/ branch): remove the isHerdrWorktreeHandle guard in
 	// herdrDefaultShellCore → wt/ handle goes to execFn instead of supervised
 	// path → herdrWtChildRunnerFn never called → test RED.
@@ -1039,14 +970,12 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 		SandboxID:        "sb-wt1",
 	}
 
-	// Stub the predicate to return true (simulates: linked worktree + binding exists).
 	// MUTATION PROOF (predicate gate): set predFn to return false → auto-create
 	// is never reached → execHostShell → herdrWtChildRunnerFn never called. RED.
 	oldPred := herdrAutoCreatePredicateFn
 	herdrAutoCreatePredicateFn = func(_ []HerdrSpaceBinding) bool { return true }
 	t.Cleanup(func() { herdrAutoCreatePredicateFn = oldPred })
 
-	// Stub: auto-create succeeds and returns the binding.
 	old := herdrDefaultShellAutoCreateFn
 	herdrDefaultShellAutoCreateFn = func(_ context.Context, _, gotWsID, _ string, _ io.Writer) (HerdrSpaceBinding, bool) {
 		if gotWsID != wsID {
@@ -1056,7 +985,6 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 	}
 	t.Cleanup(func() { herdrDefaultShellAutoCreateFn = old })
 
-	// Stub herdrWtChildRunnerFn to record calls and return immediately.
 	oldChild := herdrWtChildRunnerFn
 	var childArgv []string
 	herdrWtChildRunnerFn = func(_ context.Context, _ string, argv []string) error {
@@ -1065,7 +993,6 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 	}
 	t.Cleanup(func() { herdrWtChildRunnerFn = oldChild })
 
-	// Stub herdrWtPaneListerFn to return 1 remaining pane (so remover not called).
 	oldPaner := herdrWtPaneListerFn
 	herdrWtPaneListerFn = func(_ context.Context, _, _ string) (int, error) { return 1, nil }
 	t.Cleanup(func() { herdrWtPaneListerFn = oldPaner })
@@ -1078,7 +1005,6 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 	}
 	t.Cleanup(func() { herdrWtSandboxRemoverFn = oldRemov })
 
-	// Use a svc that reports Running + dialable.
 	svc := &fakeDialableGetter{
 		fakeDefaultShellGetter: fakeDefaultShellGetter{
 			sb: domain.Sandbox{State: domain.Running},
@@ -1096,16 +1022,13 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 	}
 
 	cap := &capturedExec{}
-	// Pass an EMPTY store root so the bindings file lookup returns !found.
 	emptyRoot := t.TempDir()
 	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, svc, "/fake/nexus3", cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Must have called herdrWtChildRunnerFn with the guest-exec argv (not host shell).
 	if len(childArgv) == 0 {
 		t.Fatal("herdrWtChildRunnerFn was not called; wt/ binding must use supervised path")
 	}
-	// The argv must target nexus3 exec, not the host shell.
 	if len(childArgv) > 0 && (childArgv[0] == "/bin/bash" || childArgv[0] == "/bin/sh") {
 		t.Errorf("herdrWtChildRunnerFn called with host shell %q; want nexus3 exec argv", childArgv[0])
 	}
@@ -1116,22 +1039,10 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 }
 
 func TestHerdrDefaultShell_UnboundNonWorktree_NoSpawn_HostShell(t *testing.T) {
-	// An unbound NON-worktree workspace must reach the host shell with ZERO
-	// output and ZERO calls to herdrDefaultShellAutoCreateFn. This is the path
-	// for w6/w8/w2R — plain operator workspaces that are NOT linked worktrees.
-	//
-	// The predicate herdrAutoCreatePredicateFn returns false for a non-worktree
 	// workspace, so the auto-create path is never entered. Any output before the
-	// predicate passes is itself a failure (e.g. a false "linked worktree
-	// detected" message).
-	//
 	// MUTATION PROOF (predicate gate removed): bypass the predicate check in
-	// herdrDefaultShellCore → auto-create stub is called → autoCreateCalled
-	// becomes true → assertion fires RED.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	wsID := "w8"
-	// The real predicate reads the test runner's cwd; pin the premise so the
-	// test holds when the checkout itself is a linked, onboarded worktree.
 	stubPredicate(t, false)
 	stubLinkedWorktreeReason(t, false)
 
@@ -1154,8 +1065,6 @@ func TestHerdrDefaultShell_UnboundNonWorktree_NoSpawn_HostShell(t *testing.T) {
 	}
 
 	cap := &capturedExec{}
-	// emptyRoot has no bindings file → (c) is false → predicate returns false
-	// → auto-create path is NOT entered.
 	emptyRoot := t.TempDir()
 	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, nil, "/fake/nexus3", cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1168,29 +1077,19 @@ func TestHerdrDefaultShell_UnboundNonWorktree_NoSpawn_HostShell(t *testing.T) {
 }
 
 func TestHerdrDefaultShell_AutoCreateFails_HostShell(t *testing.T) {
-	// When the predicate passes (cwd is inside a linked worktree with a
-	// matching RepoRoot binding) but auto-create returns false, execution
 	// must fall through to execHostShell rather than continuing with a
-	// zero-value binding.
-	//
 	// MUTATION PROOF (fail-open guard at :267-269 removed): with svc==nil,
-	// execution falls through to the guest exec with an empty SandboxHandle
-	// → this test goes RED.
 	dir := t.TempDir()
 	cwd, binding := makeLinkedWorktreeFixture(t, dir)
 	storeRoot := t.TempDir()
-	// Seed only the existing binding — wsID below is different, so !found.
 	makeBindings(t, storeRoot, []HerdrSpaceBinding{binding})
 
-	// Override the predicate to call the real implementation with the
-	// fixture cwd so the predicate actually PASSES.
 	oldPred := herdrAutoCreatePredicateFn
 	herdrAutoCreatePredicateFn = func(allBindings []HerdrSpaceBinding) bool {
 		return herdrAutoCreatePredicateWith(cwd, allBindings, os.Stat, os.ReadFile)
 	}
 	t.Cleanup(func() { herdrAutoCreatePredicateFn = oldPred })
 
-	// Stub auto-create to signal failure.
 	autoCreateCalled := false
 	oldCreate := herdrDefaultShellAutoCreateFn
 	herdrDefaultShellAutoCreateFn = func(_ context.Context, _, _ string, _ string, _ io.Writer) (HerdrSpaceBinding, bool) {
@@ -1211,8 +1110,6 @@ func TestHerdrDefaultShell_AutoCreateFails_HostShell(t *testing.T) {
 	}
 
 	cap := &capturedExec{}
-	// svc == nil: daemon unreachable, which is exactly when auto-create is
-	// most likely to have failed.
 	if err := herdrDefaultShellCore(context.Background(), getenv, storeRoot, nil, "/fake/nexus3", cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1224,14 +1121,6 @@ func TestHerdrDefaultShell_AutoCreateFails_HostShell(t *testing.T) {
 
 // ── herdrAutoCreatePredicateWith unit tests ───────────────────────────────────
 
-// makeLinkedWorktreeFixture creates a linked-worktree layout in dir:
-//
-//	<dir>/main/.git/           (directory — the main repo's .git)
-//	<dir>/main/.git/worktrees/feat/  (worktree admin dir)
-//	<dir>/worktree/.git        (file — the linked worktree's .git file)
-//
-// Returns (worktreePath, binding). The binding has a workspace ID matching
-// the worktree so callers can seed it into the bindings file as required.
 func makeLinkedWorktreeFixture(t *testing.T, dir string) (worktreePath string, binding HerdrSpaceBinding) {
 	t.Helper()
 	mainGit := filepath.Join(dir, "main", ".git")
@@ -1243,7 +1132,6 @@ func makeLinkedWorktreeFixture(t *testing.T, dir string) (worktreePath string, b
 	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The .git file in a linked worktree points at the worktrees admin dir.
 	gitFile := filepath.Join(worktreePath, ".git")
 	gitdirTarget := filepath.Join(mainGit, "worktrees", "feat")
 	if err := os.WriteFile(gitFile, []byte("gitdir: "+gitdirTarget+"\n"), 0o644); err != nil {
@@ -1260,17 +1148,9 @@ func makeLinkedWorktreeFixture(t *testing.T, dir string) (worktreePath string, b
 }
 
 func TestHerdrAutoCreatePredicate_LinkedWorktreeWithBindings_Engages(t *testing.T) {
-	// (b) cwd is inside a linked worktree AND (c) a binding exists with a
-	// RepoRoot matching the linked worktree's main repo → predicate returns true.
-	//
 	// MUTATION PROOF (b deleted): replace the .git-file check with a check that
-	// always returns true → main-checkout test fails. RED.
-	//
 	// MUTATION PROOF (c repo-comparison replaced with true): the
-	// DifferentRepoRoot test below returns true. RED.
-	//
 	// MUTATION PROOF (len==0 fast-path deleted): linked worktree with NO
-	// bindings (LinkedWorktreeNoBindings test) returns true. RED.
 	dir := t.TempDir()
 	cwd, binding := makeLinkedWorktreeFixture(t, dir)
 	allBindings := []HerdrSpaceBinding{binding}
@@ -1282,11 +1162,7 @@ func TestHerdrAutoCreatePredicate_LinkedWorktreeWithBindings_Engages(t *testing.
 }
 
 func TestHerdrAutoCreatePredicate_LinkedWorktreeNoBindings_DoesNotEngage(t *testing.T) {
-	// (b) cwd is inside a linked worktree BUT (c) no bindings exist
-	// → predicate returns false.
-	//
 	// MUTATION PROOF (c deleted): remove the len==0 fast-path → this returns
-	// true → test fails RED.
 	dir := t.TempDir()
 	cwd, _ := makeLinkedWorktreeFixture(t, dir)
 
@@ -1297,15 +1173,6 @@ func TestHerdrAutoCreatePredicate_LinkedWorktreeNoBindings_DoesNotEngage(t *test
 }
 
 func TestHerdrAutoCreatePredicate_MainCheckout_DoesNotEngage(t *testing.T) {
-	// (b) cwd has a .git DIRECTORY (main checkout) → predicate returns false
-	// regardless of bindings.
-	//
-	// What this proves: the predicate returns false when cwd is in a main
-	// checkout (.git is a directory). It does NOT isolate the IsRegular()
-	// guard — os.ReadFile on a .git DIRECTORY returns EISDIR, so :117
-	// returns false regardless. The IsRegular() guard is still the right
-	// mechanism; this test confirms the directory case is rejected, not
-	// which exact line rejects it.
 	dir := t.TempDir()
 	mainGit := filepath.Join(dir, ".git")
 	if err := os.MkdirAll(mainGit, 0o755); err != nil {
@@ -1323,7 +1190,6 @@ func TestHerdrAutoCreatePredicate_MainCheckout_DoesNotEngage(t *testing.T) {
 }
 
 func TestHerdrAutoCreatePredicate_NoGitFound_DoesNotEngage(t *testing.T) {
-	// No .git anywhere in the walk → predicate returns false.
 	dir := t.TempDir()
 	allBindings := []HerdrSpaceBinding{{HerdrWorkspaceID: "wANY"}}
 
@@ -1336,18 +1202,10 @@ func TestHerdrAutoCreatePredicate_NoGitFound_DoesNotEngage(t *testing.T) {
 // ── Additional herdrAutoCreatePredicateWith tests (repo-scoped predicate) ────
 
 func TestHerdrAutoCreatePredicate_DifferentRepoRoot_DoesNotEngage(t *testing.T) {
-	// Linked worktree of repo A, but the only binding belongs to repo B
-	// (different RepoRoot) → predicate returns false.
-	//
-	// This is the exact defect the fix addresses: the old code returned true
-	// whenever any binding existed, regardless of which repo it belonged to.
-	// This test is RED against the pre-fix implementation.
-	//
 	// MUTATION PROOF (repo comparison replaced with true): this test fails RED.
 	dir := t.TempDir()
 	cwd, _ := makeLinkedWorktreeFixture(t, dir)
 
-	// Binding whose RepoRoot points at an unrelated repo ("other-repo").
 	unrelatedBinding := HerdrSpaceBinding{
 		SpaceLabel:       "nexus3:wt/other",
 		HerdrWorkspaceID: "wOTH",
@@ -1364,12 +1222,8 @@ func TestHerdrAutoCreatePredicate_DifferentRepoRoot_DoesNotEngage(t *testing.T) 
 }
 
 func TestHerdrAutoCreatePredicate_EmptyRepoRoot_LegacyBinding_DoesNotEngage(t *testing.T) {
-	// Linked worktree with bindings that all have empty RepoRoot (legacy
-	// bindings written before this field existed) → predicate returns false.
 	// Empty RepoRoot must never act as a wildcard.
-	//
 	// MUTATION PROOF (empty RepoRoot treated as wildcard/match): this test
-	// fails RED.
 	dir := t.TempDir()
 	cwd, _ := makeLinkedWorktreeFixture(t, dir)
 
@@ -1378,7 +1232,6 @@ func TestHerdrAutoCreatePredicate_EmptyRepoRoot_LegacyBinding_DoesNotEngage(t *t
 		HerdrWorkspaceID: "wLEG",
 		SandboxHandle:    "wt/legacy",
 		SandboxID:        "sb-leg",
-		// RepoRoot intentionally absent (legacy binding).
 	}
 	allBindings := []HerdrSpaceBinding{legacyBinding}
 
@@ -1389,9 +1242,6 @@ func TestHerdrAutoCreatePredicate_EmptyRepoRoot_LegacyBinding_DoesNotEngage(t *t
 }
 
 func TestHerdrSpaceBinding_LegacyJSON_DecodesCleanly(t *testing.T) {
-	// Verify that a binding JSON written before the repo_root field existed
-	// decodes without error and produces an empty RepoRoot — encoding/json
-	// leaves missing fields at their zero value.
 	legacy := `[{"space_label":"nexus3:demo","herdr_workspace_id":"wXX","sandbox_handle":"demo","sandbox_id":"sb-demo"}]`
 	var bindings []HerdrSpaceBinding
 	if err := json.Unmarshal([]byte(legacy), &bindings); err != nil {
