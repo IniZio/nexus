@@ -137,10 +137,6 @@ gh api -X POST repos/{owner}/{repo}/pulls \
 Outputs that look like a failure but are not. Check the listed counter-probe
 before acting on them.
 
-- **`gh auth status` says "The token in GH_TOKEN is invalid".** The perimeter
-  denies the two probes it makes (`POST /graphql`, `GET /`), not the token.
-  Counter-probe: `gh api user` → 200 means authenticated. Details in
-  [github-pr.md](github-pr.md#gh-auth-status-is-a-false-negative--trust-gh-api-user).
 - **`find` returns nothing for a file that exists.** The host `~/.claude` mount
   brings the operator's `rtk hook claude` PreToolUse hook into the guest; it
   rewrites Bash `find` to `rtk find`, whose compact output can be empty for a
