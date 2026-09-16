@@ -4,8 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/builder"
@@ -49,9 +52,30 @@ type imageListJSON struct {
 	Images []imageInfoJSON `json:"images"`
 }
 
-// imagePrunedJSON is emitted by "image prune" on success.
+// imagePrunedJSON is emitted by "image prune" on success. With --dry-run,
+// removed/templates/freed_bytes describe what WOULD be removed and the
+// images/builder_templates arrays list the candidates.
 type imagePrunedJSON struct {
-	Removed int `json:"removed"`
+	Removed          int                       `json:"removed"`
+	Templates        int                       `json:"templates"`
+	FreedBytes       int64                     `json:"freed_bytes"`
+	TemplateSweep    bool                      `json:"template_sweep"`
+	DryRun           bool                      `json:"dry_run"`
+	Images           []imagePruneCandidateJSON `json:"images,omitempty"`
+	BuilderTemplates []imagePruneTemplateJSON  `json:"builder_templates,omitempty"`
+}
+
+type imagePruneCandidateJSON struct {
+	Digest string `json:"digest"`
+	Ref    string `json:"ref"`
+	Kind   string `json:"kind"`
+	Size   int64  `json:"size"`
+}
+
+type imagePruneTemplateJSON struct {
+	Path     string `json:"path"`
+	AgentTag string `json:"agent_tag"`
+	Size     int64  `json:"size"`
 }
 
 // ── top-level dispatch ────────────────────────────────────────────────────────
@@ -187,17 +211,118 @@ func humanBytes(n int64) string {
 
 // ── prune ─────────────────────────────────────────────────────────────────────
 
-// runImagePrune handles: image prune
-func runImagePrune(ctx context.Context, _ []string, out *Output, svc *service.ImageService) error {
-	n, err := svc.PruneImages(ctx)
+// runImagePrune handles: image prune [--dry-run]
+func runImagePrune(ctx context.Context, args []string, out *Output, svc *service.ImageService) error {
+	fs := flag.NewFlagSet("image prune", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "list what would be removed and why entries are kept, without removing anything")
+	if err := fs.Parse(args); err != nil {
+		return &UsageError{Msg: "image prune: " + err.Error()}
+	}
+
+	if *dryRun {
+		plan, err := svc.PlanPrune(ctx)
+		if err != nil {
+			out.EmitError(ErrCodeInternalError, fmt.Sprintf("image prune: %v", err))
+			return nil
+		}
+		data := imagePrunedJSON{
+			Removed:       len(plan.Images),
+			Templates:     len(plan.Templates),
+			FreedBytes:    plan.ImageBytes + plan.TemplateBytes,
+			TemplateSweep: plan.TemplateSweep,
+			DryRun:        true,
+		}
+		for _, img := range plan.Images {
+			data.Images = append(data.Images, imagePruneCandidateJSON{
+				Digest: img.Digest.String(), Ref: img.Ref, Kind: img.Kind.String(), Size: img.Size,
+			})
+		}
+		for _, tpl := range plan.Templates {
+			data.BuilderTemplates = append(data.BuilderTemplates, imagePruneTemplateJSON{
+				Path: tpl.Path, AgentTag: tpl.AgentTag, Size: tpl.Size,
+			})
+		}
+		if !out.IsJSON() {
+			renderPrunePlan(out.Stdout(), plan)
+		}
+		out.EmitSuccess("image.pruned", data,
+			fmt.Sprintf("Would free ~%s (%d images, %d builder templates)",
+				humanBytes(data.FreedBytes), data.Removed, data.Templates))
+		return nil
+	}
+
+	res, err := svc.PruneImages(ctx)
 	if err != nil {
 		out.EmitError(ErrCodeInternalError, fmt.Sprintf("image prune: %v", err))
 		return nil
 	}
-
-	out.EmitSuccess("image.pruned", imagePrunedJSON{Removed: n},
-		fmt.Sprintf("pruned %d image(s)", n))
+	if !out.IsJSON() && !res.TemplateSweep {
+		fmt.Fprintln(out.Stdout(), pruneSweepSkippedMsg)
+	}
+	out.EmitSuccess("image.pruned", imagePrunedJSON{
+		Removed:       res.Removed,
+		Templates:     res.Templates,
+		FreedBytes:    res.FreedBytes,
+		TemplateSweep: res.TemplateSweep,
+	}, fmt.Sprintf("Pruned %d image(s), %d builder template(s), freed ~%s",
+		res.Removed, res.Templates, humanBytes(res.FreedBytes)))
 	return nil
+}
+
+const pruneSweepSkippedMsg = "builder-template sweep skipped: nexus3-agent binary not found"
+
+var (
+	imagePruneHeaders    = []string{"DIGEST", "REF", "KIND", "SIZE"}
+	imageTemplateHeaders = []string{"FILE", "AGENT", "SIZE"}
+)
+
+func renderPrunePlan(w io.Writer, plan service.PrunePlan) {
+	if len(plan.Images) > 0 {
+		rows := make([][]string, 0, len(plan.Images))
+		for _, img := range plan.Images {
+			rows = append(rows, []string{shortDigest(img.Digest.String()), img.Ref, img.Kind.String(), humanBytes(img.Size)})
+		}
+		fmt.Fprint(w, renderTable(imagePruneHeaders, rows))
+	}
+	if len(plan.Templates) > 0 {
+		rows := make([][]string, 0, len(plan.Templates))
+		for _, tpl := range plan.Templates {
+			rows = append(rows, []string{filepath.Base(tpl.Path), tpl.AgentTag, humanBytes(tpl.Size)})
+		}
+		fmt.Fprint(w, renderTable(imageTemplateHeaders, rows))
+	}
+	if !plan.TemplateSweep {
+		fmt.Fprintln(w, pruneSweepSkippedMsg)
+	}
+}
+
+// shortDigest trims "sha256:<hex>" to the first 12 hex characters.
+func shortDigest(d string) string {
+	if i := strings.IndexByte(d, ':'); i >= 0 {
+		d = d[i+1:]
+	}
+	if len(d) > 12 {
+		d = d[:12]
+	}
+	return d
+}
+
+// builderAgentTag resolves the host nexus3-agent binary the way `sandbox create
+// --file` does and returns its image.BuilderAgentTag; "" when it cannot be found.
+func builderAgentTag() string {
+	agentBin, err := exec.LookPath("nexus3-agent")
+	if err != nil {
+		kernelPath, kerr := resolveKernelPath()
+		if kerr != nil {
+			return ""
+		}
+		agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus3-agent")
+	}
+	agentBytes, err := os.ReadFile(agentBin)
+	if err != nil {
+		return ""
+	}
+	return image.BuilderAgentTag(agentBytes)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -243,5 +368,6 @@ func newImageService() (*service.ImageService, error) {
 	}
 	svc := service.NewImageService(c, nil)
 	svc.WithStore(fs)
+	svc.WithBuilderAgentTag(builderAgentTag())
 	return svc, nil
 }

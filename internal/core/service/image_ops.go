@@ -20,6 +20,8 @@ type ImageService struct {
 	store   SandboxImageLister
 	// versionResolver resolves floating tool versions; nil means use cred.ResolveFloatingVersions.
 	versionResolver func(context.Context, cred.ToolRecipe) (cred.ToolRecipe, error)
+	// builderAgentTag: image.BuilderAgentTag of the host's nexus3-agent; "" skips the template sweep.
+	builderAgentTag string
 }
 
 func NewImageService(c *image.Cache, b ImageBuilder) *ImageService {
@@ -63,16 +65,76 @@ func (s *ImageService) ListImages(ctx context.Context) ([]domain.Image, error) {
 	return imgs, nil
 }
 
-func (s *ImageService) PruneImages(ctx context.Context) (int, error) {
+// WithBuilderAgentTag sets the live agent tag; templates with any other tag are stale. "" skips the sweep.
+func (s *ImageService) WithBuilderAgentTag(tag string) *ImageService {
+	s.builderAgentTag = tag
+	return s
+}
+
+// PrunePlan is what PruneImages would remove, computed without unlinking.
+type PrunePlan struct {
+	Images        []domain.Image          // unreferenced cache entries (candidates)
+	Templates     []image.BuilderTemplate // stale builder templates that would be removed
+	ImageBytes    int64                   // sum of Images[i].Size
+	TemplateBytes int64                   // allocated bytes of Templates
+	TemplateSweep bool                    // false when no agent tag is known (sweep skipped)
+}
+
+type PruneResult struct {
+	Removed       int   // cache entries actually removed
+	Templates     int   // builder templates actually removed
+	FreedBytes    int64 // artifact sizes + template allocated bytes
+	TemplateSweep bool  // false when no agent tag is known (sweep skipped)
+}
+
+// PlanPrune reports what PruneImages would remove without unlinking anything.
+func (s *ImageService) PlanPrune(ctx context.Context) (PrunePlan, error) {
 	ref, err := ReferencedDigests(ctx, s.cache, s.store)
 	if err != nil {
-		return 0, fmt.Errorf("image: prune: compute refs: %w", err)
+		return PrunePlan{}, fmt.Errorf("image: prune: compute refs: %w", err)
+	}
+	imgs, err := s.cache.PruneCandidates(ctx, ref)
+	if err != nil {
+		return PrunePlan{}, fmt.Errorf("image: prune: candidates: %w", err)
+	}
+	plan := PrunePlan{Images: imgs, TemplateSweep: s.builderAgentTag != ""}
+	for _, img := range imgs {
+		plan.ImageBytes += img.Size
+	}
+	tpls, freed, err := s.cache.PruneBuilderTemplates(ctx, s.builderAgentTag, true)
+	if err != nil {
+		return PrunePlan{}, fmt.Errorf("image: prune: builder templates: %w", err)
+	}
+	plan.Templates = tpls
+	plan.TemplateBytes = freed
+	return plan, nil
+}
+
+// PruneImages removes unreferenced cache entries and, when an agent tag is known, stale builder templates.
+func (s *ImageService) PruneImages(ctx context.Context) (PruneResult, error) {
+	ref, err := ReferencedDigests(ctx, s.cache, s.store)
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("image: prune: compute refs: %w", err)
+	}
+	candidates, err := s.cache.PruneCandidates(ctx, ref)
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("image: prune: candidates: %w", err)
 	}
 	n, err := s.cache.Prune(ctx, ref)
 	if err != nil {
-		return 0, fmt.Errorf("image: prune: %w", err)
+		return PruneResult{}, fmt.Errorf("image: prune: %w", err)
 	}
-	return n, nil
+	res := PruneResult{Removed: n, TemplateSweep: s.builderAgentTag != ""}
+	for _, img := range candidates {
+		res.FreedBytes += img.Size
+	}
+	tpls, freed, err := s.cache.PruneBuilderTemplates(ctx, s.builderAgentTag, false)
+	if err != nil {
+		return res, fmt.Errorf("image: prune: builder templates: %w", err)
+	}
+	res.Templates = len(tpls)
+	res.FreedBytes += freed
+	return res, nil
 }
 
 var ErrNoBuilder = fmt.Errorf("no builder configured (builder VM integration not yet wired)")

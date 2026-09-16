@@ -32,10 +32,16 @@ func newCache(t *testing.T) *image.Cache {
 
 func putImage(t *testing.T, c *image.Cache, content []byte, kind domain.ImageKind) domain.Digest {
 	t.Helper()
+	return putImageRef(t, c, content, kind, "")
+}
+
+func putImageRef(t *testing.T, c *image.Cache, content []byte, kind domain.ImageKind, ref string) domain.Digest {
+	t.Helper()
 	d := digestOf(content)
 	img := domain.Image{
 		Digest:    d,
 		Kind:      kind,
+		Ref:       ref,
 		Size:      int64(len(content)),
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
 	}
@@ -43,6 +49,15 @@ func putImage(t *testing.T, c *image.Cache, content []byte, kind domain.ImageKin
 		t.Fatalf("Put(%s): %v", d, err)
 	}
 	return d
+}
+
+func containsDigest(ref []domain.Digest, d domain.Digest) bool {
+	for _, r := range ref {
+		if r == d {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeSandboxImageLister struct {
@@ -59,24 +74,85 @@ func sandboxWith(digest string) domain.Sandbox {
 
 // ── ReferencedDigests tests ────────────────────────────────────────────────────
 
-// TestReferencedDigests_BaseImageAlwaysKept: KindBase is always in the referenced
-// set even with no sandbox references and no extra digests.
-// Mutation proof: removing the KindBase loop makes this test fail.
-func TestReferencedDigests_BaseImageAlwaysKept(t *testing.T) {
+// TestReferencedDigests_UnreferencedBaseNotKept: a KindBase image with a
+// non-pinned ref, no sandbox references and not in extra is NOT kept.
+// Mutation proof: restoring the unconditional KindBase keep makes this fail.
+func TestReferencedDigests_UnreferencedBaseNotKept(t *testing.T) {
 	ctx := context.Background()
 	c := newCache(t)
-	baseDigest := putImage(t, c, []byte("base-content"), domain.KindBase)
+	alpine := putImageRef(t, c, []byte("alpine-content"), domain.KindBase, "alpine:3.20")
+
+	ref, err := service.ReferencedDigests(ctx, c, &fakeSandboxImageLister{})
+	if err != nil {
+		t.Fatalf("ReferencedDigests: %v", err)
+	}
+	if containsDigest(ref, alpine) {
+		t.Errorf("unreferenced non-pinned KindBase %s should NOT be in referenced set %v", alpine, ref)
+	}
+}
+
+// TestReferencedDigests_PinnedBaseKept: a KindBase image whose Ref is in
+// DefaultPinnedBaseRefs is kept with no sandbox references.
+// Mutation proof: removing the pinned-ref check makes this fail.
+func TestReferencedDigests_PinnedBaseKept(t *testing.T) {
+	ctx := context.Background()
+	c := newCache(t)
+	debian := putImageRef(t, c, []byte("debian-content"), domain.KindBase, "debian:bookworm-slim")
 
 	ref, err := service.ReferencedDigests(ctx, c, nil)
 	if err != nil {
 		t.Fatalf("ReferencedDigests: %v", err)
 	}
-	for _, d := range ref {
-		if d == baseDigest {
-			return
-		}
+	if !containsDigest(ref, debian) {
+		t.Errorf("pinned KindBase %s not in referenced set %v", debian, ref)
 	}
-	t.Errorf("KindBase digest %s not in referenced set %v", baseDigest, ref)
+}
+
+// TestReferencedDigests_SandboxReferencedBaseKept: a KindBase image with a
+// non-pinned ref is kept when a sandbox record references it.
+func TestReferencedDigests_SandboxReferencedBaseKept(t *testing.T) {
+	ctx := context.Background()
+	c := newCache(t)
+	alpine := putImageRef(t, c, []byte("alpine-content"), domain.KindBase, "alpine:3.20")
+
+	store := &fakeSandboxImageLister{
+		sandboxes: []domain.Sandbox{sandboxWith(alpine.String())},
+	}
+	ref, err := service.ReferencedDigests(ctx, c, store)
+	if err != nil {
+		t.Fatalf("ReferencedDigests: %v", err)
+	}
+	if !containsDigest(ref, alpine) {
+		t.Errorf("sandbox-referenced KindBase %s not in referenced set %v", alpine, ref)
+	}
+}
+
+// TestReferencedDigestsPinned_ExplicitPins: nil pins drop the debian base;
+// an explicit alpine pin keeps alpine and drops debian.
+func TestReferencedDigestsPinned_ExplicitPins(t *testing.T) {
+	ctx := context.Background()
+	c := newCache(t)
+	debian := putImageRef(t, c, []byte("debian-content"), domain.KindBase, "debian:bookworm-slim")
+	alpine := putImageRef(t, c, []byte("alpine-content"), domain.KindBase, "alpine:3.20")
+
+	ref, err := service.ReferencedDigestsPinned(ctx, c, nil, nil)
+	if err != nil {
+		t.Fatalf("ReferencedDigestsPinned(nil): %v", err)
+	}
+	if len(ref) != 0 {
+		t.Errorf("nil pins: want empty referenced set, got %v", ref)
+	}
+
+	ref, err = service.ReferencedDigestsPinned(ctx, c, nil, []string{"alpine:3.20"})
+	if err != nil {
+		t.Fatalf("ReferencedDigestsPinned(alpine): %v", err)
+	}
+	if !containsDigest(ref, alpine) {
+		t.Errorf("alpine pin: alpine %s not in referenced set %v", alpine, ref)
+	}
+	if containsDigest(ref, debian) {
+		t.Errorf("alpine pin: debian %s should NOT be in referenced set %v", debian, ref)
+	}
 }
 
 // TestReferencedDigests_SandboxRefKept: a KindBuilder image referenced by a

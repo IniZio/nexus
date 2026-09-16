@@ -669,6 +669,212 @@ func (c *Cache) Prune(_ context.Context, referenced []domain.Digest) (int, error
 	return removed, nil
 }
 
+// PruneCandidates returns the cache entries (from List) whose digest is not in
+// referenced — the dry-run counterpart of Prune.
+//
+// It does NOT probe leases: an entry listed here may still be KEPT by Prune at
+// execution time if a concurrent Put holds its lease by then. The result is
+// therefore an upper bound on what Prune would remove, not a promise.
+func (c *Cache) PruneCandidates(ctx context.Context, referenced []domain.Digest) ([]domain.Image, error) {
+	refSet := make(map[domain.Digest]struct{}, len(referenced))
+	for _, d := range referenced {
+		refSet[d] = struct{}{}
+	}
+	imgs, err := c.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("image cache: prune candidates: %w", err)
+	}
+	var out []domain.Image
+	for _, img := range imgs {
+		if _, keep := refSet[img.Digest]; keep {
+			continue
+		}
+		out = append(out, img)
+	}
+	return out, nil
+}
+
+// ── Builder templates ─────────────────────────────────────────────────────────
+//
+// The builder writes its VM template directly into the cache root as
+// nexus-builder-<digestSafe>-agent<tag>.ext4, where tag is the first 8 bytes of
+// the sha256 of the embedded nexus3-agent binary. Every new nexus3 binary with
+// a different agent therefore leaves the previous template behind, and Prune
+// only walks sha256/, so these accumulate until swept here.
+//
+// There is no lease on a template: a build mkfs's the file in place and removes
+// a partial on failure, and a DIFFERENT nexus3 binary on the same host may be
+// writing one concurrently. The sweep therefore has two fail-safe guards in
+// place of a lease: an flock probe (a VMM with the image open, or any other
+// holder, resolves to KEEP) and a modification-time grace window (a build
+// streaming into the file resolves to KEEP).
+
+// BuilderTemplate describes one nexus-builder-*.ext4 file in the cache root.
+type BuilderTemplate struct {
+	Path     string
+	Size     int64 // allocated bytes on disk (st_blocks*512), not apparent size — these files may be sparse
+	AgentTag string // 16-hex agent tag parsed from the filename
+	ModTime  time.Time
+}
+
+// BuilderTemplateInFlightGrace: templates modified more recently than this are
+// treated as in flight and kept.
+const BuilderTemplateInFlightGrace = 10 * time.Minute
+
+const (
+	builderTemplatePrefix   = "nexus-builder-"
+	builderTemplateAgentSep = "-agent"
+	builderTemplateSuffix   = ".ext4"
+	builderAgentTagLen      = 16
+)
+
+// BuilderAgentTag returns the tag builderimage encodes for agentBytes (first 8
+// bytes of sha256, %x). Empty input -> "".
+func BuilderAgentTag(agentBytes []byte) string {
+	if len(agentBytes) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(agentBytes)
+	return fmt.Sprintf("%x", sum[:8])
+}
+
+// parseBuilderTemplateName extracts the agent tag from a template filename.
+// It returns ok=false for any name that is not
+// nexus-builder-<something>-agent<16hex>.ext4.
+func parseBuilderTemplateName(name string) (tag string, ok bool) {
+	if len(name) <= len(builderTemplatePrefix)+len(builderTemplateSuffix) ||
+		name[:len(builderTemplatePrefix)] != builderTemplatePrefix ||
+		name[len(name)-len(builderTemplateSuffix):] != builderTemplateSuffix {
+		return "", false
+	}
+	stem := name[len(builderTemplatePrefix) : len(name)-len(builderTemplateSuffix)]
+	if len(stem) < len(builderTemplateAgentSep)+builderAgentTagLen {
+		return "", false
+	}
+	tag = stem[len(stem)-builderAgentTagLen:]
+	sep := stem[len(stem)-builderAgentTagLen-len(builderTemplateAgentSep) : len(stem)-builderAgentTagLen]
+	if sep != builderTemplateAgentSep {
+		return "", false
+	}
+	if _, err := hex.DecodeString(tag); err != nil {
+		return "", false
+	}
+	return tag, true
+}
+
+// ListBuilderTemplates lists nexus-builder-*-agent<16hex>.ext4 files directly
+// in the cache root (non-recursive). Missing root -> nil, nil.
+func (c *Cache) ListBuilderTemplates(_ context.Context) ([]BuilderTemplate, error) {
+	entries, err := os.ReadDir(c.root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("image cache: list builder templates: read %s: %w", c.root, err)
+	}
+	var out []BuilderTemplate
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		tag, ok := parseBuilderTemplateName(e.Name())
+		if !ok {
+			continue
+		}
+		path := filepath.Join(c.root, e.Name())
+		var st syscall.Stat_t
+		if err := syscall.Stat(path, &st); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue // removed between ReadDir and Stat
+			}
+			return nil, fmt.Errorf("image cache: list builder templates: stat %s: %w", path, err)
+		}
+		out = append(out, BuilderTemplate{
+			Path:     path,
+			Size:     st.Blocks * 512,
+			AgentTag: tag,
+			ModTime:  time.Unix(st.Mtim.Sec, st.Mtim.Nsec),
+		})
+	}
+	return out, nil
+}
+
+// builderTemplateHeld probes path with a non-blocking exclusive flock and
+// releases it immediately. It reports true when another open file description
+// holds the lock (a VMM with the image open, a build, a sibling process) and on
+// any error other than the file being gone — ambiguity resolves to KEEP, as in
+// tryAcquireLease.
+func builderTemplateHeld(path string) (held bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, err
+		}
+		return true, nil
+	}
+	defer func() { _ = f.Close() }()
+	if flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); flockErr != nil {
+		return true, nil // EWOULDBLOCK, or an unexpected error: KEEP
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false, nil
+}
+
+// PruneBuilderTemplates removes templates whose AgentTag != currentTag.
+//
+// KEPT (never removed):
+//   - tag == currentTag — the template this binary's builder uses;
+//   - files whose flock(LOCK_EX|LOCK_NB) probe fails (another process holds
+//     it — e.g. a VMM with the image open);
+//   - files with ModTime within BuilderTemplateInFlightGrace of now (a build
+//     streaming into it).
+//
+// currentTag == "" removes nothing and returns nil, 0, nil: with no agent
+// binary known there is no way to tell live from stale, so fail safe.
+//
+// dryRun=true returns what WOULD be removed under the same keep rules (the
+// lock probe is still non-blocking and released immediately) without
+// unlinking. Returns the removed templates and the total allocated bytes freed.
+//
+// Holds c.mu for the duration like Prune, so a concurrent Prune or sweep in
+// THIS process cannot race on enumeration and removal.
+func (c *Cache) PruneBuilderTemplates(ctx context.Context, currentTag string, dryRun bool) (removed []BuilderTemplate, freed int64, err error) {
+	if currentTag == "" {
+		return nil, 0, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	templates, err := c.ListBuilderTemplates(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("image cache: prune builder templates: %w", err)
+	}
+	now := time.Now()
+	for _, tpl := range templates {
+		if tpl.AgentTag == currentTag {
+			continue
+		}
+		if now.Sub(tpl.ModTime) < BuilderTemplateInFlightGrace {
+			continue
+		}
+		held, probeErr := builderTemplateHeld(tpl.Path)
+		if probeErr != nil || held {
+			continue
+		}
+		if !dryRun {
+			if rmErr := os.Remove(tpl.Path); rmErr != nil {
+				if errors.Is(rmErr, fs.ErrNotExist) {
+					continue
+				}
+				return removed, freed, fmt.Errorf("image cache: prune builder templates: remove %s: %w", tpl.Path, rmErr)
+			}
+		}
+		removed = append(removed, tpl)
+		freed += tpl.Size
+	}
+	return removed, freed, nil
+}
+
 // writeMeta atomically persists rec to path via temp-file + fsync + rename +
 // directory fsync. Mirrors the durability guarantees of store.writeRecord.
 func writeMeta(path string, rec imageRecord) error {

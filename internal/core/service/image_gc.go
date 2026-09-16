@@ -43,11 +43,20 @@ func SetFreeSpaceFuncForTest(fn func(string) (uint64, error)) func() {
 	return func() { freeSpaceFunc = orig }
 }
 
+// DefaultPinnedBaseRefs are base-image refs retained by GC even when no
+// sandbox references them: the ref the herdr/orca flows boot by default and
+// the `image build --base` default.
+var DefaultPinnedBaseRefs = []string{"nexus3-agent-base", "debian:bookworm-slim"}
+
 // ReferencedDigests returns the set of image digests that must be preserved
 // during GC. The returned set includes:
-//   - All KindBase images (the nexus3-agent-base rootfs and any siblings).
 //   - Every image referenced by an existing sandbox record (Envelope.ImageDigest).
+//   - KindBase images whose Ref is in DefaultPinnedBaseRefs.
 //   - Any additional digests passed in extra (e.g. the image just built).
+//
+// All other images — KindBase included — are prune candidates. Base images
+// enter the cache via `--image <ref>` sandboxes and are re-pulled on demand
+// when absent, so dropping an unreferenced one is safe.
 //
 // Ambiguity resolves to KEEP: a sandbox whose ImageDigest cannot be validated
 // as a domain.Digest is silently skipped (non-parseable strings were never
@@ -55,8 +64,16 @@ func SetFreeSpaceFuncForTest(fn func(string) (uint64, error)) func() {
 // in the cache is silently ignored by Prune.
 //
 // store may be nil; passing nil disables sandbox-reference tracking and only
-// KindBase images plus extra digests are kept.
+// pinned KindBase images plus extra digests are kept.
+//
+// Delegates to ReferencedDigestsPinned with DefaultPinnedBaseRefs.
 func ReferencedDigests(ctx context.Context, c *image.Cache, store SandboxImageLister, extra ...domain.Digest) ([]domain.Digest, error) {
+	return ReferencedDigestsPinned(ctx, c, store, DefaultPinnedBaseRefs, extra...)
+}
+
+// ReferencedDigestsPinned is ReferencedDigests with an explicit pinned-ref set
+// (nil = pin nothing beyond sandbox refs and extra).
+func ReferencedDigestsPinned(ctx context.Context, c *image.Cache, store SandboxImageLister, pinnedBaseRefs []string, extra ...domain.Digest) ([]domain.Digest, error) {
 	all, err := c.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("image gc: list cache: %w", err)
@@ -64,9 +81,16 @@ func ReferencedDigests(ctx context.Context, c *image.Cache, store SandboxImageLi
 
 	ref := make(map[domain.Digest]struct{})
 
-	// Always keep all KindBase images (nexus3-agent-base and any siblings).
+	// Keep KindBase images whose Ref is pinned.
+	pinned := make(map[string]struct{}, len(pinnedBaseRefs))
+	for _, r := range pinnedBaseRefs {
+		pinned[r] = struct{}{}
+	}
 	for _, img := range all {
-		if img.Kind == domain.KindBase {
+		if img.Kind != domain.KindBase {
+			continue
+		}
+		if _, ok := pinned[img.Ref]; ok {
 			ref[img.Digest] = struct{}{}
 		}
 	}
@@ -103,6 +127,7 @@ func ReferencedDigests(ctx context.Context, c *image.Cache, store SandboxImageLi
 	for d := range ref {
 		out = append(out, d)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out, nil
 }
 

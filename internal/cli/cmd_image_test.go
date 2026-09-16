@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/domain"
@@ -23,8 +26,15 @@ import (
 // be nil for list/prune-only tests). The store is always wired so tests
 // exercise the same store-wired code path as production newImageService.
 func newTestImageService(t *testing.T, b service.ImageBuilder) (*service.ImageService, *image.Cache) {
+	svc, c, _ := newTestImageServiceRoot(t, b)
+	return svc, c
+}
+
+// newTestImageServiceRoot is newTestImageService that also returns the cache root dir.
+func newTestImageServiceRoot(t *testing.T, b service.ImageBuilder) (*service.ImageService, *image.Cache, string) {
 	t.Helper()
-	c, err := image.NewCache(t.TempDir())
+	root := t.TempDir()
+	c, err := image.NewCache(root)
 	if err != nil {
 		t.Fatalf("image.NewCache: %v", err)
 	}
@@ -34,7 +44,7 @@ func newTestImageService(t *testing.T, b service.ImageBuilder) (*service.ImageSe
 	}
 	svc := service.NewImageService(c, b)
 	svc.WithStore(fs)
-	return svc, c
+	return svc, c, root
 }
 
 // fakeDigest computes a sha256:<hex> digest of content, returning a valid
@@ -46,6 +56,8 @@ func fakeDigest(content string) (domain.Digest, *bytes.Reader) {
 }
 
 // seedCache writes one KindBase image record to cache c for testing. Returns the stored image.
+// A KindBase entry is retained by prune only when its ref is in
+// service.DefaultPinnedBaseRefs or a sandbox references its digest.
 func seedCache(t *testing.T, c *image.Cache, content, ref string) domain.Image {
 	t.Helper()
 	d, r := fakeDigest(content)
@@ -62,8 +74,8 @@ func seedCache(t *testing.T, c *image.Cache, content, ref string) domain.Image {
 }
 
 // seedBuilderCache writes one KindBuilder image record to cache c for testing.
-// Use this in prune tests where the image should be eligible for GC (KindBase
-// images are always retained by PruneImages; KindBuilder orphans are pruned).
+// Use this in prune tests where the image should be eligible for GC: any
+// unreferenced entry is pruned regardless of kind, and these refs are never pinned.
 func seedBuilderCache(t *testing.T, c *image.Cache, content, ref string) domain.Image {
 	t.Helper()
 	d, r := fakeDigest(content)
@@ -191,9 +203,8 @@ func TestImagePrune_JSON_EmptyCache(t *testing.T) {
 
 func TestImagePrune_JSON_RemovesUnreferenced(t *testing.T) {
 	svc, c := newTestImageService(t, nil)
-	// Seed KindBuilder images (orphan builder artifacts) — these are the images
-	// that accumulate from repeated --file builds and must be pruned by GC.
-	// KindBase images are always retained (the base rootfs must never be removed).
+	// Orphan builder artifacts accumulate from repeated --file builds; only
+	// pinned (DefaultPinnedBaseRefs) or sandbox-referenced entries survive.
 	seedBuilderCache(t, c, "rootfs content one", "test:one")
 	seedBuilderCache(t, c, "rootfs content two", "test:two")
 
@@ -234,7 +245,7 @@ func TestImagePrune_JSON_RemovesUnreferenced(t *testing.T) {
 
 func TestImagePrune_Human_ReportsCount(t *testing.T) {
 	svc, c := newTestImageService(t, nil)
-	// KindBuilder orphan — eligible for GC; KindBase images are always retained.
+	// KindBuilder orphan — unreferenced and unpinned, so eligible for GC.
 	seedBuilderCache(t, c, "rootfs content gamma", "test:gamma")
 
 	out, stdout, _ := capture(false)
@@ -242,9 +253,113 @@ func TestImagePrune_Human_ReportsCount(t *testing.T) {
 		t.Fatalf("image prune (human): %v", err)
 	}
 
-	if !strings.Contains(stdout.String(), "pruned 1 image(s)") {
-		t.Errorf("human output: got %q, want to contain 'pruned 1 image(s)'", stdout.String())
+	if !strings.Contains(stdout.String(), "Pruned 1 image(s)") {
+		t.Errorf("human output: got %q, want to contain 'Pruned 1 image(s)'", stdout.String())
 	}
+}
+
+func TestImagePrune_JSON_ReportsTemplatesAndFreedBytes(t *testing.T) {
+	svc, c, root := newTestImageServiceRoot(t, nil)
+	seedBuilderCache(t, c, "rootfs content delta", "test:delta")
+	seedStaleTemplate(t, root)
+	svc.WithBuilderAgentTag("fedcba9876543210")
+
+	out, stdout, _ := capture(true)
+	if err := runImageWithService(context.Background(), []string{"prune"}, out, svc); err != nil {
+		t.Fatalf("image prune: %v", err)
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+	data := env["data"].(map[string]any)
+	if data["removed"] != float64(1) {
+		t.Errorf("removed: got %v, want 1", data["removed"])
+	}
+	if data["templates"] != float64(1) {
+		t.Errorf("templates: got %v, want 1", data["templates"])
+	}
+	if fb, _ := data["freed_bytes"].(float64); fb <= 0 {
+		t.Errorf("freed_bytes: got %v, want > 0", data["freed_bytes"])
+	}
+	if data["template_sweep"] != true {
+		t.Errorf("template_sweep: got %v, want true", data["template_sweep"])
+	}
+	if data["dry_run"] != false {
+		t.Errorf("dry_run: got %v, want false", data["dry_run"])
+	}
+}
+
+func TestImagePrune_DryRun_JSON_ListsWithoutRemoving(t *testing.T) {
+	svc, c, root := newTestImageServiceRoot(t, nil)
+	stored := seedBuilderCache(t, c, "rootfs content epsilon", "test:epsilon")
+	tpl := seedStaleTemplate(t, root)
+	svc.WithBuilderAgentTag("fedcba9876543210")
+
+	out, stdout, _ := capture(true)
+	if err := runImageWithService(context.Background(), []string{"prune", "--dry-run"}, out, svc); err != nil {
+		t.Fatalf("image prune --dry-run: %v", err)
+	}
+
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+	data := env["data"].(map[string]any)
+	if data["dry_run"] != true {
+		t.Errorf("dry_run: got %v, want true", data["dry_run"])
+	}
+	imgs, _ := data["images"].([]any)
+	if len(imgs) != 1 || imgs[0].(map[string]any)["digest"] != stored.Digest.String() {
+		t.Errorf("images: got %v, want one entry with digest %s", data["images"], stored.Digest)
+	}
+	tpls, _ := data["builder_templates"].([]any)
+	if len(tpls) != 1 || tpls[0].(map[string]any)["agent_tag"] != "0123456789abcdef" {
+		t.Errorf("builder_templates: got %v, want one entry with agent_tag 0123456789abcdef", data["builder_templates"])
+	}
+
+	remaining, err := c.List(context.Background())
+	if err != nil {
+		t.Fatalf("post-dry-run List: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Errorf("dry-run removed cache entries: %d remain, want 1", len(remaining))
+	}
+	if _, err := os.Stat(tpl); err != nil {
+		t.Errorf("dry-run removed template: %v", err)
+	}
+}
+
+func TestImagePrune_DryRun_Human_WouldFree(t *testing.T) {
+	svc, c := newTestImageService(t, nil)
+	seedBuilderCache(t, c, "rootfs content zeta", "test:zeta")
+
+	out, stdout, _ := capture(false)
+	if err := runImageWithService(context.Background(), []string{"prune", "--dry-run"}, out, svc); err != nil {
+		t.Fatalf("image prune --dry-run (human): %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "Would free") {
+		t.Errorf("human output: got %q, want to contain 'Would free'", got)
+	}
+	if !strings.Contains(got, "test:zeta") {
+		t.Errorf("human output: got %q, want candidate table row for test:zeta", got)
+	}
+	if !strings.Contains(got, "builder-template sweep skipped") {
+		t.Errorf("human output: got %q, want sweep-skipped notice when no agent tag is set", got)
+	}
+}
+
+// seedStaleTemplate writes a nexus-builder-*.ext4 template with a foreign agent
+// tag and an mtime outside BuilderTemplateInFlightGrace into the cache root.
+func seedStaleTemplate(t *testing.T, root string) string {
+	t.Helper()
+	tpl := filepath.Join(root, "nexus-builder-abc-agent0123456789abcdef.ext4")
+	if err := os.WriteFile(tpl, make([]byte, 64*1024), 0o644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+	old := time.Now().Add(-2 * image.BuilderTemplateInFlightGrace)
+	if err := os.Chtimes(tpl, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	return tpl
 }
 
 // TestImagePrune_SandboxReferencedBuilderSurvives is the mutation-proven guard
@@ -257,7 +372,7 @@ func TestImagePrune_Human_ReportsCount(t *testing.T) {
 // must survive.
 //
 // Mutation proof: reverting svc.WithStore(fs) (or passing nil instead of fs)
-// causes ReferencedDigests to keep only KindBase images, so both builder
+// causes ReferencedDigests to keep only pinned base refs, so both builder
 // images are deleted and the final assertion ("referenced image survived")
 // fails.
 func TestImagePrune_SandboxReferencedBuilderSurvives(t *testing.T) {
