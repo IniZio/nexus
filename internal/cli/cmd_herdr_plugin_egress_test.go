@@ -427,3 +427,63 @@ func TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk(t *testing.T) {
 		})
 	}
 }
+
+// TestHerdrWorktreeSandboxCreateArgs_EgressOpenComposesWithPolicy pins
+// FW-EGRESS-OPEN-AUDIT: `--egress open` and `--egress-policy-json` compose —
+// OpenEgress=true (public open via AllowAllFor) AND PathPolicies reach the
+// MITM (secret hosts intercepted before the allow-all tunnel); see SKILL.md.
+func TestHerdrWorktreeSandboxCreateArgs_EgressOpenComposesWithPolicy(t *testing.T) {
+	cfg, err := config.Parse([]byte(egressTestCfgWithSecret))
+	if err != nil {
+		t.Fatalf("config.Parse: %v", err)
+	}
+	secrets, allowedRepo, pp, err := buildWorktreeEgressArgs(cfg)
+	if err != nil {
+		t.Fatalf("buildWorktreeEgressArgs: %v", err)
+	}
+	if len(pp) == 0 {
+		t.Fatalf("buildWorktreeEgressArgs produced no path policies from %q", egressTestCfgWithSecret)
+	}
+
+	args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, secrets, allowedRepo, pp, false)
+
+	var sawOpen, sawPolicy bool
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--egress" && args[i+1] == "open" {
+			sawOpen = true
+		}
+		if args[i] == "--egress-policy-json" {
+			sawPolicy = true
+		}
+	}
+	if !sawOpen || !sawPolicy {
+		t.Errorf("args must carry both --egress open (%v) and --egress-policy-json (%v): %v", sawOpen, sawPolicy, args)
+	}
+
+	f, perr := parseSandboxCreateArgs(args)
+	if perr != nil {
+		t.Fatalf("parseSandboxCreateArgs: %v", perr)
+	}
+	if !f.egressExplicit || f.egressClosed {
+		t.Errorf("egressExplicit=%v egressClosed=%v, want explicit open", f.egressExplicit, f.egressClosed)
+	}
+	if !reflect.DeepEqual(f.pathPolicies, pp) {
+		t.Errorf("--egress-policy-json did not survive parse:\n  want %#v\n   got %#v", pp, f.pathPolicies)
+	}
+
+	binds, serr := resolveCreateSecrets(context.Background(), f)
+	if serr != nil {
+		t.Fatalf("resolveCreateSecrets: GitHub secret must be bound by the config policy: %v", serr)
+	}
+	if len(binds) != 1 || binds[0].Env != "GH_TOKEN" || len(binds[0].Hosts) != 1 || binds[0].Hosts[0] != "github.com" {
+		t.Errorf("binds = %+v, want [GH_TOKEN@github.com]", binds)
+	}
+
+	_, _, openEgress := resolveAgentPosture(f)
+	if !openEgress {
+		t.Errorf("openEgress = false; --egress open must yield OpenEgress=true (public egress open) even when --egress-policy-json is present")
+	}
+	if _, ok := f.pathPolicies[""]["github.com"]; !ok {
+		t.Errorf("wildcard policy for github.com missing after resolution: %#v", f.pathPolicies)
+	}
+}
