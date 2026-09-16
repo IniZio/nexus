@@ -13,6 +13,7 @@ Each entry: the symptom, what is really happening, and what to do.
 - [Workspace doesn't nest under the repo](#wrong-workspace-verb)
 - [Two or three tabs per sandbox](#duplicate-panes)
 - [`herdr agent prompt` says not an active named agent](#in-guest-agents-arent-addressable)
+- [Watch-pane declares IDLE or NEVER_STARTED incorrectly](#watch-pane-false-stop-modes)
 - [A test fails only in the full suite](#parallelism-flake-hiding-a-real-defect)
 - [Subagent said "mutation-proven" but wasn't](#unverified-mutation-proofs)
 - [Host is out of memory / finished sandboxes still running](#finished-sandboxes-are-never-reaped)
@@ -236,12 +237,57 @@ pane the binding names (`nexus3 herdr list`), not necessarily the last tab.
 **Symptom:** `herdr agent prompt <pane> "..."` → `agent_not_ready: <pane> is not
 an active named agent`, even though the agent is plainly running there.
 
-**Cause:** herdr detects the pane but cannot bind an agent identity across the VM
-boundary. `pane report-agent` gives list visibility only.
+See `plugins/claude/skills/nexus3/references/agent-in-sandbox.md § Driving an
+agent by hand` for full detail and the `herdr pane run` / `send-keys` traps.
 
-**Do:** use the pane surface — `herdr pane run <pane> "<text>"` and `herdr pane
-read <pane> --source recent-unwrapped`. Note text sent to a busy agent queues as
-its next prompt.
+**Short answer:** herdr cannot bind an agent identity across the VM boundary.
+Use `herdr pane run <pane> "<text>"` and `herdr pane read <pane> --source
+recent-unwrapped`. Text sent to a busy agent queues as its next prompt.
+
+---
+
+## Watch-pane false-stop modes
+
+**Symptom:** `scripts/watch-pane.sh` exits and declares the agent idle or never
+started, but the agent is working (or was waiting for input all along).
+
+Six failure patterns documented from this repo:
+
+1. **Slash-command overlay** — a slash-command overlay repaints the footer,
+   dropping `esc to interrupt` and rendering `Enter to select`. A working agent
+   reads as idle; an autocomplete list reads as a question.
+
+2. **Agent blocked on its own background subagent** — the agent is working but
+   not running a tool itself, so the footer permanently loses `esc to interrupt`.
+   The marker moves to the body; no amount of re-sampling the footer helps.
+
+3. **Duplicated "working" definition** — the start-grace loop held its own
+   inlined copy of the working check, so it still reported `AGENT_NEVER_STARTED`
+   after `sample_state` learned that state. One definition, called by every loop.
+
+4. **Background-agent roster format change** — the roster switched from
+   `Waiting for N background agents` to a live subagent row, matching no marker.
+
+5. **Pane scrolled up** — a long tool chain scrolls the spinner and elapsed timer
+   above the visible window. The read window is genuinely static; no string or
+   movement check can see work that is outside it. Fix: check
+   `herdr pane get <pane-id>` → `scroll.offset_from_bottom`. Non-zero means
+   scrolled-up and WORKING regardless of what the read window shows. If the field
+   is missing or the tool unavailable, treat as SCROLLED → WORKING. The interrupt
+   fast path (`esc to interrupt` present) also proves WORKING regardless of scroll.
+
+6. **Claude app holds content back** — terminal is at the bottom
+   (`scroll.offset_from_bottom: 0`), but the Claude app's own scroll layer
+   withholds content showing `N new messages (ctrl+End) ↓`. Both
+   `--source recent-unwrapped` and `--source visible` return mid-transcript text;
+   the final report is below the fold. `ctrl+End` is not in herdr's key vocabulary.
+   Fix: read the diff directly — `git -C <worktree> diff develop...HEAD` is never
+   truncated by the UI. Require agents to write their report to `.slice-report.md`.
+
+**The principle:** if you find yourself adding a seventh string pattern, add it
+as a fast path only and let movement remain the actual decision. Mode 5 is not a
+string — it is a structural case where movement is blind. Bias every ambiguous
+case toward WORKING.
 
 ---
 

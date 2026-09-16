@@ -2,7 +2,7 @@
 """
 test-skill-nexus3.py
 ====================
-Fixture-driven tests for skills/nexus3/emit_flags.py.
+Fixture-driven tests for plugins/claude/skills/nexus3/scripts/emit_flags.py.
 
 Each test:
   1. Creates a minimal fixture project directory in a temp dir.
@@ -22,7 +22,7 @@ import textwrap
 # Resolve emit_flags relative to this script's repo root.
 # __file__ = <repo>/scripts/docs/test-skill-nexus3.py → three dirname calls reach repo root.
 _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(_repo_root, "skills", "nexus3"))
+sys.path.insert(0, os.path.join(_repo_root, "plugins", "claude", "skills", "nexus3", "scripts"))
 import emit_flags as ef  # noqa: E402
 
 FAILURES: list[str] = []

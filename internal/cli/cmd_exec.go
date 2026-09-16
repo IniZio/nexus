@@ -39,7 +39,7 @@ func agentCodeFor(err error) string {
 // exec is single-sandbox only. Batch exec --label was retracted 2026-08-15
 // (D-PD-30): no reference tool ships fleet exec — microsandbox deliberately
 // excluded it from its label-driven fleet verbs. Fan-out across sandboxes is
-// a host-side shell loop over `exec <ref>` (see docs/site/surface.md).
+// a host-side shell loop over `exec <ref>` (see docs/site/cli/exec-ssh-forward.md).
 func runExec(ctx context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
 	var (

@@ -5,7 +5,7 @@ package main
 // ZRAM swap safety net for the guest auto-resize subsystem (AR-GA-AC5,
 // D-DC-21). Must be called before the workload starts.
 //
-// Normative MUST (D-DC-21): docs/site/concepts/execution-substrate.md §Resource limits.
+// Normative MUST (D-DC-21): docs/site/sandboxes/execution-substrate.md §Resource limits.
 // Every cloudhypervisor guest must boot with compressed swap enabled before the
 // workload starts, because memory grow has irreducible actuation latency — a
 // burst allocator can OOM the guest before vm.resize completes. ZRAM converts
