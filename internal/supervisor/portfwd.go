@@ -2,15 +2,22 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/portfwd"
+	"github.com/IniZio/nexus3/internal/core/store"
 )
 
 // portForwardDialer is satisfied by service.Service (avoids importing cli).
@@ -69,6 +76,8 @@ type portForwardSupervisor struct {
 	discoverTimeout time.Duration // bounds each DiscoverOne call; zero means portFwdDiscoverTimeout
 	listeners       map[uint16]net.Listener
 	bindErrs        map[uint16]error // last host-bind failure per port; retried every tick
+	reporter        func(ctx context.Context, ports []uint16)
+	lastReportedSet map[uint16]struct{}
 }
 
 // core/portfwd defines no entry-status constants; internal/cli/portfwd_state.go matches these strings.
@@ -106,6 +115,7 @@ func startPortForwardSupervisor(
 		stateDir:   portfwd.StateDir(),
 		interval:   5 * time.Second,
 		listeners:  make(map[uint16]net.Listener),
+		reporter:   makePortForwardReporter(sandboxRef),
 	}
 	go sup.run(ctx)
 	slog.Info("supervisor.portfwd.started",
@@ -297,7 +307,113 @@ func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error
 		}
 		entries = append(entries, e)
 	}
-	return portfwd.WriteSandboxState(p.stateDir, p.sandboxRef, entries, now)
+	writeErr := portfwd.WriteSandboxState(p.stateDir, p.sandboxRef, entries, now)
+	if writeErr == nil && p.reporter != nil && !portSetsEqual(seen, p.lastReportedSet) {
+		p.lastReportedSet = seen
+		ports := sortedPortSet(seen)
+		rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		go func() {
+			defer rcancel()
+			p.reporter(rctx, ports)
+		}()
+	}
+	return writeErr
+}
+
+func portSetsEqual(a, b map[uint16]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func sortedPortSet(m map[uint16]struct{}) []uint16 {
+	out := make([]uint16, 0, len(m))
+	for p := range m {
+		out = append(out, p)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func supervisorSendReportMetadata(ctx context.Context, socketPath, workspaceID string, ports []uint16) error {
+	var portVal any
+	if len(ports) > 0 {
+		strs := make([]string, len(ports))
+		for i, p := range ports {
+			strs[i] = strconv.Itoa(int(p))
+		}
+		portVal = strings.Join(strs, ",")
+	}
+	req := map[string]any{
+		"id":     "1",
+		"method": "workspace.report_metadata",
+		"params": map[string]any{
+			"workspace_id": workspaceID,
+			"source":       "plugin:nexus3",
+			"tokens":       map[string]any{"port_forward_status": portVal},
+		},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(dl) //nolint:errcheck
+	}
+	_, err = fmt.Fprintf(conn, "%s\n", data)
+	return err
+}
+
+func makePortForwardReporter(sandboxRef string) func(context.Context, []uint16) {
+	storeRoot, err := store.DefaultRoot()
+	if err != nil {
+		return nil
+	}
+	type minBinding struct {
+		SandboxHandle    string `json:"sandbox_handle"`
+		HerdrWorkspaceID string `json:"herdr_workspace_id"`
+	}
+	return func(ctx context.Context, ports []uint16) {
+		bindingsPath := filepath.Join(storeRoot, "herdr-space-bindings.json")
+		data, err := os.ReadFile(bindingsPath)
+		if err != nil {
+			return
+		}
+		var bindings []minBinding
+		if err := json.Unmarshal(data, &bindings); err != nil {
+			return
+		}
+		var workspaceID string
+		for _, b := range bindings {
+			if b.SandboxHandle == sandboxRef {
+				workspaceID = b.HerdrWorkspaceID
+				break
+			}
+		}
+		if workspaceID == "" {
+			return
+		}
+		home, _ := os.UserHomeDir()
+		socketPath := filepath.Join(home, ".config", "herdr", "herdr.sock")
+		if _, err := os.Stat(socketPath); err != nil {
+			return
+		}
+		if err := supervisorSendReportMetadata(ctx, socketPath, workspaceID, ports); err != nil {
+			slog.Debug("supervisor.portfwd.metadata_report_failed", "sandboxRef", sandboxRef, "err", err)
+		}
+	}
 }
 
 func (p *portForwardSupervisor) teardownAll() {

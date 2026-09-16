@@ -105,6 +105,8 @@ func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 		return herdrVersionCheck(ctx, rest, out.w)
 	case "focus-changed":
 		return runHerdrFocusChanged(ctx, rest, out)
+	case "report-forward-status":
+		return runHerdrReportForwardStatus(ctx, rest, out)
 	}
 
 	pluginSub, known := herdrGroupVerbToPluginSub(sub)

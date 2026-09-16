@@ -30,7 +30,7 @@ func TestHerdrFocusChanged_Bound_WritesFocusState(t *testing.T) {
 
 	seedFocusBinding(t, storeRoot, "wX", "sb1")
 
-	if err := herdrFocusChanged(context.Background(), "wX", false, storeRoot, statePath, "sess1", io.Discard); err != nil {
+	if err := herdrFocusChanged(context.Background(), "wX", false, storeRoot, statePath, t.TempDir(), "sess1", "", io.Discard); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestHerdrFocusChanged_Unbound_WritesSandboxIDEmpty(t *testing.T) {
 	storeRoot := filepath.Join(dir, "store")
 	statePath := filepath.Join(dir, "focus.state")
 
-	if err := herdrFocusChanged(context.Background(), "wUnbound", false, storeRoot, statePath, "", io.Discard); err != nil {
+	if err := herdrFocusChanged(context.Background(), "wUnbound", false, storeRoot, statePath, t.TempDir(), "", "", io.Discard); err != nil {
 		t.Fatalf("unexpected error on unbound: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestHerdrFocusChanged_OnlyIfFocused_NoOps(t *testing.T) {
 
 	seedFocusBinding(t, storeRoot, "wX", "sb1")
 
-	if err := herdrFocusChanged(context.Background(), "wX", true, storeRoot, statePath, "", io.Discard); err != nil {
+	if err := herdrFocusChanged(context.Background(), "wX", true, storeRoot, statePath, t.TempDir(), "", "", io.Discard); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestHerdrFocusChanged_OnlyIfFocused_WritesWhenMatched(t *testing.T) {
 
 	seedFocusBinding(t, storeRoot, "wX", "sb1")
 
-	if err := herdrFocusChanged(context.Background(), "wX", true, storeRoot, statePath, "", io.Discard); err != nil {
+	if err := herdrFocusChanged(context.Background(), "wX", true, storeRoot, statePath, t.TempDir(), "", "", io.Discard); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

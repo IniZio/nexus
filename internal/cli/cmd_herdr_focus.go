@@ -41,10 +41,10 @@ func runHerdrFocusChanged(ctx context.Context, args []string, out *Output) error
 	}
 
 	return herdrFocusChanged(ctx, workspaceID, onlyIfFocused, storeRoot,
-		portfwd.FocusStatePath(), os.Getenv("HERDR_SESSION"), out.w)
+		portfwd.FocusStatePath(), portfwd.StateDir(), os.Getenv("HERDR_SESSION"), "", out.w)
 }
 
-func herdrFocusChanged(ctx context.Context, workspaceID string, onlyIfFocused bool, storeRoot, statePath, session string, w io.Writer) error {
+func herdrFocusChanged(ctx context.Context, workspaceID string, onlyIfFocused bool, storeRoot, statePath, fwdStateDir, session, socketPath string, w io.Writer) error {
 	if onlyIfFocused {
 		current, ok, err := portfwd.ReadFocusState(statePath)
 		if err != nil || !ok || current.WorkspaceID != workspaceID {
@@ -67,5 +67,8 @@ func herdrFocusChanged(ctx context.Context, workspaceID string, onlyIfFocused bo
 		return &CodedError{Code: ErrCodeInternalError, Msg: "herdr focus-changed: write: " + err.Error(), Err: err}
 	}
 	fmt.Fprintf(w, "focus-changed: workspace=%s sandbox=%s\n", workspaceID, sandboxID)
+	rctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = herdrReportForwardStatus(rctx, workspaceID, session, fwdStateDir, storeRoot, socketPath, io.Discard)
 	return nil
 }

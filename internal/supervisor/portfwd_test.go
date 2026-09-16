@@ -365,6 +365,73 @@ func TestReconcile_DiscoverTimeoutReturnsError(t *testing.T) {
 	}
 }
 
+func TestReporter_CalledOnlyWhenPortSetChanges(t *testing.T) {
+	port := freeForwardablePort(t)
+
+	tmpDir := t.TempDir()
+	backend := &fakeBackend{
+		refs:  []portfwd.SandboxRef{{ID: "sb1", Status: portfwd.SandboxStatusRunning}},
+		binds: []portfwd.PortBind{{Port: port, BindAddr: "0.0.0.0"}},
+	}
+
+	called := make(chan []uint16, 8)
+	sup := &portForwardSupervisor{
+		sandboxRef: "test/sb1",
+		backend:    backend,
+		disc:       &portfwd.Discoverer{Backend: backend},
+		dialer:     fakeDialer{},
+		stateDir:   tmpDir,
+		interval:   time.Second,
+		listeners:  make(map[uint16]net.Listener),
+		reporter: func(_ context.Context, ports []uint16) {
+			cp := make([]uint16, len(ports))
+			copy(cp, ports)
+			called <- cp
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+	select {
+	case ports := <-called:
+		if len(ports) != 1 || ports[0] != port {
+			t.Errorf("reconcile 1: reporter got %v, want [%d]", ports, port)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile 1: reporter not called within 2s")
+	}
+
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile 2 (same set): %v", err)
+	}
+	select {
+	case unexpected := <-called:
+		t.Errorf("reconcile 2: reporter called unexpectedly with %v", unexpected)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	backend.binds = nil
+	for _, l := range sup.listeners {
+		l.Close()
+	}
+	sup.listeners = make(map[uint16]net.Listener)
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile 3 (empty): %v", err)
+	}
+	select {
+	case ports := <-called:
+		if len(ports) != 0 {
+			t.Errorf("reconcile 3: reporter got %v, want []", ports)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile 3: reporter not called within 2s after port removal")
+	}
+}
+
 func TestWriteState_DedupesTCPAndTCP6Rows(t *testing.T) {
 	port := freeForwardablePort(t)
 	portHex := fmt.Sprintf("%04X", port)
