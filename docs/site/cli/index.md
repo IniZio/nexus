@@ -54,6 +54,7 @@ Global flags precede the verb:
 | `secret` <Badge type="danger" text="not built" /> | [Auth, MCP and reap](/cli/auth-mcp-reap) | Named secret store: `set`, `ls`, `rm` |
 | `mcp` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Run an MCP server over stdio |
 | `reap` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Report (and optionally delete) orphaned host resources |
+| `disk usage` | [Auth, MCP and reap](/cli/auth-mcp-reap#nexus3-disk-usage) | Report host disk usage by category, reclaimable space, and free space vs the builder floor |
 | `recover` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Reconcile persisted sandbox records against the live substrate |
 | `doctor` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Report substrate availability and capability checks |
 | `version` | — | Print version and build information |

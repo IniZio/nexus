@@ -23,6 +23,7 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "auth", CLIOnly: true},
 	{CLIVerb: "config-ssh", CanonicalMethods: []string{"service.SSHConn"}, MCPTools: nil},
 	{CLIVerb: "cp", CanonicalMethods: []string{"service.Copy"}, MCPTools: nil},
+	{CLIVerb: "disk", CanonicalMethods: []string{"service.DiskUsage"}, MCPTools: nil},
 	{CLIVerb: "doctor", CLIOnly: true},
 	{CLIVerb: "egress", CanonicalMethods: []string{"service.ResolveRef"}, MCPTools: nil},
 	{CLIVerb: "exec", CanonicalMethods: []string{"service.Exec"}, MCPTools: []string{"sandbox_exec", "delegate_agent_poll"}},

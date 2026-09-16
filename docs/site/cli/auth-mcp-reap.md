@@ -71,6 +71,44 @@ nexus3 reap [--apply]
 |---|---|---|---|
 | `--apply` | bool | false | Delete the reported orphaned resources |
 
+## nexus3 disk usage
+
+Report what nexus3 owns on disk under its state directory (`~/.local/state/nexus3`), by category: how much is on disk, how much of it nothing references any more, free space against the builder floor, and what to run next.
+
+```
+nexus3 disk usage [--json]
+```
+
+```text
+CATEGORY           COUNT  ON DISK   RECLAIMABLE  NOTE
+image cache        4      9.8 GiB   4.1 GiB      2 unreferenced image(s); reclaim with nexus3 image prune
+builder templates  3      2.4 GiB   1.6 GiB      2 stale template(s) from previous agent builds; reclaim with nexus3 image prune
+sandbox disks      7      18.2 GiB  3.0 GiB      1 disk(s) with no sandbox record; run nexus3 reap; shadow disks and .intent markers are reaper-managed; see nexus3 reap
+build caches       2      6.1 GiB   0 B          buildkit cache disks; kept while any build can reuse them
+named volumes      1      1.2 GiB   0 B          user data; remove with nexus3 volume rm
+snapshots          0      0 B       0 B
+supervisor logs    12     3.4 MiB   0 B          includes builder-supervisors
+other              9      1.1 MiB   0 B          store records, sockets, netns, locks, image-cache leftovers
+Total: 37.7 GiB   Reclaimable: 8.7 GiB   Free: 11.3 GiB (floor 15.0 GiB)
+Free space is below the builder floor; builds will fail until space is reclaimed.
+Next: nexus3 image prune; nexus3 reap
+```
+
+Sizes are **allocated** bytes, not apparent size: every disk image nexus3 writes is sparse, so `ls -l` overstates what the filesystem has given up. `--json` reports both (`bytes` and `apparent_bytes`).
+
+| Category | What it holds | Reclaimable means |
+|---|---|---|
+| image cache | Content-addressed images under `images/sha256/` | Entries no sandbox record references and no pinned base ref covers |
+| builder templates | `images/nexus-builder-*.ext4`, one per agent binary build | Templates built for an agent binary other than the one installed now |
+| sandbox disks | `disks/`: root and workspace disks keyed by sandbox ID, plus shadow disks and `.intent` markers | Disks whose sandbox ID has no store record; shadow disks and markers are reaper-managed and never counted |
+| build caches | `caches/`: buildkit cache disks | Never counted; builds reuse them |
+| named volumes | `volumes/<name>/` | Never counted; user data (`nexus3 volume rm`) |
+| snapshots | `snapshots/` | Never counted |
+| supervisor logs | `supervisors/`, `builder-supervisors/` | Never counted |
+| other | Store records, sockets, netns state, locks, image-cache leftovers | Never counted |
+
+Reclaimable is an estimate. `nexus3 image prune` and `nexus3 reap` apply their own keep rules at prune time: an image with a lease held, a template a VMM still has open or one modified in the last ten minutes, and any disk of an in-flight sandbox are kept even when this report counts them. The floor is the builder free-space floor (`image.free_space_floor_gib`, default 15 GiB); below it, `sandbox create --file` prunes first and then refuses to build if space is still short.
+
 ## nexus3 recover
 
 Reconcile persisted sandbox records against the live substrate. Use after a host crash or unexpected restart to bring the persisted state back in sync.

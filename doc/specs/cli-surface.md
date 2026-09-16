@@ -97,6 +97,15 @@ Delegates to `sandbox create`. Same flags:
 
 ---
 
+### ## disk
+
+Summary: Report host disk usage by category (usage)
+
+Subverbs:
+- `usage` — what nexus3 owns under the state directory by category (allocated bytes), how much is unreferenced, free space vs the builder floor, and next actions (`image prune`, `reap`). No flags beyond global `--json`.
+
+---
+
 ### ## doctor
 
 Summary: Report substrate availability and capability check results

@@ -4,6 +4,7 @@ auth
 config-ssh
 cp
 create
+disk
 doctor
 egress
 exec
