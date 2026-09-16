@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.6
 
 require (
-	github.com/containerd/containerd v1.7.33
+	github.com/containerd/containerd v1.7.35
 	github.com/containers/gvisor-tap-vsock v0.8.9
 	github.com/creack/pty v1.1.24
 	github.com/cucumber/godog v0.16.0
