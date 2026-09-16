@@ -27,7 +27,7 @@ unavailable (see `delegate-loop.md` for CLI spellings of every step).
 | Topic | File |
 |---|---|
 | Full step-by-step loop with MCP and CLI spellings | `delegate-loop.md` |
-| Brief authoring — what to include, what to require in the report | `delegate-briefs.md` |
+| Brief authoring — standing orders (prepended to every dispatched brief), what to include, what to require in the report | `delegate-briefs.md` |
 
 ## Push rule
 

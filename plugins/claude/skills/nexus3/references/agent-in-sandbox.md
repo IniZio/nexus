@@ -86,6 +86,8 @@ The sandbox must have source mounted. `herdr agent` refuses one that does not, b
 
 `--autonomous` launches the agent in auto permission mode (`--permission-mode auto`) so it acts without asking approval per tool call. It is off by default and always asked, never assumed.
 
+Start the brief with the standing orders from `delegate-briefs.md` (the VM is the agent's, the full local stack is the baseline, unblock yourself, report friction). The `delegate_agent_dispatch` MCP tool prepends them automatically; `herdr agent` by hand does not.
+
 ---
 
 ## Driving an agent by hand

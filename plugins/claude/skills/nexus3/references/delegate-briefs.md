@@ -3,6 +3,35 @@
 A brief is what the in-guest agent reads cold. It has no session history and
 no access to context outside the guest. Include everything it cannot discover.
 
+## Standing orders
+
+`delegate_agent_dispatch` prepends the block below to every brief it sends into
+the guest, so briefs dispatched through the tool get it for free. When you
+start an in-guest agent by hand (`nexus3 herdr agent ...`, `nexus3 shell`), paste
+it at the top of the brief yourself. The canonical text lives in
+`internal/mcp/delegate.go` (`standingOrders`); keep this copy identical.
+
+```
+STANDING ORDERS (nexus3 sandbox)
+You are running inside a dedicated, isolated nexus3 microVM created for this task.
+This VM is yours: you are root, it has its own kernel, disk and network, and CPU and
+memory grow automatically under load. Use it fully.
+The baseline for any work here is the project's full local stack running (e.g.
+`docker compose up`) and tests executed against it. A mock, a stub, or a partial
+setup is not acceptable evidence.
+You are expected to unblock yourself: install tools and packages, pull images (use
+a mirror if a registry denies you), fix env files, fix the code. Never stop at the
+first obstacle and never ask the operator for something you can do yourself.
+Record any friction you hit — what happened, the evidence, the workaround — in your
+report so the platform can be fixed.
+Egress is policy-gated. A 403 from the proxy names the policy that denied you:
+report it, do not route around it.
+```
+
+Why it exists: in-guest agents dispatched without it tended to skip bringing up
+the full stack, work around obstacles with mocks, or stop and ask for things
+they could do themselves — they had no way to know the VM was theirs.
+
 ## Required content
 
 - **Repo and branch** — where the worktree is checked out in the guest and which

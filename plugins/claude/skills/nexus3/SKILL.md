@@ -36,7 +36,7 @@ question. Each reference is self-contained; open only what you need.
 | Egress policy: `egress.policy` / `egress.secrets` / `egress.allow`, brokering model, provider patterns, verification probes, `--allow-host`, per-ecosystem hosts, open-egress posture of worktree sandboxes | `references/egress.md` |
 | Delegate work into a worktree sandbox: MCP tool map, push rule, completion heuristic, teardown order, RAM cost (`/nexus3:nexus3-delegate`) | `references/delegate.md` |
 | Delegation loop step by step, MCP and CLI spellings, builder failure modes | `references/delegate-loop.md` |
-| Brief authoring for the in-guest agent — required content, commit discipline | `references/delegate-briefs.md` |
+| Brief authoring for the in-guest agent — standing orders (auto-prepended by `delegate_agent_dispatch`; paste by hand otherwise), required content, commit discipline | `references/delegate-briefs.md` |
 
 ## Always-true invariants
 

@@ -38,6 +38,43 @@ type delegateTeardownArgs struct {
 	Ref string `json:"ref" jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
 }
 
+// standingOrders is prepended to every brief delegate_agent_dispatch delivers
+// into the guest. It tells the in-guest agent what kind of environment it is
+// in and what the baseline for evidence is — facts a cold agent cannot
+// discover on its own. Keep it in sync with the canonical copy in
+// plugins/claude/skills/nexus3/references/delegate-briefs.md.
+const standingOrders = `STANDING ORDERS (nexus3 sandbox)
+You are running inside a dedicated, isolated nexus3 microVM created for this task.
+This VM is yours: you are root, it has its own kernel, disk and network, and CPU and
+memory grow automatically under load. Use it fully.
+The baseline for any work here is the project's full local stack running (e.g.
+` + "`docker compose up`" + `) and tests executed against it. A mock, a stub, or a partial
+setup is not acceptable evidence.
+You are expected to unblock yourself: install tools and packages, pull images (use
+a mirror if a registry denies you), fix env files, fix the code. Never stop at the
+first obstacle and never ask the operator for something you can do yourself.
+Record any friction you hit — what happened, the evidence, the workaround — in your
+report so the platform can be fixed.
+Egress is policy-gated. A 403 from the proxy names the policy that denied you:
+report it, do not route around it.
+
+`
+
+// runHostCLI runs the nexus3 host binary with argv and returns its combined
+// output. It is a package variable so tests can substitute a fake executor.
+var runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable: %w", err)
+	}
+	var buf bytes.Buffer
+	cmd := exec.CommandContext(ctx, exe, argv...)
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err = cmd.Run()
+	return buf.String(), err
+}
+
 func validateDelegateWorktreeCreate(args delegateWorktreeCreateArgs) error {
 	if args.RepoPath == "" {
 		return fmt.Errorf("repo_path is required")
@@ -100,6 +137,8 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Description: "Deliver a task brief to the claude agent running inside a worktree sandbox " +
 			"via `nexus3 herdr space-agent --autonomous --no-focus`. " +
 			"The in-guest claude runs in auto permission mode (--permission-mode auto). " +
+			"A fixed standing-orders preamble (isolated VM, full stack is the baseline, " +
+			"unblock yourself, report friction) is prepended to the brief. " +
 			"Returns the dispatch log.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentDispatchArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
@@ -108,18 +147,12 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if args.Brief == "" {
 			return errorResult(fmt.Errorf("brief is required")), nil, nil
 		}
-		exe, err := os.Executable()
-		if err != nil {
-			return errorResult(fmt.Errorf("delegate_agent_dispatch: resolve executable: %w", err)), nil, nil
+		brief := standingOrders + args.Brief
+		out, runErr := runHostCLI(ctx, "herdr", "agent", "--autonomous", "--no-focus", args.Ref, brief)
+		if runErr != nil {
+			return errorResult(fmt.Errorf("delegate_agent_dispatch: %w\n%s", runErr, out)), nil, nil
 		}
-		var buf bytes.Buffer
-		cmd := exec.CommandContext(ctx, exe, "herdr", "agent", "--autonomous", "--no-focus", args.Ref, args.Brief)
-		cmd.Stdout = &buf
-		cmd.Stderr = &buf
-		if runErr := cmd.Run(); runErr != nil {
-			return errorResult(fmt.Errorf("delegate_agent_dispatch: %w\n%s", runErr, buf.String())), nil, nil
-		}
-		return successResult(map[string]string{"output": buf.String()}), nil, nil
+		return successResult(map[string]string{"output": out}), nil, nil
 	})
 
 	gosdk.AddTool(srv, &gosdk.Tool{
