@@ -137,9 +137,7 @@ install-agent:
 NEXUS3_DATA_DIR ?= $(if $(XDG_DATA_HOME),$(XDG_DATA_HOME),$(HOME)/.local/share)/nexus3
 
 install-kernel:
-	@mkdir -p $(NEXUS3_DATA_DIR)/images/kernel
-	ln -sfn $(CURDIR)/images/kernel/vmlinux-x86_64 $(NEXUS3_DATA_DIR)/images/kernel/vmlinux-x86_64
-	@echo "OK: kernel linked → $(NEXUS3_DATA_DIR)/images/kernel/vmlinux-x86_64"
+	nexus3 kernel install
 
 # build-agent: legacy alias — installs to NEXUS3_AGENT_INSTALL_DIR (same as install-agent).
 # Previously wrote to /tmp; use install-agent for new scripts.

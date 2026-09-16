@@ -183,6 +183,17 @@ Subcommands: `build`, `list`, `rm`
 
 ---
 
+### ## kernel install
+
+Summary: Download and install the guest kernel image from a release
+
+Flags:
+- `--version string` — release version to download (default: CLI's own version; required for `-dev` builds unless `NEXUS3_RELEASE_BASE_URL` is set)
+
+Downloads `vmlinux-x86_64` and its sha256 from `${NEXUS3_RELEASE_BASE_URL:-https://github.com/IniZio/nexus3/releases/download}/v<version>/`. Verifies the sha256 before install. Installs atomically (temp + rename) to `$XDG_DATA_HOME/nexus3/images/kernel/vmlinux-x86_64` (default: `~/.local/share/nexus3/images/kernel/vmlinux-x86_64`). Idempotent: exits 0 immediately when the installed file's checksum matches.
+
+---
+
 ### ## log
 
 Summary: Stream or print the console log of a sandbox

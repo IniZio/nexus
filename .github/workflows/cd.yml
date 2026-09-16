@@ -22,8 +22,10 @@ concurrency:
 
 # contents:write is required for semantic-release to push tags and create
 # GitHub releases, and for gh release upload/edit calls in later jobs.
+# packages:write is required for docker/login-action to push images to GHCR.
 permissions:
   contents: write
+  packages: write
 
 jobs:
   # ── Run semantic-release to decide if this push warrants a release ──────
@@ -153,6 +155,16 @@ jobs:
           OUTFILE="nexus3-${{ matrix.goos }}-${{ matrix.goarch }}"
           gh release upload "$TAG" "$OUTFILE" --clobber
 
+      - name: Upload kernel image to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-create.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sha256sum images/kernel/vmlinux-x86_64 | awk '{print $1}' > vmlinux-x86_64.sha256
+          gh release upload "$TAG" images/kernel/vmlinux-x86_64 --clobber
+          gh release upload "$TAG" vmlinux-x86_64.sha256 --clobber
+
   # ── Build nexus3-client binaries (pure Go, cross-compiled) ─────────────
   # nexus3-client is CGO_ENABLED=0 so it cross-compiles from ubuntu-latest
   # for all three targets without native runners.
@@ -206,6 +218,40 @@ jobs:
           set -euo pipefail
           OUTFILE="nexus3-client-${{ matrix.goos }}-${{ matrix.goarch }}"
           gh release upload "$TAG" "$OUTFILE" --clobber
+
+  # ── Build and push base container image ──────────────────────────────────
+  release-build-base-image:
+    name: Build and push base image
+    needs: [release-create]
+    if: needs.release-create.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push base image
+        env:
+          VERSION: ${{ needs.release-create.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/inizio/nexus3-base"
+          docker build \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:latest" \
+            -f images/base/Containerfile \
+            images/base/
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
 
   # ── Publish: compute checksums ──────────────────────────────────────────
   # Fail-closed gate: `needs: [release-build, release-build-client]` means

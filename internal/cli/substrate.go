@@ -201,7 +201,7 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		if kernelErr != nil {
 			kernelCheck.OK = false
 			kernelCheck.Detail = kernelErr.Error()
-			kernelCheck.Remediation = "Set NEXUS3_KERNEL_PATH to the vmlinux image path, or place the kernel image at images/kernel/vmlinux-x86_64 alongside the nexus3 binary."
+			kernelCheck.Remediation = "run: nexus3 kernel install"
 			checks = append(checks, kernelCheck)
 			return checks, nil // drv stays nil; selectWith will return a SubstrateError
 		}
