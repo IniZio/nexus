@@ -761,13 +761,19 @@ func newGitHubAllowedRepoProxy(t *testing.T, upstreamAddr string) (srv *httptest
 	return srv, recGH, recAPI, recUploads
 }
 
-// receiveOrTimeout reads from ch with a 2 s deadline. Returns ("", false) on
-// timeout — meaning the upstream never received the request.
+// receiveOrTimeout reads from ch without waiting. Returns ("", false) when
+// nothing arrived — meaning the upstream never received the request.
+//
+// No deadline is needed, and an earlier 2 s one only made every denied case
+// cost 2 s: callers invoke this AFTER the client has the proxy's response,
+// and the proxy handles a request synchronously, so an upstream that was
+// going to receive it has already done so (its handler sends on the buffered
+// channel before it even writes its own response). Nothing can arrive later.
 func receiveOrTimeout(ch <-chan string) (string, bool) {
 	select {
 	case v := <-ch:
 		return v, true
-	case <-time.After(2 * time.Second):
+	default:
 		return "", false
 	}
 }
