@@ -105,18 +105,42 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 	// pump exits (on Exit frame or error).
 	defer dataConn.Close()
 
+	// done is closed when runDataPump returns, providing a defensive exit
+	// for any background goroutines that outlive the caller closing their
+	// input channel (e.g. a winsizeCh that is never closed).
+	done := make(chan struct{})
+	defer close(done)
+
+	// net.Conn I/O does not observe ctx: on ctx.Done close dataConn to
+	// unblock every ReadFrame/Write, then report ctx.Err() via pumpErr.
+	// The guest (handleDataConn) sees EOF and closes the child's stdin pipe;
+	// it does NOT kill the child — the session stays attachable via Attach.
+	go func() {
+		select {
+		case <-ctx.Done():
+			dataConn.Close()
+		case <-done:
+		}
+	}()
+	pumpErr := func(stage string, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("agent: pump: %s: %w", stage, ctxErr)
+		}
+		return fmt.Errorf("agent: pump: %s: %w", stage, err)
+	}
+
 	wr := wire.NewWriter(dataConn)
 	if err := wr.WriteHandshake(wire.Handshake{
 		SessionID:        opts.sessionID,
 		ResumeFromOffset: opts.resumeFromOffset,
 	}); err != nil {
-		return 0, fmt.Errorf("agent: pump: write handshake: %w", err)
+		return 0, pumpErr("write handshake", err)
 	}
 
 	rd := wire.NewReader(dataConn)
 	ackFrame, err := rd.ReadFrame()
 	if err != nil {
-		return 0, fmt.Errorf("agent: pump: read handshake ack: %w", err)
+		return 0, pumpErr("read handshake ack", err)
 	}
 	if ackFrame.HandshakeAck == nil {
 		return 0, fmt.Errorf("agent: pump: expected HandshakeAck, got frame type %d", ackFrame.Type)
@@ -125,12 +149,6 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 	// frame. The drain loop below handles both the alive and exited cases.
 
 	var wrMu sync.Mutex // wire.Writer is not safe for concurrent use.
-
-	// done is closed when runDataPump returns, providing a defensive exit
-	// for any background goroutines that outlive the caller closing their
-	// input channel (e.g. a winsizeCh that is never closed).
-	done := make(chan struct{})
-	defer close(done)
 
 	// Forward stdin → guest in a background goroutine. When the source
 	// reaches EOF (or is absent), send FrameStdinClose so the guest closes
@@ -142,6 +160,11 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 			buf := make([]byte, wire.MaxDataPayload)
 			for {
 				n, err := opts.stdin.Read(buf)
+				select {
+				case <-done:
+					return
+				default:
+				}
 				if n > 0 {
 					wrMu.Lock()
 					_ = wr.WriteData(wire.StreamStdin, buf[:n])
@@ -188,7 +211,7 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 	for {
 		frame, err := rd.ReadFrame()
 		if err != nil {
-			return 0, fmt.Errorf("agent: pump: read frame: %w", err)
+			return 0, pumpErr("read frame", err)
 		}
 		switch frame.Type {
 		case wire.FrameData:
