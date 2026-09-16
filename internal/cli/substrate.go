@@ -1,17 +1,24 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"time"
 
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
 // SubstrateError is returned by SelectSubstrate when no usable substrate
@@ -62,7 +69,9 @@ type probes struct {
 	// openKVM opens /dev/kvm for read-write access and closes it immediately.
 	// Returns nil on success; the caller distinguishes fs.ErrNotExist (device
 	// absent) from fs.ErrPermission (group membership required) from other errors.
-	openKVM func() error
+	openKVM           func() error
+	listImages        func(context.Context) ([]domain.Image, error)
+	registryReachable func(string) error
 }
 
 func defaultProbes() probes {
@@ -75,6 +84,27 @@ func defaultProbes() probes {
 				return err
 			}
 			return f.Close()
+		},
+		listImages: func(ctx context.Context) ([]domain.Image, error) {
+			storeRoot, err := store.DefaultRoot()
+			if err != nil {
+				return nil, err
+			}
+			cache, err := image.NewCache(filepath.Join(storeRoot, "images"))
+			if err != nil {
+				return nil, err
+			}
+			return cache.List(ctx)
+		},
+		registryReachable: func(ref string) error {
+			r, err := name.ParseReference(ref)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err = remote.Head(r, remote.WithContext(ctx))
+			return err
 		},
 	}
 }
@@ -208,6 +238,35 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		kernelCheck.OK = true
 		kernelCheck.Detail = kernelPath
 		checks = append(checks, kernelCheck)
+
+		if p.listImages != nil {
+			imgs, _ := p.listImages(context.Background())
+			var found bool
+			for _, img := range imgs {
+				if img.Ref == herdrDefaultImage && img.Size > 0 {
+					found = true
+					break
+				}
+			}
+			baseImgCheck := CheckResult{
+				Name:        "base_image",
+				Description: "base sandbox image in local cache",
+			}
+			if found {
+				baseImgCheck.OK = true
+				baseImgCheck.Detail = herdrDefaultImage + " cached"
+			} else {
+				baseImgCheck.OK = false
+				if p.registryReachable != nil && p.registryReachable(herdrDefaultImage) == nil {
+					baseImgCheck.Detail = "not cached; registry reachable — first sandbox create will pull it"
+					baseImgCheck.Remediation = "run: nexus3 sandbox create --image " + herdrDefaultImage + " (or first worktree-sandbox create pulls automatically)"
+				} else {
+					baseImgCheck.Detail = "not cached and registry unreachable"
+					baseImgCheck.Remediation = "run: nexus3 sandbox create --image " + herdrDefaultImage + " when registry is available"
+				}
+			}
+			checks = append(checks, baseImgCheck)
+		}
 
 		// ── Check 5: Virtiofsd ───────────────────────────────────────────────
 		// Informational only — virtiofsd is required only when --mount is used.

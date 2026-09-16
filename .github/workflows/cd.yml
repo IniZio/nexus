@@ -232,6 +232,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build nexus3-agent (static, for base image layer)
+        # images/base/Containerfile COPYs nexus3-agent as the final layer so an
+        # agent bump only rebuilds that layer. CGO_ENABLED=0 produces a fully
+        # static binary that runs on the Debian bookworm-slim base without any
+        # glibc compatibility layer. A bare `go build` yields a glibc-linked
+        # binary that kernel-panics Alpine-based builder VMs (memory: nexus3-agent-binary-must-be-static).
+        run: CGO_ENABLED=0 go build -o images/base/nexus3-agent ./cmd/nexus3-agent
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:

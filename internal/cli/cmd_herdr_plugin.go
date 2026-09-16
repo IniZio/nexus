@@ -28,6 +28,8 @@ import (
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor"
+	ociname "github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
 func init() {
@@ -636,6 +638,29 @@ var herdrExecCommandContext = exec.CommandContext
 
 var herdrPaneExistsFn = herdrPaneExists
 
+var herdrBaseImageListFn = func(ctx context.Context) ([]domain.Image, error) {
+	storeRoot, err := store.DefaultRoot()
+	if err != nil {
+		return nil, err
+	}
+	cache, err := image.NewCache(filepath.Join(storeRoot, "images"))
+	if err != nil {
+		return nil, err
+	}
+	return cache.List(ctx)
+}
+
+var herdrBaseImageRegistryReachableFn = func(ref string) error {
+	r, err := ociname.ParseReference(ref)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = remote.Head(r, remote.WithContext(ctx))
+	return err
+}
+
 func herdrPaneExists(ctx context.Context, herdrBin, workspaceID, paneID string) bool {
 	if herdrBin == "" || workspaceID == "" || paneID == "" {
 		return false
@@ -684,6 +709,23 @@ func herdrReadMountSpec(scanner *bufio.Scanner) ([]string, error) {
 func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *service.Service, storeRoot string) error {
 	if _, err := resolveKernelPath(); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin create: " + err.Error(), Err: err}
+	}
+
+	imgs, _ := herdrBaseImageListFn(ctx)
+	found := false
+	for _, img := range imgs {
+		if img.Ref == herdrDefaultImage && img.Size > 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		if err := herdrBaseImageRegistryReachableFn(herdrDefaultImage); err != nil {
+			return &CodedError{
+				Code: ErrCodeInternalError,
+				Msg:  fmt.Sprintf("__herdr-plugin create: base image %q not cached and registry unreachable (%v); run: nexus3 sandbox create --image %s", herdrDefaultImage, err, herdrDefaultImage),
+			}
+		}
 	}
 
 	scanner := bufio.NewScanner(r)
@@ -943,6 +985,16 @@ func herdrPluginDoctor(w io.Writer) error {
 	} else {
 		fmt.Fprintf(w, "version check: HERDR_PLUGIN_ROOT unset (not running as a herdr plugin)\n")
 	}
+
+	fmt.Fprintln(w, "")
+	checks, drv := runAllChecks(defaultProbes())
+	substrate := "none"
+	if drv != nil {
+		substrate = drv.Name()
+	}
+	fmt.Fprint(w, formatDoctorHuman(substrate, drv != nil, checks))
+	fmt.Fprintln(w, "")
+
 	return nil
 }
 

@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
 )
 
@@ -286,8 +288,117 @@ func TestRunAllChecks_NonLinux_ReportsAllThree(t *testing.T) {
 	}
 }
 
-// TestRunAllChecks_AllFail_DriversNil verifies that a nil driver is returned
-// when any capability check fails.
+func TestRunAllChecks_BaseImage_Cached(t *testing.T) {
+	kernelFile := t.TempDir() + "/vmlinux"
+	if err := os.WriteFile(kernelFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+
+	p := probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "/usr/bin/cloud-hypervisor", nil },
+		openKVM:  func() error { return nil },
+		listImages: func(context.Context) ([]domain.Image, error) {
+			return []domain.Image{{Ref: herdrDefaultImage, Size: 1024}}, nil
+		},
+		registryReachable: func(string) error { return nil },
+	}
+	checks, _ := runAllChecks(p)
+
+	var baseCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "base_image" {
+			baseCheck = &checks[i]
+			break
+		}
+	}
+	if baseCheck == nil {
+		t.Fatalf("expected base_image check in %v", checks)
+	}
+	if !baseCheck.OK {
+		t.Errorf("base_image check should be OK=true when image is cached; got Detail=%q", baseCheck.Detail)
+	}
+}
+
+func TestRunAllChecks_BaseImage_MissingRegistryReachable(t *testing.T) {
+	kernelFile := t.TempDir() + "/vmlinux"
+	if err := os.WriteFile(kernelFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+
+	p := probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "/usr/bin/cloud-hypervisor", nil },
+		openKVM:  func() error { return nil },
+		listImages: func(context.Context) ([]domain.Image, error) {
+			return []domain.Image{}, nil
+		},
+		registryReachable: func(string) error { return nil },
+	}
+	checks, drv := runAllChecks(p)
+
+	var baseCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "base_image" {
+			baseCheck = &checks[i]
+			break
+		}
+	}
+	if baseCheck == nil {
+		t.Fatalf("expected base_image check in %v", checks)
+	}
+	if baseCheck.OK {
+		t.Error("base_image check should be OK=false when image is not cached")
+	}
+	if !strings.Contains(baseCheck.Detail, "registry reachable") {
+		t.Errorf("detail should mention registry reachable; got: %s", baseCheck.Detail)
+	}
+	if drv == nil {
+		t.Error("drv should be non-nil: base_image check is informational and must not block driver construction")
+	}
+}
+
+func TestRunAllChecks_BaseImage_MissingRegistryUnreachable(t *testing.T) {
+	kernelFile := t.TempDir() + "/vmlinux"
+	if err := os.WriteFile(kernelFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+
+	p := probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "/usr/bin/cloud-hypervisor", nil },
+		openKVM:  func() error { return nil },
+		listImages: func(context.Context) ([]domain.Image, error) {
+			return []domain.Image{}, nil
+		},
+		registryReachable: func(string) error { return errors.New("unreachable") },
+	}
+	checks, drv := runAllChecks(p)
+
+	var baseCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "base_image" {
+			baseCheck = &checks[i]
+			break
+		}
+	}
+	if baseCheck == nil {
+		t.Fatalf("expected base_image check in %v", checks)
+	}
+	if baseCheck.OK {
+		t.Error("base_image check should be OK=false when registry is unreachable")
+	}
+	if !strings.Contains(baseCheck.Detail, "unreachable") {
+		t.Errorf("detail should mention unreachable; got: %s", baseCheck.Detail)
+	}
+	if drv == nil {
+		t.Error("drv should be non-nil: base_image check is informational and must not block driver construction")
+	}
+}
+
 func TestRunAllChecks_AllFail_DriverNil(t *testing.T) {
 	p := probes{
 		goos:     "linux",
