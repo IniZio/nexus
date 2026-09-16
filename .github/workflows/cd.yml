@@ -340,7 +340,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add plugins/herdr/nexus3-version
-          # No-op if nexus3-version already matches (e.g. manual pre-stamp).
-          git diff --cached --quiet && echo "nexus3-version already up to date." && exit 0
-          git commit -m "chore(plugin): stamp nexus3-version to ${TAG} [skip ci]"
-          git push
+          if git diff --cached --quiet; then
+            echo "nexus3-version already up to date."
+          else
+            git commit -m "chore(plugin): stamp nexus3-version to ${TAG} [skip ci]"
+            git push
+          fi
+          STAMP_COMMIT="$(git rev-parse HEAD)"
+
+          git fetch origin develop
+          if git merge-base --is-ancestor origin/develop "$STAMP_COMMIT"; then
+            git push origin "${STAMP_COMMIT}:refs/heads/develop"
+            echo "Fast-forward: stamp pushed to develop."
+          else
+            git checkout -b tmp-stamp-merge origin/develop
+            git merge --no-ff "$STAMP_COMMIT" \
+              -m "chore(release): merge nexus3-version stamp ${TAG} into develop" || {
+              echo "::error::Merge of stamp into develop conflicted — resolve manually." >&2
+              exit 1
+            }
+            git push origin HEAD:develop
+            echo "Merge commit: stamp merged into develop."
+          fi
