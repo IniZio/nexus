@@ -228,7 +228,7 @@ func TestZramPressureShrinkBlocked(t *testing.T) {
 	swapUsed := s.SwapTotalBytes - s.SwapFreeBytes
 
 	// prevSwapUsed < swapUsed: swap is actively increasing. Flow gate blocks shrink.
-	if sampleWantsShrink(s, swapUsed-1) {
+	if sampleWantsShrink(s, swapUsed-1, 0) {
 		t.Fatal("sampleWantsShrink=true while SwapUsed is increasing — " +
 			"shrink must be blocked when SwapUsed has increased since previous sample (D-RAM-13)")
 	}
@@ -276,7 +276,7 @@ func TestZramPressureShrinkStaticSwapAllowed(t *testing.T) {
 	}
 
 	// Shrink must be allowed: swap is static, MemAvailable=60%>45% (D-RAM-13).
-	if !sampleWantsShrink(s, swapUsed) {
+	if !sampleWantsShrink(s, swapUsed, 0) {
 		t.Fatalf("sampleWantsShrink=false with static SwapUsed at ratio=%.3f and "+
 			"MemAvail=60%% — static high swap must not pin shrink (D-RAM-13 pin floor removed)",
 			swapRatio)
@@ -333,7 +333,7 @@ func TestStaticSwapShrinkPinFloor(t *testing.T) {
 	// Shrink MUST be allowed: static swap, MemAvail=60%>45%, MemTotal below old pin floor.
 	// Under old code (defaultSwapShrinkBlockRatio=0.10): 33.9%>=10% → returns false.
 	// Under D-RAM-13: swapUsed==prevSwapUsed → not increasing → no block → returns true.
-	if !sampleWantsShrink(s, swapUsed) {
+	if !sampleWantsShrink(s, swapUsed, 0) {
 		t.Fatalf("sampleWantsShrink=false with static SwapUsed ratio=%.3f and MemTotal=2GiB "+
 			"(old pin floor was %.1f GiB) — static swap must not prevent shrink (D-RAM-13)",
 			swapRatio, oldPinFloorGiB)

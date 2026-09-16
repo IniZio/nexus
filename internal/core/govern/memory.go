@@ -248,16 +248,26 @@ func sampleWantsGrow(s resize.Sample, prevSwapUsed uint64) bool {
 //     (Governor.prevSwapUsed); the zero value on first governor start causes the
 //     block to fire conservatively whenever any swap is present (non-zero
 //     SwapUsed > 0 = prevSwapUsed). Gated on SwapTotalBytes > 0.
+//   - Swap-in gate (HAN-941): shrink is blocked when the cumulative pswpin
+//     counter (SwapInPages) has advanced since the previous sample
+//     (Governor.prevSwapInPages), regardless of MemAvailable. Catches the
+//     stable-but-paging guest the SwapUsed stock gate cannot see.
 //   - MemAvailable ratio: only shrink when ratio > defaultShrinkThreshold (0.45).
 //
 // PSI check is gated on MemPSISupported.
 // Source: OLD memory_resize.go:245-256.
-func sampleWantsShrink(s resize.Sample, prevSwapUsed uint64) bool {
+func sampleWantsShrink(s resize.Sample, prevSwapUsed, prevSwapInPages uint64) bool {
 	if s.MemTotalBytes == 0 {
 		return false
 	}
 	// Block shrink when PSI reports active stall.
 	if s.MemPSISupported && s.MemPSISomeAvg10 >= psiGrowPressure {
+		return false
+	}
+	// Block shrink while the guest is swapping pages back in (HAN-941 F7/F13/
+	// F20): a stable-but-high SwapUsed hides active paging that the stock gate
+	// below cannot see. Older agents leave SwapInPages at 0, so the delta is 0.
+	if s.SwapInPages > prevSwapInPages {
 		return false
 	}
 	// Block shrink when swap is actively increasing (D-RAM-13 flow gate).
@@ -483,7 +493,7 @@ func (g *Governor) evaluate(ctx context.Context) {
 	case sampleWantsGrow(g.latest, g.prevSwapUsed):
 		g.growCount++
 		g.shrinkCount = 0
-	case sampleWantsShrink(g.latest, g.prevSwapUsed):
+	case sampleWantsShrink(g.latest, g.prevSwapUsed, g.prevSwapInPages):
 		g.shrinkCount++
 		g.growCount = 0
 	default:
@@ -537,7 +547,7 @@ func (g *Governor) evaluate(ctx context.Context) {
 			target = current + growStep(minBytes, maxBytes, current, g.latest)
 		}
 
-	case sampleWantsShrink(g.latest, g.prevSwapUsed) && g.shrinkCount >= memoryShrinkConsecutive:
+	case sampleWantsShrink(g.latest, g.prevSwapUsed, g.prevSwapInPages) && g.shrinkCount >= memoryShrinkConsecutive:
 		if current <= minBytes {
 			return
 		}

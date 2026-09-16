@@ -312,13 +312,13 @@ func TestSampleSignals(t *testing.T) {
 	})
 	t.Run("shrink: high MemAvailable, no PSI pressure", func(t *testing.T) {
 		t.Parallel()
-		if !sampleWantsShrink(shrinkSample(total), 0) {
+		if !sampleWantsShrink(shrinkSample(total), 0, 0) {
 			t.Error("60% available should wantsShrink")
 		}
 	})
 	t.Run("no shrink: PSI pressure blocks shrink", func(t *testing.T) {
 		t.Parallel()
-		if sampleWantsShrink(psiGrowSample(total), 0) {
+		if sampleWantsShrink(psiGrowSample(total), 0, 0) {
 			t.Error("high PSI should block shrink even with high MemAvailable")
 		}
 	})

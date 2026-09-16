@@ -143,6 +143,12 @@ type Sample struct {
 	SwapTotalBytes uint64 `json:"swap_total_bytes,omitempty"`
 	SwapFreeBytes  uint64 `json:"swap_free_bytes,omitempty"`
 
+	// SwapInPages is the cumulative /proc/vmstat pswpin counter. SwapUsed is a
+	// stock; a stable-but-high swap can still be paging hard, and shrinking such
+	// a guest storms it (HAN-941 F7/F13/F20). The governor refuses to shrink
+	// while the delta vs the previous sample is > 0. Zero for older agents.
+	SwapInPages uint64 `json:"swap_in_pages,omitempty"`
+
 	// VCPUCount is the total number of vCPUs the VM was created with
 	// (the MaxVCPUs ceiling set at vm.create). VCPUOnline is the number
 	// currently online from the guest's perspective (after any hotplug events).

@@ -79,6 +79,9 @@ type Governor struct {
 	// previous sample. Updated immediately before g.latest is overwritten each
 	// poll cycle so evaluate() always sees the prior sample's value.
 	prevSwapUsed        uint64
+	// prevSwapInPages is the cumulative pswpin from the sample before g.latest;
+	// sampleWantsShrink refuses while g.latest.SwapInPages exceeds it.
+	prevSwapInPages     uint64
 	agentOutdated       bool
 	pollErrLogged       bool
 	axes                []AxisEvaluator
@@ -213,19 +216,7 @@ func (g *Governor) Run(ctx context.Context) {
 				}
 			} else {
 				g.agentOutdated = false
-				// Capture SwapUsed from the current g.latest BEFORE
-				// overwriting it. This becomes the previous-sample reference
-				// point for the flow gate in sampleWantsGrow (D-RAM-10).
-				if g.latest.SwapTotalBytes > 0 && g.latest.SwapFreeBytes <= g.latest.SwapTotalBytes {
-					g.prevSwapUsed = g.latest.SwapTotalBytes - g.latest.SwapFreeBytes
-				} else {
-					g.prevSwapUsed = 0
-				}
-				g.latest = sample
-				g.lastSampleTime = g.clock.Now()
-				for _, a := range g.axes {
-					a.Evaluate(ctx)
-				}
+				g.acceptSample(ctx, sample)
 			}
 		}
 
@@ -247,6 +238,24 @@ func (g *Governor) Run(ctx context.Context) {
 			return
 		case <-g.clock.After(interval):
 		}
+	}
+}
+
+// acceptSample installs a fresh, non-stale sample as g.latest and runs every
+// axis over it. The previous g.latest's SwapUsed and SwapInPages are captured
+// first so the flow gates (D-RAM-10 grow, D-RAM-13 + HAN-941 shrink) compare
+// against the prior sample.
+func (g *Governor) acceptSample(ctx context.Context, sample resize.Sample) {
+	if g.latest.SwapTotalBytes > 0 && g.latest.SwapFreeBytes <= g.latest.SwapTotalBytes {
+		g.prevSwapUsed = g.latest.SwapTotalBytes - g.latest.SwapFreeBytes
+	} else {
+		g.prevSwapUsed = 0
+	}
+	g.prevSwapInPages = g.latest.SwapInPages
+	g.latest = sample
+	g.lastSampleTime = g.clock.Now()
+	for _, a := range g.axes {
+		a.Evaluate(ctx)
 	}
 }
 
