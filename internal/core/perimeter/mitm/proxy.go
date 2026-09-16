@@ -602,6 +602,17 @@ func New(cfg Config) (*Proxy, error) {
 		if !allowSet.Has(host) && !isSuffix {
 			return req, nil
 		}
+		// Public artifact reads on github.com (F14) carry no credential
+		// upstream: the placeholder is stripped rather than swapped.
+		if lhost == "github.com" && isGitHubPublicArtifactPath(req.Method, req.URL.Path) {
+			if req.Header.Get("Authorization") == "" {
+				return req, nil
+			}
+			req2 := req.Clone(req.Context())
+			req2.Header.Del("Authorization")
+			log.Info("mitm: credential stripped for public GitHub artifact", "sandbox", sandboxID, "path", req.URL.Path)
+			return req2, nil
+		}
 		scoped := !isSuffix
 		swapped, ok := swapAuthorization(req.Header.Get("Authorization"), sandboxID, host, broker, scoped)
 		if !ok {
@@ -908,6 +919,30 @@ func allDigits(s string) bool {
 	return true
 }
 
+// isGitHubPublicArtifactPath reports whether (method, path) on github.com is a
+// read of a public source archive or release asset — GET/HEAD on
+// /<owner>/<repo>/archive/* or /<owner>/<repo>/releases/download/*. Any
+// owner/repo qualifies: these are unauthenticated public artifacts, the same
+// class codeload.github.com already serves. The GH_TOKEN placeholder is never
+// swapped for this path class (see the swap handler in New), so allowing them
+// widens no credential blast radius.
+func isGitHubPublicArtifactPath(method, path string) bool {
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	segs := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(segs) < 4 || segs[0] == "" || segs[1] == "" {
+		return false
+	}
+	switch segs[2] {
+	case "archive":
+		return segs[3] != ""
+	case "releases":
+		return len(segs) >= 5 && segs[3] == "download" && segs[4] != ""
+	}
+	return false
+}
+
 // gitHubPathAllowed reports whether a request to a GitHub host is permitted
 // by the D-PDE-16 GitHub built-in policy for the given owner/repo.
 //
@@ -936,6 +971,12 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 			return true
 		case method == http.MethodPost && path == prefix+"git-receive-pack":
 			// Push data transfer.
+			return true
+		case isGitHubPublicArtifactPath(method, path):
+			// Public source archives and release assets for ANY repo (F14).
+			// Same trust level as codeload.github.com, which these redirect
+			// to. The credential swap is skipped for this path class — see
+			// the swap handler in New.
 			return true
 		}
 		return false

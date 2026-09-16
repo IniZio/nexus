@@ -104,6 +104,8 @@ Rotating a credential used via `--secret` takes effect for any sandbox created a
 
 `github.com` enters a sandbox envelope only via `--repo` or `--allow-host`. The guest holds a 64-hex placeholder for `GH_TOKEN`; the host broker holds the real `gh auth token`. The MITM swaps the placeholder on every `api.github.com` and `uploads.github.com` request, so REST `gh api` calls work from inside the guest.
 
+On `github.com` itself, git smart-HTTP (`info/refs`, `git-upload-pack`, `git-receive-pack`) is permitted only for the bound repo. Public artifact downloads — `GET`/`HEAD` on `/<owner>/<repo>/archive/*` and `/<owner>/<repo>/releases/download/*` — are permitted for any repository, the same trust level as `codeload.github.com` they redirect to. Those requests carry no credential upstream: the MITM strips the `GH_TOKEN` placeholder instead of swapping it, so `curl -L https://github.com/<org>/<repo>/archive/<tag>.zip` works from inside the guest without exposing the host token to a foreign repository.
+
 :::warning `gh pr create` is refused
 `gh pr create` uses GitHub's GraphQL API, which the perimeter denies (GraphQL default-deny). Create PRs with the REST form:
 
