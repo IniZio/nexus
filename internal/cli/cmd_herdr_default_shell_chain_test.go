@@ -303,14 +303,17 @@ func TestHerdrApplyGuestShellNext(t *testing.T) {
 
 func TestHerdrInstallDefaultShellParseArgs(t *testing.T) {
 	exe := writeExecutable(t, t.TempDir(), "msb-guest-shell")
-	if got, err := herdrInstallDefaultShellParseArgs([]string{"--next", exe}); err != nil || got != exe {
-		t.Fatalf("--next: got (%q, %v)", got, err)
+	if got, wc, err := herdrInstallDefaultShellParseArgs([]string{"--next", exe}); err != nil || got != exe || wc {
+		t.Fatalf("--next: got (%q, %v, %v)", got, wc, err)
 	}
-	if got, err := herdrInstallDefaultShellParseArgs([]string{"--next=" + exe}); err != nil || got != exe {
-		t.Fatalf("--next=: got (%q, %v)", got, err)
+	if got, wc, err := herdrInstallDefaultShellParseArgs([]string{"--next=" + exe}); err != nil || got != exe || wc {
+		t.Fatalf("--next=: got (%q, %v, %v)", got, wc, err)
 	}
-	if got, err := herdrInstallDefaultShellParseArgs(nil); err != nil || got != "" {
-		t.Fatalf("no args: got (%q, %v)", got, err)
+	if got, wc, err := herdrInstallDefaultShellParseArgs(nil); err != nil || got != "" || wc {
+		t.Fatalf("no args: got (%q, %v, %v)", got, wc, err)
+	}
+	if _, wc, err := herdrInstallDefaultShellParseArgs([]string{"--write-config"}); err != nil || !wc {
+		t.Fatalf("--write-config: got (wc=%v, %v)", wc, err)
 	}
 	for name, args := range map[string][]string{
 		"missing":  {"--next", filepath.Join(t.TempDir(), "nope")},
@@ -318,7 +321,7 @@ func TestHerdrInstallDefaultShellParseArgs(t *testing.T) {
 		"unknown":  {"--bogus"},
 		"dangling": {"--next"},
 	} {
-		if _, err := herdrInstallDefaultShellParseArgs(args); err == nil {
+		if _, _, err := herdrInstallDefaultShellParseArgs(args); err == nil {
 			t.Errorf("%s: want error for %v", name, args)
 		}
 	}

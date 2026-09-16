@@ -796,7 +796,7 @@ func runHerdrDefaultShell(ctx context.Context, _ []string, _ *Output) error {
 //   - The sidecar stores the real nexus3 binary path so the exec leg does not
 //     loop back into the guest-shell dispatch (avoids execve self-loop).
 func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) error {
-	nextShell, err := herdrInstallDefaultShellParseArgs(args)
+	nextShell, writeConfig, err := herdrInstallDefaultShellParseArgs(args)
 	if err != nil {
 		return err
 	}
@@ -822,6 +822,27 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 
 	installPath := filepath.Join(binDir, "nexus3-guest-shell")
 	_ = os.Remove(installPath) // remove old file/link before installing
+
+	var configPath string
+	var configBackupPath string
+	var origConfigData []byte
+	if writeConfig {
+		configPath, err = herdrConfigTOMLPath()
+		if err != nil {
+			return fmt.Errorf("install-default-shell: resolve config path: %w", err)
+		}
+		origConfigData, _ = os.ReadFile(configPath)
+		_, bkp, foreign, wcErr := herdrWriteConfigTOML(configPath, installPath)
+		if wcErr != nil {
+			return fmt.Errorf("install-default-shell: write config: %w", wcErr)
+		}
+		configBackupPath = bkp
+		if foreign != "" && nextShell == "" {
+			if st, stErr := os.Stat(foreign); stErr == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+				nextShell = foreign
+			}
+		}
+	}
 
 	// Hard-link this binary to the install path. A hard link means the
 	// installed entry point IS this binary's inode: no PATH lookup, no stale
@@ -879,40 +900,178 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 	if nextShell != "" {
 		fmt.Fprintf(out.w, "Chained guest shell (non-nexus3 panes): %s\n\n", nextShell)
 	}
-	fmt.Fprintf(out.w, "Add to ~/.config/herdr/config.toml:\n\n")
-	fmt.Fprintf(out.w, "[terminal]\ndefault_shell = %q\n", installPath)
+
+	if writeConfig {
+		if herdrBin, herdrErr := resolveHerdrBin(); herdrErr == nil {
+			checkOut, checkErr := osexec.Command(herdrBin, "config", "check").CombinedOutput()
+			if checkErr != nil {
+				if origConfigData != nil {
+					_ = os.WriteFile(configPath, origConfigData, 0o644)
+				} else {
+					_ = os.Remove(configPath)
+				}
+				_ = configBackupPath
+				fmt.Fprintf(out.w, "Add to %s:\n\n", configPath)
+				fmt.Fprintf(out.w, "[terminal]\ndefault_shell = %q\n", installPath)
+				return fmt.Errorf("install-default-shell: herdr config check failed (config restored): %s",
+					strings.TrimSpace(string(checkOut)))
+			}
+			_ = osexec.Command(herdrBin, "server", "reload-config").Run()
+		}
+		fmt.Fprintf(out.w, "Wrote %s\n", configPath)
+	} else {
+		fmt.Fprintf(out.w, "Add to ~/.config/herdr/config.toml:\n\n")
+		fmt.Fprintf(out.w, "[terminal]\ndefault_shell = %q\n", installPath)
+	}
 	return nil
 }
 
-// herdrInstallDefaultShellParseArgs accepts an optional "--next <path>": the
-// guest shell of another herdr plugin that nexus3-guest-shell hands non-nexus3
-// panes to. The path must exist and must not be nexus3-guest-shell itself.
-func herdrInstallDefaultShellParseArgs(args []string) (nextShell string, err error) {
+// herdrConfigTOMLPath returns the path to herdr's config.toml.
+// Resolution order: HERDR_CONFIG_PATH env var, then
+// $XDG_CONFIG_HOME/herdr/config.toml, then ~/.config/herdr/config.toml.
+func herdrConfigTOMLPath() (string, error) {
+	if p := os.Getenv("HERDR_CONFIG_PATH"); p != "" {
+		return p, nil
+	}
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("herdrConfigTOMLPath: %w", err)
+		}
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "herdr", "config.toml"), nil
+}
+
+// herdrWriteConfigTOML idempotently writes `default_shell = <installPath>`
+// under the [terminal] section of herdr's config.toml at configPath.
+//
+// Four states (per D-4):
+//  1. File absent → create with [terminal] section and key.
+//  2. File present, key absent → insert key under [terminal] (create section at
+//     EOF if [terminal] is missing).
+//  3. File present, key equals installPath exactly → no-op (byte-identical).
+//  4. File present, key set to a different path → backup to
+//     configPath.bak.<UTC-timestamp>, rewrite only the default_shell line.
+//
+// Returns (changed, backupPath, foreignShell, err). backupPath is non-empty only
+// in state 4. foreignShell is the previous value in state 4.
+func herdrWriteConfigTOML(configPath, installPath string) (changed bool, backupPath string, foreignShell string, err error) {
+	wantLine := fmt.Sprintf("default_shell = %q", installPath)
+
+	data, readErr := os.ReadFile(configPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return false, "", "", fmt.Errorf("herdrWriteConfigTOML: read %s: %w", configPath, readErr)
+	}
+
+	if os.IsNotExist(readErr) {
+		if mkErr := os.MkdirAll(filepath.Dir(configPath), 0o755); mkErr != nil {
+			return false, "", "", fmt.Errorf("herdrWriteConfigTOML: mkdir: %w", mkErr)
+		}
+		content := "[terminal]\n" + wantLine + "\n"
+		if wErr := os.WriteFile(configPath, []byte(content), 0o644); wErr != nil {
+			return false, "", "", fmt.Errorf("herdrWriteConfigTOML: write: %w", wErr)
+		}
+		return true, "", "", nil
+	}
+
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	inTerminal := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inTerminal = trimmed == "[terminal]"
+			continue
+		}
+		if !inTerminal {
+			continue
+		}
+		key, val, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(key) != "default_shell" {
+			continue
+		}
+		currentVal := strings.TrimSpace(val)
+		if len(currentVal) >= 2 && currentVal[0] == '"' && currentVal[len(currentVal)-1] == '"' {
+			currentVal = currentVal[1 : len(currentVal)-1]
+		}
+		if currentVal == installPath {
+			return false, "", "", nil
+		}
+		foreignShell = currentVal
+		ts := time.Now().UTC().Format("20060102T150405Z")
+		backupPath = configPath + ".bak." + ts
+		if wErr := os.WriteFile(backupPath, data, 0o644); wErr != nil {
+			return false, "", "", fmt.Errorf("herdrWriteConfigTOML: write backup: %w", wErr)
+		}
+		lines[i] = wantLine
+		newContent := strings.Join(lines, "\n") + "\n"
+		if wErr := os.WriteFile(configPath, []byte(newContent), 0o644); wErr != nil {
+			return false, "", "", fmt.Errorf("herdrWriteConfigTOML: rewrite: %w", wErr)
+		}
+		return true, backupPath, foreignShell, nil
+	}
+
+	termIdx := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "[terminal]" {
+			termIdx = i
+			break
+		}
+	}
+	var newLines []string
+	if termIdx >= 0 {
+		newLines = append(newLines, lines[:termIdx+1]...)
+		newLines = append(newLines, wantLine)
+		newLines = append(newLines, lines[termIdx+1:]...)
+	} else {
+		newLines = append(newLines, lines...)
+		if len(lines) > 0 {
+			newLines = append(newLines, "")
+		}
+		newLines = append(newLines, "[terminal]", wantLine)
+	}
+	newContent := strings.Join(newLines, "\n") + "\n"
+	if wErr := os.WriteFile(configPath, []byte(newContent), 0o644); wErr != nil {
+		return false, "", "", fmt.Errorf("herdrWriteConfigTOML: insert: %w", wErr)
+	}
+	return true, "", "", nil
+}
+
+// herdrInstallDefaultShellParseArgs accepts --next <path> (chain a foreign guest
+// shell for non-nexus3 panes) and --write-config (idempotently write config.toml).
+func herdrInstallDefaultShellParseArgs(args []string) (nextShell string, writeConfig bool, err error) {
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--write-config":
+			writeConfig = true
 		case args[i] == "--next" && i+1 < len(args):
 			nextShell = args[i+1]
 			i++
 		case strings.HasPrefix(args[i], "--next="):
 			nextShell = strings.TrimPrefix(args[i], "--next=")
 		default:
-			return "", &UsageError{Msg: "herdr install-default-shell: usage: install-default-shell [--next <guest-shell-path>]"}
+			return "", false, &UsageError{Msg: "herdr install-default-shell: usage: install-default-shell [--write-config] [--next <guest-shell-path>]"}
 		}
 	}
 	if nextShell == "" {
-		return "", nil
+		return "", writeConfig, nil
 	}
 	st, statErr := os.Stat(nextShell)
 	if statErr != nil {
-		return "", fmt.Errorf("install-default-shell: --next %s: %w", nextShell, statErr)
+		return "", false, fmt.Errorf("install-default-shell: --next %s: %w", nextShell, statErr)
 	}
 	if st.IsDir() || st.Mode()&0o111 == 0 {
-		return "", fmt.Errorf("install-default-shell: --next %s: not an executable file", nextShell)
+		return "", false, fmt.Errorf("install-default-shell: --next %s: not an executable file", nextShell)
 	}
 	if filepath.Base(nextShell) == "nexus3-guest-shell" {
-		return "", fmt.Errorf("install-default-shell: --next %s: would chain nexus3-guest-shell to itself", nextShell)
+		return "", false, fmt.Errorf("install-default-shell: --next %s: would chain nexus3-guest-shell to itself", nextShell)
 	}
-	return nextShell, nil
+	return nextShell, writeConfig, nil
 }
 
 // herdrInstallProbeCmd returns the probe command used by
