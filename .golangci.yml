@@ -11,5 +11,5 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  new-from-rev: 47884b2b54d4390ef28d2dbf4f26ed5464e9d37c
+  new-from-rev: 3a529d9d8c5d920b9196426e822ff9483409a013 # baseline = develop HEAD 2026-09-16 (D-6); advance as debt paid; prior findings in .groundwork/motives/handbook-conformance/motive.md
   whole-files: false

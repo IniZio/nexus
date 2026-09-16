@@ -21,7 +21,7 @@ import (
 
 type HerdrMachine struct {
 	ProfileID string `json:"id"`
-	SSHTarget string `json:"target"`  // "user@host" or an ssh_config Host alias
+	SSHTarget string `json:"target"` // "user@host" or an ssh_config Host alias
 	Enabled   bool   `json:"enabled"`
 	Selected  bool   `json:"selected"`
 	Session   string `json:"session"` // herdr session name; "" means default session
@@ -80,8 +80,8 @@ func RunStartup(ctx context.Context) error {
 	}
 }
 
-var RemoteStateReader = ReadRemoteForwardsState        // tests swap it
-var ForwarderRunner portfwd.Runner = portfwd.OSRunner  // tests swap it
+var RemoteStateReader = ReadRemoteForwardsState       // tests swap it
+var ForwarderRunner portfwd.Runner = portfwd.OSRunner // tests swap it
 
 // FocusResolverFunc resolves the sandbox handle for the focused workspace.
 // Returns fallback=true on error (caller uses all rows); handle="" with
