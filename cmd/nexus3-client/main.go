@@ -31,6 +31,12 @@ func run(args []string) error {
 		case "local-agent-startup":
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 			defer stop()
+			pidPath := clientagent.DefaultPidPath()
+			clientagent.ReapPrevious(ctx, pidPath)
+			if err := clientagent.WritePidfile(pidPath); err != nil {
+				fmt.Fprintf(os.Stderr, "nexus3-client: pidfile: %v\n", err)
+			}
+			defer os.Remove(pidPath)
 			return clientagent.RunStartup(ctx)
 		}
 	}
