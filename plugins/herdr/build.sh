@@ -12,11 +12,6 @@ ASSET_NAME="nexus3-linux-amd64"
 INSTALL_DIR="${HOME}/.local/bin"
 
 # ── Platform guard ────────────────────────────────────────────────────────
-# Linux/x86_64 gets the full nexus3 binary (host side: VMs, panes, verbs).
-# Every other platform is a REMOTE CLIENT: the only thing that runs there is
-# the [[startup]] hook that mirrors a nexus3 host's auto port-forwards, and
-# that ships as the small nexus3-client binary because the full CLI does not
-# build off Linux. The shim points at whichever binary this platform uses.
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
@@ -57,34 +52,54 @@ if [ "$USE_LOCAL" = "0" ]; then
     VERSION="$(cat "$VERSION_FILE")"
     BASE_URL="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${VERSION}"
 
-    WORK_DIR="$(mktemp -d)"
-    trap 'rm -rf "$WORK_DIR"' EXIT
+    # ── Skip-if-newer guard ───────────────────────────────────────────────
+    SKIP_DOWNLOAD=0
+    if [ -z "${NEXUS3_FORCE_DOWNLOAD:-}" ] && [ -x "$INSTALL_DIR/nexus3" ]; then
+        EXISTING_VER="$("$INSTALL_DIR/nexus3" --version 2>/dev/null \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9._]+)?' \
+            | head -1)" || true
+        if echo "${EXISTING_VER:-}" | grep -q -- '-dev'; then
+            echo "nexus3 plugin: $INSTALL_DIR/nexus3 ($EXISTING_VER) is a dev build — keeping it (set NEXUS3_FORCE_DOWNLOAD=1 to override)."
+            SKIP_DOWNLOAD=1
+        elif [ -n "$EXISTING_VER" ]; then
+            HIGHEST="$(printf '%s\n%s\n' "$VERSION" "$EXISTING_VER" | sort -V | tail -1)"
+            if [ "$HIGHEST" = "$EXISTING_VER" ] && [ "$EXISTING_VER" != "$VERSION" ]; then
+                echo "nexus3 plugin: $INSTALL_DIR/nexus3 ($EXISTING_VER) is newer than release $VERSION — keeping it (set NEXUS3_FORCE_DOWNLOAD=1 to override)."
+                SKIP_DOWNLOAD=1
+            fi
+        fi
+    fi
 
-    echo "nexus3 plugin: downloading ${ASSET_NAME} ${VERSION} …"
-    curl --fail --location --silent --show-error \
-        -o "$WORK_DIR/$ASSET_NAME" \
-        "${BASE_URL}/${ASSET_NAME}"
-    curl --fail --location --silent --show-error \
-        -o "$WORK_DIR/SHA256SUMS" \
-        "${BASE_URL}/SHA256SUMS"
-
-    echo "nexus3 plugin: verifying checksum …"
-    # sha256sum -c reads the filename from the SUMS file; cd so relative paths match.
-    (cd "$WORK_DIR" && grep "${ASSET_NAME}" SHA256SUMS | sha256sum --check --status) || {
-        echo "nexus3: error: checksum mismatch for ${ASSET_NAME}" >&2
-        exit 1
-    }
-
-    mkdir -p "$INSTALL_DIR"
-    install -m 0755 "$WORK_DIR/$ASSET_NAME" "$INSTALL_DIR/nexus3"
     NEXUS3="$INSTALL_DIR/nexus3"
-    echo "nexus3 plugin: installed -> $NEXUS3"
 
-    # Hard-link guest shell + print config.toml default_shell snippet.
-    "$NEXUS3" herdr install-default-shell || {
-        echo "nexus3: error: install-default-shell failed" >&2
-        exit 1
-    }
+    if [ "$SKIP_DOWNLOAD" = "0" ]; then
+        WORK_DIR="$(mktemp -d)"
+        trap 'rm -rf "$WORK_DIR"' EXIT
+
+        echo "nexus3 plugin: downloading ${ASSET_NAME} ${VERSION} …"
+        curl --fail --location --silent --show-error \
+            -o "$WORK_DIR/$ASSET_NAME" \
+            "${BASE_URL}/${ASSET_NAME}"
+        curl --fail --location --silent --show-error \
+            -o "$WORK_DIR/SHA256SUMS" \
+            "${BASE_URL}/SHA256SUMS"
+
+        echo "nexus3 plugin: verifying checksum …"
+        # sha256sum -c reads the filename from the SUMS file; cd so relative paths match.
+        (cd "$WORK_DIR" && grep "${ASSET_NAME}" SHA256SUMS | sha256sum --check --status) || {
+            echo "nexus3: error: checksum mismatch for ${ASSET_NAME}" >&2
+            exit 1
+        }
+
+        mkdir -p "$INSTALL_DIR"
+        install -m 0755 "$WORK_DIR/$ASSET_NAME" "$NEXUS3"
+        echo "nexus3 plugin: installed -> $NEXUS3"
+
+        "$NEXUS3" herdr install-default-shell || {
+            echo "nexus3: error: install-default-shell failed" >&2
+            exit 1
+        }
+    fi
 else
     # ── Local dev / PATH fallback ─────────────────────────────────────────
     NEXUS3="$(command -v nexus3 2>/dev/null)" || {
@@ -121,14 +136,9 @@ if [ "$GOT_ABI" != "$EXPECTED_ABI" ]; then
 fi
 
 # ── herdr version guard ───────────────────────────────────────────────────
-# min_herdr_version = "0.9.0" in the manifest prevents initial install on
-# herdr < 0.9 but does NOT block a stale binary. Guard explicitly because
-# `herdr machine list --json` (required by local-agent-startup) did not
-# exist before 0.9.
 MIN_HERDR="0.9.0"
 HERDR_VER="$(herdr --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" || true
 if [ -n "$HERDR_VER" ]; then
-    # Compare using sort -V (version sort) — POSIX sort lacks -V, but sort from GNU coreutils on Linux has it.
     LOWEST="$(printf '%s\n%s\n' "$MIN_HERDR" "$HERDR_VER" | sort -V | head -1)"
     if [ "$LOWEST" != "$MIN_HERDR" ]; then
         echo "nexus3: error: herdr ${HERDR_VER} < ${MIN_HERDR}: upgrade herdr first (brew upgrade herdr / herdr update)" >&2
@@ -142,3 +152,5 @@ printf '#!/bin/sh\nexec "%s" "$@"\n' "$NEXUS3" > "$SHIM"
 chmod +x "$SHIM"
 
 echo "nexus3 plugin: shim written -> $SHIM"
+NEXUS3_VER="$("$NEXUS3" --version 2>/dev/null | head -1)" || true
+echo "nexus3 plugin: using $NEXUS3 ($NEXUS3_VER)"
