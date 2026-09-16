@@ -15,7 +15,9 @@ command = ["sh", "build.sh"]
 # local-agent-startup runs on the laptop when herdr starts (herdr ≥0.9).
 # It opens an SSH ControlMaster to each `herdr machine add`-ed host and
 # keeps guest TCP ports forwarded to 127.0.0.1:P on the laptop.
-command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/nexus3-shim.sh" herdr local-agent-startup']
+# version-check runs first (non-fatal) and prints a skew notice to stderr
+# when the pinned release is newer than the installed binary.
+command = ["sh", "-c", '"$HERDR_PLUGIN_ROOT/nexus3-shim.sh" herdr version-check || true; exec "$HERDR_PLUGIN_ROOT/nexus3-shim.sh" herdr local-agent-startup']
 platforms = ["linux", "macos"]
 
 [[panes]]

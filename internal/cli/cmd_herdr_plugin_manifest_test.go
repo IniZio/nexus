@@ -267,7 +267,7 @@ func TestHerdrGroupUsageString_containsAllPluginVerbs(t *testing.T) {
 	// name is true: every known verb must appear in the usage string.
 	for _, verb := range []string{
 		// Self-contained verbs.
-		"default-shell", "install-default-shell",
+		"default-shell", "install-default-shell", "version-check",
 		// Non-space verbs.
 		"abi", "context-cwd", "workspaces", "attach", "create", "logs", "doctor",
 		"open-pane", "launch", "shell-cwd", "new-tab",

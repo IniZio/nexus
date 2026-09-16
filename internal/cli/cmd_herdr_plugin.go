@@ -89,7 +89,7 @@ func herdrGroupVerbToPluginSub(sub string) (pluginSub string, known bool) {
 
 func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox|backfill-repo-root|local-agent-startup)"}
+		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox|backfill-repo-root|local-agent-startup|version-check)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -99,6 +99,8 @@ func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 		return runHerdrDefaultShell(ctx, rest, out)
 	case "install-default-shell":
 		return runHerdrInstallDefaultShell(ctx, rest, out)
+	case "version-check":
+		return herdrVersionCheck(ctx, rest, out.w)
 	}
 
 	pluginSub, known := herdrGroupVerbToPluginSub(sub)
@@ -923,6 +925,19 @@ func herdrPluginDoctor(w io.Writer) error {
 				fmt.Fprintf(w, "ABI file check: MISMATCH — file has %q, binary expects %q\n", expected, herdrPluginABIVersion)
 			}
 		}
+	}
+
+	if pluginRoot != "" {
+		pinPath := filepath.Join(pluginRoot, "nexus3-version")
+		pinBytes, err := os.ReadFile(pinPath)
+		if err != nil {
+			fmt.Fprintf(w, "version check: cannot read %s: %v\n", pinPath, err)
+		} else {
+			res := herdrCheckVersionSkew(version, string(pinBytes))
+			fmt.Fprintf(w, "version check: %s\n", res.Message)
+		}
+	} else {
+		fmt.Fprintf(w, "version check: HERDR_PLUGIN_ROOT unset (not running as a herdr plugin)\n")
 	}
 	return nil
 }

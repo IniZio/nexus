@@ -1,25 +1,17 @@
 # nexus3 CLI Surface Inventory
 
 Captured: 2026-09-07 from `internal/cli/` on branch `develop`.
-Purpose: parity target for the microsandbox-pivot new repo. A later slice (`s14-parity-and-residuals`) measures the new repo against this baseline.
-
-The test `internal/cli/surface_inventory_test.go::TestVerbInventory` fails if the registry diverges from the golden list. `TestSpecCoversAllVisibleVerbs` fails if a visible verb is missing from this file. Both run under `make test`.
+Purpose: authoritative inventory of nexus3's own CLI surface. The test `internal/cli/surface_inventory_test.go::TestVerbInventory` fails if the registry diverges from the golden list. `TestSpecCoversAllVisibleVerbs` fails if a visible verb is missing from this file. Both run under `make test`.
 
 ---
 
-## Scope and non-goals
+## Scope
 
-The motive charter explicitly declined the following capabilities. Verbs that exist solely to serve them are **OUT-OF-SCOPE** for the new repo — they must NOT be treated as parity obligations.
+This file documents the full public CLI surface of nexus3 on this branch, including `fork`, `snapshot`, and `restore` (shipped as primitives).
 
-| Verb | Reason out-of-scope |
-|---|---|
-| `fork` | Fork-from-running snapshots declined |
-| `snapshot` | Snapshot management declined |
-| `restore` | Restore-from-snapshot declined |
-| `--nested` flag on `sandbox create` / `create` | Nested KVM declined |
-| `supervisor-backfill-netns-identity` | CH-specific netns identity backfill; not applicable to microsandbox |
+> **Historical note.** An earlier motive charter drafted this file as a parity target for a microsandbox-pivot repo and marked `fork`, `snapshot`, `restore`, `--nested`, and `supervisor-backfill-netns-identity` out-of-scope for that pivot. That pivot was superseded on 2026-08-15 by the strict-primitives turn; nexus3 is now the shipping repo and all verbs below are in-scope.
 
-Rootless/zero-networking-privilege egress mode (old P1 design) and hosted-service/server mode are also declined; those are not surfaced as top-level verbs but influence `egress` internals.
+Rootless/zero-networking-privilege egress mode (old P1 design) and hosted-service/server mode are not exposed as top-level verbs; they influence `egress` internals only.
 
 ---
 
