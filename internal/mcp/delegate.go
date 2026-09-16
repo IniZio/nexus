@@ -57,6 +57,8 @@ Record any friction you hit — what happened, the evidence, the workaround — 
 report so the platform can be fixed.
 Egress is policy-gated. A 403 from the proxy names the policy that denied you:
 report it, do not route around it.
+` + "`gh auth status`" + ` is a known false negative here ("The token in GH_TOKEN is invalid"):
+it probes ` + "`POST /graphql`" + ` and ` + "`GET /`" + `, both policy-denied. Trust ` + "`gh api user`" + ` (200 = authenticated).
 
 `
 

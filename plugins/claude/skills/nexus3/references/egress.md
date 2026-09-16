@@ -400,3 +400,9 @@ echo "$GH_TOKEN" | grep -E '^[0-9a-f]{64}$' && echo PASS || echo 'FAIL: real tok
 - "Without a path policy, `sandbox create` is refused with a hard error." Correctly describes
   `ErrUnboundGitHubSecret` (`service.go:971-977`), but only applies to GitHub hosts in
   `egress.secrets`. Non-GitHub hosts can be listed in secrets without a policy.
+
+- "`gh auth status` says the GH_TOKEN is invalid, so brokering is broken." No — the
+  token is fine. `gh auth status` probes `POST /graphql` and `GET /` on api.github.com,
+  and a GitHub `egress.policy` lists neither, so both 403 with `D-PD-36` and gh reports
+  the token invalid. `gh api user` → 200 is the real authentication check
+  (see github-pr.md).

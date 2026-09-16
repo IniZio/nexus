@@ -19,6 +19,31 @@ gh api repos/{owner}/{repo} --jq .name
 
 `gh api` expands `{owner}` and `{repo}` from the local git remote automatically.
 
+### `gh auth status` is a false negative — trust `gh api user`
+
+Inside a sandbox `gh auth status` prints
+`X Failed to log in to github.com using token (GH_TOKEN)` /
+`The token in GH_TOKEN is invalid.` while the token works. It is NOT a
+credential problem. `gh auth status` makes two probes that the perimeter denies:
+
+1. `POST /graphql` with `{"query":"query UserCurrent{viewer{login}}"}` →
+   `403 D-PD-36: request path not in allowlist` (GraphQL is not listed in the
+   repo's `egress.policy`, by design).
+2. `GET https://api.github.com/` (root, to read `X-Oauth-Scopes`) → `403 D-PD-36`.
+
+Evidence (live, `GH_DEBUG=api gh auth status`, gh 2.100.0, 2026-09-16): the first
+probe 403s and gh reports the token invalid; in the same guest `gh api user` → 200
+(with `X-Oauth-Scopes`) and `gh api repos/{owner}/{repo}` → 200.
+
+Use this instead:
+
+```sh
+gh api user --jq .login     # 200 + your login = authenticated; keep going
+```
+
+Do not stop, re-login, or ask the operator for a token on the strength of
+`gh auth status` alone.
+
 ## Push first
 
 The branch must exist on the remote before opening a PR:

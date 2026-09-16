@@ -131,3 +131,19 @@ gh api -X POST repos/{owner}/{repo}/pulls \
 ## What the guest image has
 
 `node` is present (claude is a node program). `python3`, `python` and `jq` are **absent** — write guest-side JSON manipulation in node.
+
+## Known false signals in the guest
+
+Outputs that look like a failure but are not. Check the listed counter-probe
+before acting on them.
+
+- **`gh auth status` says "The token in GH_TOKEN is invalid".** The perimeter
+  denies the two probes it makes (`POST /graphql`, `GET /`), not the token.
+  Counter-probe: `gh api user` → 200 means authenticated. Details in
+  [github-pr.md](github-pr.md#gh-auth-status-is-a-false-negative--trust-gh-api-user).
+- **`find` returns nothing for a file that exists.** The host `~/.claude` mount
+  brings the operator's `rtk hook claude` PreToolUse hook into the guest; it
+  rewrites Bash `find` to `rtk find`, whose compact output can be empty for a
+  path that is present. Counter-probe: `ls -la <path>`, or `rtk proxy find …`
+  (raw, unfiltered). Prefixing with `command` may not help — the hook rewrites
+  the command line before the shell sees it.
