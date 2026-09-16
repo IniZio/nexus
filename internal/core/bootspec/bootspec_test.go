@@ -70,6 +70,12 @@ func TestFromOCIImageConfig(t *testing.T) {
 			wantTasks: 0,
 		},
 		{
+			name:      "env only => no boot task, env kept",
+			cfg:       OCIImageConfig{Env: []string{"GOPATH=/go", "CGO_ENABLED=0"}},
+			wantTasks: 0,
+			wantEnv:   []string{"GOPATH=/go", "CGO_ENABLED=0"},
+		},
+		{
 			name: "workingdir and env propagated",
 			cfg: OCIImageConfig{
 				Entrypoint: []string{"/app/server"},
@@ -89,6 +95,17 @@ func TestFromOCIImageConfig(t *testing.T) {
 			spec := FromOCIImageConfig(tc.cfg)
 			if len(spec.Tasks) != tc.wantTasks {
 				t.Fatalf("Tasks len = %d, want %d", len(spec.Tasks), tc.wantTasks)
+			}
+			if len(spec.Env) != len(tc.wantEnv) {
+				t.Fatalf("Spec.Env = %v, want %v", spec.Env, tc.wantEnv)
+			}
+			for i, e := range tc.wantEnv {
+				if spec.Env[i] != e {
+					t.Errorf("Spec.Env[%d] = %q, want %q", i, spec.Env[i], e)
+				}
+			}
+			if wantEmpty := tc.wantTasks == 0 && len(tc.wantEnv) == 0; spec.IsEmpty() != wantEmpty {
+				t.Errorf("IsEmpty() = %v, want %v", spec.IsEmpty(), wantEmpty)
 			}
 			if tc.wantTasks == 0 {
 				return

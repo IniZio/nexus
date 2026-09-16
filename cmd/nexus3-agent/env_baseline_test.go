@@ -410,6 +410,55 @@ func TestExecEnvPrecedence(t *testing.T) {
 	}
 }
 
+// TestBootSpecEnvTopLevelEnv pins FW-OCI-ENV-CAPTURE on the agent side: a
+// manifest with Spec.Env and no task (image with ENV only) yields those pairs;
+// a manifest carrying both Spec.Env and Task.Env yields Spec.Env first, task
+// pairs after, exact duplicates dropped; a legacy task-only manifest is unchanged.
+func TestBootSpecEnvTopLevelEnv(t *testing.T) {
+	origSpec := bootspecPath
+	t.Cleanup(func() { bootspecPath = origSpec })
+
+	cases := []struct {
+		name string
+		spec bootspec.Spec
+		want []string
+	}{
+		{
+			name: "env only, no task",
+			spec: bootspec.Spec{Env: []string{"GOPATH=/go", "CGO_ENABLED=0"}},
+			want: []string{"GOPATH=/go", "CGO_ENABLED=0"},
+		},
+		{
+			name: "env and task with duplicate pairs",
+			spec: bootspec.Spec{
+				Env: []string{"A=1", "B=2"},
+				Tasks: []bootspec.Task{{
+					Argv: []string{"/bin/true"},
+					Env:  []string{"A=1", "C=3"},
+				}},
+			},
+			want: []string{"A=1", "B=2", "C=3"},
+		},
+		{
+			name: "legacy task-only manifest",
+			spec: bootspec.Spec{Tasks: []bootspec.Task{{
+				Argv: []string{"/bin/true"},
+				Env:  []string{"X=1"},
+			}}},
+			want: []string{"X=1"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bootspecPath = writeBootspec(t, tc.spec)
+			got := bootSpecEnv()
+			if strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+				t.Errorf("bootSpecEnv() = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestBootSpecEnvAbsentOrUnparseable pins the non-fatal fallback: a missing or
 // corrupt manifest contributes nothing.
 func TestBootSpecEnvAbsentOrUnparseable(t *testing.T) {

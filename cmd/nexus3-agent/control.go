@@ -272,11 +272,13 @@ func unquoteEnvValue(v string) string {
 	return v
 }
 
-// bootSpecEnv returns the KEY=VALUE entries declared by every task in the
-// boot manifest at bootspecPath (/etc/nexus3/boot.json), in task order. That
-// is where the builder captures the OCI image ENV (bootspec.FromOCIImageConfig),
-// so this is how Containerfile ENV reaches exec'd shells. A missing or
-// unparseable manifest yields nil, mirroring runBootTasks' fallback.
+// bootSpecEnv returns the KEY=VALUE entries of the boot manifest at
+// bootspecPath (/etc/nexus3/boot.json): the image-wide Spec.Env first, then
+// every task's Env in task order, with exact duplicate pairs dropped. That is
+// where the builder captures the OCI image ENV (bootspec.FromOCIImageConfig),
+// so this is how Containerfile ENV reaches exec'd shells even when the image
+// declares no process. A missing or unparseable manifest yields nil,
+// mirroring runBootTasks' fallback.
 func bootSpecEnv() []string {
 	data, err := os.ReadFile(bootspecPath)
 	if err != nil {
@@ -287,8 +289,18 @@ func bootSpecEnv() []string {
 		return nil
 	}
 	var env []string
+	seen := map[string]bool{}
+	add := func(pairs []string) {
+		for _, p := range pairs {
+			if !seen[p] {
+				seen[p] = true
+				env = append(env, p)
+			}
+		}
+	}
+	add(spec.Env)
 	for _, task := range spec.Tasks {
-		env = append(env, task.Env...)
+		add(task.Env)
 	}
 	return env
 }

@@ -16,6 +16,16 @@ type Task struct {
 // Spec is the whole boot manifest.
 type Spec struct {
 	Tasks []Task `json:"tasks"`
+	// Env is the image-wide environment (OCI config Env) as KEY=VALUE pairs.
+	// It is captured even when the image declares no process, so the agent
+	// can layer it into every exec'd shell. Older manifests omit it.
+	Env []string `json:"env,omitempty"`
+}
+
+// IsEmpty reports whether the Spec carries nothing worth persisting: no
+// boot task and no image environment.
+func (s Spec) IsEmpty() bool {
+	return len(s.Tasks) == 0 && len(s.Env) == 0
 }
 
 // OCIImageConfig is the subset of an OCI image config this package needs.
@@ -35,15 +45,19 @@ type OCIImageConfig struct {
 // PID 1: a boot command that blocks would prevent the agent from binding its
 // control plane, and a PID-1 child that exits must never take the VM down.
 //
-// If both Entrypoint and Cmd are empty, it returns an empty Spec (Tasks nil):
-// an image with no declared process (the pure dev-workspace case) contributes
-// no boot task, matching the devcontainers `overrideCommand` behavior.
+// Env is always copied to Spec.Env, independent of whether a process is
+// declared, so a Containerfile with only ENV still reaches exec shells.
+//
+// If both Entrypoint and Cmd are empty, no Task is produced: an image with no
+// declared process (the pure dev-workspace case) contributes no boot task,
+// matching the devcontainers `overrideCommand` behavior.
 func FromOCIImageConfig(cfg OCIImageConfig) Spec {
 	argv := append(append([]string{}, cfg.Entrypoint...), cfg.Cmd...)
 	if len(argv) == 0 {
-		return Spec{}
+		return Spec{Env: cfg.Env}
 	}
 	return Spec{
+		Env: cfg.Env,
 		Tasks: []Task{
 			{
 				Argv:       argv,

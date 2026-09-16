@@ -503,6 +503,52 @@ WORKDIR /app
 	}
 }
 
+// TestCaptureBootSpec_OCIEnvWithoutProcess pins FW-OCI-ENV-CAPTURE: an OCI
+// config carrying only Env (a Containerfile with ENV but no ENTRYPOINT/CMD)
+// still yields a boot.json whose top-level env holds those pairs and no task.
+//
+// Mutation proof: restoring the old `len(spec.Tasks) == 0` skip in
+// captureBootSpec makes readBootJSON fatal (no boot.json written).
+func TestCaptureBootSpec_OCIEnvWithoutProcess(t *testing.T) {
+	outDir := t.TempDir()
+
+	cf := []byte(`FROM docker.io/library/golang:1.23
+ENV GOPATH=/go CGO_ENABLED=0
+`)
+	ociCfg := &bootspec.OCIImageConfig{
+		WorkingDir: "/workspace",
+		Env:        []string{"GOPATH=/go", "CGO_ENABLED=0"},
+	}
+
+	builder.CaptureBootSpec(cf, ociCfg, outDir)
+
+	spec := readBootJSON(t, outDir)
+	if len(spec.Tasks) != 0 {
+		t.Fatalf("expected no boot task without entrypoint/cmd, got %d: %+v", len(spec.Tasks), spec.Tasks)
+	}
+	wantEnv := []string{"GOPATH=/go", "CGO_ENABLED=0"}
+	if len(spec.Env) != len(wantEnv) {
+		t.Fatalf("Spec.Env = %v, want %v", spec.Env, wantEnv)
+	}
+	for i, e := range wantEnv {
+		if spec.Env[i] != e {
+			t.Errorf("Spec.Env[%d] = %q, want %q", i, spec.Env[i], e)
+		}
+	}
+}
+
+// TestCaptureBootSpec_OCIEmptyConfigWritesNothing pins the unchanged branch:
+// an OCI config with no entrypoint, cmd, or env writes no boot.json.
+func TestCaptureBootSpec_OCIEmptyConfigWritesNothing(t *testing.T) {
+	outDir := t.TempDir()
+
+	builder.CaptureBootSpec([]byte("FROM scratch\n"), &bootspec.OCIImageConfig{WorkingDir: "/w"}, outDir)
+
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus3", "boot.json")); !os.IsNotExist(err) {
+		t.Errorf("expected no boot.json for empty OCI config, got err=%v", err)
+	}
+}
+
 // TestCaptureBootSpec_NilOCICfgFallsBackToContainerfile verifies that when
 // ociCfg is nil (OCI export unavailable), captureBootSpec falls back to
 // captureBootSpecFromContainerfile and still produces a correct boot.json from

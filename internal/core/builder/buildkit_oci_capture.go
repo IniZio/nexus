@@ -152,8 +152,8 @@ func parseOCIConfigFromTar(r io.Reader) (bootspec.OCIImageConfig, bool, error) {
 func captureBootSpec(containerfileBytes []byte, ociCfg *bootspec.OCIImageConfig, outDir string) {
 	if ociCfg != nil {
 		spec := bootspec.FromOCIImageConfig(*ociCfg)
-		if len(spec.Tasks) == 0 {
-			slog.Debug("buildkit: captureBootSpec: OCI config has no entrypoint/cmd; no boot.json written")
+		if spec.IsEmpty() {
+			slog.Debug("buildkit: captureBootSpec: OCI config has no entrypoint/cmd/env; no boot.json written")
 			return
 		}
 		writeBootJSON(spec, outDir, "OCI config")
@@ -180,5 +180,5 @@ func writeBootJSON(spec bootspec.Spec, outDir string, source string) {
 		slog.Warn("buildkit: writeBootJSON: failed to write boot.json", "source", source, "err", err)
 		return
 	}
-	slog.Info("buildkit: writeBootJSON: wrote boot.json", "source", source, "path", bootJSONPath, "tasks", len(spec.Tasks))
+	slog.Info("buildkit: writeBootJSON: wrote boot.json", "source", source, "path", bootJSONPath, "tasks", len(spec.Tasks), "env", len(spec.Env))
 }
