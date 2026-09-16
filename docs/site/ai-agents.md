@@ -165,6 +165,8 @@ This requires **herdr ≥ 0.9** on the remote client. nexus3 declares `min_herdr
 
 Port-forward state is persisted under `~/.config/herdr/portfwd/` on the herdr host. Forwarded ports appear in the herdr overlay alongside the sandbox that owns them. When the guest listener closes, nexus3 cancels the forward and the port disappears from the laptop within the reconcile interval.
 
+**Remote-client focus scoping:** `nexus3-client` on a laptop scopes forwards to the sandbox bound to the focused herdr workspace. Unfocusing removes its forwards from `127.0.0.1` within one reconcile tick (≤ 5 s); focusing restores them. Forwards of unfocused sandboxes are never applied. Host-side listeners are not affected — focus scoping is client-side only.
+
 > Note: the same-number invariant (`127.0.0.1:5173` on the guest → `127.0.0.1:5173` on the host) is preserved end-to-end. Renumbering would break OAuth redirect URIs and Vite HMR WebSocket URLs.
 
 ---
