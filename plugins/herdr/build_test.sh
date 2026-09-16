@@ -15,12 +15,13 @@ fail() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
 make_fake_release() {
     _fr_dir="$1" _fr_ver="$2" _fr_os="$3" _fr_arch="$4"
     _fr_asset="nexus3-client-${_fr_os}-${_fr_arch}"
-    mkdir -p "$_fr_dir"
-    printf '#!/bin/sh\ncase "$*" in\n"herdr abi") echo "%s" ;;\n"version") echo "nexus3-client %s" ;;\n*) exit 1 ;;\nesac\n' \
-        "$ABI" "$_fr_ver" > "$_fr_dir/$_fr_asset"
-    chmod +x "$_fr_dir/$_fr_asset"
+    _fr_vdir="$_fr_dir/$_fr_ver"
+    mkdir -p "$_fr_vdir"
+    printf '#!/bin/sh\ncase "$*" in\n"herdr abi") echo "%s" ;;\n"version") echo "nexus3-client %s (go1.26.6)" ;;\n*) exit 1 ;;\nesac\n' \
+        "$ABI" "$_fr_ver" > "$_fr_vdir/$_fr_asset"
+    chmod +x "$_fr_vdir/$_fr_asset"
     (
-        cd "$_fr_dir"
+        cd "$_fr_vdir"
         if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "$_fr_asset" > SHA256SUMS
         else
@@ -168,7 +169,8 @@ make_fake_nexus3() {
         '#!/bin/sh' \
         'printf "%s\n" "$*" >> "${FAKE_NEXUS3_LOG:-/dev/null}"' \
         'case "$*" in' \
-        '    "--version") echo "nexus3 ${FAKE_NEXUS3_VER:-v0.1.1}" ;;' \
+        '    "--version") exit 1 ;;' \
+        '    "version") echo "nexus3 ${FAKE_NEXUS3_VER:-v0.1.1} (go1.26.6)" ;;' \
         '    "herdr abi") cat "$HERDR_PLUGIN_ROOT/abi" ;;' \
         '    "herdr version-check"*) exit "${FAKE_VC_EXIT:-0}" ;;' \
         '    "herdr install-default-shell"*) exit "${FAKE_IDS_EXIT:-0}" ;;' \
@@ -180,10 +182,11 @@ make_fake_nexus3() {
 }
 
 make_fake_linux_release() {
-    _flr_dir="$1"
-    mkdir -p "$_flr_dir"
-    make_fake_nexus3 "$_flr_dir/nexus3-linux-amd64"
-    (cd "$_flr_dir" && sha256sum nexus3-linux-amd64 > SHA256SUMS)
+    _flr_dir="$1" _flr_ver="${2:-v0.2.0}"
+    _flv="$_flr_dir/$_flr_ver"
+    mkdir -p "$_flv"
+    make_fake_nexus3 "$_flv/nexus3-linux-amd64"
+    (cd "$_flv" && sha256sum nexus3-linux-amd64 > SHA256SUMS)
 }
 
 run_linux_build() {
@@ -283,6 +286,48 @@ else
     fail "Linux: kernel install --version for dev binary failed (exit=$_le)"
 fi
 rm -rf "$_lw"
+
+_lb_work="$(mktemp -d)"
+_lb_plug="$_lb_work/plugin" _lb_inst="$_lb_work/install" _lb_shim="$_lb_work/shim"
+mkdir -p "$_lb_plug" "$_lb_inst" "$_lb_shim"
+cp "$SCRIPT_DIR/abi" "$_lb_plug/abi"
+echo "v0.2.0" > "$_lb_plug/nexus3-version"
+make_fake_nexus3 "$_lb_inst/nexus3"
+_lb_out=0
+_lb_stdout="$(env \
+    HERDR_PLUGIN_ROOT="$_lb_plug" \
+    INSTALL_DIR="$_lb_inst" \
+    NEXUS3_SHIM_DIR="$_lb_shim" \
+    FAKE_NEXUS3_VER="v0.2.0" \
+    FAKE_VC_EXIT=0 \
+    FAKE_IDS_EXIT=0 \
+    FAKE_KI_EXIT=0 \
+    FAKE_DOCTOR_EXIT=0 \
+    sh "$BUILD_SH" 2>/dev/null)" || _lb_out=$?
+if [ "$_lb_out" = "0" ] && echo "$_lb_stdout" | grep -qE 'installed [0-9]'; then
+    ok "D3: outcome line contains non-blank version"
+else
+    fail "D3: outcome line missing non-blank version (exit=$_lb_out, out=$_lb_stdout)"
+fi
+rm -rf "$_lb_work"
+
+_bsd_dir="$(mktemp -d)"
+_real_sum="$(command -v sha256sum)"
+printf '#!/bin/sh\ncase "$1" in\n  --version) echo "sha256sum (BSD) 6.0"; exit 0 ;;\n  --check) exit 1 ;;\nesac\nexec "%s" "$@"\n' "$_real_sum" > "$_bsd_dir/sha256sum"
+chmod +x "$_bsd_dir/sha256sum"
+_r_bsd="$(PATH="$_bsd_dir:$PATH" run_build "Darwin" "arm64" "v0.1.1" "")"
+[ "$_r_bsd" = "ok" ] && ok "D4: BSD sha256sum (no --check) handled via compute-and-compare" \
+    || fail "D4: BSD sha256sum compute-and-compare failed ($_r_bsd)"
+rm -rf "$_bsd_dir"
+
+_kd_lr="$(run_linux_build 0 "v0.2.0" 0 0 0 "" 0)"
+_kd_w="${_kd_lr%%:*}"; _kd_t="${_kd_lr#*:}"; _kd_e="${_kd_t%%:*}"; _kd_l="${_kd_t#*:}"
+_kd_ok=1
+[ "$_kd_e" = "0" ] || { echo "  exit=$_kd_e" >&2; _kd_ok=0; }
+grep -q "^kernel install$" "$_kd_l" 2>/dev/null || { echo "  kernel install not called without --version" >&2; _kd_ok=0; }
+[ "$_kd_ok" = "1" ] && ok "D2: kernel install uses same version-free base as binary download (release build)" \
+    || fail "D2: kernel install / base URL test failed"
+rm -rf "$_kd_w"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

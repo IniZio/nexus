@@ -30,6 +30,21 @@ fi
 mkdir -p "$SHIM_DIR"
 SHIM="$SHIM_DIR/nexus3-shim.sh"
 
+# ── Portable SHA-256 checksum helper ─────────────────────────────────────
+_sha256_check() {
+    _asset="$1" _sums_file="$2"
+    _expected="$(grep "$_asset" "$_sums_file" | awk '{print $1}')"
+    if sha256sum --version 2>/dev/null | grep -q GNU; then
+        _got="$(sha256sum "$_asset" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        _got="$(shasum -a 256 "$_asset" | awk '{print $1}')"
+    else
+        echo "nexus3: error: no sha256 tool (need GNU sha256sum or shasum -a 256)" >&2
+        return 1
+    fi
+    [ "$_got" = "$_expected" ]
+}
+
 # ── Platform guard ────────────────────────────────────────────────────────
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -65,7 +80,7 @@ if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
         esac
         CLIENT_ASSET="nexus3-client-${GOOS}-${GOARCH}"
         CLIENT_BIN="$INSTALL_DIR/nexus3-client"
-        BASE_URL="${NEXUS3_RELEASE_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${VERSION}}"
+        BASE_URL="${NEXUS3_RELEASE_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download}"
 
         SKIP_CLIENT_DOWNLOAD=0
         if [ -z "${NEXUS3_FORCE_DOWNLOAD:-}" ] && [ -x "$CLIENT_BIN" ]; then
@@ -85,25 +100,16 @@ if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
         fi
 
         if [ "$SKIP_CLIENT_DOWNLOAD" = "0" ]; then
-            _sha256_check() {
-                _asset="$1" _sums_file="$2"
-                if command -v sha256sum >/dev/null 2>&1; then
-                    grep "$_asset" "$_sums_file" | sha256sum --check --status
-                else
-                    grep "$_asset" "$_sums_file" | shasum -a 256 --check --status
-                fi
-            }
-
             WORK_DIR="$(mktemp -d)"
             trap 'rm -rf "$WORK_DIR"' EXIT
 
             echo "nexus3 plugin: downloading ${CLIENT_ASSET} ${VERSION} …"
             curl --fail --location --silent --show-error \
                 -o "$WORK_DIR/$CLIENT_ASSET" \
-                "${BASE_URL}/${CLIENT_ASSET}"
+                "${BASE_URL}/${VERSION}/${CLIENT_ASSET}"
             curl --fail --location --silent --show-error \
                 -o "$WORK_DIR/SHA256SUMS" \
-                "${BASE_URL}/SHA256SUMS"
+                "${BASE_URL}/${VERSION}/SHA256SUMS"
 
             echo "nexus3 plugin: verifying checksum …"
             (cd "$WORK_DIR" && _sha256_check "$CLIENT_ASSET" SHA256SUMS) || {
@@ -145,7 +151,7 @@ fi
 if [ "$USE_LOCAL" = "0" ]; then
     # ── Self-bootstrapping download path ──────────────────────────────────
     VERSION="$(cat "$VERSION_FILE")"
-    BASE_URL="${NEXUS3_RELEASE_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${VERSION}}"
+    BASE_URL="${NEXUS3_RELEASE_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download}"
     NEXUS3="$INSTALL_DIR/nexus3"
 
     # ── Version-check guard ───────────────────────────────────────────────
@@ -153,7 +159,7 @@ if [ "$USE_LOCAL" = "0" ]; then
     if [ -z "${NEXUS3_FORCE_DOWNLOAD:-}" ] && [ -x "$NEXUS3" ]; then
         _vc_exit=0
         "$NEXUS3" herdr version-check --pin "$VERSION_FILE" >/dev/null 2>&1 || _vc_exit=$?
-        _vc_ver="$("$NEXUS3" --version 2>/dev/null \
+        _vc_ver="$("$NEXUS3" version 2>/dev/null \
             | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9._]+)?' \
             | head -1)" || true
         case "$_vc_exit" in
@@ -172,14 +178,13 @@ if [ "$USE_LOCAL" = "0" ]; then
         echo "nexus3 plugin: downloading ${ASSET_NAME} ${VERSION} …"
         curl --fail --location --silent --show-error \
             -o "$WORK_DIR/$ASSET_NAME" \
-            "${BASE_URL}/${ASSET_NAME}"
+            "${BASE_URL}/${VERSION}/${ASSET_NAME}"
         curl --fail --location --silent --show-error \
             -o "$WORK_DIR/SHA256SUMS" \
-            "${BASE_URL}/SHA256SUMS"
+            "${BASE_URL}/${VERSION}/SHA256SUMS"
 
         echo "nexus3 plugin: verifying checksum …"
-        # sha256sum -c reads the filename from the SUMS file; cd so relative paths match.
-        (cd "$WORK_DIR" && grep "${ASSET_NAME}" SHA256SUMS | sha256sum --check --status) || {
+        (cd "$WORK_DIR" && _sha256_check "${ASSET_NAME}" SHA256SUMS) || {
             echo "nexus3: error: checksum mismatch for ${ASSET_NAME}" >&2
             exit 1
         }
@@ -198,7 +203,7 @@ if [ "$USE_LOCAL" = "0" ]; then
     fi
 
     _ki_exit=0
-    _ki_ver="$("$NEXUS3" --version 2>/dev/null \
+    _ki_ver="$("$NEXUS3" version 2>/dev/null \
         | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9._]+)?' \
         | head -1)" || true
     if echo "${_ki_ver:-}" | grep -q -- '-dev'; then
@@ -260,7 +265,7 @@ printf '#!/bin/sh\nexec "%s" "$@"\n' "$NEXUS3" > "$SHIM"
 chmod +x "$SHIM"
 
 echo "nexus3 plugin: shim written -> $SHIM"
-NEXUS3_VER="$("$NEXUS3" --version 2>/dev/null | head -1)" || true
+NEXUS3_VER="$("$NEXUS3" version 2>/dev/null | head -1)" || true
 echo "nexus3 plugin: using $NEXUS3 ($NEXUS3_VER)"
 
 _doctor_out="$("$NEXUS3" doctor 2>&1)" || true

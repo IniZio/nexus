@@ -65,24 +65,30 @@ cd nexus3 && go build -o ~/.local/bin/nexus3 ./cmd/nexus3
 nexus3 herdr install-default-shell --write-config
 ```
 
-Then install the plugin pointing at a local clone so the build hook skips the
-download:
+Then wire the plugin from a local clone (two steps — `herdr plugin link` does
+not run the build hook, so run `build.sh` first):
 
 ```sh
-NEXUS3_LOCAL=1 herdr plugin install /path/to/nexus3/plugins/herdr
+cd /path/to/nexus3/plugins/herdr
+NEXUS3_LOCAL=1 sh build.sh
+herdr plugin link /path/to/nexus3/plugins/herdr
 ```
 
 ### Local-dev path
 
 If `nexus3` is already on `PATH` and you want to skip the download entirely
-(e.g. while iterating on the binary itself), set `NEXUS3_LOCAL=1`:
+(e.g. while iterating on the binary itself):
 
 ```sh
-NEXUS3_LOCAL=1 herdr plugin install /path/to/nexus3/plugins/herdr
+cd /path/to/nexus3/plugins/herdr
+NEXUS3_LOCAL=1 sh build.sh
+herdr plugin link /path/to/nexus3/plugins/herdr
 ```
 
-`build.sh` uses the binary already on `PATH` and runs the same probes without
-touching the download path.
+`herdr plugin install` only accepts `OWNER/REPO` (GitHub) source; it cannot
+install from a local path. `herdr plugin link` registers the manifest but does
+not run the `[[build]]` hook. Run `build.sh` manually before or after linking;
+`NEXUS3_LOCAL=1` skips the download and uses the binary already on `PATH`.
 
 `build.sh` writes the shim next to the plugin files (`plugins/herdr/nexus3-shim.sh`
 in a checkout install), and that shim is what every live hook execs. Override

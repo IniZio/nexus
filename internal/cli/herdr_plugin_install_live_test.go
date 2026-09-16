@@ -157,12 +157,16 @@ func fakeReleaseServer(t *testing.T, binaryContent []byte) *httptest.Server {
 	sum := sha256.Sum256(binaryContent)
 	checksum := hex.EncodeToString(sum[:])
 	mux := http.NewServeMux()
-	mux.HandleFunc("/nexus3-linux-amd64", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		_, _ = w.Write(binaryContent)
-	})
-	mux.HandleFunc("/SHA256SUMS", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, "%s  nexus3-linux-amd64\n", checksum)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/nexus3-linux-amd64"):
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(binaryContent)
+		case strings.HasSuffix(r.URL.Path, "/SHA256SUMS"):
+			fmt.Fprintf(w, "%s  nexus3-linux-amd64\n", checksum)
+		default:
+			http.NotFound(w, r)
+		}
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -215,6 +219,7 @@ func runBuildSh(t *testing.T, probeHome, installDir, shimDir, baseURL string, ex
 		"NEXUS3_RELEASE_BASE_URL=" + baseURL,
 		"INSTALL_DIR=" + installDir,
 		"NEXUS3_SHIM_DIR=" + shimDir,
+		"HERDR_PLUGIN_ROOT=" + pluginDirPath(t),
 	}
 	env = append(env, extraEnv...)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -228,8 +233,10 @@ func runBuildSh(t *testing.T, probeHome, installDir, shimDir, baseURL string, ex
 func writeStubBinary(t *testing.T, path, ver string, vcExit int) {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
-if [ "$1" = "--version" ]; then
-    echo "nexus3 version %s"
+if [ "$1" = "version" ]; then
+    echo "nexus3 %s (go1.26.6)"
+elif [ "$1" = "--version" ]; then
+    exit 1
 elif [ "$1" = "herdr" ] && [ "$2" = "version-check" ]; then
     exit %d
 elif [ "$1" = "herdr" ] && [ "$2" = "abi" ]; then
@@ -300,9 +307,8 @@ func TestHerdrRefusalGuard(t *testing.T) {
 // herdr session (no pre-existing binary → download path) and verifies the
 // binary and shim are installed, then links the plugin and lists it.
 //
-// Mutation guide: delete the [[build]] stanza from
-// plugins/herdr/herdr-plugin.toml and run this test — herdr plugin link
-// returns an error, proving the herdr server is the oracle.
+// D1: herdr plugin link does not run [[build]]; build.sh is invoked directly.
+// runBuildSh sets HERDR_PLUGIN_ROOT to match the env herdr passes to the hook.
 func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 	probeHome, sess := startIsolatedHerdr(t)
 	nexus3Bin := buildNexus3Binary(t)
