@@ -142,6 +142,51 @@ func errSandbox(prefix string, cause error) *CodedError {
 	}
 }
 
+// sandboxCreateDiskProbe is the seam for the pre-create disk guard; tests
+// replace it to drive both branches of sandboxCreateDiskGuard through the
+// real runSandboxCreate call site.
+var sandboxCreateDiskProbe = func(ctx context.Context, stateDir string, c *image.Cache, agentTag string) (service.DiskUsageReport, error) {
+	st, err := store.NewFileStore(stateDir)
+	if err != nil {
+		return service.DiskUsageReport{}, err
+	}
+	return service.DiskUsage(ctx, stateDir, c, st, agentTag)
+}
+
+// sandboxCreateDiskGuard refuses a booted create when host free space is
+// below the builder floor (usage summary + hints on stderr, non-zero exit)
+// and warns once when free space is under twice the floor. A failed probe is
+// logged and does not block the create.
+func sandboxCreateDiskGuard(ctx context.Context, out *Output, stateDir string, c *image.Cache) error {
+	rep, err := sandboxCreateDiskProbe(ctx, stateDir, c, currentAgentTag())
+	if err != nil {
+		slog.Warn("sandbox create: disk usage probe failed; proceeding without disk guard", "err", err)
+		return nil
+	}
+	if ugCfg, ugErr := config.LoadUserGlobal(); ugErr == nil && ugCfg.Image.FreeSpaceFloorGiB > 0 {
+		rep.FloorBytes = uint64(ugCfg.Image.FreeSpaceFloorGiB) << 30
+		rep.BelowFloor = rep.FreeBytes < rep.FloorBytes
+	}
+	if rep.BelowFloor {
+		fmt.Fprint(out.Stderr(), renderDiskUsage(rep))
+		return errSandbox("sandbox create", fmt.Errorf(
+			"free space %s on %s is below the %s floor; reclaim space first (see disk usage above, or run: nexus3 disk usage)",
+			humanBytes(int64(rep.FreeBytes)), rep.StateDir, humanBytes(int64(rep.FloorBytes))))
+	}
+	if rep.FreeBytes < 2*rep.FloorBytes {
+		largest := "none"
+		var largestBytes int64 = -1
+		for _, cat := range rep.Categories {
+			if cat.Bytes > largestBytes {
+				largest, largestBytes = fmt.Sprintf("%s (%s)", cat.Name, humanBytes(cat.Bytes)), cat.Bytes
+			}
+		}
+		fmt.Fprintf(out.Stderr(), "warning: sandbox create: free space %s is under twice the %s floor; largest category: %s; run `nexus3 disk usage` for reclaim hints\n",
+			humanBytes(int64(rep.FreeBytes)), humanBytes(int64(rep.FloorBytes)), largest)
+	}
+	return nil
+}
+
 type sandboxInfoJSON struct {
 	ID           string            `json:"id"`
 	Project      string            `json:"project"`
@@ -998,6 +1043,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	imgCache, err := image.NewCache(cacheRoot)
 	if err != nil {
 		return errSandbox("sandbox create", fmt.Errorf("open image cache: %w", err))
+	}
+
+	// Disk guard runs before any temp dir, capture, or build: a full host used
+	// to surface only at CreateAndBoot's free-space check, after a 28-40s capture.
+	if guardErr := sandboxCreateDiskGuard(ctx, out, storeRoot, imgCache); guardErr != nil {
+		return guardErr
 	}
 
 	if f.filePath != "" && f.imageRef == "" && f.rootfsPath == "" {
