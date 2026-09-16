@@ -2736,7 +2736,10 @@ func classifyBriefSubmission(before, after string, beforeOK, afterOK bool) (brie
 // briefConfirmSettle is the gap between the two reads classifyBriefSubmission
 // compares. It must exceed claude's repaint period — the spinner's elapsed
 // timer ticks once a second — or a working agent reads as static.
-const briefConfirmSettle = 1500 * time.Millisecond
+//
+// A var, not a const: the pane reads are a seam (herdrPaneReadFn), and a test
+// driving that seam with scripted reads has nothing to wait for.
+var briefConfirmSettle = 1500 * time.Millisecond
 
 // briefSubmitAttempts is how many times Enter is pressed in total before the
 // dispatch is failed. The first press happens in herdrPaneSubmitToAgent; each
@@ -3605,7 +3608,6 @@ func herdrWorktreeGroundworkMount(worktreePath string) string {
 // AllowedRepo is only set when the user passes --repo explicitly at the CLI.
 // The config path uses generic paths policies for all hosts including GitHub.
 func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, err error) {
-	// Step 1: policy entries → pathPolicies (generic paths for all hosts).
 	for _, p := range cfg.Egress.Policy {
 		if len(p.Paths) > 0 {
 			pathPolicies = egressAddHostPolicy(pathPolicies, p.Host,
@@ -3613,7 +3615,6 @@ func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo s
 		}
 	}
 
-	// Step 2: secrets → "ENV@host1,host2" strings.
 	for _, s := range cfg.Egress.Secrets {
 		if len(s.Hosts) == 0 {
 			continue
@@ -3888,13 +3889,11 @@ func herdrWorktreeSandbox(
 	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, bool) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
 ) error {
-	// Step 1: idempotency.
 	if _, err := herdrSpaceResolve(ctx, storeRoot, workspaceID); err == nil {
 		fmt.Fprintf(w, "worktree-sandbox: workspace %s already bound\n", workspaceID)
 		return nil
 	}
 
-	// Step 2: resolve herdr binary.
 	herdrBin, err := resolveHerdrBin()
 	if err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: resolve herdr binary: %v\n", err)
@@ -3911,13 +3910,11 @@ func herdrWorktreeSandbox(
 		return nil
 	}
 
-	// Step 4: linked-worktree guard (predicates a+b).
 	if !info.IsLinkedWorktree {
 		fmt.Fprintf(w, "worktree-sandbox: workspace %s is main checkout, skipping\n", workspaceID)
 		return nil
 	}
 
-	// Step 5: mode-specific source check.
 	//
 	//  auto mode (--auto): repo-level predicate (c). At least one binding's
 	//  RepoRoot must match the main repo root derived from info.RepoKey. If
@@ -3981,8 +3978,6 @@ func herdrWorktreeSandbox(
 		extraMounts = append(extraMounts, gwMount)
 	}
 
-	// Step 6.1: per-handle create-intent lock.
-	//
 	// Two concurrent callers for the same worktree workspace both pass the
 	// unlocked step-1 idempotency check before either writes a binding.  A
 	// second create succeeds because the sandbox store does NOT enforce handle
@@ -4143,7 +4138,6 @@ func herdrWorktreeSandbox(
 		}
 		fmt.Fprintf(w, "worktree-sandbox: sandbox %s already exists (binding absent) — reconciling\n", handle)
 	} else {
-		// Step 8a: look up sandbox ID after successful create.
 		// The binding is written BEFORE opening the pane so the idempotency check
 		// on the next run sees it even if the process dies during pane open.
 		// MUTATION PROOF: keep the error-path return but discard sb on success:
@@ -4193,7 +4187,6 @@ func herdrWorktreeSandbox(
 		slog.Warn("worktree-sandbox: backfill-repo-root", "err", bfErr)
 	}
 
-	// Step 9: open guest shell pane and patch GuestPaneID into the stored binding.
 	// Error policy: sandbox+binding already exist and are recoverable on the next run,
 	// so pane failure is always printed. Explicit mode also returns it (non-zero exit);
 	// auto/conditional mode continues because the binding committed and the workspace is usable.
@@ -4230,7 +4223,6 @@ func herdrWorktreeSandbox(
 		}
 	}
 
-	// Step 10: rename workspace to space label.
 	if err := herdrWorkspaceRenameFn(ctx, herdrBin, workspaceID, label); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: rename workspace: %v\n", err)
 	}

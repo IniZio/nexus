@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,15 @@ type watchPaneEnv struct {
 	readsFile string
 }
 
+// watchPaneReadBudget is how many `pane read` calls a CYCLING stub answers
+// before going unreadable. A pane that keeps moving never stops on its own,
+// so "the script did not stop" cannot be observed by waiting: a script that
+// stops on the next poll passes a 6 s wait just as well as one that never
+// does. The budget turns the negative into a positive — the script must
+// consume every read and then exit REFUSED (3) on the unreadable pane,
+// which it can only do from inside a loop that was still polling.
+const watchPaneReadBudget = 40
+
 // newWatchPaneEnv writes a stub herdr. `pane read` emits the Nth transcript
 // from reads (repeating the last once exhausted) using a counter file, so the
 // stub is stateless between invocations exactly as a real CLI is.
@@ -90,7 +100,14 @@ type watchPaneEnv struct {
 // behaves. Getting this backwards makes an endlessly-working fixture go static
 // the moment the list is exhausted, and the test then measures the fixture
 // rather than the script.
+//
+// budget > 0 makes `pane read` answer that many calls and then emit nothing,
+// which the script must treat as an unreadable pane (see watchPaneReadBudget).
 func newWatchPaneEnv(t *testing.T, reads []string, scrollOffset string, cycle bool) *watchPaneEnv {
+	return newWatchPaneEnvBudget(t, reads, scrollOffset, cycle, 0)
+}
+
+func newWatchPaneEnvBudget(t *testing.T, reads []string, scrollOffset string, cycle bool, budget int) *watchPaneEnv {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -119,6 +136,7 @@ func newWatchPaneEnv(t *testing.T, reads []string, scrollOffset string, cycle bo
 READS=%q
 N=%d
 CYCLE=%q
+BUDGET=%d
 CTR="$READS/../counter"
 case "$1 $2" in
   "pane read")
@@ -131,6 +149,9 @@ case "$1 $2" in
     [ -f "$CTR" ] && i=$(cat "$CTR")
     next=$((i + 1))
     echo "$next" > "$CTR"
+    if [ "$BUDGET" -gt 0 ] && [ "$next" -gt "$BUDGET" ]; then
+      exit 0
+    fi
     if [ "$CYCLE" = "1" ]; then
       i=$((i %% N))
     else
@@ -145,13 +166,54 @@ case "$1 $2" in
     exit 0
     ;;
 esac
-`, readsDir, len(reads), map[bool]string{true: "1", false: "0"}[cycle], scrollBody)
+`, readsDir, len(reads), map[bool]string{true: "1", false: "0"}[cycle], budget, scrollBody)
 
 	bin := filepath.Join(dir, "herdr")
 	if err := os.WriteFile(bin, []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return &watchPaneEnv{dir: dir, herdrBin: bin, readsFile: readsDir}
+}
+
+// reads reports how many `pane read` calls the stub has answered.
+func (e *watchPaneEnv) reads(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(e.dir, "counter"))
+	if err != nil {
+		t.Fatalf("read stub counter: %v", err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatalf("stub counter %q: %v", b, err)
+	}
+	return n
+}
+
+// runExhaustsBudget runs the script against a budgeted stub and asserts the
+// only acceptable outcome: every read consumed, then REFUSED on the unreadable
+// pane, and no stop verdict at any point. An exit before the budget is spent
+// is a stop the pane never made; a timeout means the script stopped polling.
+func (e *watchPaneEnv) runExhaustsBudget(t *testing.T) {
+	t.Helper()
+	out, code, timedOut := e.run(t, 20*time.Second)
+	if timedOut {
+		t.Fatalf("script stopped polling before the read budget was spent (%d/%d reads)\noutput:\n%s",
+			e.reads(t), watchPaneReadBudget, out)
+	}
+	if n := e.reads(t); n <= watchPaneReadBudget {
+		t.Fatalf("reported a stop (exit %d) after %d/%d reads on a pane that never stopped\noutput:\n%s",
+			code, n, watchPaneReadBudget, out)
+	}
+	if code != exitRefused || !strings.Contains(out, "REFUSED: pane became unreadable while watching") {
+		t.Fatalf("exit %d after the pane went unreadable, want %d (REFUSED from the WATCH loop — "+
+			"a refusal from the start-grace loop means the agent was never seen working)\noutput:\n%s",
+			code, exitRefused, out)
+	}
+	for _, verdict := range []string{"AGENT_IDLE", "AGENT_QUESTION", "AGENT_NEVER_STARTED"} {
+		if strings.Contains(out, verdict) {
+			t.Fatalf("emitted %s on a pane that never stopped\noutput:\n%s", verdict, out)
+		}
+	}
 }
 
 // run executes the real scripts/watch-pane.sh against the stub, with the poll
@@ -232,20 +294,14 @@ func TestWatchPane_IdleTranscriptExitsIdle(t *testing.T) {
 }
 
 // TestWatchPane_WorkingTranscriptDoesNotStop is the positive test: a pane that
-// keeps moving must NOT produce a stop verdict. It is expected to time out —
-// blocking is the correct behaviour — so the timeout here is the PASS.
+// keeps moving must NOT produce a stop verdict. Blocking is the correct
+// behaviour, so the stub's read budget is what ends the run.
 func TestWatchPane_WorkingTranscriptDoesNotStop(t *testing.T) {
 	// Two transcripts one spinner tick apart, CYCLED: the pane repaints forever,
 	// exactly as a working agent's does.
-	env := newWatchPaneEnv(t, []string{paneWorkingA, paneWorkingB}, "0", true)
+	env := newWatchPaneEnvBudget(t, []string{paneWorkingA, paneWorkingB}, "0", true, watchPaneReadBudget)
 
-	out, code, timedOut := env.run(t, 6*time.Second)
-	if !timedOut {
-		t.Errorf("watch-pane.sh reported a stop (exit %d) on a pane that never stopped moving\noutput:\n%s", code, out)
-	}
-	if !strings.Contains(out, "agent is working") {
-		t.Errorf("start-grace loop did not detect the working agent:\n%s", out)
-	}
+	env.runExhaustsBudget(t)
 }
 
 // TestWatchPane_BlockedOnSubagentIsWorking covers the skill's false-stop mode
@@ -253,13 +309,9 @@ func TestWatchPane_WorkingTranscriptDoesNotStop(t *testing.T) {
 // affordance at all, ever. Only movement can see it. A detector that treated
 // the affordance's absence as idleness stops here immediately.
 func TestWatchPane_BlockedOnSubagentIsWorking(t *testing.T) {
-	env := newWatchPaneEnv(t, []string{paneWorkingNoAffordanceA, paneWorkingNoAffordanceB}, "0", true)
+	env := newWatchPaneEnvBudget(t, []string{paneWorkingNoAffordanceA, paneWorkingNoAffordanceB}, "0", true, watchPaneReadBudget)
 
-	out, code, timedOut := env.run(t, 6*time.Second)
-	if !timedOut {
-		t.Errorf("reported a stop (exit %d) on an agent blocked on its own subagent — "+
-			"the interrupt affordance's ABSENCE was treated as evidence\noutput:\n%s", code, out)
-	}
+	env.runExhaustsBudget(t)
 }
 
 // TestWatchPane_QuestionDiscriminated proves strings still do their one job:
@@ -304,13 +356,9 @@ func TestWatchPane_ScrolledPaneReadsAsWorking(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// A single, genuinely STATIC transcript: clamped, so every read is
 			// identical. Only the scroll answer differs between sub-tests.
-			env := newWatchPaneEnv(t, []string{paneIdle}, tc.offset, false)
+			env := newWatchPaneEnvBudget(t, []string{paneIdle}, tc.offset, false, watchPaneReadBudget)
 
-			out, code, timedOut := env.run(t, 6*time.Second)
-			if !timedOut {
-				t.Errorf("reported a stop (exit %d) on a scrolled pane — a static read from "+
-					"outside the spinner's window is not evidence of a stop\noutput:\n%s", code, out)
-			}
+			env.runExhaustsBudget(t)
 		})
 	}
 }

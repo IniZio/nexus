@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Transcripts below are the two states observed live on 2026-09-02 while
@@ -208,12 +209,15 @@ func stubHerdrExec(t *testing.T, argv *[][]string) {
 	t.Cleanup(func() { herdrExecCommandContext = old })
 }
 
-// stubPaneRead swaps the pane-read seam for a scripted sequence.
+// stubPaneRead swaps the pane-read seam for a scripted sequence and collapses
+// the settle gap, which exists to outlast a real pane's repaint period.
 func stubPaneRead(t *testing.T, reads []readStep, calls *int) {
 	t.Helper()
 	old := herdrPaneReadFn
 	herdrPaneReadFn = scriptedPaneReader(reads, calls)
-	t.Cleanup(func() { herdrPaneReadFn = old })
+	oldSettle := briefConfirmSettle
+	briefConfirmSettle = time.Millisecond
+	t.Cleanup(func() { herdrPaneReadFn = old; briefConfirmSettle = oldSettle })
 }
 
 // TestDeliverBriefConfirmed_StrandedFailsLoudly is the regression test for the

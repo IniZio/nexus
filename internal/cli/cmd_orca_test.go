@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -798,28 +799,36 @@ func TestOrcaSpawnConfig_NoWorkspace(t *testing.T) {
 }
 
 // TestOrcaSyncWorkspace_ExecFailureIsHardError verifies that orcaSyncWorkspace
-// returns a non-nil error rather than swallowing the failure.
+// returns the svc.Exec failure rather than swallowing it the way the old
+// warn-and-continue path did.
 //
-// With a fake driver there is no real vsock agent in the guest, so svc.Exec
-// must fail. This test confirms that failure propagates as an error — i.e.
-// the function never silently continues the way the old warn-and-continue
-// code path did.
+// The guest dial is made to fail explicitly. A bare fake driver hands out a
+// net.Pipe nobody serves, so Exec only fails once gRPC gives up its connect
+// attempt 20 s later — and a test that accepts any error cannot tell that
+// timeout from the failure it means to prove.
 //
 // KVM-gated: the mount/cp execution itself cannot be verified without a real
 // guest; this test only covers the error-surface contract.
 func TestOrcaSyncWorkspace_ExecFailureIsHardError(t *testing.T) {
-	svc := newTestOrcaService(t)
+	st, err := store.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	errNoAgent := errors.New("fake: no guest agent")
+	fd := fake.New()
+	fd.SetDialGuestError(errNoAgent)
+	svc := service.New(st, fd, lifecycle.New())
 	sb := createOrcaSandbox(t, svc, "motive-sync-err", "sync-err-sandbox")
 
 	ws := &service.WorkspaceSpec{
 		SourcePath: t.TempDir(),
 		GuestPath:  "/workspace/repo",
 	}
-	// With a fake driver there is no real vsock/agent connection; svc.Exec
-	// must fail. orcaSyncWorkspace must return that error (hard failure), not
-	// succeed or swallow it as a warning.
-	err := orcaSyncWorkspace(context.Background(), svc, sb.ID.String(), ws, 0)
+	err = orcaSyncWorkspace(context.Background(), svc, sb.ID.String(), ws, 0)
 	if err == nil {
-		t.Fatal("orcaSyncWorkspace: expected non-nil error with fake (non-running) sandbox, got nil")
+		t.Fatal("orcaSyncWorkspace: expected non-nil error when the guest dial fails, got nil")
+	}
+	if !errors.Is(err, errNoAgent) && !strings.Contains(err.Error(), errNoAgent.Error()) {
+		t.Fatalf("orcaSyncWorkspace: error does not carry the dial failure: %v", err)
 	}
 }

@@ -414,11 +414,20 @@ func TestSandbox_UsageError_UnknownSubcommand(t *testing.T) {
 	}
 }
 
+// TestSandbox_OperationalError_StartNoSubstrate: `sandbox start` on a host with
+// no substrate must fail with code no_substrate and exit 1.
+//
+// The substrate must be ABSENT, not merely broken. SelectSubstrate finds
+// cloud-hypervisor via PATH, so an empty PATH is what "no substrate" means.
+// Before this was pinned, the test ran on a developer host with
+// cloud-hypervisor installed: it selected the real substrate, spawned the real
+// netns runtime, and passed only because the VMM API never came up within its
+// 10 s start timeout — a different failure, 10 s late, on the operator's
+// machine.
 func TestSandbox_OperationalError_StartNoSubstrate(t *testing.T) {
-	// Using the real binary path (sandboxNoopDriver) via cli.Run with XDG_STATE_HOME.
-	// First create a sandbox so start can find it.
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("PATH", t.TempDir())
 
 	// Create via Run so the store is in the right place.
 	createCode := Run([]string{"sandbox", "create", "proj/box"})
@@ -426,10 +435,21 @@ func TestSandbox_OperationalError_StartNoSubstrate(t *testing.T) {
 		t.Fatalf("create failed with exit code %d", createCode)
 	}
 
-	// Start should fail with the noopDriver (exit 1).
 	startCode := Run([]string{"sandbox", "start", "proj/box"})
 	if startCode != 1 {
 		t.Errorf("start with no substrate: exit code = %d, want 1", startCode)
+	}
+
+	// The exit code alone cannot tell "no substrate" from any other start
+	// failure; the error code can.
+	out, _, _ := capture(false)
+	err := runSandbox(context.Background(), []string{"start", "proj/box"}, out)
+	var coded *CodedError
+	if !errors.As(err, &coded) {
+		t.Fatalf("expected *CodedError, got %T: %v", err, err)
+	}
+	if coded.Code != sandboxErrCodeNoSubstrate {
+		t.Errorf("code = %q, want %q", coded.Code, sandboxErrCodeNoSubstrate)
 	}
 }
 
