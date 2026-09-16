@@ -74,14 +74,60 @@ SHA256SUMS.
 No manual version bumping or tagging is required. The CD workflow
 (`.github/workflows/cd.yml`) is the source of truth for the release process.
 
+## Test tiers
+
+| Tier | Build tag | Make target | Needs |
+|---|---|---|---|
+| Unit | _(none)_ | `make test` | Any Linux laptop with Go, make, gcc |
+| Integration | `integration` | `make test-integration` | `/dev/kvm` + cloud-hypervisor binary + memory cap awareness (see OOM warning in CLAUDE.md — the Makefile guards are mandatory) |
+| Herdr live | `herdr_live` | `make test-herdr-live` | KVM + a running herdr daemon |
+
+**What happens without KVM:**
+Integration and herdr-live tests check `/dev/kvm` at startup and call
+`t.Skip("skipping: /dev/kvm not available")` — the test is counted as
+skipped, not failed. Set `NEXUS3_LIVE_REQUIRED=1` to convert every such skip
+into a hard `t.Fatalf`, so CI can enforce that KVM tiers actually ran rather
+than silently skipping.
+
+## Quality gate
+
+Run once after cloning to install `golangci-lint` and `govulncheck`:
+
+```bash
+make setup
+```
+
+| Target | What it does |
+|---|---|
+| `make format` | Checks gofmt formatting; exits non-zero and lists offending files |
+| `make format-fix` | Applies gofmt in-place |
+| `make lint` | Runs golangci-lint; only findings **new since the merge base** fail the build (`new-from-rev` in `.golangci.yml`) |
+| `make audit` | Runs govulncheck + `go mod verify` |
+| `make ci` | `audit` + `lint` + `format` + `test` — exactly what CI runs |
+
+Run `make ci` locally before pushing to avoid a round-trip to CI.
+
+**Docker toolchain (non-KVM work):** the root `Dockerfile` builds a
+self-contained dev image. Use it on machines without KVM to run the
+type-checker and unit tier:
+
+```bash
+docker build -t nexus3-dev .
+docker run --rm -v $PWD:/src nexus3-dev make vet
+docker run --rm -v $PWD:/src nexus3-dev make test
+```
+
+KVM tiers need the host device passed through: add `--device /dev/kvm` to the
+`docker run` command.
+
 ## Development
 
 ```bash
-# Build
-go build ./...
+# Build (type-check only; produces no binary — see CLAUDE.md)
+make build
 
-# Test (TMPDIR=/tmp required: long paths exceed AF_UNIX sun_path limit)
-TMPDIR=/tmp go test ./...
+# Unit tests
+make test
 ```
 
 Integration tests (KVM-gated) are excluded from the default run. They require
