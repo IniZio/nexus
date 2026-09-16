@@ -202,7 +202,7 @@ func freeForwardablePort(t *testing.T) uint16 {
 	return 0
 }
 
-func mergedStatus(t *testing.T, dir string, port uint16) string {
+func mergedEntry(t *testing.T, dir string, port uint16) portfwd.Entry {
 	t.Helper()
 	st, err := portfwd.Merge(dir, time.Now())
 	if err != nil {
@@ -210,11 +210,11 @@ func mergedStatus(t *testing.T, dir string, port uint16) string {
 	}
 	for _, e := range st.Forwards {
 		if e.Port == port {
-			return e.Status
+			return e
 		}
 	}
 	t.Fatalf("port %d absent from merged state: %+v", port, st.Forwards)
-	return ""
+	return portfwd.Entry{}
 }
 
 // AC-6: a forwardable port whose host bind fails must never read as live.
@@ -246,8 +246,10 @@ func TestReconcile_BindFailureWritesErrorThenRetries(t *testing.T) {
 	if err := sup.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile(bind fails): %v", err)
 	}
-	if got := mergedStatus(t, tmpDir, port); got != "error" {
-		t.Fatalf("status after failed bind = %q, want %q", got, "error")
+	if got := mergedEntry(t, tmpDir, port); got.Status != "error" {
+		t.Fatalf("status after failed bind = %q, want %q", got.Status, "error")
+	} else if !strings.Contains(got.Error, "address already in use") {
+		t.Fatalf("merged Error after failed bind = %q, want address already in use", got.Error)
 	}
 	if _, bound := sup.listeners[port]; bound {
 		t.Fatalf("port %d recorded in listeners despite bind failure", port)
@@ -261,8 +263,10 @@ func TestReconcile_BindFailureWritesErrorThenRetries(t *testing.T) {
 	if err := sup.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile(retry): %v", err)
 	}
-	if got := mergedStatus(t, tmpDir, port); got != "live" {
-		t.Fatalf("status after retry = %q, want %q", got, "live")
+	if got := mergedEntry(t, tmpDir, port); got.Status != "live" {
+		t.Fatalf("status after retry = %q, want %q", got.Status, "live")
+	} else if got.Error != "" {
+		t.Fatalf("merged Error after retry = %q, want empty", got.Error)
 	}
 	if _, ok := sup.bindErrs[port]; ok {
 		t.Fatalf("bindErrs still holds port %d after successful retry", port)

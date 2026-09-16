@@ -285,8 +285,10 @@ func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error
 			e.Status = portFwdStatusLive
 			e.ConfirmedAt = now
 		} else {
-			// portfwd.Entry carries no error field; the bind error text lives in p.bindErrs and the listen_err log.
 			e.Status = portFwdStatusError
+			if bindErr := p.bindErrs[l.Port]; bindErr != nil {
+				e.Error = bindErr.Error()
+			}
 		}
 		entries = append(entries, e)
 	}
