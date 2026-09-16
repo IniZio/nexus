@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	ctdarchive "github.com/containerd/containerd/archive"
+	ctdarchive "github.com/containerd/containerd/v2/pkg/archive"
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
