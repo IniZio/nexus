@@ -33,6 +33,7 @@ type Entry struct {
 	Sandbox     string    `json:"sandbox"`
 	Status      string    `json:"status"`
 	ConfirmedAt time.Time `json:"confirmed_at,omitzero"`
+	Error       string    `json:"error,omitempty"`
 }
 
 // State is the JSON shape of forwards.state and of each per-sandbox file.
@@ -55,7 +56,7 @@ func WriteSandboxState(dir, sandboxID string, entries []Entry, now time.Time) er
 	if err := writeJSONAtomic(perSandboxFile(dir, sandboxID), st); err != nil {
 		return err
 	}
-	return withLock(dir, func() error { return mergeLocked(dir, now) })
+	return withLock(dir, func() error { return mergeLocked(dir, now, "") })
 }
 
 // RemoveSandboxState deletes sandboxID's file and rewrites the merge; used on
@@ -65,30 +66,87 @@ func RemoveSandboxState(dir, sandboxID string, now time.Time) error {
 	if err := os.Remove(perSandboxFile(dir, sandboxID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("portfwd state remove: %w", err)
 	}
-	return withLock(dir, func() error { return mergeLocked(dir, now) })
+	return withLock(dir, func() error { return mergeLocked(dir, now, sandboxID) })
 }
 
-// Merge reads every fresh per-sandbox file and returns the combined state,
-// ports sorted; entries from files older than StaleAfter are dropped.
+// Merge unions every fresh per-sandbox file with the previous forwards.state,
+// one row per (sandbox, port) from the newest file (updated_at, then
+// confirmed_at); live 2026-09-16 a supervisor listed every port twice and
+// remote clients doubled every forward.
+//
+// Rows in forwards.state whose sandbox has no forwards.d file (fresh or stale)
+// come from a supervisor that predates forwards.d and writes forwards.state
+// directly (HAN-941 F6); they are carried while the sandbox is alive.
+// Liveness is the row's confirmed_at: every supervisor stamps it with the
+// wall clock on each reconcile tick (5s), so it is a per-row heartbeat that
+// a merge copies unchanged. Zero or older than StaleAfter means no live
+// writer and the row is dropped, like a stale forwards.d file.
 func Merge(dir string, now time.Time) (State, error) {
+	return merge(dir, now, "")
+}
+
+type mergeCandidate struct {
+	entry  Entry
+	fileAt time.Time
+}
+
+func (c mergeCandidate) newerThan(o mergeCandidate) bool {
+	if !c.fileAt.Equal(o.fileAt) {
+		return c.fileAt.After(o.fileAt)
+	}
+	return c.entry.ConfirmedAt.After(o.entry.ConfirmedAt)
+}
+
+type mergeKey struct {
+	sandbox string
+	port    uint16
+}
+
+func merge(dir string, now time.Time, excludeSandbox string) (State, error) {
 	names, err := filepath.Glob(filepath.Join(dir, perSandboxDirName, "*.state"))
 	if err != nil {
 		return State{}, fmt.Errorf("portfwd state glob: %w", err)
 	}
-	merged := State{WrittenBy: "nexus3/merge", UpdatedAt: now.UTC(), Forwards: []Entry{}}
-	for _, name := range names {
-		data, err := os.ReadFile(name)
-		if err != nil {
-			continue
+	best := map[mergeKey]mergeCandidate{}
+	consider := func(e Entry, fileAt time.Time) {
+		k := mergeKey{sandbox: e.Sandbox, port: e.Port}
+		c := mergeCandidate{entry: e, fileAt: fileAt}
+		if prev, ok := best[k]; ok && !c.newerThan(prev) {
+			return
 		}
-		var st State
-		if err := json.Unmarshal(data, &st); err != nil {
+		best[k] = c
+	}
+	owned := map[string]bool{}
+	for _, name := range names {
+		st, ok := readState(name)
+		if !ok {
 			continue
 		}
 		if now.Sub(st.UpdatedAt) > StaleAfter {
 			continue
 		}
-		merged.Forwards = append(merged.Forwards, st.Forwards...)
+		for _, e := range st.Forwards {
+			owned[e.Sandbox] = true
+			consider(e, st.UpdatedAt)
+		}
+	}
+	if prev, ok := readState(filepath.Join(dir, StateFileName)); ok {
+		for _, e := range prev.Forwards {
+			if owned[e.Sandbox] || e.Sandbox == excludeSandbox {
+				continue
+			}
+			if _, err := os.Stat(perSandboxFile(dir, e.Sandbox)); err == nil {
+				continue
+			}
+			if e.ConfirmedAt.IsZero() || now.Sub(e.ConfirmedAt) > StaleAfter {
+				continue
+			}
+			consider(e, prev.UpdatedAt)
+		}
+	}
+	merged := State{WrittenBy: "nexus3/merge", UpdatedAt: now.UTC(), Forwards: make([]Entry, 0, len(best))}
+	for _, c := range best {
+		merged.Forwards = append(merged.Forwards, c.entry)
 	}
 	sort.Slice(merged.Forwards, func(i, j int) bool {
 		if merged.Forwards[i].Port != merged.Forwards[j].Port {
@@ -99,8 +157,20 @@ func Merge(dir string, now time.Time) (State, error) {
 	return merged, nil
 }
 
-func mergeLocked(dir string, now time.Time) error {
-	merged, err := Merge(dir, now)
+func readState(path string) (State, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return State{}, false
+	}
+	var st State
+	if err := json.Unmarshal(data, &st); err != nil {
+		return State{}, false
+	}
+	return st, true
+}
+
+func mergeLocked(dir string, now time.Time, excludeSandbox string) error {
+	merged, err := merge(dir, now, excludeSandbox)
 	if err != nil {
 		return err
 	}
