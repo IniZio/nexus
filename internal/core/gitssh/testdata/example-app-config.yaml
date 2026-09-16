@@ -38,7 +38,7 @@ egress:
   #     (postgres:16.11-trixie Debian base).
   #   registry.npmjs.org — npm install -g pnpm in web Dockerfiles.
   #   pypi.org / files.pythonhosted.org — uv sync for Python deps in backend.
-  #   github.com / codeload.github.com — wget of pg_partman zip in db/Dockerfile
+  #   codeload.github.com — wget of pg_partman zip in db/Dockerfile
   #     (GitHub redirects archive downloads to codeload.github.com).
   allow:
     - registry-1.docker.io          # Docker Hub image pulls
@@ -51,5 +51,4 @@ egress:
     - registry.npmjs.org            # npm packages (pnpm install)
     - pypi.org                      # Python package index (uv sync)
     - files.pythonhosted.org        # Python wheels/sdists (uv sync)
-    - github.com                    # git + release tarballs (pg_partman wget)
     - codeload.github.com           # GitHub archive/zip downloads (pg_partman)
