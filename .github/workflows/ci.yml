@@ -4,8 +4,13 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
+    # D-2: GitHub-hosted runners are a deliberate exception to the handbook self-hosted policy — no self-hosted KVM runner exists; KVM tiers are gated separately below.
     runs-on: ubuntu-latest
 
     steps:
@@ -14,7 +19,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -22,13 +27,18 @@ jobs:
           python-version: "3.11"
 
       - name: Build
-        run: go build ./...
+        run: make build
 
-      # TMPDIR=/tmp is required: long TMPDIR paths exceed the 107-byte AF_UNIX
-      # sun_path limit and break socket-based tests in this repo.
-      # The `integration` build tag is NOT set, so KVM-gated tests are excluded.
+      - name: Setup tools
+        run: make setup
+
+      # TMPDIR=/tmp: long paths exceed the 107-byte AF_UNIX sun_path limit.
+      # make ci carries the memory-cap guards from CLAUDE.md; NEXUS3_ALLOW_UNCAPPED=1
+      # skips systemd-run --user --scope, which is unavailable on GitHub runners.
       - name: Test
-        run: TMPDIR=/tmp go test ./...
+        env:
+          NEXUS3_ALLOW_UNCAPPED: "1"
+        run: TMPDIR=/tmp make ci
 
       - name: Validate CLI examples in docs
         run: python3 scripts/docs/validate-cli-examples.py
@@ -98,7 +108,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       # Install herdr at a pinned version with SHA-256 verification.
       # The version is pinned to 0.8.0 — the version validated on this host.
@@ -173,7 +183,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       # NEXUS3_ALLOW_UNCAPPED=1: GitHub Actions provides no user systemd
       # instance, so `systemd-run --user --scope` fails and CAPPED fails closed.
