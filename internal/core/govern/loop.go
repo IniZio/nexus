@@ -68,6 +68,9 @@ type Governor struct {
 	shrinkCount         int
 	lastResizeTime      time.Time
 	lastResizeWasShrink bool
+	// grewOnce is set on the first memory grow attempt; until then the memory
+	// axis skips the post-resize cooldown for a grow (F13, see evaluate).
+	grewOnce            bool
 	latest              resize.Sample
 	lastSampleTime      time.Time
 	// prevSwapUsed is the SwapUsed (bytes) from the sample before g.latest.

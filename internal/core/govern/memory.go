@@ -64,6 +64,22 @@ const (
 	// Source: OLD memory_resize.go:64-66.
 	criticalGrowThreshold = 0.08
 
+	// loadedGrowThreshold = 0.35: MemAvailable ratio below which a grow fires
+	// when the guest is ALSO under CPU pressure (CPUPSISomeAvg10 >=
+	// cpuGrowPressure, the CPU axis' own grow threshold — shared, not
+	// duplicated, so the two axes agree on what "loaded" means).
+	//
+	// Friction F13 (hanlun-lms test drive): during a docker-compose build the
+	// guest sat at MemAvailable 23-26% for ~10 min before the first memory grow,
+	// because defaultGrowThreshold (0.20) never tripped while CPU hotplug
+	// (PSI >= 15) reacted immediately. A build that is saturating its vCPUs is
+	// about to allocate; pre-warming memory at 0.35 under CPU load buys the
+	// headroom before MemAvailable falls off the cache-pressure cliff. Sits
+	// strictly between defaultGrowThreshold (0.20) and defaultShrinkThreshold
+	// (0.45) so a loaded grow can never be immediately undone by a shrink.
+	// Not in OLD.
+	loadedGrowThreshold = 0.35
+
 	// defaultShrinkThreshold = 0.45: fraction of MemTotal above which the VM
 	// has comfortable headroom and can return memory.
 	// Source: OLD memory_resize.go:67.
@@ -167,6 +183,11 @@ const (
 //  2. MemAvailable ratio (lagging backstop): ratio < defaultGrowThreshold (0.20)
 //     catches collapses that PSI misses when the kernel races the OOM path.
 //
+//  2b. CPU-load pre-warm (F13): ratio < loadedGrowThreshold (0.35) while the
+//     CPU axis reports pressure (CPUPSISupported && CPUPSISomeAvg10 >=
+//     cpuGrowPressure). Gated on CPUPSISupported — an absent CPU PSI reads
+//     as zero and must never fire (or suppress) this term.
+//
 //  3. Swap-pressure term (flow-gated, D-RAM-07 + D-RAM-10): fires when zram is
 //     active, SwapUsed/MemTotal >= defaultSwapPressureRatio (0.20), AND
 //     SwapUsed has INCREASED since the previous sample. The increase guard
@@ -189,6 +210,11 @@ func sampleWantsGrow(s resize.Sample, prevSwapUsed uint64) bool {
 	// Signal 2: MemAvailable ratio — lagging backstop.
 	ratio := float64(s.MemAvailableBytes) / float64(s.MemTotalBytes)
 	if ratio < defaultGrowThreshold {
+		return true
+	}
+	// Signal 2b: CPU-load pre-warm (F13) — a build saturating its vCPUs is
+	// about to allocate; grow earlier while the guest is loaded.
+	if s.CPUPSISupported && s.CPUPSISomeAvg10 >= cpuGrowPressure && ratio < loadedGrowThreshold {
 		return true
 	}
 	// Signal 3: swap-pressure flow gate — zram indicator (D-RAM-07 + D-RAM-10).
@@ -467,10 +493,17 @@ func (g *Governor) evaluate(ctx context.Context) {
 
 	critical := sampleIsCritical(g.latest) && current < maxBytes
 
-	// Post-resize cooldown — skipped when the sample is critical.
-	// The two critical bypasses (PSI-full and MemAvailable < 0.08) are
-	// embedded in sampleIsCritical.
-	if !critical && !g.lastResizeTime.IsZero() {
+	// Post-resize cooldown — skipped when the sample is critical, and skipped
+	// for the FIRST grow after boot (F13). The two critical bypasses (PSI-full
+	// and MemAvailable < 0.08) are embedded in sampleIsCritical.
+	//
+	// First-grow bypass: before the governor has ever grown, the only cooldown
+	// that can be in force is a shrink cooldown (120 s) left by an early idle
+	// shrink. A boot-time workload that then wants memory should not wait it
+	// out — the first grow is the one that decides whether a cold build gets
+	// its headroom in time. Every subsequent grow honours the cooldown.
+	firstGrow := !g.grewOnce && g.growCount > 0
+	if !critical && !firstGrow && !g.lastResizeTime.IsZero() {
 		cooldown := memoryGrowCooldown
 		if g.lastResizeWasShrink {
 			cooldown = memoryShrinkCooldown
@@ -591,6 +624,11 @@ func (g *Governor) evaluate(ctx context.Context) {
 	// don't hammer a failing resizer on every tick.
 	g.lastResizeTime = g.clock.Now()
 	g.lastResizeWasShrink = isShrink
+	if !isShrink {
+		// Set regardless of outcome (like lastResizeTime): the first-grow
+		// cooldown bypass must not re-fire against a failing resizer every tick.
+		g.grewOnce = true
+	}
 
 	if err != nil {
 		slog.Warn("govern.memory.resize_error",

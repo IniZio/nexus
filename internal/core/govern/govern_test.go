@@ -223,6 +223,21 @@ func TestMemoryControlLawConstants(t *testing.T) {
 	if criticalGrowThreshold != 0.08 {
 		t.Errorf("criticalGrowThreshold = %v, want 0.08", criticalGrowThreshold)
 	}
+	// F13 pre-warm threshold. Pinned strictly between the grow (0.20) and
+	// shrink (0.45) thresholds: below 0.20 it would be redundant with
+	// defaultGrowThreshold; at or above 0.45 a loaded grow could land in the
+	// shrink band and be undone. Pinned to the CPU axis' grow pressure so the
+	// two axes cannot silently disagree on what "loaded" means.
+	if loadedGrowThreshold != 0.35 {
+		t.Errorf("loadedGrowThreshold = %v, want 0.35 (F13)", loadedGrowThreshold)
+	}
+	if !(loadedGrowThreshold > defaultGrowThreshold && loadedGrowThreshold < defaultShrinkThreshold) {
+		t.Errorf("loadedGrowThreshold %v must sit strictly between grow %v and shrink %v",
+			loadedGrowThreshold, defaultGrowThreshold, defaultShrinkThreshold)
+	}
+	if cpuGrowPressure != 15.0 {
+		t.Errorf("cpuGrowPressure = %v, want 15.0 (shared by memory F13 pre-warm)", cpuGrowPressure)
+	}
 	if memoryShrinkConsecutive != 5 {
 		t.Errorf("memoryShrinkConsecutive = %d, want 5", memoryShrinkConsecutive)
 	}
@@ -1085,5 +1100,154 @@ func TestMemoryLoop_ConvergesInsteadOfOscillating(t *testing.T) {
 	if finalSize <= minBytes {
 		t.Fatalf("governor settled at or below the floor (%d) despite steady ~1GiB demand over %d rounds (full sequence: %v) — shrink is still overshooting",
 			finalSize, rounds, sizes)
+	}
+}
+
+// ── F13: CPU-load memory pre-warm + first-grow cooldown bypass ────────────────
+
+// loadedSample: MemAvailable at ratio (default 0.30 — above defaultGrowThreshold
+// 0.20, below loadedGrowThreshold 0.35), memory PSI idle, CPU PSI as given.
+func loadedSample(total uint64, ratio float64, cpuPSISupported bool, cpuSome float64) resize.Sample {
+	return resize.Sample{
+		Timestamp:         time.Now(),
+		MemTotalBytes:     total,
+		MemAvailableBytes: uint64(float64(total) * ratio),
+		MemPSISupported:   true,
+		CPUPSISupported:   cpuPSISupported,
+		CPUPSISomeAvg10:   cpuSome,
+	}
+}
+
+// TestSampleWantsGrow_CPULoadPreWarm pins the F13 term of sampleWantsGrow:
+// a MemAvailable ratio in (0.20, 0.35) grows only when the CPU axis reports
+// pressure, and an absent CPU PSI never fires it.
+func TestSampleWantsGrow_CPULoadPreWarm(t *testing.T) {
+	t.Parallel()
+	total := uint64(3584 * 1024 * 1024) // 3.5 GiB, as in the F13 observation
+	cases := []struct {
+		name     string
+		ratio    float64
+		cpuOK    bool
+		cpuSome  float64
+		wantGrow bool
+	}{
+		{"psi high + ratio 0.30 -> grow", 0.30, true, cpuGrowPressure, true},
+		{"psi high + ratio 0.25 -> grow", 0.25, true, 40.0, true},
+		{"psi low + ratio 0.30 -> no grow (existing behaviour)", 0.30, true, cpuGrowPressure - 0.1, false},
+		{"psi zero + ratio 0.30 -> no grow", 0.30, true, 0, false},
+		{"psi unsupported + ratio 0.30 -> no grow", 0.30, false, 99.0, false},
+		// 0.36 not 0.35: uint64 truncation of total*0.35 lands a hair below the
+		// threshold and would exercise the grow side of the boundary.
+		{"psi high + ratio just above loadedGrowThreshold -> no grow", 0.36, true, 99.0, false},
+		{"psi high + ratio 0.40 -> no grow", 0.40, true, 99.0, false},
+		{"psi low + ratio 0.10 -> grow via defaultGrowThreshold", 0.10, true, 0, true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := loadedSample(total, tc.ratio, tc.cpuOK, tc.cpuSome)
+			if got := sampleWantsGrow(s, 0); got != tc.wantGrow {
+				t.Errorf("sampleWantsGrow(ratio=%.2f cpuOK=%v cpuSome=%.1f) = %v, want %v",
+					tc.ratio, tc.cpuOK, tc.cpuSome, got, tc.wantGrow)
+			}
+			if sampleIsCritical(s) {
+				t.Errorf("loaded sample must not read as critical (ratio=%.2f)", tc.ratio)
+			}
+		})
+	}
+}
+
+// TestCPULoadPreWarm_EvaluateGrowsAligned drives evaluate() end-to-end with a
+// loaded sample: the grow fires, the target is hotplug-aligned (CH rejects
+// unaligned vm.resize), and the same sample without CPU pressure takes no
+// action.
+func TestCPULoadPreWarm_EvaluateGrowsAligned(t *testing.T) {
+	t.Parallel()
+	const boot int64 = 3584 * 1024 * 1024
+
+	t.Run("cpu pressure -> grow, aligned", func(t *testing.T) {
+		t.Parallel()
+		resizer := newFakeResizer(boot)
+		g, clk := newTestGovernorMinMax(t, 512*1024*1024, 8*gib, resizer, nil)
+		injectSample(g, clk, loadedSample(uint64(boot), 0.30, true, 20.0))
+		g.evaluate(context.Background())
+		if len(resizer.calls) != 1 {
+			t.Fatalf("expected 1 grow under CPU load at ratio 0.30, got %d", len(resizer.calls))
+		}
+		got := resizer.calls[0]
+		if got <= boot {
+			t.Errorf("target %d must exceed current %d", got, boot)
+		}
+		if got%memHotplugAlignBytes != 0 {
+			t.Errorf("target %d not aligned to %d", got, memHotplugAlignBytes)
+		}
+	})
+
+	t.Run("no cpu pressure -> no grow", func(t *testing.T) {
+		t.Parallel()
+		resizer := newFakeResizer(boot)
+		g, clk := newTestGovernorMinMax(t, 512*1024*1024, 8*gib, resizer, nil)
+		injectSample(g, clk, loadedSample(uint64(boot), 0.30, true, 0))
+		g.evaluate(context.Background())
+		if len(resizer.calls) != 0 {
+			t.Fatalf("expected no grow at ratio 0.30 without CPU load, got %v", resizer.calls)
+		}
+	})
+}
+
+// TestFirstGrowBypassesCooldown_SecondHonoursIt: the first grow after boot
+// skips the post-resize cooldown (here a shrink cooldown left by an early idle
+// shrink), the immediately-following second grow is held by the grow cooldown,
+// and it fires once the cooldown expires.
+func TestFirstGrowBypassesCooldown_SecondHonoursIt(t *testing.T) {
+	t.Parallel()
+	const boot int64 = 2 * gib
+	resizer := newFakeResizer(boot)
+	g, clk := newTestGovernorMinMax(t, 512*1024*1024, 8*gib, resizer, nil)
+
+	// Prior shrink "just now": shrink cooldown (120 s) in force, no grow yet.
+	g.lastResizeTime = clk.Now()
+	g.lastResizeWasShrink = true
+
+	injectSample(g, clk, growSample(uint64(boot)))
+	g.evaluate(context.Background())
+	if len(resizer.calls) != 1 {
+		t.Fatalf("first grow must bypass the shrink cooldown; calls=%v", resizer.calls)
+	}
+	if !g.grewOnce {
+		t.Fatal("grewOnce must be set after the first grow")
+	}
+
+	clk.Advance(time.Second)
+	injectSample(g, clk, growSample(uint64(resizer.current)))
+	g.evaluate(context.Background())
+	if len(resizer.calls) != 1 {
+		t.Fatalf("second grow within the grow cooldown must be held; calls=%v", resizer.calls)
+	}
+
+	clk.Advance(memoryGrowCooldown)
+	injectSample(g, clk, growSample(uint64(resizer.current)))
+	g.evaluate(context.Background())
+	if len(resizer.calls) != 2 {
+		t.Fatalf("second grow after the cooldown must fire; calls=%v", resizer.calls)
+	}
+}
+
+// TestFirstGrowBypass_NotForShrink: the first-grow bypass must never let a
+// shrink through a cooldown — only a grow-wanting sample is exempt.
+func TestFirstGrowBypass_NotForShrink(t *testing.T) {
+	t.Parallel()
+	const boot int64 = 4 * gib
+	resizer := newFakeResizer(boot)
+	g, clk := newTestGovernorMinMax(t, 512*1024*1024, 8*gib, resizer, nil)
+	g.lastResizeTime = clk.Now()
+	g.lastResizeWasShrink = true
+	g.shrinkCount = memoryShrinkConsecutive
+
+	injectSample(g, clk, shrinkSample(uint64(boot)))
+	g.evaluate(context.Background())
+	if len(resizer.calls) != 0 {
+		t.Fatalf("shrink within shrink cooldown must stay held; calls=%v", resizer.calls)
 	}
 }
