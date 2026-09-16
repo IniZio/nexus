@@ -148,6 +148,7 @@ func TestCreate_DeadlineWhenLocked(t *testing.T) {
 
 	// Drive Create with an unbounded context — production's shape.  The bound
 	// must come from inside Create (TBD-PD-42), not from the caller.
+	t.Cleanup(volumestore.SetCreateLockTimeout(300 * time.Millisecond))
 	_, err = s.Create(context.Background(), volName, volumestore.KindDir, 0, "")
 	if err == nil {
 		t.Fatal("Create with held lock: expected deadline error, got nil")

@@ -2,6 +2,7 @@ package volumestore
 
 import (
 	"context"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/store"
 )
@@ -41,4 +42,12 @@ func HoldVolumeLockForTest(s *VolumeStore, name string) (release func(), err err
 		_ = lk.Unlock()
 		_ = lk.Close()
 	}, nil
+}
+
+// SetCreateLockTimeout is exported for testing only. It shrinks the bound
+// Create places on acquiring the volume lock and returns a restore function.
+func SetCreateLockTimeout(d time.Duration) (restore func()) {
+	old := createLockTimeout
+	createLockTimeout = d
+	return func() { createLockTimeout = old }
 }

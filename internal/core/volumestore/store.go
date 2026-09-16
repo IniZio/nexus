@@ -173,6 +173,10 @@ func (s *VolumeStore) writeRecord(rec *VolumeRecord) error {
 	return nil
 }
 
+// createLockTimeout bounds Create's wait for the per-volume lock. A var so a
+// test holding that lock on purpose can shrink the wait it is proving.
+var createLockTimeout = 10 * time.Second
+
 // Create creates the named volume and returns its record.
 //
 // Idempotency (D-PD-84):
@@ -231,7 +235,7 @@ func (s *VolumeStore) Create(ctx context.Context, name string, kind VolumeKind, 
 	// hung CLI (TBD-PD-42).  Create is not a cleanup path — a cancelled parent
 	// (Ctrl-C) must propagate promptly, so WithoutCancel is intentionally
 	// absent here.  10 s matches the neighbouring guardCtx in service/create.go.
-	lockCtx, lockCancel := context.WithTimeout(ctx, 10*time.Second)
+	lockCtx, lockCancel := context.WithTimeout(ctx, createLockTimeout)
 	defer lockCancel()
 	if err := lk.TryExclusive(lockCtx); err != nil {
 		return nil, fmt.Errorf("volume %s: acquire lock: %w", name, err)
