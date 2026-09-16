@@ -68,7 +68,14 @@ type portForwardSupervisor struct {
 	interval        time.Duration
 	discoverTimeout time.Duration // bounds each DiscoverOne call; zero means portFwdDiscoverTimeout
 	listeners       map[uint16]net.Listener
+	bindErrs        map[uint16]error // last host-bind failure per port; retried every tick
 }
+
+// core/portfwd defines no entry-status constants; internal/cli/portfwd_state.go matches these strings.
+const (
+	portFwdStatusLive  = "live"
+	portFwdStatusError = "error"
+)
 
 // portFwdDiscoverTimeout bounds one guest /proc/net/tcp exec so a single hung
 // exec cannot freeze reconcile for the life of the sandbox.
@@ -155,12 +162,22 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 		}
 	}
 
+	if p.bindErrs == nil {
+		p.bindErrs = make(map[uint16]error)
+	}
+	for port := range p.bindErrs {
+		if _, ok := desired[port]; !ok {
+			delete(p.bindErrs, port)
+		}
+	}
+
 	for _, l := range result.Forwardable {
 		if _, ok := p.listeners[l.Port]; ok {
 			continue
 		}
 		lis, lisErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", l.Port))
 		if lisErr != nil {
+			p.bindErrs[l.Port] = lisErr
 			slog.Warn("supervisor.portfwd.listen_err",
 				"sandboxRef", p.sandboxRef,
 				"port", l.Port,
@@ -168,6 +185,7 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 			)
 			continue
 		}
+		delete(p.bindErrs, l.Port)
 		p.listeners[l.Port] = lis
 		slog.Info("supervisor.portfwd.listening",
 			"sandboxRef", p.sandboxRef,
@@ -262,12 +280,15 @@ func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error
 	now := time.Now().UTC()
 	entries := make([]portfwd.Entry, 0, len(forwardable))
 	for _, l := range forwardable {
-		entries = append(entries, portfwd.Entry{
-			Port:        l.Port,
-			Sandbox:     p.sandboxRef,
-			Status:      "live",
-			ConfirmedAt: now,
-		})
+		e := portfwd.Entry{Port: l.Port, Sandbox: p.sandboxRef}
+		if _, bound := p.listeners[l.Port]; bound {
+			e.Status = portFwdStatusLive
+			e.ConfirmedAt = now
+		} else {
+			// portfwd.Entry carries no error field; the bind error text lives in p.bindErrs and the listen_err log.
+			e.Status = portFwdStatusError
+		}
+		entries = append(entries, e)
 	}
 	return portfwd.WriteSandboxState(p.stateDir, p.sandboxRef, entries, now)
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,6 +185,90 @@ func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
 	stateFile := filepath.Join(tmpDir, "forwards.state")
 	if _, err := os.Stat(stateFile); err != nil {
 		t.Errorf("forwards.state not written: %v", err)
+	}
+}
+
+// freeForwardablePort finds a bindable port inside [GuestPortBase, GuestPortTop].
+func freeForwardablePort(t *testing.T) uint16 {
+	t.Helper()
+	for p := uint16(8000); p <= 11000; p++ {
+		probe, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err == nil {
+			probe.Close()
+			return p
+		}
+	}
+	t.Skip("no free port in forwardable range 8000-11000")
+	return 0
+}
+
+func mergedStatus(t *testing.T, dir string, port uint16) string {
+	t.Helper()
+	st, err := portfwd.Merge(dir, time.Now())
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	for _, e := range st.Forwards {
+		if e.Port == port {
+			return e.Status
+		}
+	}
+	t.Fatalf("port %d absent from merged state: %+v", port, st.Forwards)
+	return ""
+}
+
+// AC-6: a forwardable port whose host bind fails must never read as live.
+func TestReconcile_BindFailureWritesErrorThenRetries(t *testing.T) {
+	port := freeForwardablePort(t)
+	squatter, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("pre-bind %d: %v", port, err)
+	}
+	defer squatter.Close()
+
+	tmpDir := t.TempDir()
+	backend := &fakeBackend{
+		refs:  []portfwd.SandboxRef{{ID: "sb1", Status: portfwd.SandboxStatusRunning}},
+		binds: []portfwd.PortBind{{Port: port, BindAddr: "0.0.0.0"}},
+	}
+	sup := &portForwardSupervisor{
+		sandboxRef: "test/sb1",
+		backend:    backend,
+		disc:       &portfwd.Discoverer{Backend: backend},
+		dialer:     fakeDialer{},
+		stateDir:   tmpDir,
+		interval:   time.Second,
+		listeners:  make(map[uint16]net.Listener),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile(bind fails): %v", err)
+	}
+	if got := mergedStatus(t, tmpDir, port); got != "error" {
+		t.Fatalf("status after failed bind = %q, want %q", got, "error")
+	}
+	if _, bound := sup.listeners[port]; bound {
+		t.Fatalf("port %d recorded in listeners despite bind failure", port)
+	}
+	bindErr, ok := sup.bindErrs[port]
+	if !ok || bindErr == nil || !strings.Contains(bindErr.Error(), "address already in use") {
+		t.Fatalf("bindErrs[%d] = %v, want address already in use", port, bindErr)
+	}
+
+	squatter.Close()
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile(retry): %v", err)
+	}
+	if got := mergedStatus(t, tmpDir, port); got != "live" {
+		t.Fatalf("status after retry = %q, want %q", got, "live")
+	}
+	if _, ok := sup.bindErrs[port]; ok {
+		t.Fatalf("bindErrs still holds port %d after successful retry", port)
+	}
+	if _, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second); err != nil {
+		t.Fatalf("port %d not bound after retry: %v", port, err)
 	}
 }
 
