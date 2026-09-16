@@ -84,12 +84,12 @@ func RunStartup(ctx context.Context) error {
 var RemoteStateReader = ReadRemoteForwardsState       // tests swap it
 var ForwarderRunner portfwd.Runner = portfwd.OSRunner // tests swap it
 
-// FocusResolverFunc resolves the sandbox handle for the focused workspace.
-// Returns fallback=true on error (caller uses all rows); handle="" with
+// FocusResolverFunc resolves the sandbox ID for the focused workspace.
+// Returns fallback=true on error (caller uses all rows); sandboxID="" with
 // fallback=false means no focused workspace (desired is empty).
-type FocusResolverFunc func(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (handle string, fallback bool)
+type FocusResolverFunc func(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (sandboxID string, fallback bool)
 
-var DefaultFocusResolver FocusResolverFunc = resolveFocusedHandle // tests swap it
+var DefaultFocusResolver FocusResolverFunc = resolveFocusedSandboxID // tests swap it
 
 var fallbackWarned sync.Map // key: "target\x00kind" → struct{}{}
 
@@ -103,16 +103,17 @@ func clearFallback(target, kind string) {
 	fallbackWarned.Delete(target + "\x00" + kind)
 }
 
-func filterToFocused(forwards []RemoteForwardEntry, handle string, fallback bool) []RemoteForwardEntry {
+func filterToFocused(forwards []RemoteForwardEntry, sandboxID string, fallback bool) []RemoteForwardEntry {
 	if fallback {
 		return forwards
 	}
-	if handle == "" {
+	if sandboxID == "" {
 		return nil
 	}
 	var out []RemoteForwardEntry
 	for _, f := range forwards {
-		if f.Sandbox == handle {
+		// RemoteForwardEntry.Sandbox and forwards.state are both keyed by sandbox ID, not handle.
+		if f.Sandbox == sandboxID {
 			out = append(out, f)
 		}
 	}
@@ -147,8 +148,8 @@ func Tick(ctx context.Context, stateDir string, managers map[string]*portfwd.Man
 			slog.Warn("local-agent-startup: read-remote-state", "target", m.SSHTarget, "err", err)
 			continue
 		}
-		handle, fallback := DefaultFocusResolver(ctx, herdrBin, m.Session, ctlPath, m.SSHTarget, fw.Run)
-		focused := filterToFocused(state.Forwards, handle, fallback)
+		sandboxID, fallback := DefaultFocusResolver(ctx, herdrBin, m.Session, ctlPath, m.SSHTarget, fw.Run)
+		focused := filterToFocused(state.Forwards, sandboxID, fallback)
 		var desired []portfwd.Listener
 		for _, fwd := range focused {
 			if fwd.Status == "live" || fwd.Status == "pending" {
@@ -218,7 +219,7 @@ func ReadRemoteForwardsState(ctx context.Context, ctlPath, target string) (*Remo
 	return &state, nil
 }
 
-func resolveFocusedHandle(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (string, bool) {
+func resolveFocusedSandboxID(ctx context.Context, herdrBin, session, ctlPath, target string, runner portfwd.Runner) (string, bool) {
 	workspaceID, err := resolveFocusedWorkspaceID(ctx, herdrBin, session)
 	if err != nil {
 		warnFallbackOnce(target, "workspace", "portfwd focus: workspace list failed, using all rows", "target", target, "err", err)
@@ -229,13 +230,13 @@ func resolveFocusedHandle(ctx context.Context, herdrBin, session, ctlPath, targe
 		slog.Debug("portfwd focus: no focused workspace, no forwards", "target", target)
 		return "", false
 	}
-	handle, err := resolveRemoteHandleForWorkspace(ctx, ctlPath, target, workspaceID, runner)
+	sandboxID, err := resolveRemoteSandboxIDForWorkspace(ctx, ctlPath, target, workspaceID, runner)
 	if err != nil {
-		warnFallbackOnce(target, "handle", "portfwd focus: remote handle lookup failed, using all rows", "target", target, "workspace_id", workspaceID, "err", err)
+		warnFallbackOnce(target, "sandbox_id", "portfwd focus: remote sandbox_id lookup failed, using all rows", "target", target, "workspace_id", workspaceID, "err", err)
 		return "", true
 	}
-	clearFallback(target, "handle")
-	return handle, false
+	clearFallback(target, "sandbox_id")
+	return sandboxID, false
 }
 
 func resolveFocusedWorkspaceID(ctx context.Context, herdrBin, session string) (string, error) {
@@ -277,7 +278,7 @@ func remoteNexus3HerdrListCmd() string {
 	return `"$HOME/.local/bin/nexus3" herdr list 2>/dev/null || nexus3 herdr list`
 }
 
-func resolveRemoteHandleForWorkspace(ctx context.Context, ctlPath, target, workspaceID string, runner portfwd.Runner) (string, error) {
+func resolveRemoteSandboxIDForWorkspace(ctx context.Context, ctlPath, target, workspaceID string, runner portfwd.Runner) (string, error) {
 	argv := ExecArgv(target, ctlPath, remoteNexus3HerdrListCmd())
 	stdout, _, code, err := runner(ctx, argv)
 	if err != nil {
@@ -286,10 +287,10 @@ func resolveRemoteHandleForWorkspace(ctx context.Context, ctlPath, target, works
 	if code != 0 {
 		return "", fmt.Errorf("nexus3 herdr list: exit %d", code)
 	}
-	return parseHandleFromSpaceList(stdout, workspaceID), nil
+	return parseSandboxIDFromSpaceList(stdout, workspaceID), nil
 }
 
-func parseHandleFromSpaceList(output, workspaceID string) string {
+func parseSandboxIDFromSpaceList(output, workspaceID string) string {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "(") {
@@ -303,7 +304,7 @@ func parseHandleFromSpaceList(output, workspaceID string) string {
 			}
 		}
 		if fields["workspace_id"] == workspaceID {
-			return fields["handle"]
+			return fields["sandbox_id"]
 		}
 	}
 	return ""

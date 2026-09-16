@@ -100,20 +100,20 @@ func TestParseFocusedWorkspaceID(t *testing.T) {
 	}
 }
 
-func TestParseHandleFromSpaceList(t *testing.T) {
-	output := "label=foo\tworkspace_id=w1\thandle=worktree/main\tsandbox_id=abc\tpane_id=p1\n" +
-		"label=bar\tworkspace_id=w2\thandle=worktree/dev\tsandbox_id=def\tpane_id=p2\n"
+func TestParseSandboxIDFromSpaceList(t *testing.T) {
+	output := "label=foo\tworkspace_id=w1\thandle=worktree/main\tsandbox_id=sb-AAA\tpane_id=p1\n" +
+		"label=bar\tworkspace_id=w2\thandle=worktree/dev\tsandbox_id=sb-BBB\tpane_id=p2\n"
 
-	if got := parseHandleFromSpaceList(output, "w1"); got != "worktree/main" {
-		t.Errorf("w1: got %q, want %q", got, "worktree/main")
+	if got := parseSandboxIDFromSpaceList(output, "w1"); got != "sb-AAA" {
+		t.Errorf("w1: got %q, want %q", got, "sb-AAA")
 	}
-	if got := parseHandleFromSpaceList(output, "w2"); got != "worktree/dev" {
-		t.Errorf("w2: got %q, want %q", got, "worktree/dev")
+	if got := parseSandboxIDFromSpaceList(output, "w2"); got != "sb-BBB" {
+		t.Errorf("w2: got %q, want %q", got, "sb-BBB")
 	}
-	if got := parseHandleFromSpaceList(output, "w99"); got != "" {
+	if got := parseSandboxIDFromSpaceList(output, "w99"); got != "" {
 		t.Errorf("missing workspace: got %q, want empty", got)
 	}
-	if got := parseHandleFromSpaceList("(no herdr space bindings)\n", "w1"); got != "" {
+	if got := parseSandboxIDFromSpaceList("(no herdr space bindings)\n", "w1"); got != "" {
 		t.Errorf("no bindings line: got %q, want empty", got)
 	}
 }
@@ -310,19 +310,19 @@ func TestRemoteNexus3HerdrListCmd_PathFallback(t *testing.T) {
 }
 
 // MUTATION TARGET: remoteNexus3HerdrListCmd return value → "nexus3 herdr list" → RED.
-func TestResolveRemoteHandleForWorkspace_ArgvContainsLocalBin(t *testing.T) {
+func TestResolveRemoteSandboxIDForWorkspace_ArgvContainsLocalBin(t *testing.T) {
 	var capturedArgv []string
 	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
 		capturedArgv = argv
-		return "workspace_id=ws1\thandle=worktree/main\n", "", 0, nil
+		return "workspace_id=ws1\thandle=worktree/main\tsandbox_id=sb-RESOLVED\n", "", 0, nil
 	}
 	ctx := context.Background()
-	handle, err := resolveRemoteHandleForWorkspace(ctx, "/fake.ctl", "myhost", "ws1", fakeRunner)
+	sandboxID, err := resolveRemoteSandboxIDForWorkspace(ctx, "/fake.ctl", "myhost", "ws1", fakeRunner)
 	if err != nil {
-		t.Fatalf("resolveRemoteHandleForWorkspace: %v", err)
+		t.Fatalf("resolveRemoteSandboxIDForWorkspace: %v", err)
 	}
-	if handle != "worktree/main" {
-		t.Errorf("handle: got %q, want worktree/main", handle)
+	if sandboxID != "sb-RESOLVED" {
+		t.Errorf("sandboxID: got %q, want sb-RESOLVED", sandboxID)
 	}
 	if len(capturedArgv) == 0 {
 		t.Fatal("runner was not called")
@@ -334,18 +334,18 @@ func TestResolveRemoteHandleForWorkspace_ArgvContainsLocalBin(t *testing.T) {
 	}
 }
 
-func TestParseHandleFromSpaceList_ContractFixture(t *testing.T) {
+func TestParseSandboxIDFromSpaceList_ContractFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/herdr-list.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := parseHandleFromSpaceList(string(data), "ws-abc"); got != "project/worktree-feature" {
-		t.Errorf("contract ws-abc: got %q, want %q", got, "project/worktree-feature")
+	if got := parseSandboxIDFromSpaceList(string(data), "ws-abc"); got != "sb-01FIXTURE0000000000000000000A" {
+		t.Errorf("contract ws-abc: got %q, want sandbox id", got)
 	}
-	if got := parseHandleFromSpaceList(string(data), "ws-def"); got != "other/worktree-main" {
-		t.Errorf("contract ws-def: got %q, want %q", got, "other/worktree-main")
+	if got := parseSandboxIDFromSpaceList(string(data), "ws-def"); got != "sb-02FIXTURE0000000000000000000B" {
+		t.Errorf("contract ws-def: got %q, want sandbox id", got)
 	}
-	if got := parseHandleFromSpaceList(string(data), "ws-missing"); got != "" {
+	if got := parseSandboxIDFromSpaceList(string(data), "ws-missing"); got != "" {
 		t.Errorf("missing workspace: got %q, want empty", got)
 	}
 }
