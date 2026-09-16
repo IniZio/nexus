@@ -444,6 +444,10 @@ func TestServeAdoptedSupervisor_RefusesWhenRecordedSlotIsHeld(t *testing.T) {
 	cfg.CacheDiskSlots = []string{slot}
 	spawnLeaseHolder(t, cfg)
 
+	oldWait := cacheDiskAdoptLeaseTimeout
+	cacheDiskAdoptLeaseTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { cacheDiskAdoptLeaseTimeout = oldWait })
+
 	err := serveAdoptedSupervisor(context.Background(), serveAdoptedInput{
 		cfg:       Config{StateDir: stateDir},
 		sb:        domain.Sandbox{ID: domain.NewSandboxID(), CacheDiskSlot: slot},

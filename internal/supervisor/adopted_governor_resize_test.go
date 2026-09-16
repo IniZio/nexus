@@ -199,7 +199,20 @@ func startFakeCHServer(t *testing.T, path string) *atomic.Int64 {
 
 // ── Test ─────────────────────────────────────────────────────────────────────
 
+// fastClock reports real time but fires timers 100x early, so the governor's
+// 10 s boot delay and 5 s eval interval pass in a fraction of a second while
+// every ordering between them is preserved. Now() stays real because sample
+// age is measured against timestamps the fake telemetry stamps with time.Now.
+type fastClock struct{}
+
+func (fastClock) Now() time.Time                         { return time.Now() }
+func (fastClock) After(d time.Duration) <-chan time.Time { return time.After(d / 100) }
+
 func TestAdoptedGovernorResizes(t *testing.T) {
+	oldClock := governClock
+	governClock = fastClock{}
+	t.Cleanup(func() { governClock = oldClock })
+
 	// Socket paths must fit within AF_UNIX sun_path (107 bytes). Use /tmp
 	// directly to keep the base path short.
 	socketDir, err := os.MkdirTemp("/tmp", "govtest")

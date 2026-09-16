@@ -22,6 +22,12 @@ import (
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
+// governClock is the clock every governor the supervisor starts runs on. nil
+// means the wall clock. It is a seam for tests only: the governor's boot
+// delay and eval interval are real seconds, and a test that watches an
+// in-process supervisor drive a resize has no other way to skip them.
+var governClock govern.Clock
+
 type serveAdoptedInput struct {
 	cfg Config
 	st  store.Store
@@ -126,6 +132,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		Resizer:   resizer,
 		Telemetry: govern.NewVsockTelemetry(drv, sb.ID),
 		Bounds:    cfg.GovBounds,
+		Clock:     governClock,
 	})
 	diskIndices := cfg.ResizableDiskIndices
 	if len(diskIndices) == 0 && cfg.HasWorkspaceDisk {

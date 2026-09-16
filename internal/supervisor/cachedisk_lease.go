@@ -83,7 +83,10 @@ import (
 // releases on its own shutdown, which runs immediately after it reads a
 // positive handoff Ack, so this is headroom rather than the expected wait — it
 // mirrors adoptWaitOldExitTimeout for the same reason.
-const cacheDiskAdoptLeaseTimeout = 15 * time.Second
+//
+// A var so a test that holds the slot on purpose can shrink the headroom it
+// is proving the refusal waits out.
+var cacheDiskAdoptLeaseTimeout = 15 * time.Second
 
 // acquireCacheDiskLeases takes ownership of every cache-disk slot in slots.
 //

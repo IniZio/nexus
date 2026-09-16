@@ -753,6 +753,7 @@ func RunDetached(cfg Config) error {
 		Resizer:   resizer,
 		Telemetry: govern.NewVsockTelemetry(drv, sb.ID),
 		Bounds:    cfg.GovBounds,
+		Clock:     governClock,
 	})
 	// Effective disk indices: prefer ResizableDiskIndices when non-empty;
 	// fall back to the legacy HasWorkspaceDisk/WorkspaceDiskIndex pair.
@@ -1549,9 +1550,6 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 			"mcp_servers_count", len(in.MCPServers))
 	}
 
-	// MCP servers are written host-side inside seedAgentOnboardingFn as part of
-	// the initial /root/.claude.json payload. Log when servers were requested so
-	// the supervisor trace shows the intent.
 	if len(in.MCPServers) > 0 {
 		slog.Info("supervisor.mcp_servers_included_in_onboarding",
 			"sandbox", id, "count", len(in.MCPServers))
@@ -1744,12 +1742,6 @@ func startParentWatchdog(pipeR *os.File, sandboxRef string, cancel context.Cance
 // the real token. Configs with an empty AccessToken or Host are logged and
 // skipped; all others are registered unconditionally (RegisterPlaceholder is
 // idempotent: a second call for the same scope replaces the old placeholder).
-// registerMCPOAuthPlaceholders registers a broker placeholder for each
-// MCPOAuthRefreshConfig so that (a) ForcePush / SetRealToken can update the
-// scope after seeding, and (b) the MITM proxy can resolve the placeholder to
-// the real token. Configs with an empty AccessToken or Host are logged and
-// skipped; all others are registered unconditionally (RegisterPlaceholder is
-// idempotent: a second call for the same scope replaces the old placeholder).
 //
 // Returns a serverName→placeholder hex map for the successfully registered
 // servers; callers pass this to buildMCPOAuthCredPayload to seed the guest env.
@@ -1848,7 +1840,6 @@ func SeedLoop(
 		if *cert != nil {
 			caErr := service.SeedCA(ctx, *cert, id, caSeeder)
 			if caErr == nil {
-				// At least one vsock round-trip to the guest agent succeeded.
 				guestEverResponded = true
 			}
 			var agentErr error
@@ -1925,7 +1916,6 @@ func seedHumanSecrets(
 			if caErr := service.SeedCA(ctx, cert, sb.ID, caSeeder); caErr != nil {
 				slog.Debug("supervisor.seed_ca_retry", "attempt", attempt, "err", caErr)
 			} else {
-				// CA seed succeeded: at least one vsock round-trip to the guest agent.
 				guestEverResponded = true
 				if secErr := service.SeedGuestSecrets(ctx, broker, sb.ID, sb.Envelope.SecretSpecs, secretSeeder); secErr != nil {
 					slog.Debug("supervisor.seed_secrets_retry", "attempt", attempt, "err", secErr)
