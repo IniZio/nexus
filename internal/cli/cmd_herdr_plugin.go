@@ -1765,11 +1765,12 @@ func herdrPluginBackfillRepoRoot(ctx context.Context, storeRoot string, w io.Wri
 func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc herdrSpacePruneLister, storeRoot, herdrBin string) error {
 	fs := flag.NewFlagSet("space-prune", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "delete stale bindings (default: dry-run)")
+	workspace := fs.String("workspace", "", "only the binding for this herdr workspace id (the worktree.removed hook path); the workspace is taken as gone")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "__herdr-plugin space-prune: " + err.Error()}
 	}
 	if fs.NArg() > 0 {
-		return &UsageError{Msg: fmt.Sprintf("__herdr-plugin space-prune: unexpected argument %q; usage: space-prune [--apply]", fs.Arg(0))}
+		return &UsageError{Msg: fmt.Sprintf("__herdr-plugin space-prune: unexpected argument %q; usage: space-prune [--apply] [--workspace <id>]", fs.Arg(0))}
 	}
 	// Refuse --apply when herdr is unavailable: the workspace-exists predicate
 	// would fail safe to all-alive (exec error → treat all alive), but a binding
@@ -1806,6 +1807,25 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 	// prune (herdrSpacePruneFull does its own read and reports it); it only
 	// disables the fallback.
 	bindingsBefore, bindingsErr := HerdrSpaceList(ctx, storeRoot)
+
+	if *workspace != "" {
+		// Scoped mode (worktree.removed hook): the event names the closed
+		// workspace, so only its binding is a candidate and the workspace is
+		// taken as gone without consulting `herdr workspace list`. The
+		// global orphan and bindingless sweeps never run here — they are what
+		// reaped unrelated live sandboxes when the hook ran the full prune.
+		if bindingsErr != nil {
+			return fmt.Errorf("space-prune: read bindings: %w", bindingsErr)
+		}
+		var scoped []HerdrSpaceBinding
+		for _, b := range bindingsBefore {
+			if b.HerdrWorkspaceID == *workspace {
+				scoped = append(scoped, b)
+			}
+		}
+		gone := func(HerdrSpaceBinding) bool { return false }
+		return herdrSpacePruneBindings(ctx, w, storeRoot, herdrBin, scoped, sandboxExists, gone, closer, removeSandbox, *apply, false)
+	}
 
 	if err := herdrSpacePruneFull(ctx, w, storeRoot, herdrBin, sandboxExists, workspaceExists, closer, removeSandbox, *apply); err != nil {
 		return err
@@ -1849,7 +1869,24 @@ func herdrSpacePruneFull(
 	if err != nil {
 		return fmt.Errorf("space-prune: read bindings: %w", err)
 	}
+	return herdrSpacePruneBindings(ctx, w, storeRoot, herdrBin, bindings, sandboxExists, workspaceExists, closer, removeSandbox, apply, true)
+}
 
+// herdrSpacePruneBindings classifies and (under apply) reconciles the given
+// bindings; sweepOrphans additionally closes unbound "nexus3:" workspaces.
+func herdrSpacePruneBindings(
+	ctx context.Context,
+	w io.Writer,
+	storeRoot string,
+	herdrBin string,
+	bindings []HerdrSpaceBinding,
+	sandboxExists func(HerdrSpaceBinding) bool,
+	workspaceExists func(HerdrSpaceBinding) bool,
+	closer func(context.Context, string) error,
+	removeSandbox func(context.Context, string) error,
+	apply bool,
+	sweepOrphans bool,
+) error {
 	var stale []HerdrSpaceBinding
 	var keep []HerdrSpaceBinding
 	for _, b := range bindings {
@@ -1927,7 +1964,7 @@ func herdrSpacePruneFull(
 		deleted++
 	}
 	fmt.Fprintf(w, "Deleted %d stale binding(s).\n", deleted)
-	if apply {
+	if apply && sweepOrphans {
 		herdrSpaceSweepOrphanWorkspaces(ctx, w, storeRoot, herdrBin, closer)
 	}
 	return nil

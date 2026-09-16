@@ -131,6 +131,14 @@ nexus3 herdr prune            # dry-run: report what would change
 nexus3 herdr prune --apply    # apply: close workspaces and delete stale bindings
 ```
 
+Global `prune --apply` is a **manual** verb. A workspace whose tab you merely
+closed is absent from `herdr workspace list`, so a global apply reaps its
+sandbox too. The `worktree.removed` hook therefore never runs it; it runs
+`nexus3 herdr prune --apply --workspace <id>`, which takes the workspace id
+from the event payload and reconciles only that one binding (the named
+workspace is taken as gone; no orphan or bindingless sweep runs). Run the
+dry form first to see what a global apply would take.
+
 ### Known residue (D-SHL-27)
 
 The **first** worktree you open for a given repo opens a plain host shell — not
