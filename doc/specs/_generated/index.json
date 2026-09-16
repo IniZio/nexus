@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-04T03:49:05.000Z",
+  "generated_at": "2026-09-16T07:35:55.759Z",
   "nodes": {
     "PDF-R-006": {
       "id": "PDF-R-006",
@@ -708,6 +708,323 @@
       "source": null,
       "views": null
     },
+    "HPO-R-008": {
+      "id": "HPO-R-008",
+      "type": "requirement",
+      "title": "Remote-client port-forwards scoped to the focused workspace",
+      "summary": "Remote-client port-forwards are scoped to the focused workspace; unfocused sandbox forwards are not applied.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-009",
+        "HPO-R-010"
+      ],
+      "inbound": [
+        "HPO-R-009",
+        "HPO-R-010"
+      ],
+      "byteSize": 1810,
+      "relPath": "hpo/HPO-R-008.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-008",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-001": {
+      "id": "HPO-R-001",
+      "type": "requirement",
+      "title": "Linux x86-64 one-command fresh install",
+      "summary": "Linux x86-64 fresh install via one herdr plugin install command with no manual step.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-005",
+        "HPO-R-007"
+      ],
+      "inbound": [
+        "HPO-R-007",
+        "C-HPO",
+        "HPO-R-002",
+        "HPO-R-006",
+        "HPO-R-005"
+      ],
+      "byteSize": 1759,
+      "relPath": "hpo/HPO-R-001.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-001",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-007": {
+      "id": "HPO-R-007",
+      "type": "requirement",
+      "title": "Install/update/startup path exercised against a real herdr in an isolated session",
+      "summary": "Install/update/startup path runs against a real herdr in an isolated named session.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-001",
+        "HPO-R-003"
+      ],
+      "inbound": [
+        "HPO-R-001"
+      ],
+      "byteSize": 1605,
+      "relPath": "hpo/HPO-R-007.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-007",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-004": {
+      "id": "HPO-R-004",
+      "type": "requirement",
+      "title": "ABI/version skew reported with the exact update command",
+      "summary": "ABI or version skew prints the exact herdr plugin install update command verbatim.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-003"
+      ],
+      "inbound": [
+        "HPO-R-003"
+      ],
+      "byteSize": 1444,
+      "relPath": "hpo/HPO-R-004.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-004",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "C-HPO": {
+      "id": "C-HPO",
+      "type": "concept",
+      "title": "Herdr plugin out-of-the-box",
+      "summary": "Requirements for zero-manual-step install and upgrade of the nexus3 herdr plugin on Linux and macOS, with a real-herdr test harness and focused port-forwards.",
+      "refs": [
+        "C-NEXUS3",
+        "HPO-R-001",
+        "HPO-R-010"
+      ],
+      "inbound": [
+        "HPO-R-008",
+        "HPO-R-001",
+        "HPO-R-007",
+        "HPO-R-004",
+        "HPO-R-009",
+        "HPO-R-002",
+        "HPO-R-006",
+        "HPO-R-010",
+        "HPO-R-005",
+        "HPO-R-003"
+      ],
+      "byteSize": 810,
+      "relPath": "hpo/README.md",
+      "status": null,
+      "pattern": null,
+      "verification": null,
+      "criticality": "must",
+      "concept": null,
+      "parent": "C-NEXUS3",
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-009": {
+      "id": "HPO-R-009",
+      "type": "requirement",
+      "title": "Locally bound port reported as conflict, never marked forwarded",
+      "summary": "A locally bound port is reported as a conflict and never recorded as an applied forward.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-008",
+        "HPO-R-010"
+      ],
+      "inbound": [
+        "HPO-R-008",
+        "HPO-R-010"
+      ],
+      "byteSize": 1595,
+      "relPath": "hpo/HPO-R-009.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-009",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-002": {
+      "id": "HPO-R-002",
+      "type": "requirement",
+      "title": "macOS remote-client one-command fresh install",
+      "summary": "macOS remote-client fresh install via one herdr plugin install command, no Go toolchain.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-001"
+      ],
+      "inbound": [],
+      "byteSize": 1734,
+      "relPath": "hpo/HPO-R-002.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "manual",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-002",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-006": {
+      "id": "HPO-R-006",
+      "type": "requirement",
+      "title": "Install-time preflight reports substrate problems with remediation",
+      "summary": "Install-time preflight warns on failing substrate checks and re-checks at first sandbox create.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-001"
+      ],
+      "inbound": [],
+      "byteSize": 1930,
+      "relPath": "hpo/HPO-R-006.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-006",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-010": {
+      "id": "HPO-R-010",
+      "type": "requirement",
+      "title": "Forwards cancelled on client restart; duplicate rows collapsed",
+      "summary": "Client restart cancels previous-process forwards; duplicate tcp/tcp6 rows collapse to one entry.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-008",
+        "HPO-R-009"
+      ],
+      "inbound": [
+        "HPO-R-008",
+        "C-HPO",
+        "HPO-R-009"
+      ],
+      "byteSize": 1781,
+      "relPath": "hpo/HPO-R-010.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-010",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-005": {
+      "id": "HPO-R-005",
+      "type": "requirement",
+      "title": "config.toml wiring is automatic and idempotent",
+      "summary": "install-default-shell --write-config writes config.toml idempotently across all four config states.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-001"
+      ],
+      "inbound": [
+        "HPO-R-001"
+      ],
+      "byteSize": 1596,
+      "relPath": "hpo/HPO-R-005.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-005",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "HPO-R-003": {
+      "id": "HPO-R-003",
+      "type": "requirement",
+      "title": "Idempotent upgrade; dev and newer builds preserved",
+      "summary": "Re-running install upgrades older releases; dev and newer builds are preserved with a status message.",
+      "refs": [
+        "C-HPO",
+        "HPO-R-004"
+      ],
+      "inbound": [
+        "HPO-R-007",
+        "HPO-R-004"
+      ],
+      "byteSize": 1671,
+      "relPath": "hpo/HPO-R-003.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-HPO",
+      "parent": null,
+      "ears": null,
+      "anchor": "hpo-r-003",
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
     "C-NEXUS3": {
       "id": "C-NEXUS3",
       "type": "concept",
@@ -720,6 +1037,8 @@
       ],
       "inbound": [
         "C-PDF",
+        "C-HPO",
+        "C-CRED",
         "C-PER",
         "C-SUR",
         "C-RES"
@@ -732,6 +1051,187 @@
       "criticality": "must",
       "concept": null,
       "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "CRED-R-002": {
+      "id": "CRED-R-002",
+      "type": "requirement",
+      "title": "Guest Claude runs in auto permission mode: no process in the guest carries --dangerously-skip-permissions, no seeded file sets bypassPermissions or skipDangerousModePermissionPrompt, and the agent completes a delegated brief unattended via delegate_agent_dispatch.",
+      "summary": "Guest Claude runs in auto permission mode: no process in the guest carries --dangerously-skip-permissions, no seeded file sets bypassPermissions or skipDangerousModePermissionPrompt, and the agent completes a delegated brief unattended via delegate_agent_dispatch.",
+      "refs": [
+        "C-CRED"
+      ],
+      "inbound": [],
+      "byteSize": 1924,
+      "relPath": "cred/CRED-R-002.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-CRED",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "CRED-R-001": {
+      "id": "CRED-R-001",
+      "type": "requirement",
+      "title": "A freshly created claude-code worktree sandbox has the host ~/.claude live-mounted read-write at /root/.claude; the guest starts with valid credentials without login or onboarding, and after a forced expiry the guest refreshes the token itself while the host session keeps working.",
+      "summary": "A freshly created claude-code worktree sandbox has the host ~/.claude live-mounted read-write at /root/.claude; the guest starts with valid credentials without login or onboarding, and after a forced expiry the guest refreshes the token itself while the host session keeps working.",
+      "refs": [
+        "C-CRED"
+      ],
+      "inbound": [
+        "C-CRED"
+      ],
+      "byteSize": 2101,
+      "relPath": "cred/CRED-R-001.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "live",
+      "criticality": "must",
+      "concept": "C-CRED",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "CRED-R-004": {
+      "id": "CRED-R-004",
+      "type": "requirement",
+      "title": "A push to a remote outside the repo's .nexus/config.yaml egress policy is refused with an error naming the policy and the rejected host+owner/repo; a push to an in-policy repo but out-of-allowlist ref is refused naming the ref; non-git SSH commands and flag-injection attempts are refused.",
+      "summary": "A push to a remote outside the repo's .nexus/config.yaml egress policy is refused with an error naming the policy and the rejected host+owner/repo; a push to an in-policy repo but out-of-allowlist ref is refused naming the ref; non-git SSH commands and flag-injection attempts are refused.",
+      "refs": [
+        "C-CRED"
+      ],
+      "inbound": [],
+      "byteSize": 2472,
+      "relPath": "cred/CRED-R-004.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "automated",
+      "criticality": "must",
+      "concept": "C-CRED",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "CRED-R-005": {
+      "id": "CRED-R-005",
+      "type": "requirement",
+      "title": "gh pr create is refused (MITM GraphQL default-deny); create PRs with gh api -X POST /repos/<owner>/<repo>/pulls → 201; cross-repo gh api returns 403; the guest holds only the 64-hex GH_TOKEN placeholder.",
+      "summary": "gh pr create is refused (MITM GraphQL default-deny); create PRs with gh api -X POST /repos/<owner>/<repo>/pulls → 201; cross-repo gh api returns 403; the guest holds only the 64-hex GH_TOKEN placeholder.",
+      "refs": [
+        "C-CRED"
+      ],
+      "inbound": [],
+      "byteSize": 2175,
+      "relPath": "cred/CRED-R-005.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "live",
+      "criticality": "must",
+      "concept": "C-CRED",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "CRED-R-006": {
+      "id": "CRED-R-006",
+      "type": "requirement",
+      "title": "A dev server started in the guest on port P (1024–11023) is auto-discovered and reachable at 127.0.0.1:P on a remote herdr ≥0.9 client at the same port number; the forward disappears when the guest listener closes.",
+      "summary": "A dev server started in the guest on port P (1024–11023) is auto-discovered and reachable at 127.0.0.1:P on a remote herdr ≥0.9 client at the same port number; the forward disappears when the guest listener closes.",
+      "refs": [
+        "C-CRED"
+      ],
+      "inbound": [
+        "C-CRED"
+      ],
+      "byteSize": 2492,
+      "relPath": "cred/CRED-R-006.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "live",
+      "criticality": "must",
+      "concept": "C-CRED",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "CRED-R-003": {
+      "id": "CRED-R-003",
+      "type": "requirement",
+      "title": "From inside a claude-code sandbox, git push to an in-policy SSH remote succeeds via the vsock relay, with no private key material in the guest and no HTTPS push traffic through the MITM.",
+      "summary": "From inside a claude-code sandbox, git push to an in-policy SSH remote succeeds via the vsock relay, with no private key material in the guest and no HTTPS push traffic through the MITM.",
+      "refs": [
+        "C-CRED"
+      ],
+      "inbound": [],
+      "byteSize": 1949,
+      "relPath": "cred/CRED-R-003.md",
+      "status": "active",
+      "pattern": null,
+      "verification": "live",
+      "criticality": "must",
+      "concept": "C-CRED",
+      "parent": null,
+      "ears": null,
+      "anchor": null,
+      "why": null,
+      "fitCriterion": null,
+      "source": null,
+      "views": null
+    },
+    "C-CRED": {
+      "id": "C-CRED",
+      "type": "concept",
+      "title": "Credential delivery and SSH relay",
+      "summary": "Requirements for live-mount credential delivery to claude-code sandboxes, auto permission mode, git SSH relay with policy guard, and port auto-forward.",
+      "refs": [
+        "C-NEXUS3",
+        "CRED-R-001",
+        "CRED-R-006"
+      ],
+      "inbound": [
+        "CRED-R-002",
+        "CRED-R-001",
+        "CRED-R-004",
+        "CRED-R-005",
+        "CRED-R-006",
+        "CRED-R-003"
+      ],
+      "byteSize": 739,
+      "relPath": "cred/README.md",
+      "status": null,
+      "pattern": null,
+      "verification": null,
+      "criticality": "must",
+      "concept": null,
+      "parent": "C-NEXUS3",
       "ears": null,
       "anchor": null,
       "why": null,
@@ -1136,9 +1636,7 @@
       "refs": [
         "C-RES"
       ],
-      "inbound": [
-        "C-RES"
-      ],
+      "inbound": [],
       "byteSize": 276,
       "relPath": "res/RES-R-012.md",
       "status": "active",
@@ -1210,7 +1708,7 @@
       "refs": [
         "C-NEXUS3",
         "RES-R-001",
-        "RES-R-012"
+        "RES-R-013"
       ],
       "inbound": [
         "C-NEXUS3",
@@ -1371,8 +1869,10 @@
       "refs": [
         "C-RES"
       ],
-      "inbound": [],
-      "byteSize": 2580,
+      "inbound": [
+        "C-RES"
+      ],
+      "byteSize": 2632,
       "relPath": "res/RES-R-013.md",
       "status": "active",
       "pattern": null,

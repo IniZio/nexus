@@ -1,0 +1,20 @@
+---
+id: HPO-R-008
+type: requirement
+concept: C-HPO
+criticality: must
+verification: automated
+status: active
+origin_decision_ref: herdr-plugin-ootb#D-8
+summary: "Remote-client port-forwards are scoped to the focused workspace; unfocused sandbox forwards are not applied."
+---
+
+## HPO-R-008 — Remote-client port-forwards scoped to the focused workspace {#hpo-r-008}
+
+**When** a macOS remote client is running and the user unfocuses a worktree workspace, `clientagent.Tick` **shall** remove the forwards belonging to that workspace's bound sandbox from `127.0.0.1` within one reconcile tick (≤5 s); **when** the user focuses a worktree workspace, `clientagent.Tick` **shall** apply that workspace's sandbox forwards within one reconcile tick; and `clientagent.Tick` **shall not** apply forwards belonging to a sandbox whose workspace is not currently focused.
+
+- **Why** — without focus scoping, forwards from every sandbox accumulate on the client for the lifetime of the guest TCP listener, causing port collisions on shared port numbers (e.g. 3000, 5432) across concurrent worktrees and leaking services that the user has switched away from.
+- **Fit criterion** — a unit test wires a fake `herdr workspace.focused` event source and a fake portfwd manager, then asserts: (a) after a focus event for workspace W, only W's sandbox forwards are in the applied set; (b) after an unfocus or a focus-switch to a different workspace, W's forwards are removed within one Tick call; (c) forwards of unfocused sandboxes are never passed to `Manager.Reconcile`.
+- **Verification**: automated — `TestClientAgentFocusScoping` in `internal/clientagent` exercises all three assertions. Conditional on D-8 operator ratification.
+- **Criticality**: must
+- **See also** [HPO-R-009](#hpo-r-009), [HPO-R-010](#hpo-r-010)

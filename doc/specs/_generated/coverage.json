@@ -1,23 +1,37 @@
 {
-  "total": 52,
+  "total": 68,
   "by_source": {
-    "unknown": 52
+    "unknown": 68
   },
   "by_concept": {
     "C-PDF": 27,
+    "C-HPO": 10,
+    "C-CRED": 6,
     "C-PER": 7,
     "C-SUR": 5,
     "C-RES": 13
   },
   "by_verification": {
-    "manual": 47,
-    "automated": 5
+    "manual": 48,
+    "automated": 16,
+    "live": 4
   },
   "by_criticality": {
-    "must": 52
+    "must": 68
   },
   "verified": 0,
   "unverified_automated": [
+    "CRED-R-002",
+    "CRED-R-004",
+    "HPO-R-001",
+    "HPO-R-003",
+    "HPO-R-004",
+    "HPO-R-005",
+    "HPO-R-006",
+    "HPO-R-007",
+    "HPO-R-008",
+    "HPO-R-009",
+    "HPO-R-010",
     "PER-R-001",
     "PER-R-002",
     "PER-R-003",
@@ -157,6 +171,86 @@
     },
     "PDF-R-008": {
       "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-008": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-001": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-007": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-004": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-009": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-002": {
+      "declared": "manual",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-006": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-010": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-005": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "HPO-R-003": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "CRED-R-002": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "CRED-R-001": {
+      "declared": "live",
+      "verified": false,
+      "tests": []
+    },
+    "CRED-R-004": {
+      "declared": "automated",
+      "verified": false,
+      "tests": []
+    },
+    "CRED-R-005": {
+      "declared": "live",
+      "verified": false,
+      "tests": []
+    },
+    "CRED-R-006": {
+      "declared": "live",
+      "verified": false,
+      "tests": []
+    },
+    "CRED-R-003": {
+      "declared": "live",
       "verified": false,
       "tests": []
     },
