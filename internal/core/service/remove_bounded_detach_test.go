@@ -39,6 +39,7 @@ func TestRemove_DetachBoundedWithoutCallerDeadline(t *testing.T) {
 	}
 	vs := volumestore.New(t.TempDir())
 	svc := service.New(st, fake.New(), lifecycle.New()).WithVolumes(vs)
+	t.Cleanup(service.SetRemoveDetachTimeout(300 * time.Millisecond))
 
 	// Create the named volume.
 	volName := "bounded-detach-vol"

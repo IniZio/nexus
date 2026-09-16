@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/store"
@@ -77,4 +78,12 @@ func DetachVolumeLocked(ctx context.Context, vs *volumestore.VolumeStore, name, 
 // res.Path rather than a fabricated .sock path.
 func SocketPathForID(res HostResource, socketDir string) string {
 	return socketPathForID(res, socketDir)
+}
+
+// SetRemoveDetachTimeout is exported for testing only. It shrinks the bound
+// Remove places on each volume detach and returns a restore function.
+func SetRemoveDetachTimeout(d time.Duration) (restore func()) {
+	old := removeDetachTimeout
+	removeDetachTimeout = d
+	return func() { removeDetachTimeout = old }
 }

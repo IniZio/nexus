@@ -281,7 +281,6 @@ func (s *Service) List(ctx context.Context) ([]domain.Sandbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("service: list: %w", err)
 	}
-	// Reap stale orphan builder records before filtering (R-REAP).
 	s.reapBuilders(ctx, all)
 	// Filter transient builder records. Use in-place filtering to avoid alloc.
 	out := all[:0]
@@ -354,9 +353,6 @@ func (s *Service) reapBuilders(ctx context.Context, all []domain.Sandbox) {
 		if err := syscall.Kill(sb.CreatorPID, 0); !errors.Is(err, syscall.ESRCH) {
 			continue // process still alive (nil) or uncertain (EPERM) — do not delete
 		}
-		// Creator is provably dead.
-		//
-		// Stop the VM and clean driver-side state (sockets, netns).
 		// Non-fatal: if CH is already gone the Stop returns nil after clearState.
 		// Ignore errors; we proceed to delete the record regardless.
 		_ = s.driver.Stop(ctx, sb.ID)
@@ -406,7 +402,6 @@ func (s *Service) resolve(ctx context.Context, ref string) (domain.Sandbox, erro
 		return sb, nil
 	}
 
-	// Prefix: fall through to the store's prefix resolver.
 	sb, err := s.store.ResolveByPrefix(ctx, ref)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("resolve %q: %w", ref, err)
@@ -596,7 +591,6 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 		return domain.Sandbox{}, err
 	}
 
-	// Fast-path validation against the cached state.
 	if _, err := s.machine.Next(sb.State, lifecycle.TriggerStop); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: stop %s: %w", sb.ID, err)
 	}
@@ -718,6 +712,10 @@ func (s *Service) Resume(ctx context.Context, ref string) (domain.Sandbox, error
 	return updated, nil
 }
 
+// removeDetachTimeout bounds each volume detach inside Remove. A var so tests
+// that hold the volume lock on purpose can shrink the wait they are proving.
+var removeDetachTimeout = 10 * time.Second
+
 // Remove deletes the sandbox identified by ref.
 //
 // Write-ahead removal protocol (crash-safety and concurrency guarantee):
@@ -834,7 +832,7 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	// this internal bound. WithoutCancel prevents a pre-cancelled ctx (already
 	// returned an error) from skipping detach entirely.
 	if s.volumes != nil {
-		detachCtx, detachCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		detachCtx, detachCancel := context.WithTimeout(context.WithoutCancel(ctx), removeDetachTimeout)
 		defer detachCancel()
 
 		// Primary path: detach volumes listed in the sandbox record.
@@ -1502,7 +1500,6 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 		return nil, fmt.Errorf("service: fork %s: %w", parent.ID, leaseErr)
 	}
 
-	// Spawn all children from the snapshot in one driver call.
 	instanceIDs, err := forker.ForkFrom(ctx, snap, childIDs)
 	if err != nil {
 		return nil, fmt.Errorf("service: fork %s: driver: %w", parent.ID, err)
@@ -1560,10 +1557,6 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: fork %s: persist child %s: %w", parent.ID, id, err)
 		}
-		// The record is committed, so the reaper now classifies this child's
-		// disk as Owned. Only now is it safe to drop the lease (release also
-		// removes the intent file). Releasing before the commit — or deferring
-		// all releases to the end of the loop — would reopen the window.
 		// The record is committed, so the reaper now classifies this child's
 		// disks as Owned — .raw by ULID, shadow copies via
 		// forkChildShadowOwner. Only now is it safe to drop the leases
@@ -1737,7 +1730,6 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 		return nil, fmt.Errorf("service: restore %s: %w", snapID, leaseErr)
 	}
 
-	// Spawn all children from the retained snapshot in one driver call.
 	instanceIDs, err := forker.ForkFrom(ctx, snap, childIDs)
 	if err != nil {
 		return nil, fmt.Errorf("service: restore %s: driver: %w", snapID, err)

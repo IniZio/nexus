@@ -80,14 +80,13 @@ func TestRemove_RecordDeletedEvenWhenDetachTimesOut(t *testing.T) {
 	}
 	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) //nolint:errcheck
 
-	// Remove with a short deadline. The store.Delete (record removal) happens
-	// before the detach loop, so Remove must return nil even though detach times
-	// out. Give enough time for the fast pre-detach steps but let detach exhaust
-	// the ctx.
-	removeCtx, cancel := context.WithTimeout(bgCtx, 500*time.Millisecond)
-	defer cancel()
+	// Remove bounds the detach itself (WithoutCancel + removeDetachTimeout), so
+	// the caller's deadline never reaches it; shrink the internal bound instead.
+	// The store.Delete (record removal) happens before the detach loop, so
+	// Remove must return nil even though detach times out.
+	t.Cleanup(service.SetRemoveDetachTimeout(300 * time.Millisecond))
 
-	if err := svc.Remove(removeCtx, sbID.String()); err != nil {
+	if err := svc.Remove(bgCtx, sbID.String()); err != nil {
 		t.Fatalf("Remove returned error when detach timed out: %v", err)
 	}
 
