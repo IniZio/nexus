@@ -31,8 +31,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/IniZio/nexus3/internal/core/diskfloor"
 	"github.com/IniZio/nexus3/internal/core/store"
 )
 
@@ -259,6 +261,11 @@ func (s *VolumeStore) Create(ctx context.Context, name string, kind VolumeKind, 
 	if sizeBytes <= 0 {
 		sizeBytes = DefaultDiskSizeBytes
 	}
+	if kind == KindDisk {
+		if err := s.checkFreeSpace(dir, sizeBytes); err != nil {
+			return nil, fmt.Errorf("volume %s: %w", name, err)
+		}
+	}
 
 	rec := &VolumeRecord{
 		Name:      name,
@@ -295,6 +302,40 @@ func (s *VolumeStore) Create(ctx context.Context, name string, kind VolumeKind, 
 	}
 
 	return rec, nil
+}
+
+// ErrInsufficientDisk is returned by Create when preallocating a disk volume
+// would leave less than the free-space floor on the volume filesystem.
+var ErrInsufficientDisk = errors.New("insufficient disk space for volume")
+
+// DiskStatfs is the injectable free-space probe (Bavail × Bsize, as df's
+// "available" column). Tests replace it to simulate a nearly full host.
+var DiskStatfs = func(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
+// FreeSpaceFloorBytes is the floor Create keeps free after a disk volume is
+// preallocated. It is the same floor service.DiskUsage and BuildPreflight use.
+var FreeSpaceFloorBytes = diskfloor.DefaultFreeSpaceFloorBytes
+
+// checkFreeSpace refuses a sizeBytes allocation under dir when the remaining
+// free space would fall below FreeSpaceFloorBytes.
+func (s *VolumeStore) checkFreeSpace(dir string, sizeBytes int64) error {
+	free, err := DiskStatfs(dir)
+	if err != nil {
+		return fmt.Errorf("statfs %s: %w", dir, err)
+	}
+	if free-sizeBytes < FreeSpaceFloorBytes {
+		return fmt.Errorf("%w: %.2f GiB free on %s, %.2f GiB requested, floor %.2f GiB (free=%d requested=%d floor=%d bytes)",
+			ErrInsufficientDisk,
+			float64(free)/(1<<30), dir, float64(sizeBytes)/(1<<30), float64(FreeSpaceFloorBytes)/(1<<30),
+			free, sizeBytes, FreeSpaceFloorBytes)
+	}
+	return nil
 }
 
 // materialise creates the backing file or directory for rec.

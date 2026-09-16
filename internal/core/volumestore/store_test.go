@@ -340,3 +340,75 @@ func TestUpdateSizeBytes_goneIsNoOp(t *testing.T) {
 // (No-op function whose import ensures this test file compiles only if
 // volumestore compiles without importing internal/core/service.)
 var _ = fmt.Sprintf
+
+// ── FW-DISK-VOL — free-space floor guards disk preallocation ────────────────
+//
+// Mutation that breaks these tests: delete the checkFreeSpace call in Create →
+// the refusal case creates the volume, and the error-content assertions fail.
+
+func TestCreate_refusesBelowFreeSpaceFloor(t *testing.T) {
+	origStatfs, origFloor := volumestore.DiskStatfs, volumestore.FreeSpaceFloorBytes
+	t.Cleanup(func() {
+		volumestore.DiskStatfs, volumestore.FreeSpaceFloorBytes = origStatfs, origFloor
+	})
+
+	const free int64 = 20 << 30
+	var statfsPath string
+	volumestore.DiskStatfs = func(path string) (int64, error) {
+		statfsPath = path
+		return free, nil
+	}
+
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Default 10 GiB request against 20 GiB free leaves 10 GiB < 15 GiB floor.
+	rec, err := s.Create(ctx, "floor-hit", volumestore.KindDisk, 0, "")
+	if err == nil {
+		t.Fatalf("Create succeeded with %d free, %d requested, %d floor; rec=%+v",
+			free, volumestore.DefaultDiskSizeBytes, volumestore.FreeSpaceFloorBytes, rec)
+	}
+	if !errors.Is(err, volumestore.ErrInsufficientDisk) {
+		t.Fatalf("error does not wrap ErrInsufficientDisk: %v", err)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("free=%d", free),
+		fmt.Sprintf("requested=%d", volumestore.DefaultDiskSizeBytes),
+		fmt.Sprintf("floor=%d", volumestore.FreeSpaceFloorBytes),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	if !strings.HasPrefix(statfsPath, s.Root()) {
+		t.Errorf("statfs probed %q, want a path under the store root %q", statfsPath, s.Root())
+	}
+	if _, err := s.Get("floor-hit"); err == nil {
+		t.Fatalf("refused volume left a record behind")
+	}
+
+	// Same request with a small floor override passes the guard and runs the
+	// real materialise path (preallocate + mke2fs) when mke2fs exists.
+	volumestore.FreeSpaceFloorBytes = 1 << 30
+	rec, err = s.Create(ctx, "floor-ok", volumestore.KindDisk, 0, "")
+	if err != nil {
+		if strings.Contains(err.Error(), "mke2fs") {
+			t.Skipf("mke2fs unavailable: %v", err)
+		}
+		t.Fatalf("Create under the floor override failed: %v", err)
+	}
+	if rec.SizeBytes != volumestore.DefaultDiskSizeBytes {
+		t.Fatalf("SizeBytes=%d want %d", rec.SizeBytes, volumestore.DefaultDiskSizeBytes)
+	}
+}
+
+func TestCreate_dirVolumeSkipsFreeSpaceFloor(t *testing.T) {
+	origStatfs := volumestore.DiskStatfs
+	t.Cleanup(func() { volumestore.DiskStatfs = origStatfs })
+	volumestore.DiskStatfs = func(string) (int64, error) { return 0, nil }
+
+	s := newStore(t)
+	if _, err := s.Create(context.Background(), "dirvol", volumestore.KindDir, 0, ""); err != nil {
+		t.Fatalf("kind=dir must not be gated by the disk floor: %v", err)
+	}
+}

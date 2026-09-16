@@ -6,6 +6,7 @@ import (
 	"sort"
 	"syscall"
 
+	"github.com/IniZio/nexus3/internal/core/diskfloor"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/image"
 )
@@ -14,8 +15,9 @@ import (
 // on the filesystem backing the nexus3 state directory before a build is allowed
 // to start. When free space falls below this floor, automatic GC runs first.
 // Configurable via ImageGCConfig.FreeSpaceFloorGiB in .nexus/config.yaml or
-// ~/.config/nexus3/config.yaml.
-const DefaultGCFreeSpaceFloorGiB = 15
+// ~/.config/nexus3/config.yaml. The value lives in diskfloor so volumestore
+// (which service imports) can share it without a cycle.
+const DefaultGCFreeSpaceFloorGiB = diskfloor.DefaultFreeSpaceFloorGiB
 
 // SandboxImageLister is the subset of store.Store required by image GC to
 // enumerate existing sandbox records and extract their image references.
