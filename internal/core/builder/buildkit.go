@@ -158,7 +158,10 @@ func renderRecipeIfNeeded(containerfileBytes []byte, recipe cred.ToolRecipe, arc
 //
 // recipeLayerBytes is the output of [renderRecipeIfNeeded]. Pass nil or empty
 // to omit the recipe layer (no recipe, or Containerfile opted out).
-func synthesizeDockerfile(containerfileBytes, recipeLayerBytes []byte, agentFile, installPath string) []byte {
+//
+// runcShimFile must come from [stageRuncShim]; the shim is copied to
+// [RuncShimInstallPath] in the same final layer, right after the agent.
+func synthesizeDockerfile(containerfileBytes, recipeLayerBytes []byte, agentFile, installPath, runcShimFile string) []byte {
 	var out []byte
 	out = append(out, containerfileBytes...)
 	if len(recipeLayerBytes) > 0 {
@@ -166,8 +169,8 @@ func synthesizeDockerfile(containerfileBytes, recipeLayerBytes []byte, agentFile
 		out = append(out, recipeLayerBytes...)
 	}
 	finalLayer := fmt.Sprintf(
-		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
-		installPath, agentFile, installPath,
+		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
+		installPath, agentFile, installPath, runcShimFile, RuncShimInstallPath,
 	)
 	return append(out, []byte(finalLayer)...)
 }
@@ -389,12 +392,18 @@ func buildLocalMounts(set *sizeVerifiedSet, ctxFS, dfFS, agentFS fsutil.FS) map[
 //
 //	# Final layer: bake the nexus3-agent (boot contract: init=/sbin/nexus3-agent)
 //	COPY --chmod=0755 --from=nexus3agent _nexus3-agent-<nonce> <req.AgentInstallPath>
+//	COPY --chmod=0755 --from=nexus3agent nexus3-runc /usr/local/sbin/runc
 //
 // Placing the agent COPY last means an agent version bump only invalidates
 // that single layer; all Containerfile layers above are cache-hits in buildkitd.
 // The <nonce> in the source filename ([newAgentContextFilename]) makes that
 // last layer a deliberate cache MISS on every build, so a corrupt agent layer
 // can never be served from buildkitd's persisted snapshot cache.
+//
+// The runc shim ([RuncShimInstallPath]) rides in the same final layer so
+// every container runtime's PATH lookup of "runc" resolves to the shim.
+// dockerd's built-in BuildKit resolves the runc path once at daemon start,
+// so the shim must already exist in the image before the guest first boots.
 //
 // # Context layout
 //
@@ -431,11 +440,15 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	if err != nil {
 		return err
 	}
+	runcShimFile, err := stageRuncShim(agentDir)
+	if err != nil {
+		return err
+	}
 	recipeLayerBytes, err := renderRecipeIfNeeded(req.ContainerfileBytes, req.ToolRecipe, req.TargetArch)
 	if err != nil {
 		return err
 	}
-	synthDF := synthesizeDockerfile(req.ContainerfileBytes, recipeLayerBytes, agentFile, req.AgentInstallPath)
+	synthDF := synthesizeDockerfile(req.ContainerfileBytes, recipeLayerBytes, agentFile, req.AgentInstallPath, runcShimFile)
 
 	// Small temp dir for the synthetic Dockerfile only.
 	dfDir, err := os.MkdirTemp("", "nexus3-bkdf-*")

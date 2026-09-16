@@ -53,7 +53,7 @@ func TestSynthesizeDockerfile_RecipeLayerOrdering(t *testing.T) {
 	const agentFile = "_nexus3-agent-deadbeef"
 	const installPath = "/sbin/nexus3-agent"
 
-	df := string(synthesizeDockerfile(containerfile, recipeBytes, agentFile, installPath))
+	df := string(synthesizeDockerfile(containerfile, recipeBytes, agentFile, installPath, runcShimContextFilename))
 
 	// User Containerfile must lead.
 	if !strings.HasPrefix(df, string(containerfile)) {
@@ -83,7 +83,7 @@ func TestSynthesizeDockerfile_RecipeLayerOrdering(t *testing.T) {
 // bytes omits the recipe section entirely while still emitting the agent COPY.
 func TestSynthesizeDockerfile_NoRecipeLayerWhenNil(t *testing.T) {
 	containerfile := []byte("FROM ubuntu:24.04\n")
-	df := string(synthesizeDockerfile(containerfile, nil, "_nexus3-agent-x", "/sbin/nexus3-agent"))
+	df := string(synthesizeDockerfile(containerfile, nil, "_nexus3-agent-x", "/sbin/nexus3-agent", runcShimContextFilename))
 
 	if strings.Contains(df, "Recipe layer") {
 		t.Fatalf("nil recipe bytes produced a recipe section:\n%s", df)
@@ -172,8 +172,8 @@ func TestSynthesizeDockerfile_RecipeDeterminism(t *testing.T) {
 		t.Fatalf("renderRecipeIfNeeded (call 2): %v", err)
 	}
 
-	df1 := synthesizeDockerfile(containerfile, recipeBytes1, agentFile, installPath)
-	df2 := synthesizeDockerfile(containerfile, recipeBytes2, agentFile, installPath)
+	df1 := synthesizeDockerfile(containerfile, recipeBytes1, agentFile, installPath, runcShimContextFilename)
+	df2 := synthesizeDockerfile(containerfile, recipeBytes2, agentFile, installPath, runcShimContextFilename)
 
 	if !bytes.Equal(df1, df2) {
 		t.Fatalf("two synthesizeDockerfile calls with the same recipe produced different output\n--- call 1 ---\n%s\n--- call 2 ---\n%s",

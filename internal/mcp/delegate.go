@@ -59,6 +59,7 @@ Egress is policy-gated. A 403 from the proxy names the policy that denied you:
 report it, do not route around it.
 ` + "`gh auth status`" + ` is a known false negative here ("The token in GH_TOKEN is invalid"):
 it probes ` + "`POST /graphql`" + ` and ` + "`GET /`" + `, both policy-denied. Trust ` + "`gh api user`" + ` (200 = authenticated).
+Containers built or run by docker inside this VM already trust the sandbox TLS perimeter (CA at /etc/nexus3/ca, SSL_CERT_FILE and friends pre-set); a 403 from a TLS-intercepted host is egress policy, not a certificate problem — report it, do not work around it.
 
 `
 

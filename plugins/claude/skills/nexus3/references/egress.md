@@ -298,6 +298,12 @@ All providers share the same model:
 
 ---
 
+## Docker build and TLS-intercepted hosts
+
+`RUN wget/curl/git/pip/apt https://<secret-host>` inside a Dockerfile used to fail with "certificate of X is not trusted" because each container ran without the sandbox CA bundle. That symptom is now handled automatically: every `--file` (`.nexus/Containerfile`) image bakes a runc shim at `/usr/local/sbin/runc` that bind-mounts `/etc/nexus3/ca/` and pre-sets `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `PIP_CERT`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, `WGETRC`, and `APT_CONFIG` into every container the guest's docker creates. No Dockerfile change is needed. See `guest-setup.md §1 → Docker build containers` for caveats (vendored trust stores, sandboxes predating this change) and diagnostics.
+
+**"403 Forbidden" after TLS succeeds** is egress policy, not a certificate problem. The MITM path ACL denied the request — add the needed path to `egress.policy` in `.nexus/config.yaml`. Do not work around it.
+
 ## Verification probes
 
 Run inside the sandbox shell after sourcing credentials:

@@ -26,6 +26,7 @@ Record any friction you hit — what happened, the evidence, the workaround — 
 report so the platform can be fixed.
 Egress is policy-gated. A 403 from the proxy names the policy that denied you:
 report it, do not route around it.
+Containers built or run by docker inside this VM already trust the sandbox TLS perimeter (CA at /etc/nexus3/ca, SSL_CERT_FILE and friends pre-set); a 403 from a TLS-intercepted host is egress policy, not a certificate problem — report it, do not work around it.
 ```
 
 Why it exists: in-guest agents dispatched without it tended to skip bringing up

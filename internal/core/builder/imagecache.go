@@ -19,7 +19,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 )
 
-// BuildFingerprint computes a stable hex SHA-256 fingerprint over the six
+// BuildFingerprint computes a stable hex SHA-256 fingerprint over the seven
 // inputs that together uniquely identify a builder-VM image output:
 //
 //  1. containerfileBytes — raw bytes of the Containerfile (or Dockerfile).
@@ -45,6 +45,8 @@ import (
 //  6. targetArch — the CPU architecture string passed to the recipe renderer
 //     (e.g. "x64", "arm64"). Same recipe rendered for a different arch
 //     produces a different image; it must be in the fingerprint.
+//  7. runcShimScript — the runc shim baked at [RuncShimInstallPath]; a shim
+//     change must rebuild cached images.
 //
 // # Precision tradeoffs
 //
@@ -106,6 +108,8 @@ func BuildFingerprint(
 	recipeHash := sha256.Sum256(recipeJSON)
 	writeComp("recipe:", hex.EncodeToString(recipeHash[:]))
 	writeComp("arch:", targetArch)
+	shimHash := sha256.Sum256(runcShimScript)
+	writeComp("runcshim:", hex.EncodeToString(shimHash[:]))
 
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
