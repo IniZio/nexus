@@ -100,6 +100,8 @@ Port state is persisted under `~/.config/herdr/portfwd/` on the herdr host and a
 
 **Remote-client focus scoping:** on a laptop running `nexus3-client`, forwards are scoped to the sandbox bound to the currently focused herdr workspace. Unfocusing a workspace removes its forwards from `127.0.0.1` within one reconcile tick (≤ 5 s); focusing it again restores them. Forwards of unfocused sandboxes are never applied. Host-side listeners are unaffected by focus — the scoping is client-side only.
 
+herdr 0.9.0 maintains one session-wide focus shared across all connected clients; the daemon reads focus from the host session's `focus.state` file. Focus-scoped forwarding is accurate only when `nexus3-client` is the **sole interactive client** on the session. When both a host TUI and a remote client are attached, the host session's last workspace-focus event is the one the daemon reads.
+
 ## nexus3 ssh
 
 Dial a sandbox's sshd over vsock. With `--stdio`, behaves as an SSH `ProxyCommand`, allowing standard `ssh` tooling to reach the sandbox.

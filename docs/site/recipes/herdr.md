@@ -340,6 +340,13 @@ back to mirroring all live forwards and logs one Info line:
 `portfwd focus: focused workspace has no nexus3 binding; mirroring all forwards`.
 Look for that line in `~/.local/state/nexus3/portfwd-client/agent.log`.
 Switch focus to the workspace that owns the sandbox, or run `nexus3 herdr list`
-on the host to confirm a binding exists. Note: herdr 0.9.0 has one session-wide
-focus, so with two clients attached (host TUI + remote), the host session's
-focus is the one the daemon reads.
+on the host to confirm a binding exists.
+
+::: warning Sole-interactive-client rule
+herdr 0.9.0 maintains one session-wide focus state shared across all connected
+clients. The `nexus3-client` daemon reads the focus from the host session.
+Focus-scoped forwarding is accurate only when `nexus3-client` is the **sole
+interactive client** on that herdr session. When a host TUI and a remote client
+are both attached, the host session's most recent workspace focus is the one
+the daemon reads; the remote client has no independent focus channel.
+:::
