@@ -161,6 +161,129 @@ else
 fi
 rm -rf "$_w5"
 
+
+make_fake_nexus3() {
+    _fn_path="$1"
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'printf "%s\n" "$*" >> "${FAKE_NEXUS3_LOG:-/dev/null}"' \
+        'case "$*" in' \
+        '    "--version") echo "nexus3 ${FAKE_NEXUS3_VER:-v0.1.1}" ;;' \
+        '    "herdr abi") cat "$HERDR_PLUGIN_ROOT/abi" ;;' \
+        '    "herdr version-check"*) exit "${FAKE_VC_EXIT:-0}" ;;' \
+        '    "herdr install-default-shell"*) exit "${FAKE_IDS_EXIT:-0}" ;;' \
+        '    "kernel install"*) exit "${FAKE_KI_EXIT:-0}" ;;' \
+        '    "doctor") exit "${FAKE_DOCTOR_EXIT:-0}" ;;' \
+        '    *) exit 0 ;;' \
+        'esac' > "$_fn_path"
+    chmod +x "$_fn_path"
+}
+
+make_fake_linux_release() {
+    _flr_dir="$1"
+    mkdir -p "$_flr_dir"
+    make_fake_nexus3 "$_flr_dir/nexus3-linux-amd64"
+    (cd "$_flr_dir" && sha256sum nexus3-linux-amd64 > SHA256SUMS)
+}
+
+run_linux_build() {
+    _lvc="$1" _lver="$2" _lids="$3" _lki="$4" _ldoc="$5" _lextra="$6" _ldown="$7"
+    _lwork="$(mktemp -d)"
+    _lplug="$_lwork/plugin" _linst="$_lwork/install"
+    _lshim="$_lwork/shim"  _lrel="$_lwork/release"
+    _llog="$_lwork/nexus3.log"
+    mkdir -p "$_lplug" "$_linst" "$_lshim" "$_lrel"
+    cp "$SCRIPT_DIR/abi" "$_lplug/abi"
+    echo "v0.2.0" > "$_lplug/nexus3-version"
+    make_fake_nexus3 "$_linst/nexus3"
+    [ "$_ldown" = "1" ] && make_fake_linux_release "$_lrel"
+    _lexit=0
+    env \
+        HERDR_PLUGIN_ROOT="$_lplug" \
+        INSTALL_DIR="$_linst" \
+        NEXUS3_SHIM_DIR="$_lshim" \
+        NEXUS3_RELEASE_BASE_URL="file://${_lrel}" \
+        FAKE_NEXUS3_LOG="$_llog" \
+        FAKE_NEXUS3_VER="$_lver" \
+        FAKE_VC_EXIT="$_lvc" \
+        FAKE_IDS_EXIT="$_lids" \
+        FAKE_KI_EXIT="$_lki" \
+        FAKE_DOCTOR_EXIT="$_ldoc" \
+        $_lextra \
+        sh "$BUILD_SH" >/dev/null 2>&1 || _lexit=$?
+    printf '%s' "$_lwork:$_lexit:$_llog"
+}
+
+_lr="$(run_linux_build 0 "v0.2.0" 0 0 0 "" 0)"
+_lw="${_lr%%:*}"; _lt="${_lr#*:}"; _le="${_lt%%:*}"; _ll="${_lt#*:}"
+_l1ok=1
+[ "$_le" = "0" ] || { echo "  exit=$_le" >&2; _l1ok=0; }
+grep -q -- "--write-config" "$_ll" 2>/dev/null || { echo "  --write-config not in log" >&2; _l1ok=0; }
+grep -q "^kernel install" "$_ll" 2>/dev/null || { echo "  kernel install not in log" >&2; _l1ok=0; }
+grep -q "^doctor" "$_ll" 2>/dev/null || { echo "  doctor not in log" >&2; _l1ok=0; }
+[ "$_l1ok" = "1" ] && ok "Linux: same (exit 0) skips download; --write-config, kernel install, doctor called" \
+    || fail "Linux: version-check same failed"
+rm -rf "$_lw"
+
+_lr="$(run_linux_build 11 "v0.3.0" 0 0 0 "" 0)"
+_lw="${_lr%%:*}"; _lt="${_lr#*:}"; _le="${_lt%%:*}"; _ll="${_lt#*:}"
+_l2ok=1
+[ "$_le" = "0" ] || { echo "  exit=$_le" >&2; _l2ok=0; }
+grep -q -- "--write-config" "$_ll" 2>/dev/null || { echo "  --write-config not in log" >&2; _l2ok=0; }
+grep -q "^kernel install" "$_ll" 2>/dev/null || { echo "  kernel install not in log" >&2; _l2ok=0; }
+[ "$_l2ok" = "1" ] && ok "Linux: installed-newer (exit 11) keeps binary; --write-config, kernel install called" \
+    || fail "Linux: version-check installed-newer failed"
+rm -rf "$_lw"
+
+_lr="$(run_linux_build 12 "v0.2.0-dev" 0 0 0 "" 0)"
+_lw="${_lr%%:*}"; _lt="${_lr#*:}"; _le="${_lt%%:*}"; _ll="${_lt#*:}"
+_l3ok=1
+[ "$_le" = "0" ] || { echo "  exit=$_le" >&2; _l3ok=0; }
+grep -q -- "--write-config" "$_ll" 2>/dev/null || { echo "  --write-config not in log" >&2; _l3ok=0; }
+grep -q "^kernel install" "$_ll" 2>/dev/null || { echo "  kernel install not in log" >&2; _l3ok=0; }
+[ "$_l3ok" = "1" ] && ok "Linux: dev build (exit 12) keeps binary; --write-config, kernel install called" \
+    || fail "Linux: version-check dev build failed"
+rm -rf "$_lw"
+
+_lr="$(run_linux_build 10 "v0.2.0" 0 0 0 "" 1)"
+_lw="${_lr%%:*}"; _lt="${_lr#*:}"; _le="${_lt%%:*}"; _ll="${_lt#*:}"
+_l4ok=1
+[ "$_le" = "0" ] || { echo "  exit=$_le" >&2; _l4ok=0; }
+grep -q -- "--write-config" "$_ll" 2>/dev/null || { echo "  --write-config not in log" >&2; _l4ok=0; }
+grep -q "^kernel install" "$_ll" 2>/dev/null || { echo "  kernel install not in log" >&2; _l4ok=0; }
+grep -q "^doctor" "$_ll" 2>/dev/null || { echo "  doctor not in log" >&2; _l4ok=0; }
+[ "$_l4ok" = "1" ] \
+    && ok "Linux: pin-newer downloads; --write-config, kernel install, doctor called" \
+    || fail "Linux: pin-newer download test failed"
+rm -rf "$_lw"
+
+_lr="$(run_linux_build 0 "v0.2.0" 0 0 0 "NEXUS3_FORCE_DOWNLOAD=1" 1)"
+_lw="${_lr%%:*}"; _lt="${_lr#*:}"; _le="${_lt%%:*}"; _ll="${_lt#*:}"
+if [ "$_le" = "0" ] && grep -q "^kernel install" "$_ll" 2>/dev/null; then
+    ok "Linux: NEXUS3_FORCE_DOWNLOAD=1 always downloads"
+else
+    fail "Linux: NEXUS3_FORCE_DOWNLOAD=1 test failed (exit=$_le)"
+fi
+rm -rf "$_lw"
+
+_lr="$(run_linux_build 0 "v0.2.0" 0 0 1 "" 0)"
+_lw="${_lr%%:*}"; _lt="${_lr#*:}"; _le="${_lt%%:*}"
+if [ "$_le" = "0" ]; then
+    ok "Linux: doctor failure (exit 1) is non-fatal"
+else
+    fail "Linux: doctor failure should not fail install (exit=$_le)"
+fi
+rm -rf "$_lw"
+
+_lr="$(run_linux_build 10 "v0.2.0-dev" 0 0 0 "" 1)"
+_lw="${_lr%%:*}"; _lt="${_lr#*:}"; _le="${_lt%%:*}"; _ll="${_lt#*:}"
+if [ "$_le" = "0" ] && grep -q "^kernel install --version" "$_ll" 2>/dev/null; then
+    ok "Linux: kernel install passes --version for dev binary"
+else
+    fail "Linux: kernel install --version for dev binary failed (exit=$_le)"
+fi
+rm -rf "$_lw"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ] && exit 0 || exit 1

@@ -145,27 +145,25 @@ fi
 if [ "$USE_LOCAL" = "0" ]; then
     # ── Self-bootstrapping download path ──────────────────────────────────
     VERSION="$(cat "$VERSION_FILE")"
-    BASE_URL="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${VERSION}"
+    BASE_URL="${NEXUS3_RELEASE_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${VERSION}}"
+    NEXUS3="$INSTALL_DIR/nexus3"
 
-    # ── Skip-if-newer guard ───────────────────────────────────────────────
+    # ── Version-check guard ───────────────────────────────────────────────
     SKIP_DOWNLOAD=0
-    if [ -z "${NEXUS3_FORCE_DOWNLOAD:-}" ] && [ -x "$INSTALL_DIR/nexus3" ]; then
-        EXISTING_VER="$("$INSTALL_DIR/nexus3" --version 2>/dev/null \
+    if [ -z "${NEXUS3_FORCE_DOWNLOAD:-}" ] && [ -x "$NEXUS3" ]; then
+        _vc_exit=0
+        "$NEXUS3" herdr version-check --pin "$VERSION_FILE" >/dev/null 2>&1 || _vc_exit=$?
+        _vc_ver="$("$NEXUS3" --version 2>/dev/null \
             | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9._]+)?' \
             | head -1)" || true
-        if echo "${EXISTING_VER:-}" | grep -q -- '-dev'; then
-            echo "nexus3 plugin: $INSTALL_DIR/nexus3 ($EXISTING_VER) is a dev build — keeping it (set NEXUS3_FORCE_DOWNLOAD=1 to override)."
-            SKIP_DOWNLOAD=1
-        elif [ -n "$EXISTING_VER" ]; then
-            HIGHEST="$(printf '%s\n%s\n' "$VERSION" "$EXISTING_VER" | sort -V | tail -1)"
-            if [ "$HIGHEST" = "$EXISTING_VER" ] && [ "$EXISTING_VER" != "$VERSION" ]; then
-                echo "nexus3 plugin: $INSTALL_DIR/nexus3 ($EXISTING_VER) is newer than release $VERSION — keeping it (set NEXUS3_FORCE_DOWNLOAD=1 to override)."
-                SKIP_DOWNLOAD=1
-            fi
-        fi
+        case "$_vc_exit" in
+            0)  echo "nexus3 plugin: installed ${_vc_ver} (matches pin)"; SKIP_DOWNLOAD=1 ;;
+            11) echo "nexus3 plugin: kept ${_vc_ver} (newer than pin)"; SKIP_DOWNLOAD=1 ;;
+            12) echo "nexus3 plugin: kept ${_vc_ver} (dev build — set NEXUS3_FORCE_DOWNLOAD=1 to override)"; SKIP_DOWNLOAD=1 ;;
+            10) ;; # pin-newer → download
+            *)  echo "nexus3 plugin: warning: version-check returned unexpected exit code $_vc_exit — downloading" ;;
+        esac
     fi
-
-    NEXUS3="$INSTALL_DIR/nexus3"
 
     if [ "$SKIP_DOWNLOAD" = "0" ]; then
         WORK_DIR="$(mktemp -d)"
@@ -189,11 +187,27 @@ if [ "$USE_LOCAL" = "0" ]; then
         mkdir -p "$INSTALL_DIR"
         install -m 0755 "$WORK_DIR/$ASSET_NAME" "$NEXUS3"
         echo "nexus3 plugin: installed -> $NEXUS3"
+        echo "nexus3 plugin: installed ${VERSION}"
+    fi
 
-        "$NEXUS3" herdr install-default-shell || {
-            echo "nexus3: error: install-default-shell failed" >&2
-            exit 1
-        }
+    _ids_exit=0
+    _ids_out="$("$NEXUS3" herdr install-default-shell --write-config 2>&1)" || _ids_exit=$?
+    if [ -n "$_ids_out" ]; then printf '%s\n' "$_ids_out"; fi
+    if [ "$_ids_exit" != "0" ]; then
+        echo "nexus3 plugin: warning: install-default-shell exited $_ids_exit (continuing)"
+    fi
+
+    _ki_exit=0
+    _ki_ver="$("$NEXUS3" --version 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9._]+)?' \
+        | head -1)" || true
+    if echo "${_ki_ver:-}" | grep -q -- '-dev'; then
+        "$NEXUS3" kernel install --version "${VERSION}" || _ki_exit=$?
+    else
+        "$NEXUS3" kernel install || _ki_exit=$?
+    fi
+    if [ "$_ki_exit" != "0" ]; then
+        echo "nexus3 plugin: warning: kernel install failed — run: nexus3 kernel install"
     fi
 else
     # ── Local dev / PATH fallback ─────────────────────────────────────────
@@ -248,3 +262,6 @@ chmod +x "$SHIM"
 echo "nexus3 plugin: shim written -> $SHIM"
 NEXUS3_VER="$("$NEXUS3" --version 2>/dev/null | head -1)" || true
 echo "nexus3 plugin: using $NEXUS3 ($NEXUS3_VER)"
+
+_doctor_out="$("$NEXUS3" doctor 2>&1)" || true
+if [ -n "$_doctor_out" ]; then printf '%s\n' "$_doctor_out"; fi
