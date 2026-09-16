@@ -20,8 +20,8 @@ func BuildExt4ForTest(ctx context.Context, srcDir, dstPath string) error {
 // real network implementations so ResetTestOverrides can restore them after a
 // test override.
 var (
-	origResolveDigest      = resolveDigest
-	origPullRemoteImage    = pullRemoteImage
+	origResolveDigest        = resolveDigest
+	origPullRemoteImage      = pullRemoteImage
 	origPullAmd64RemoteImage = pullAmd64RemoteImage
 )
 

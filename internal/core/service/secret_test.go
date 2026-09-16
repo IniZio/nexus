@@ -372,4 +372,3 @@ func TestSeedGuestSecrets_NoTokenLeak(t *testing.T) {
 		t.Fatalf("missing GH_TOKEN: %s", payload)
 	}
 }
-

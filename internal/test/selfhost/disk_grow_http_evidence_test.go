@@ -229,8 +229,8 @@ func TestDiskGrowHTTPEvidence(t *testing.T) {
 
 	curlCmd := exec.Command("curl",
 		"--unix-socket", socketPath,
-		"--include",  // include HTTP response headers (status line + headers)
-		"--silent",   // suppress progress meter
+		"--include",    // include HTTP response headers (status line + headers)
+		"--silent",     // suppress progress meter
 		"--show-error", // but still show errors
 		"-X", "PUT",
 		"-H", "Content-Type: application/json",

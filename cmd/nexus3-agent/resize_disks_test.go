@@ -212,7 +212,7 @@ func TestSelectResizableDisks_BuilderNoCacheDisks(t *testing.T) {
 func TestResizableDisksFromCacheDisks_UnrecognisedDeviceSkipped(t *testing.T) {
 	cacheDisks := []agent.CacheDiskMount{
 		{Device: "/dev/sda", MountPath: "/mnt/sda"},   // not /dev/vd* → skipped
-		{Device: "/dev/vdd", MountPath: "/mnt/cache"},  // ok
+		{Device: "/dev/vdd", MountPath: "/mnt/cache"}, // ok
 	}
 	got := resizableDisksFromCacheDisks(cacheDisks)
 	if len(got) != 1 {

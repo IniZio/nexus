@@ -226,6 +226,7 @@ func readEnvInt64(key string, def int64) int64 {
 //  7. Write the inner Containerfile and inner VM init script.
 //  8. buildctl solve → local rootfs export.
 //  9. mke2fs -d → raw ext4 inner disk image.
+//
 // 10. Boot inner cloud-hypervisor VM using the ext4, capture serial log.
 // 11. Print serial log; assert "INNER_BUILD_OK" appears.
 //
@@ -734,13 +735,13 @@ func TestNestedSourceBuild(t *testing.T) {
 		}
 		var ferr error
 		bootDrv, ferr = cloudhypervisor.New(cloudhypervisor.Config{
-			BinaryPath:       chBin,
-			SocketDir:        socketDir,
-			KernelPath:       kernelPath,
-			DiskImagePath:    ext4Path,
-			MemoryMiB:        uint32(outerMiB), // NESTED_OUTER_MIB (default 8192)
-			VCPUs:            6,                // 6 vCPUs: inner build VM uses ~2, leaving 4 for outer guest's agent/network/kernel; prevents CPU starvation during nested build
-			SerialOutputPath: serialPath,
+			BinaryPath:        chBin,
+			SocketDir:         socketDir,
+			KernelPath:        kernelPath,
+			DiskImagePath:     ext4Path,
+			MemoryMiB:         uint32(outerMiB), // NESTED_OUTER_MIB (default 8192)
+			VCPUs:             6,                // 6 vCPUs: inner build VM uses ~2, leaving 4 for outer guest's agent/network/kernel; prevents CPU starvation during nested build
+			SerialOutputPath:  serialPath,
 			StartTimeout:      90 * time.Second,
 			NestedVirt:        true, // expose /dev/kvm for inner cloud-hypervisor
 			FreePageReporting: true, // passively return guest-free pages to host; prevents host-OOM during step-8 buildctl export burst

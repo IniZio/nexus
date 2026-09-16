@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"testing"
 
-	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
+	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ── stub service ──────────────────────────────────────────────────────────────
@@ -284,8 +284,8 @@ func TestSandboxCreate_invokesService(t *testing.T) {
 	defer close()
 
 	res := callTool(t, cs, "sandbox_create", map[string]any{
-		"project":       "myproj",
-		"name":          "mysb",
+		"project":        "myproj",
+		"name":           "mysb",
 		"remove_on_exit": false,
 	})
 	if res.IsError {
@@ -419,9 +419,9 @@ func TestSandboxCreate_WithImage_CallsCreateAndBoot(t *testing.T) {
 	defer close()
 
 	res := callTool(t, cs, "sandbox_create", map[string]any{
-		"project":      "myproj",
-		"name":         "mysb",
-		"rootfs_path":  "/path/to/rootfs.ext4",
+		"project":        "myproj",
+		"name":           "mysb",
+		"rootfs_path":    "/path/to/rootfs.ext4",
 		"remove_on_exit": true,
 	})
 	if res.IsError {
@@ -475,9 +475,9 @@ func TestSandboxCreate_WithDigest_CallsCreateAndBoot(t *testing.T) {
 	defer close()
 
 	res := callTool(t, cs, "sandbox_create", map[string]any{
-		"project":       "proj",
-		"name":          "sb",
-		"digest":        "sha256:abc123",
+		"project":        "proj",
+		"name":           "sb",
+		"digest":         "sha256:abc123",
 		"remove_on_exit": false,
 	})
 	if res.IsError {
@@ -830,10 +830,10 @@ func TestSandboxRun_invokesService(t *testing.T) {
 	defer close()
 
 	res := callTool(t, cs, "sandbox_run", map[string]any{
-		"project":    "myproj",
-		"name":       "mysb",
+		"project":     "myproj",
+		"name":        "mysb",
 		"rootfs_path": "/fake/rootfs.ext4",
-		"argv":       []any{"sh", "-c", "echo done"},
+		"argv":        []any{"sh", "-c", "echo done"},
 	})
 	if res.IsError {
 		t.Fatalf("expected success, got error: %s", resultText(t, res))
@@ -880,10 +880,10 @@ func TestSandboxRun_missingArgv(t *testing.T) {
 	defer close()
 
 	res := callTool(t, cs, "sandbox_run", map[string]any{
-		"project":    "p",
-		"name":       "sb",
+		"project":     "p",
+		"name":        "sb",
 		"rootfs_path": "/rootfs.ext4",
-		"argv":       []any{},
+		"argv":        []any{},
 	})
 	if !res.IsError {
 		t.Fatal("expected error for missing argv, got success")
@@ -932,12 +932,12 @@ func TestSandboxRun_envAndStdinFlow(t *testing.T) {
 	defer close()
 
 	res := callTool(t, cs, "sandbox_run", map[string]any{
-		"project":    "myproj",
-		"name":       "mysb",
+		"project":     "myproj",
+		"name":        "mysb",
 		"rootfs_path": "/fake/rootfs.ext4",
-		"argv":       []any{"cat"},
-		"env":        map[string]any{"FOO": "bar", "BAZ": "qux"},
-		"stdin":      "hello stdin",
+		"argv":        []any{"cat"},
+		"env":         map[string]any{"FOO": "bar", "BAZ": "qux"},
+		"stdin":       "hello stdin",
 	})
 	if res.IsError {
 		t.Fatalf("expected success, got error: %s", resultText(t, res))

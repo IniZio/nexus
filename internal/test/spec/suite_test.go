@@ -37,12 +37,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cucumber/godog"
 	"github.com/IniZio/nexus3/internal/cli"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	testharness "github.com/IniZio/nexus3/internal/test/harness"
+	"github.com/cucumber/godog"
 )
 
 // ── per-scenario state ────────────────────────────────────────────────────────

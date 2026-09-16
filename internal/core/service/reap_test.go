@@ -729,8 +729,8 @@ func TestSocketPathForID_AllSocketKindsUseRealPath(t *testing.T) {
 	sockDir := "/state/sockets"
 
 	cases := []struct {
-		kind    service.ResourceKind
-		suffix  string
+		kind   service.ResourceKind
+		suffix string
 	}{
 		{service.KindSocketAPI, ".sock"},
 		{service.KindSocketVSock, ".vsock"},

@@ -248,9 +248,9 @@ func TestBootEgressSmoke(t *testing.T) {
 
 	// REGRESSION GUARD: dummy0 means the old alphabetical selection is back.
 	if gotIface == "dummy0" {
-		t.Errorf("REGRESSION: agent configured dummy0 (virtual, black-hole TX) instead of eth0 (virtio-net).\n"+
-			"Cause: firstNonLoIfaceAt in cmd/nexus3-agent/network.go reverted to alphabetical\n"+
-			"       first-non-lo selection. Restore the /sys/class/net/<name>/device-symlink\n"+
+		t.Errorf("REGRESSION: agent configured dummy0 (virtual, black-hole TX) instead of eth0 (virtio-net).\n" +
+			"Cause: firstNonLoIfaceAt in cmd/nexus3-agent/network.go reverted to alphabetical\n" +
+			"       first-non-lo selection. Restore the /sys/class/net/<name>/device-symlink\n" +
 			"       preference so hardware interfaces are preferred over virtual ones.")
 	}
 

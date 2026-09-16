@@ -89,12 +89,12 @@ func TestImportClaudeCredentials_EmptyTokens(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name: "empty_accessToken",
+			name:    "empty_accessToken",
 			content: `{"claudeAiOauth": {"accessToken": "", "refreshToken": "r", "expiresAt": 0}}`,
 			wantSub: "accessToken is empty",
 		},
 		{
-			name: "empty_refreshToken",
+			name:    "empty_refreshToken",
 			content: `{"claudeAiOauth": {"accessToken": "a", "refreshToken": "", "expiresAt": 0}}`,
 			wantSub: "refreshToken is empty",
 		},

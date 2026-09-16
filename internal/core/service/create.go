@@ -884,22 +884,22 @@ func CreateAndBoot(
 		Labels:  opts.Labels,
 		State:   domain.Created,
 		Envelope: domain.Envelope{
-			ImageDigest:     resolvedDigest,
-			AllowedHosts:    opts.AllowedHosts, // frozen at creation (P1-S6)
-			SSHPublicKey:    opts.SSHPublicKey, // frozen at creation (ORCA-S1)
+			ImageDigest:        resolvedDigest,
+			AllowedHosts:       opts.AllowedHosts, // frozen at creation (P1-S6)
+			SSHPublicKey:       opts.SSHPublicKey, // frozen at creation (ORCA-S1)
 			SecretHosts:        append(secretHostsFromBinds(opts.Secrets), opts.ExtraSecretHosts...),
 			SecretHostSuffixes: opts.ExtraSecretHostSuffixes,
-			SecretSpecs:     secretSpecsFromBinds(opts.Secrets),
-			OpenEgress:      opts.OpenEgress,              // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
-			AllowedRepo:     opts.AllowedRepo,             // D-PD-36: per-repo path allowlist; enforced below
-			AllowedBranches: resolveAllowedBranches(opts), // TBD-1: derived from the bound worktree's branch; see resolveAllowedBranches
-			PathPolicies:    opts.PathPolicies,            // T4: per-secret path policies; converted to mitm.PathPolicies at start
+			SecretSpecs:        secretSpecsFromBinds(opts.Secrets),
+			OpenEgress:         opts.OpenEgress,              // D-PD-33: explicit opt-in; never inferred from empty AllowedHosts
+			AllowedRepo:        opts.AllowedRepo,             // D-PD-36: per-repo path allowlist; enforced below
+			AllowedBranches:    resolveAllowedBranches(opts), // TBD-1: derived from the bound worktree's branch; see resolveAllowedBranches
+			PathPolicies:       opts.PathPolicies,            // T4: per-secret path policies; converted to mitm.PathPolicies at start
 		},
-		RemoveOnExit:   opts.RemoveOnExit,
-		BaseRef:        opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
-		MountedVolumes: namedVolumeAttachments(opts.NamedVolumeMounts),
-		LiveMounts:     opts.LiveMounts,
-		AgentName:       agentProfile.Name,                               // TBD-PD-32: empty when no agent is attached
+		RemoveOnExit:    opts.RemoveOnExit,
+		BaseRef:         opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace
+		MountedVolumes:  namedVolumeAttachments(opts.NamedVolumeMounts),
+		LiveMounts:      opts.LiveMounts,
+		AgentName:       agentProfile.Name,                                    // TBD-PD-32: empty when no agent is attached
 		ExtraAgentNames: extraAgentNamesFromProfiles(opts.ExtraAgentProfiles), // D-TP-09: persisted so supervisor can re-seed on restart
 	}
 	// 6a. Mixed-host guard: a bind must not span GitHub and non-GitHub hosts

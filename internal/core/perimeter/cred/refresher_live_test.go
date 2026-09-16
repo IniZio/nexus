@@ -85,8 +85,8 @@ func TestRefresherLiveRefreshGrant(t *testing.T) {
 	tempPath := filepath.Join(tempDir, "creds-live.json")
 
 	expiredStore := &DedicatedCredStore{
-		AccessToken:   realStore.AccessToken,   // non-empty (required by SaveStore)
-		RefreshToken:  realStore.RefreshToken,  // live RT — will be consumed by grant
+		AccessToken:   realStore.AccessToken,          // non-empty (required by SaveStore)
+		RefreshToken:  realStore.RefreshToken,         // live RT — will be consumed by grant
 		ExpiresAt:     time.Now().Add(-1 * time.Hour), // past → forces endpoint call
 		TokenType:     realStore.TokenType,
 		ClientID:      realStore.ClientID,

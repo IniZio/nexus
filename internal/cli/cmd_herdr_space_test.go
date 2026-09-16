@@ -232,4 +232,3 @@ func TestHerdrSpaceBindingClearWorkspaceID(t *testing.T) {
 		t.Errorf("SandboxHandle changed: got %q, want %q", got.SandboxHandle, b.SandboxHandle)
 	}
 }
-

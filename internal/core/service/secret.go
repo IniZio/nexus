@@ -246,8 +246,6 @@ func SeedGuestSecrets(ctx context.Context, broker *cred.Broker, id domain.Sandbo
 	return seeder(ctx, id, extra)
 }
 
-
-
 // applySecrets mints ONE placeholder per bind, extends it to all hosts in the
 // bind via [cred.Broker.RegisterPlaceholderForHost], and returns KEY=VALUE lines
 // for the guest cred.env (whole-file overwrite — the seeder owns the write).

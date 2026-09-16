@@ -83,4 +83,3 @@ func (s *Service) GetSandboxByID(ctx context.Context, id domain.SandboxID) (doma
 func (s *Service) ResolveRef(ctx context.Context, ref string) (domain.Sandbox, error) {
 	return s.resolve(ctx, ref)
 }
-

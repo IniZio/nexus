@@ -271,4 +271,3 @@ func (d *CHDriver) TakeSnapshot(ctx context.Context, id domain.SandboxID, kind a
 
 	return snap, nil
 }
-

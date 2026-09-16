@@ -50,13 +50,13 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/perimeter"
+	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
 	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
@@ -77,6 +77,7 @@ import (
 //  7. Run buildctl solve → local rootfs dir export.
 //  8. Append nexus3-agent as the final layer (copy it into the rootfs).
 //  9. mke2fs -d → raw ext4 inner disk image.
+//
 // 10. Launch inner cloud-hypervisor VM using the ext4, capture serial log.
 // 11. Print serial log; assert "nexus3-agent" appears (inner agent booted).
 //
@@ -477,9 +478,9 @@ func TestNestedDogfood(t *testing.T) {
 	scriptExit, scriptErr := agentClient.Exec(scriptCtx, agent.ExecOptions{
 		Argv: []string{"/bin/sh", "-c", innerBuildAndBootScript},
 		Env: map[string]string{
-			"PATH":           "/usr/local/bin:/sbin:/usr/sbin:/usr/bin:/bin",
-			"HOME":           "/root",
-			"SSL_CERT_FILE":  "/etc/ssl/certs/ca-certificates.crt",
+			"PATH":          "/usr/local/bin:/sbin:/usr/sbin:/usr/bin:/bin",
+			"HOME":          "/root",
+			"SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
 		},
 		Stdout: &scriptOut,
 		Stderr: &scriptOut,

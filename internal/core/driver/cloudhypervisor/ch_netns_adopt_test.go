@@ -184,9 +184,10 @@ func TestAdoptNetnsRuntime_RejectsZeroStartTime(t *testing.T) {
 // starttime to AdoptNetnsRuntime and asserts it returns an error.
 //
 // Two sub-cases:
-//  (a) pid still exists (as a zombie or newly recycled): wrong starttime → reject.
-//  (b) pid no longer exists at all (dead and reaped): adopt must also reject,
-//      because we cannot verify identity of a vanished pid.
+//
+//	(a) pid still exists (as a zombie or newly recycled): wrong starttime → reject.
+//	(b) pid no longer exists at all (dead and reaped): adopt must also reject,
+//	    because we cannot verify identity of a vanished pid.
 func TestAdoptNetnsRuntime_RejectsStaleStartTime(t *testing.T) {
 	// Sub-case (a): pid exists but starttime is wrong.
 	t.Run("wrong_starttime", func(t *testing.T) {

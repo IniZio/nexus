@@ -21,8 +21,9 @@ import (
 // a genuine run through the builder VM (not a nexus3 image-cache hit).
 //
 // Measured values (2026-08-29, this host):
-//   nexus3 FP-cache HIT (build-cache: hit — skipping builder VM):  5.2s
-//   genuine build, COPY layer cached (only export+mke2fs run fresh): 30s
+//
+//	nexus3 FP-cache HIT (build-cache: hit — skipping builder VM):  5.2s
+//	genuine build, COPY layer cached (only export+mke2fs run fresh): 30s
 //
 // The 20s threshold was chosen to sit in the 5–30 s gap:
 //   - Any run < 20s is a cache hit (skipped builder VM)
@@ -203,14 +204,14 @@ func injectRunIDIntoContainerfile(containerfilePath, runID string) error {
 
 // BuildResult holds the outcome of one build attempt.
 type BuildResult struct {
-	Label         string
-	BuildLog      string        // path to log file
-	NewDigest     string        // sha256:... of new image
-	ImageFile     string        // path to ext4 artifact
-	Elapsed       time.Duration
-	BuildExitCode int
-	HostDiskFreeGiB float64   // available GiB on host at build-start (for diagnosis)
-	RunID         string      // out-of-band run identifier injected into Containerfile
+	Label           string
+	BuildLog        string // path to log file
+	NewDigest       string // sha256:... of new image
+	ImageFile       string // path to ext4 artifact
+	Elapsed         time.Duration
+	BuildExitCode   int
+	HostDiskFreeGiB float64 // available GiB on host at build-start (for diagnosis)
+	RunID           string  // out-of-band run identifier injected into Containerfile
 }
 
 // RunBuild executes one nexus3 build and applies the cache-miss gate.

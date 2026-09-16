@@ -205,8 +205,8 @@ func TestParseStateBackend_RamTmpfsDriftGuard(t *testing.T) {
 	// The repro package sits at internal/test/repro; the target is at
 	// internal/core/agent/buildkit_linux.go — three levels up then back down.
 	candidates := []string{
-		"../../../internal/core/agent/buildkit_linux.go",    // relative from test working dir
-		"internal/core/agent/buildkit_linux.go",            // from repo root
+		"../../../internal/core/agent/buildkit_linux.go", // relative from test working dir
+		"internal/core/agent/buildkit_linux.go",          // from repo root
 	}
 
 	// Resolve via the module root: look for go.mod walking upward.

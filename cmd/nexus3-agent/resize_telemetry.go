@@ -17,8 +17,8 @@ import (
 	"net"
 	"os"
 
-	"github.com/mdlayher/vsock"
 	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/mdlayher/vsock"
 )
 
 // resizeEnvelope mirrors the unexported resize/wire.envelope, used here to

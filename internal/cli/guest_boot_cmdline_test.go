@@ -124,8 +124,8 @@ func TestGuestBootCmdline_NoScratchDisk_OrcaPath(t *testing.T) {
 	cfg := buildOrcaSpawnConfig(
 		"01J0NOSCRATCH", "proj/noscratch", t.TempDir(), t.TempDir(), "", "", "/k", "/d",
 		extraDiskPaths, bounds, 1,
-		true,  // hasWorkspaceDisk=true
-		0,     // workspaceDiskIndex
+		true, // hasWorkspaceDisk=true
+		0,    // workspaceDiskIndex
 		"", "/workspace",
 		false, // hasScratchDisk=false — explicitly not attached
 	)

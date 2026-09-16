@@ -63,9 +63,9 @@ import (
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
-	cloudhypervisor "github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
+	cloudhypervisor "github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/service"
@@ -244,8 +244,8 @@ func buildOneImage(
 		ac := agent.NewClient(bdrv, bdrv.lastStartedID)
 		teeW := io.MultiWriter(w, &execBuf)
 		// The agent ring sends all subprocess output (stdout+stderr combined)
-	// as StreamStdout frames. Wire Stdout to teeW so the build log is captured.
-	return ac.Exec(execCtx, agent.ExecOptions{Argv: argv, Stdout: teeW})
+		// as StreamStdout frames. Wire Stdout to teeW so the build log is captured.
+		return ac.Exec(execCtx, agent.ExecOptions{Argv: argv, Stdout: teeW})
 	}
 
 	spec := builder.BuilderVMSpec{
@@ -346,7 +346,7 @@ func TestBuilderVME2E(t *testing.T) {
 	t.Logf("agent binary: %s (%d bytes)", agentBin, len(agentBytes))
 
 	// ── 2. Shared store roots ─────────────────────────────────────────────────
-	storeRoot := t.TempDir()     // for EnsureBuilderImage (builder rootfs)
+	storeRoot := t.TempDir()    // for EnsureBuilderImage (builder rootfs)
 	imgCacheRoot := t.TempDir() // for image.NewCache (built sandboxes)
 	serviceRoot := t.TempDir()  // for service.Service (sandbox store)
 

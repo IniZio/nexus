@@ -270,7 +270,7 @@ func TestTapPump_FrameBoundary(t *testing.T) {
 	// Three frames of different sizes — boundary preservation check.
 	frames := [][]byte{
 		[]byte("short"),
-		make([]byte, 200), // medium
+		make([]byte, 200),  // medium
 		make([]byte, 1500), // typical MTU-sized
 	}
 	for i, f := range frames {

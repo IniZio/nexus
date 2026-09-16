@@ -82,9 +82,10 @@ func ghBoundRecord() domain.Sandbox {
 // against a store record with a GitHub secret host and no AllowedRepo.
 //
 // Mutation evidence:
-//   Remove the isGitHubHost guard loop added to service.Start
-//   → Start returns nil instead of ErrUnboundGitHubSecret.
-//   Restore → test passes.
+//
+//	Remove the isGitHubHost guard loop added to service.Start
+//	→ Start returns nil instead of ErrUnboundGitHubSecret.
+//	Restore → test passes.
 func TestGHBootGuard_Start_UnboundSecretRefused(t *testing.T) {
 	sb := ghUnboundRecord("bad-start")
 	svc := service.New(seedBadRecord(t, sb), fake.New(), lifecycle.New())
@@ -129,10 +130,11 @@ func TestGHBootGuard_RestoreChild_UnboundSecretRefused(t *testing.T) {
 // sandbox with a GitHub secret host AND a valid AllowedRepo must boot normally.
 //
 // Mutation evidence:
-//   Remove the `sb.Envelope.AllowedRepo == ""` condition so the guard always
-//   fires for any GitHub secret host.
-//   → Start returns ErrUnboundGitHubSecret even for the valid sandbox.
-//   Restore → test passes.
+//
+//	Remove the `sb.Envelope.AllowedRepo == ""` condition so the guard always
+//	fires for any GitHub secret host.
+//	→ Start returns ErrUnboundGitHubSecret even for the valid sandbox.
+//	Restore → test passes.
 func TestGHBootGuard_BoundSecretAllowed(t *testing.T) {
 	sb := ghBoundRecord()
 	svc := service.New(seedBadRecord(t, sb), fake.New(), lifecycle.New())

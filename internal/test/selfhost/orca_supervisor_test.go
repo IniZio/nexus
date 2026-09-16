@@ -160,11 +160,11 @@ func TestOrcaSupervisorWiring(t *testing.T) {
 		diskPath = resolvedExt4
 		var newErr error
 		bootDrv, newErr = cloudhypervisor.New(cloudhypervisor.Config{
-			BinaryPath:   chBin,
-			SocketDir:    socketDir,
-			KernelPath:   kernelPath,
+			BinaryPath:    chBin,
+			SocketDir:     socketDir,
+			KernelPath:    kernelPath,
 			DiskImagePath: resolvedExt4,
-			StartTimeout: 30 * time.Second,
+			StartTimeout:  30 * time.Second,
 		})
 		return bootDrv, newErr
 	})

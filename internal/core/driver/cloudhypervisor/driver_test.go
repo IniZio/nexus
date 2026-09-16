@@ -824,4 +824,3 @@ func TestBuildMemoryConfig_SharedSetWithLiveMounts(t *testing.T) {
 		t.Errorf("Shared = true, want false when no LiveMounts (unnecessary memfd overhead on every sandbox)")
 	}
 }
-

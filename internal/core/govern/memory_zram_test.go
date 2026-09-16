@@ -41,10 +41,10 @@ import (
 // ratio, because zram has absorbed 46% of MemTotal as compressed pages.
 func liveZramSample() resize.Sample {
 	const (
-		memTotalKB    = 1543912
-		memAvailKB    = 616516
-		swapTotalKB   = 2097148
-		swapFreeKB    = 1386212 // swapUsed = 710936 kB → ratio 0.460
+		memTotalKB  = 1543912
+		memAvailKB  = 616516
+		swapTotalKB = 2097148
+		swapFreeKB  = 1386212 // swapUsed = 710936 kB → ratio 0.460
 	)
 	return resize.Sample{
 		Timestamp:         time.Now(),
@@ -154,7 +154,7 @@ func TestZramPressureAbsentNoGrow(t *testing.T) {
 	}
 
 	if sampleWantsGrow(s, 0) {
-		t.Fatalf("sampleWantsGrow=true with avail_ratio=0.399 and zero swap — "+
+		t.Fatalf("sampleWantsGrow=true with avail_ratio=0.399 and zero swap — " +
 			"swap-pressure term must not fire when SwapTotalBytes=0 (D-RAM-10 guard)")
 	}
 }

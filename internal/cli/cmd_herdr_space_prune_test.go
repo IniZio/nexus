@@ -123,7 +123,7 @@ func TestHerdrSpacePrune_StaleWorkspace(t *testing.T) {
 
 	sandboxExists, workspaceExists := buildFakeCheckers(
 		map[string]bool{"proj/alive": true}, // sandbox alive
-		map[string]bool{},                    // workspace gone
+		map[string]bool{},                   // workspace gone
 	)
 	closer := func(_ context.Context, _ string) error { return nil }
 
@@ -230,9 +230,10 @@ func TestHerdrSpacePrune_DryRunPreservesAll(t *testing.T) {
 // stale workspace with running sandbox (b2), and valid (b3).
 //
 // 4-case reconciler behaviour:
-//   b1: sandbox absent — workspace closed + binding deleted.
-//   b2: sandbox present, workspace absent, non-worktree-managed — workspace-id cleared, binding retained.
-//   b3: both present — unchanged.
+//
+//	b1: sandbox absent — workspace closed + binding deleted.
+//	b2: sandbox present, workspace absent, non-worktree-managed — workspace-id cleared, binding retained.
+//	b3: both present — unchanged.
 //
 // MUTATION TARGET: the `sbPresent && !wsPresent && !b.IsWorktreeManaged()` branch in
 // herdrSpacePruneFull. Removing it causes b2 to be deleted instead of workspace-id-cleared
@@ -301,8 +302,8 @@ func withFakeHerdr(t *testing.T, payload string) {
 // never touch this function; this test closes that gap.
 func TestHerdrSpacePruneWorkspaceExistsFn(t *testing.T) {
 	tests := []struct {
-		name      string
-		payload   string
+		name    string
+		payload string
 		// wantW6 is the expected result for a binding with HerdrWorkspaceID="w6".
 		wantW6 bool
 		// wantW999 is the expected result for an ID not in the list.
@@ -595,7 +596,7 @@ func TestHerdrSpacePruneFull_CloseFail_BindingRetained(t *testing.T) {
 	}
 
 	sandboxExists, workspaceExists := buildFakeCheckers(
-		map[string]bool{},         // sandbox gone → stale
+		map[string]bool{}, // sandbox gone → stale
 		map[string]bool{"wFAIL": true},
 	)
 	closeErr := errors.New("herdr: connection refused")
@@ -637,7 +638,7 @@ func TestHerdrSpacePruneFull_CloseSucceeds_BindingDeleted(t *testing.T) {
 	}
 
 	sandboxExists, workspaceExists := buildFakeCheckers(
-		map[string]bool{},       // sandbox gone → stale
+		map[string]bool{}, // sandbox gone → stale
 		map[string]bool{"wOK": true},
 	)
 	closer := func(_ context.Context, _ string) error { return nil } // close succeeds
@@ -769,7 +770,7 @@ func TestHerdrSpacePruneFull_DeleteFail_BindingRetained(t *testing.T) {
 	}
 
 	sandboxExists, workspaceExists := buildFakeCheckers(
-		map[string]bool{},                  // sandbox gone → stale
+		map[string]bool{}, // sandbox gone → stale
 		map[string]bool{"wDELFAIL": true},
 	)
 	closer := func(_ context.Context, _ string) error { return nil } // close succeeds

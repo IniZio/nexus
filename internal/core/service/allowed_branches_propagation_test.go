@@ -46,4 +46,3 @@ func TestAllowedBranches_ExplicitPropagates(t *testing.T) {
 		t.Errorf("mitm.Config.AllowedBranches = %v; want %v", cfg.AllowedBranches, explicit)
 	}
 }
-

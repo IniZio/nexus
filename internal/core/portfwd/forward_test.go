@@ -329,7 +329,7 @@ func TestEnsureMasterLiveSocketNotUnlinked(t *testing.T) {
 	f := &Forwarder{
 		ControlPath: sock,
 		SSHHost:     testHost,
-		Run: seqRun(&calls, []runResp{{code: 0}}),
+		Run:         seqRun(&calls, []runResp{{code: 0}}),
 	}
 	if err := f.EnsureMaster(context.Background()); err != nil {
 		t.Fatal(err)

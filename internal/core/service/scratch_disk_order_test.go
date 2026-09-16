@@ -43,6 +43,7 @@ import (
 //
 //	MUTATION-D (caller disks shifted): caller disk positions change.
 //	  Caught by assertions (d) and (e).
+//
 // @verifies SD-AC1
 func TestScratchDisk_IsLast_SD_AC1(t *testing.T) {
 	t.Parallel()
@@ -72,8 +73,8 @@ func TestScratchDisk_IsLast_SD_AC1(t *testing.T) {
 	_, err := CreateAndBoot(ctx, svc, nil, capturingFactory, noopProbe,
 		"proj", "scratch-ac1",
 		CreateAndBootOptions{
-			Image:   ImageSpec{RootfsPath: "/fake/rootfs.ext4"},
-			DiskDir: diskDir,
+			Image:      ImageSpec{RootfsPath: "/fake/rootfs.ext4"},
+			DiskDir:    diskDir,
 			ExtraDisks: []ExtraDisk{callerDisk0, callerDisk1},
 			Workspace: &WorkspaceSpec{
 				SourcePath: "/host/repo",
@@ -289,6 +290,7 @@ func TestScratchDisk_NoScratchDiskFlag_SD_AC12b(t *testing.T) {
 //	  appended → len(capturedDisks)==0 → FAIL.
 //
 //	MUTATION-B (remove scratch append): drop the opts.ExtraDisks append → len==0 → FAIL.
+//
 // @verifies D-SD-05
 func TestScratchDisk_LiveMountWorkspace_GetsScratch(t *testing.T) {
 	t.Parallel()

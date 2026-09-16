@@ -251,20 +251,22 @@ func herdrSubscriptionEventNames(t *testing.T) (set map[string]bool, ok bool) {
 //
 // MUTATION PROOF (both verified RED — see log at EOF):
 //
-//   M1. Rewrite "worktree.removed" → "worktree_removed" in herdr-plugin.toml:
-//       herdrManifestEventNames returns ["worktree_removed","worktree.created"];
-//       "worktree_removed" not in known set → t.Errorf → RED.
-//       Substitution count (wantEventCount=2) is unchanged, so the count guard
-//       alone does NOT fire — the membership check is the real sentinel here.
+//	M1. Rewrite "worktree.removed" → "worktree_removed" in herdr-plugin.toml:
+//	    herdrManifestEventNames returns ["worktree_removed","worktree.created"];
+//	    "worktree_removed" not in known set → t.Errorf → RED.
+//	    Substitution count (wantEventCount=2) is unchanged, so the count guard
+//	    alone does NOT fire — the membership check is the real sentinel here.
 //
-//   M2. Remove both [[events]] blocks from herdr-plugin.toml:
-//       herdrManifestEventNames returns [] (len=0); wantEventCount=2 → RED.
-//       No membership checks run, so the count guard is the only sentinel here.
-//       This proves a no-op patch (events deleted) cannot masquerade as a pass.
+//	M2. Remove both [[events]] blocks from herdr-plugin.toml:
+//	    herdrManifestEventNames returns [] (len=0); wantEventCount=2 → RED.
+//	    No membership checks run, so the count guard is the only sentinel here.
+//	    This proves a no-op patch (events deleted) cannot masquerade as a pass.
 //
 // The substitution count wantEventCount=2 is asserted first so that:
-//   (a) a mutation that deletes the events section goes RED on count, and
-//   (b) a mutation that only misspells one name goes RED on membership.
+//
+//	(a) a mutation that deletes the events section goes RED on count, and
+//	(b) a mutation that only misspells one name goes RED on membership.
+//
 // Both must hold for the mutation to be properly caught.
 func TestHerdrManifestEventNames(t *testing.T) {
 	// wantEventCount is the exact number of [[events]] hooks this test expects.

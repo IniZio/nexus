@@ -44,9 +44,9 @@ import (
 
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/builder"
-	cloudhypervisor "github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/driver"
+	cloudhypervisor "github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/lifecycle"
 	"github.com/IniZio/nexus3/internal/core/service"
@@ -487,7 +487,7 @@ func sfCreateShadowDisk(t *testing.T, path string) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "mke2fs",
 		"-t", "ext4",
-		"-F",                                    // force (no interactive confirmation)
+		"-F",                                           // force (no interactive confirmation)
 		"-E", "lazy_itable_init=0,lazy_journal_init=0", // fully initialise inode table
 		path,
 	)

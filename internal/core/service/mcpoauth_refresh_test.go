@@ -199,13 +199,13 @@ func TestStartMCPOAuthRefreshers_SkipBadConfig(t *testing.T) {
 
 	configs := []service.MCPOAuthRefreshConfig{
 		{
-			ServerName:   "bad-no-refresh",
-			Host:         "bad.example.com",
-			AccessToken:  "at-bad",
-			RefreshToken: "", // missing — should be skipped
+			ServerName:    "bad-no-refresh",
+			Host:          "bad.example.com",
+			AccessToken:   "at-bad",
+			RefreshToken:  "", // missing — should be skipped
 			TokenEndpoint: srv.URL + "/token",
-			ClientID:     "cid",
-			ExpiresAtMs:  time.Now().Add(time.Hour).UnixMilli(),
+			ClientID:      "cid",
+			ExpiresAtMs:   time.Now().Add(time.Hour).UnixMilli(),
 		},
 		{
 			ServerName:    "good-server",

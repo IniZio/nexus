@@ -197,7 +197,8 @@ func TestResolveBoundsMinFields(t *testing.T) {
 }
 
 // TestResolveBuilderVMPattern mirrors the builder call site:
-//   builderGovBounds := buildAutoResizeBounds(builderBootMemMiB, 0, builderBootVCPUs, 0, 0)
+//
+//	builderGovBounds := buildAutoResizeBounds(builderBootMemMiB, 0, builderBootVCPUs, 0, 0)
 //
 // Default builder spec: 8192 MiB / 2 vCPUs → expect 32 GiB / 8 vCPUs ceilings.
 func TestResolveBuilderVMPattern(t *testing.T) {

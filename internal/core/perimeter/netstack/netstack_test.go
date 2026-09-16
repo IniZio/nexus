@@ -284,4 +284,3 @@ func TestObserveDNSAnswer_WiredToAllowList(t *testing.T) {
 		t.Errorf("expected Allow AuditEvent for observed DNS IP, got %v", events)
 	}
 }
-

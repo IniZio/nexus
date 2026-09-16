@@ -27,11 +27,11 @@ import (
 // caller calls Err() to retrieve the first violation and only the external
 // cancel-cause + error-slot wiring differs.
 type sizeVerifiedFS struct {
-	inner      fsutil.FS
-	noteErrFn  func(error)  // fires cancel + records first err
-	errFn      func() error // returns the first recorded err
-	mu         sync.Mutex
-	expected   map[string]int64 // path → declared byte count from Walk
+	inner     fsutil.FS
+	noteErrFn func(error)  // fires cancel + records first err
+	errFn     func() error // returns the first recorded err
+	mu        sync.Mutex
+	expected  map[string]int64 // path → declared byte count from Walk
 }
 
 // newSizeVerifiedFS returns an FS that rejects truncated or over-length reads.

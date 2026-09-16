@@ -179,8 +179,8 @@ func TestSeedUserMountFarm_NoWriteOnceGuard(t *testing.T) {
 // compatibility symlinks.
 func TestSeedUserMountFarm_ContainmentSubPath(t *testing.T) {
 	dir := t.TempDir()
-	stagingDir := filepath.Join(dir, "staging")  // = /run/nexus3/usermount/bin-mise
-	guestDir := filepath.Join(dir, "mise")       // = /root/.local/share/mise
+	stagingDir := filepath.Join(dir, "staging") // = /run/nexus3/usermount/bin-mise
+	guestDir := filepath.Join(dir, "mise")      // = /root/.local/share/mise
 	nativeDir := filepath.Join(dir, "native")
 	reportPath := filepath.Join(dir, "hostbin.report")
 

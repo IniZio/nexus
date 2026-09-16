@@ -18,9 +18,9 @@ type ResourceKind string
 const (
 	KindDiskRaw           ResourceKind = "disk_raw"
 	KindDiskWorkspace     ResourceKind = "disk_workspace"
-	KindDiskShadow        ResourceKind = "disk_shadow"        // shadow disk (handle-keyed, not ULID-keyed)
-	KindCreateIntent      ResourceKind = "create_intent"      // <diskDir>/<ULID>.create-intent.json
-	KindShadowIntent      ResourceKind = "shadow_intent"      // <diskDir>/<safeHandle>.shadow-intent.json
+	KindDiskShadow        ResourceKind = "disk_shadow"   // shadow disk (handle-keyed, not ULID-keyed)
+	KindCreateIntent      ResourceKind = "create_intent" // <diskDir>/<ULID>.create-intent.json
+	KindShadowIntent      ResourceKind = "shadow_intent" // <diskDir>/<safeHandle>.shadow-intent.json
 	KindSocketAPI         ResourceKind = "socket_api"
 	KindSocketVSock       ResourceKind = "socket_vsock"
 	KindSocketIID         ResourceKind = "socket_iid"

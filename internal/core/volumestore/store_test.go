@@ -295,7 +295,7 @@ func TestUpdateSizeBytes_updatesRecord(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
 
-	const origSize = 10 * 1024 * 1024 * 1024 // 10 GiB
+	const origSize = 10 * 1024 * 1024 * 1024  // 10 GiB
 	const grownSize = 26 * 1024 * 1024 * 1024 // 26 GiB (after +16 GiB grow step)
 
 	_, err := s.Create(ctx, "docker-vol", volumestore.KindDisk, origSize, "")

@@ -182,9 +182,9 @@ func TestPreflight_Expired_ClockInjection(t *testing.T) {
 // checkCredAt.  AC-2 (proves the real expiry parse works).
 func TestPreflight_ParseCursorJWTExpiry_RoundTrip(t *testing.T) {
 	tests := []struct {
-		name      string
-		token     string
-		wantUnix  int64
+		name     string
+		token    string
+		wantUnix int64
 	}{
 		{"expired", expiredJWT, 1000000000},
 		{"valid", validJWT, 9999999999},

@@ -23,8 +23,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
 	"github.com/IniZio/nexus3/internal/core/bootspec"
+	"github.com/IniZio/nexus3/internal/core/builder"
 )
 
 // readBootJSON reads and unmarshals the boot.json written under outDir.

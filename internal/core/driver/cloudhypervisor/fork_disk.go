@@ -286,7 +286,7 @@ func rewriteConfigDiskPath(configJSON []byte, oldDiskPath, newDiskPath string) (
 //     — without copying them). Falls back to reflinkCopy on cross-device error.
 //  2. Writes a new config.json with the requested rewrites applied:
 //     - diskRewrites maps every parent disk path to its child copy path; ALL
-//       matched entries are rewritten (root disk + extra disks in index order).
+//     matched entries are rewritten (root disk + extra disks in index order).
 //     - When parentGuestTap is non-empty, rewrites the first net[].tap to childGuestTap.
 //     - When parentVsockPath is non-empty, rewrites the vsock.socket path to childVsockPath.
 //     At least one rewrite is expected; any combination may be applied together.

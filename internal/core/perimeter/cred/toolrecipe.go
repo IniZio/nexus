@@ -18,10 +18,10 @@ const (
 const FloatingVersion = "latest"
 
 type RecipePackage struct {
-	Kind         RecipePackageKind
-	Name         string
-	Version      string
-	URLTemplate  string
+	Kind        RecipePackageKind
+	Name        string
+	Version     string
+	URLTemplate string
 	// SHA256ByArch: empty string means hash not yet verified; renderer must refuse to build if target-arch entry is absent or empty.
 	SHA256ByArch map[string]string
 	InstallDir   string

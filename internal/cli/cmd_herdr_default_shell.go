@@ -997,7 +997,8 @@ func installParentSighupAbsorber() (stop func()) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, herdrPaneCloseSignals...)
 	go func() {
-		for range ch { /* absorb: keep parent alive to hand off teardown */ }
+		for range ch { /* absorb: keep parent alive to hand off teardown */
+		}
 	}()
 	return func() { signal.Stop(ch); close(ch) }
 }

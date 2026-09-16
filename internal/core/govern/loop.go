@@ -70,21 +70,21 @@ type Governor struct {
 	lastResizeWasShrink bool
 	// grewOnce is set on the first memory grow attempt; until then the memory
 	// axis skips the post-resize cooldown for a grow (F13, see evaluate).
-	grewOnce            bool
-	latest              resize.Sample
-	lastSampleTime      time.Time
+	grewOnce       bool
+	latest         resize.Sample
+	lastSampleTime time.Time
 	// prevSwapUsed is the SwapUsed (bytes) from the sample before g.latest.
 	// Used by sampleWantsGrow as the reference point for the flow gate
 	// (D-RAM-10): grow fires only when SwapUsed has increased since the
 	// previous sample. Updated immediately before g.latest is overwritten each
 	// poll cycle so evaluate() always sees the prior sample's value.
-	prevSwapUsed        uint64
+	prevSwapUsed uint64
 	// prevSwapInPages is the cumulative pswpin from the sample before g.latest;
 	// sampleWantsShrink refuses while g.latest.SwapInPages exceeds it.
-	prevSwapInPages     uint64
-	agentOutdated       bool
-	pollErrLogged       bool
-	axes                []AxisEvaluator
+	prevSwapInPages uint64
+	agentOutdated   bool
+	pollErrLogged   bool
+	axes            []AxisEvaluator
 }
 
 // Config is the Governor's construction parameters.

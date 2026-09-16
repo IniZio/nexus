@@ -120,7 +120,6 @@ const (
 	// Gated on SwapTotalBytes > 0 — pre-D-RAM-07 agents leave it zero.
 	defaultSwapPressureRatio = 0.20
 
-
 	// minGrowStepBytes: floor on each grow increment (256 MiB).
 	// Source: OLD spec §4.3, D-DC-23 corrected value.
 	minGrowStepBytes int64 = 256 * 1024 * 1024
@@ -183,7 +182,7 @@ const (
 //  2. MemAvailable ratio (lagging backstop): ratio < defaultGrowThreshold (0.20)
 //     catches collapses that PSI misses when the kernel races the OOM path.
 //
-//  2b. CPU-load pre-warm (F13): ratio < loadedGrowThreshold (0.35) while the
+//     2b. CPU-load pre-warm (F13): ratio < loadedGrowThreshold (0.35) while the
 //     CPU axis reports pressure (CPUPSISupported && CPUPSISomeAvg10 >=
 //     cpuGrowPressure). Gated on CPUPSISupported — an absent CPU PSI reads
 //     as zero and must never fire (or suppress) this term.

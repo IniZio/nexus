@@ -894,9 +894,9 @@ func TestD36_DeniedPaths(t *testing.T) {
 	client := proxyClient(proxy.URL)
 
 	type dcase struct {
-		host      string
-		method    string
-		path      string
+		host        string
+		method      string
+		path        string
 		placeholder string
 	}
 	cases := []dcase{
@@ -1256,10 +1256,10 @@ func TestD36_DotSegmentTraversalDenied(t *testing.T) {
 	cases := []tcase{
 		// 1. Raw dot-dot segments reaching /user/repos via api.github.com.
 		{
-			name:    "raw-dotdot-to-user-repos",
-			host:    "api.github.com",
-			method:  http.MethodGet,
-			rawPath: relBase + "../../../user/repos",
+			name:        "raw-dotdot-to-user-repos",
+			host:        "api.github.com",
+			method:      http.MethodGet,
+			rawPath:     relBase + "../../../user/repos",
 			placeholder: recAPI.Placeholder,
 		},
 		// 2. %2e%2e (lowercase percent-encoded) reaching /user/repos.
@@ -1294,18 +1294,18 @@ func TestD36_DotSegmentTraversalDenied(t *testing.T) {
 		},
 		// 5. Traversal reaching a different repo under the same owner.
 		{
-			name:    "raw-dotdot-to-other-repo",
-			host:    "api.github.com",
-			method:  http.MethodGet,
-			rawPath: relBase + "../../../repos/acme/otherrepo/pulls",
+			name:        "raw-dotdot-to-other-repo",
+			host:        "api.github.com",
+			method:      http.MethodGet,
+			rawPath:     relBase + "../../../repos/acme/otherrepo/pulls",
 			placeholder: recAPI.Placeholder,
 		},
 		// 6. uploads.github.com — the second HasPrefix site.
 		{
-			name:    "uploads-raw-dotdot-to-user-repos",
-			host:    "uploads.github.com",
-			method:  http.MethodPost,
-			rawPath: relBase + "42/assets/../../../../../user/repos",
+			name:        "uploads-raw-dotdot-to-user-repos",
+			host:        "uploads.github.com",
+			method:      http.MethodPost,
+			rawPath:     relBase + "42/assets/../../../../../user/repos",
 			placeholder: recUploads.Placeholder,
 		},
 		// 7. %2e%2e on uploads.github.com.
@@ -2011,10 +2011,10 @@ func TestD38_BranchPolicy_UnresolvedSentinelDeniesAll(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	proxyServer := newTestProxy(t, mitm.Config{
-		SandboxID:    newSandboxID(203),
-		AllowedHosts: []string{"github.com"},
-		Broker:       cred.NewBroker(),
-		AllowedRepo:  "acme/myrepo",
+		SandboxID:       newSandboxID(203),
+		AllowedHosts:    []string{"github.com"},
+		Broker:          cred.NewBroker(),
+		AllowedRepo:     "acme/myrepo",
 		AllowedBranches: []string{domain.UnresolvedBranchSentinel},
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
@@ -2051,10 +2051,10 @@ func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
 
 	// Simulate the resolved default: ["refs/heads/nexus3/**"].
 	proxyServer := newTestProxy(t, mitm.Config{
-		SandboxID:    newSandboxID(201),
-		AllowedHosts: []string{"github.com"},
-		Broker:       cred.NewBroker(),
-		AllowedRepo:  "acme/myrepo",
+		SandboxID:       newSandboxID(201),
+		AllowedHosts:    []string{"github.com"},
+		Broker:          cred.NewBroker(),
+		AllowedRepo:     "acme/myrepo",
 		AllowedBranches: []string{"refs/heads/nexus3/**"},
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
@@ -2137,12 +2137,12 @@ func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
 	// Build the proxy directly (not via newTestProxy) so we can supply a
 	// custom Transport that redirects to our stub server.
 	p, err := mitm.New(mitm.Config{
-		SandboxID:   sid,
-		AllowedHosts: []string{"github.com"},
-		Broker:       broker,
-		AllowedRepo:  "acme/myrepo",
+		SandboxID:       sid,
+		AllowedHosts:    []string{"github.com"},
+		Broker:          broker,
+		AllowedRepo:     "acme/myrepo",
 		AllowedBranches: []string{"refs/heads/nexus3/**"},
-		OnEgress:     collect,
+		OnEgress:        collect,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, network, plainUpstream.Listener.Addr().String())

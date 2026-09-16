@@ -70,16 +70,16 @@ func main() {
 	// baseBuild is the shared BuildConfig used by all phases.
 	// Each phase overrides SandboxName and (where applicable) BuilderMemoryMiB.
 	baseBuild := repro.BuildConfig{
-		Nexus3:      os.Getenv("NEXUS3"),
-		Workspace:   filepath.Join(reproDir, "workspace"),
-		Project:     "repro",
-		SandboxName: phase, // overridden per-run inside each phase
-		ImageStore:  filepath.Join(stateDir, "images", "sha256"),
-		AgentBin:    agentBin,
-		ElfSize:     0,
+		Nexus3:         os.Getenv("NEXUS3"),
+		Workspace:      filepath.Join(reproDir, "workspace"),
+		Project:        "repro",
+		SandboxName:    phase, // overridden per-run inside each phase
+		ImageStore:     filepath.Join(stateDir, "images", "sha256"),
+		AgentBin:       agentBin,
+		ElfSize:        0,
 		ExpectedHashes: nil,
-		BuildTimeout:     25 * time.Minute,
-		LogsDir:          filepath.Join(reproDir, "logs"),
+		BuildTimeout:   25 * time.Minute,
+		LogsDir:        filepath.Join(reproDir, "logs"),
 		// Host swap is fully exhausted (8/8 GiB). 2 GiB builder reduces
 		// FreePageReporting balloon pressure during large COPY layers.
 		BuilderMemoryMiB: 2048,

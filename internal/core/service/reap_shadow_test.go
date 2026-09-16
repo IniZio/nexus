@@ -383,8 +383,8 @@ func TestReap_ShadowDisk_ApplyDeletesOrphans(t *testing.T) {
 	mustMkdir(t, disksDir)
 
 	paths := []string{
-		mustWriteShadowDisk(t, disksDir, "node_modules.shadow.ext4"),        // legacy
-		mustWriteShadowDisk(t, disksDir, "orphan_handle.shadow.dist.ext4"),  // B1, no record
+		mustWriteShadowDisk(t, disksDir, "node_modules.shadow.ext4"),       // legacy
+		mustWriteShadowDisk(t, disksDir, "orphan_handle.shadow.dist.ext4"), // B1, no record
 	}
 
 	st := newEmptyStore(t)

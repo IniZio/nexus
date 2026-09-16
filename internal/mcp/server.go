@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/service"
+	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // SandboxService is the subset of *service.Service consumed by the MCP tools.

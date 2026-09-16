@@ -1,16 +1,17 @@
 // ch_virtiofs_zombie_test.go — count-based zombie-reaping proof for AC-12c.
 //
 // Acceptance criteria exercised:
-//   AC-12c #1 — a managedProcess child that exits mid-life is reaped promptly;
-//               no zombie remains. Proven by polling /proc/<pid>/stat field 3
-//               on the REAL spawnVirtiofsd call site (N children, external kill).
-//               TestSpawnVirtiofsd_NChildExternalKillZombieCount
-//   AC-12c #2 — kill() returns only after the child is fully reaped.
-//               TestManagedProcess_KillReapsZombie
-//   AC-12c #3 — kill() must not signal a PID whose slot may be recycled:
-//               the deathCh guard returns early before sending any signal.
-//               Proven by killFn injection asserting zero invocations.
-//               TestKillGuard_NoSignalAfterReap
+//
+//	AC-12c #1 — a managedProcess child that exits mid-life is reaped promptly;
+//	            no zombie remains. Proven by polling /proc/<pid>/stat field 3
+//	            on the REAL spawnVirtiofsd call site (N children, external kill).
+//	            TestSpawnVirtiofsd_NChildExternalKillZombieCount
+//	AC-12c #2 — kill() returns only after the child is fully reaped.
+//	            TestManagedProcess_KillReapsZombie
+//	AC-12c #3 — kill() must not signal a PID whose slot may be recycled:
+//	            the deathCh guard returns early before sending any signal.
+//	            Proven by killFn injection asserting zero invocations.
+//	            TestKillGuard_NoSignalAfterReap
 //
 // Mutation proof annotations are in each test's doc comment.
 package cloudhypervisor

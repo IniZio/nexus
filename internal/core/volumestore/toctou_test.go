@@ -191,8 +191,8 @@ func TestD3_RmAttachSerialisedByFlock(t *testing.T) {
 	unblockRm := make(chan struct{}) // test signals: Rm may proceed with delete
 
 	volumestore.SetTestHookAfterRmRead(s, func() error {
-		close(rmRead)   // signal: Attach may now be issued
-		<-unblockRm    // wait: hold lock until test says go
+		close(rmRead) // signal: Attach may now be issued
+		<-unblockRm   // wait: hold lock until test says go
 		return nil
 	})
 

@@ -18,18 +18,18 @@
 //
 // # What the crash tests prove
 //
-// - SIGKILL does NOT run Go defers → intent file survives (mechanical proof of the
-//   structural argument, not just a claim about it).
-// - After SIGKILL, service.Reap --apply finds all orphaned resources and deletes them,
-//   leaving zero stranded bytes.
+//   - SIGKILL does NOT run Go defers → intent file survives (mechanical proof of the
+//     structural argument, not just a claim about it).
+//   - After SIGKILL, service.Reap --apply finds all orphaned resources and deletes them,
+//     leaving zero stranded bytes.
 //
 // # What they cannot prove
 //
-// - Power loss at the storage layer. writeCreateIntent uses os.WriteFile, which
-//   flushes to the kernel page cache via f.Close() but does NOT call fsync(2).
-//   A voltage failure before the kernel writes the page cache to disk would lose
-//   the intent file — leaving an orphan .raw without a detectable intent, identical
-//   to the pre-R2 state. See "PRODUCTION FINDING — fsync gap" below.
+//   - Power loss at the storage layer. writeCreateIntent uses os.WriteFile, which
+//     flushes to the kernel page cache via f.Close() but does NOT call fsync(2).
+//     A voltage failure before the kernel writes the page cache to disk would lose
+//     the intent file — leaving an orphan .raw without a detectable intent, identical
+//     to the pre-R2 state. See "PRODUCTION FINDING — fsync gap" below.
 //
 // PRODUCTION FINDING — fsync gap:
 //

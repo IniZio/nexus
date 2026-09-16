@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/IniZio/nexus3/internal/mcp"
+	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // TestMCPIntegration_stdio builds the nexus3 binary and runs it as an MCP

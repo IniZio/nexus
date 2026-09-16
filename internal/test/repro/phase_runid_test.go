@@ -55,9 +55,9 @@ func TestAllPhasesHaveRunIDProbe(t *testing.T) {
 
 	t.Run("baseline", func(t *testing.T) {
 		cfg := BaselinePhaseConfig{
-			Build:   BuildConfig{LogsDir: logsDir},
+			Build:    BuildConfig{LogsDir: logsDir},
 			ReproDir: t.TempDir(),
-			Runner:  runner,
+			Runner:   runner,
 		}
 		result, err := RunBaselinePhase(ctx, cfg)
 		if err != nil {
@@ -73,10 +73,10 @@ func TestAllPhasesHaveRunIDProbe(t *testing.T) {
 		// only if FreeMiB < 100000. Set FreeMiB = 99999 → needed = 1 MiB → starts hog.
 		// Instead use FreeMiB > MemChecker result: FreeMiB=200000 → needed ≤ 0 → no hog.
 		cfg := HostMemPhaseConfig{
-			Build:    BuildConfig{LogsDir: logsDir},
-			ReproDir: t.TempDir(),
-			Targets:  []HostMemTarget{{FreeMiB: 200000, Runs: 1}},
-			Runner:   runner,
+			Build:      BuildConfig{LogsDir: logsDir},
+			ReproDir:   t.TempDir(),
+			Targets:    []HostMemTarget{{FreeMiB: 200000, Runs: 1}},
+			Runner:     runner,
 			MemChecker: func() (int64, error) { return 100000, nil },
 		}
 		results, err := RunHostMemPhase(ctx, cfg)
@@ -95,11 +95,11 @@ func TestAllPhasesHaveRunIDProbe(t *testing.T) {
 
 	t.Run("cpu", func(t *testing.T) {
 		cfg := CPUPhaseConfig{
-			Build:   BuildConfig{LogsDir: logsDir},
+			Build:    BuildConfig{LogsDir: logsDir},
 			ReproDir: t.TempDir(),
-			NumCPU:  1,
-			Runs:    1,
-			Runner:  runner,
+			NumCPU:   1,
+			Runs:     1,
+			Runner:   runner,
 		}
 		results, err := RunCPUPhase(ctx, cfg)
 		if err != nil {
@@ -117,10 +117,10 @@ func TestAllPhasesHaveRunIDProbe(t *testing.T) {
 
 	t.Run("guestmem", func(t *testing.T) {
 		cfg := GuestMemPhaseConfig{
-			Build:          BuildConfig{LogsDir: logsDir},
-			ReproDir:       t.TempDir(),
-			MemoryAxisMiB:  []uint16{1024},
-			Runner:         runner,
+			Build:         BuildConfig{LogsDir: logsDir},
+			ReproDir:      t.TempDir(),
+			MemoryAxisMiB: []uint16{1024},
+			Runner:        runner,
 		}
 		results, err := RunGuestMemPhase(ctx, cfg)
 		if err != nil {
@@ -138,12 +138,12 @@ func TestAllPhasesHaveRunIDProbe(t *testing.T) {
 
 	t.Run("concurrency", func(t *testing.T) {
 		cfg := ConcurrencyPhaseConfig{
-			Build:       BuildConfig{LogsDir: logsDir},
-			ReproDir:    t.TempDir(),
-			N:           1,
-			Waves:       1,
+			Build:        BuildConfig{LogsDir: logsDir},
+			ReproDir:     t.TempDir(),
+			N:            1,
+			Waves:        1,
 			StaggerDelay: time.Millisecond,
-			Runner:      runner,
+			Runner:       runner,
 			// MemChecker returns enough memory for required = N*BuilderMemoryMiB(→2048) + 2048 = 4096 MiB.
 			MemChecker: func() (int64, error) { return 100000, nil },
 		}

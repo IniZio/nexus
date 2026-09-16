@@ -213,4 +213,3 @@ func performSwap(
 	// Unreachable: execSelf either replaces the process image or returns an error.
 	return nil
 }
-

@@ -152,7 +152,9 @@ func TestS22_AC2_StaticAgentUnchanged(t *testing.T) {
 
 	dir := t.TempDir()
 	credPath := filepath.Join(dir, "static-creds.json")
-	type credFile struct{ Token string `json:"token"` }
+	type credFile struct {
+		Token string `json:"token"`
+	}
 	data, _ := json.Marshal(credFile{Token: wantToken})
 	if err := os.WriteFile(credPath, data, 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -225,7 +227,9 @@ func TestS22_AC3_CheckCredSeesRegisteredFormat(t *testing.T) {
 
 	dir := t.TempDir()
 	credPath := filepath.Join(dir, "creds.json")
-	type credFile struct{ Token string `json:"token"` }
+	type credFile struct {
+		Token string `json:"token"`
+	}
 	data, _ := json.Marshal(credFile{Token: wantToken})
 	if err := os.WriteFile(credPath, data, 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -281,7 +285,9 @@ func TestS22_AC5_MutationProof_SingleRegistration(t *testing.T) {
 
 	dir := t.TempDir()
 	credPath := filepath.Join(dir, "creds.json")
-	type credFile struct{ Token string `json:"token"` }
+	type credFile struct {
+		Token string `json:"token"`
+	}
 	data, _ := json.Marshal(credFile{Token: wantToken})
 	if err := os.WriteFile(credPath, data, 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)

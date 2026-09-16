@@ -11,9 +11,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/IniZio/nexus3/internal/core/driver/fake"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
 )
 
 func TestCreateAndBoot_RecordsAgentName(t *testing.T) {

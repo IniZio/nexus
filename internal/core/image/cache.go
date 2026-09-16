@@ -712,7 +712,7 @@ func (c *Cache) PruneCandidates(ctx context.Context, referenced []domain.Digest)
 // BuilderTemplate describes one nexus-builder-*.ext4 file in the cache root.
 type BuilderTemplate struct {
 	Path     string
-	Size     int64 // allocated bytes on disk (st_blocks*512), not apparent size — these files may be sparse
+	Size     int64  // allocated bytes on disk (st_blocks*512), not apparent size — these files may be sparse
 	AgentTag string // 16-hex agent tag parsed from the filename
 	ModTime  time.Time
 }

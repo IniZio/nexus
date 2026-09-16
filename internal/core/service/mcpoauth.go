@@ -86,13 +86,13 @@ type rawCredentials struct {
 
 // rawMCPOAuthEntry is one entry in the mcpOAuth map.
 type rawMCPOAuthEntry struct {
-	ServerName    string `json:"serverName"`
-	ServerURL     string `json:"serverUrl"`
-	AccessToken   string `json:"accessToken"`
-	RefreshToken  string `json:"refreshToken"`
-	ExpiresAt     int64  `json:"expiresAt"` // ms since epoch
-	Scope         string `json:"scope"`
-	ClientID      string `json:"clientId"`
+	ServerName     string `json:"serverName"`
+	ServerURL      string `json:"serverUrl"`
+	AccessToken    string `json:"accessToken"`
+	RefreshToken   string `json:"refreshToken"`
+	ExpiresAt      int64  `json:"expiresAt"` // ms since epoch
+	Scope          string `json:"scope"`
+	ClientID       string `json:"clientId"`
 	DiscoveryState struct {
 		AuthorizationServerURL string `json:"authorizationServerUrl"`
 		OAuthMetadataFound     bool   `json:"oauthMetadataFound"`

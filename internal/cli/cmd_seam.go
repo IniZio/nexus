@@ -41,13 +41,13 @@ type sandboxDriverSpec struct {
 	KernelPath   string
 	MemoryMiB    uint32
 	VCPUs        uint32
-	MemoryMaxMiB uint32            // 0 → driver default
-	VCPUMax      uint32            // 0 → driver default
+	MemoryMaxMiB uint32 // 0 → driver default
+	VCPUMax      uint32 // 0 → driver default
 	NestedVirt   bool
-	PID1Args     string            // from vmcfg.Resolve; "" → no extra pid1 args
-	SBHandle     string            // "project/name" for cmdline; "" → omit handle
-	LiveMounts   []domain.LiveMount  // nil for MCP/run paths
-	GuestMounts  []agent.GuestMount  // nil for MCP/run paths
+	PID1Args     string             // from vmcfg.Resolve; "" → no extra pid1 args
+	SBHandle     string             // "project/name" for cmdline; "" → omit handle
+	LiveMounts   []domain.LiveMount // nil for MCP/run paths
+	GuestMounts  []agent.GuestMount // nil for MCP/run paths
 	// HasScratchDisk is true when a scratch disk was actually attached as the
 	// last ExtraDisk. Set from the same condition that controls service scratch
 	// creation (workspace present && !NoScratchDisk). Do not infer from

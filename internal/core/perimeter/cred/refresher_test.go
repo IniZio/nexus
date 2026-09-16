@@ -1031,9 +1031,11 @@ func TestVend_RetryPushOnPreviousFailure(t *testing.T) {
 //  6. Assert broker.Resolve(newPlaceholder) == realToken.
 //
 // Mutation proof (apply to PRODUCTION code, not this file):
-//   In refresher.go ForcePush, remove or no-op the r.broker.SetRealToken call.
-//   ForcePush returns nil, but broker.Resolve(rec2.Placeholder) == "" → RED:
-//   "after post-seed push: broker resolves new placeholder to ..."
+//
+//	In refresher.go ForcePush, remove or no-op the r.broker.SetRealToken call.
+//	ForcePush returns nil, but broker.Resolve(rec2.Placeholder) == "" → RED:
+//	"after post-seed push: broker resolves new placeholder to ..."
+//
 // Do NOT mutate the r.ForcePush call on line ~1086 of this file — that mutates
 // the test itself and only proves the test checks its own assertion.
 func TestRefresher_ForcePush_PostSeedRemint(t *testing.T) {

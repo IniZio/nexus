@@ -183,4 +183,3 @@ func TestS1AC3_SnapshotRm_RefusesWhenChildExists(t *testing.T) {
 		t.Errorf("S1-AC3: snapshot removed despite refusal: %v", readErr)
 	}
 }
-

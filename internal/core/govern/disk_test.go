@@ -400,7 +400,7 @@ func TestDiskAxis_PerDiskSample_UsesMatchingEntry(t *testing.T) {
 		{Index: 0, UsedBytes: 1 << 30, TotalBytes: 10 << 30, Supported: true},
 		{Index: 2, UsedBytes: 9 << 30, TotalBytes: 10 << 30, Supported: true},
 	})
-	sample.DiskUsedBytes = 1 << 30  // legacy: under threshold
+	sample.DiskUsedBytes = 1 << 30 // legacy: under threshold
 	sample.DiskTotalBytes = 10 << 30
 	sample.DiskSupported = true
 	injectSample(g, clk, sample)
@@ -477,7 +477,7 @@ func TestDiskAxis_MissingIndexInDiskStats_NoGrow(t *testing.T) {
 	// spurious fallback.
 	sample := resize.Sample{
 		Timestamp:      time.Now(),
-		DiskUsedBytes:  9 << 30,  // legacy: over threshold — must NOT be used
+		DiskUsedBytes:  9 << 30, // legacy: over threshold — must NOT be used
 		DiskTotalBytes: 10 << 30,
 		DiskSupported:  true,
 		DiskStats: []resize.DiskSample{

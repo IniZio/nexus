@@ -265,35 +265,35 @@ func runSandbox(ctx context.Context, args []string, out *Output) error {
 }
 
 type sandboxCreateFlags struct {
-	rm              bool
-	forceDiskSpace  bool
-	imageRef        string
-	rootfsPath      string
-	filePath        string
-	dockerfilePath  string // --dockerfile / -f: explicit Containerfile path override
-	memoryMiB       uint32
-	vcpus           uint32
-	labels          map[string]string
-	nestedVirt      bool
-	workspacePath   string // --workspace <host-path>: host git worktree to capture
-	captureMaxBytes int64  // --capture-max <size>: explicit workspace capture cap (0 = auto)
-	memoryMaxMiB uint32   // --memory-max <MiB>: RAM ceiling for hotplug region
-	vcpusMax     uint32   // --vcpus-max <n>:    vCPU ceiling for hotplug
+	rm               bool
+	forceDiskSpace   bool
+	imageRef         string
+	rootfsPath       string
+	filePath         string
+	dockerfilePath   string // --dockerfile / -f: explicit Containerfile path override
+	memoryMiB        uint32
+	vcpus            uint32
+	labels           map[string]string
+	nestedVirt       bool
+	workspacePath    string   // --workspace <host-path>: host git worktree to capture
+	captureMaxBytes  int64    // --capture-max <size>: explicit workspace capture cap (0 = auto)
+	memoryMaxMiB     uint32   // --memory-max <MiB>: RAM ceiling for hotplug region
+	vcpusMax         uint32   // --vcpus-max <n>:    vCPU ceiling for hotplug
 	diskMaxGiB       uint32   // --disk-max <GiB>:   disk grow ceiling
 	builderMemoryMiB uint32   // --builder-memory <MiB>: builder VM RAM (0 = use default 8192 MiB; min 1024 when set)
 	secrets          []string // --secret ENV@host[,host…] (repeatable)
-	egressClosed bool     // --egress closed: disable open egress (D-PD-33)
-	egressExplicit bool
-	agentName       string
-	extraAgentNames []string
-	allowHosts      []string // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
-	allowedRepo     string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
-	pathPolicies    domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
-	mountNamed      []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
-	mountLive       []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
-	noShareSettings bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
-	noUserMounts    bool     // --no-user-mounts: skip operator tool-dir live mounts (usermount-table-host)
-	positionals     []string
+	egressClosed     bool     // --egress closed: disable open egress (D-PD-33)
+	egressExplicit   bool
+	agentName        string
+	extraAgentNames  []string
+	allowHosts       []string                  // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
+	allowedRepo      string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
+	pathPolicies     domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
+	mountNamed       []string                  // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
+	mountLive        []string                  // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
+	noShareSettings  bool                      // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
+	noUserMounts     bool                      // --no-user-mounts: skip operator tool-dir live mounts (usermount-table-host)
+	positionals      []string
 }
 
 func applyProjectConfig(f *sandboxCreateFlags) error {
@@ -1217,19 +1217,19 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 
 			bdrv := &supervisorBuilderDriver{
-				dialerDrv:  dialerDrv,
-				storeRoot:  storeRoot,
-				stateBase:  filepath.Join(storeRoot, "builder-supervisors"),
-				socketDir:  builderSocketDir,
-				kernelPath: kernelPath,
-				diskPath:   builderRootfs,
-				extraDisks: builderExtraDisks,
-				ar:         builderAR,
-				bootMemMiB: builderBootMemMiB,
-				bootVCPUs:  builderBootVCPUs,
+				dialerDrv:           dialerDrv,
+				storeRoot:           storeRoot,
+				stateBase:           filepath.Join(storeRoot, "builder-supervisors"),
+				socketDir:           builderSocketDir,
+				kernelPath:          kernelPath,
+				diskPath:            builderRootfs,
+				extraDisks:          builderExtraDisks,
+				ar:                  builderAR,
+				bootMemMiB:          builderBootMemMiB,
+				bootVCPUs:           builderBootVCPUs,
 				logPath:             "",
 				cacheDiskMountPaths: cacheDiskMountPaths,
-				cacheDiskLeases: cacheDiskLeases,
+				cacheDiskLeases:     cacheDiskLeases,
 			}
 			execFn := func(ctx context.Context, argv []string, stderr io.Writer) (int32, error) {
 				ac := agent.NewClient(bdrv, bdrv.StartedID())
@@ -1553,31 +1553,31 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
-			PreMintedID:       preMintedID, // A-MOUNT: zero unless curated config was staged at an ID-keyed path
-			Labels:            f.labels,
-			RemoveOnExit:      f.rm,
-			ForceDiskSpace:    f.forceDiskSpace,
-			Image:             spec,
-			CacheRoot:         cacheRoot,
-			MemoryMiB:         f.memoryMiB,
-			VCPUs:             f.vcpus,
-			NestedVirt:        f.nestedVirt,
-			ExtraDisks:        bootExtraDisks,
-			Workspace:         bootWorkspace,
-			WorkspaceCapturer: bootCapturer,
-			BaseRef:           bootBaseRef, // GIT-SEED: host HEAD at capture time (D-PD-19/D-PD-29)
-			Secrets:           secrets,
-			AllowedHosts:      allowHosts, // --allow-host, plus the agent's own hosts when --agent is set
-			OpenEgress:        openEgress,
+			PreMintedID:             preMintedID, // A-MOUNT: zero unless curated config was staged at an ID-keyed path
+			Labels:                  f.labels,
+			RemoveOnExit:            f.rm,
+			ForceDiskSpace:          f.forceDiskSpace,
+			Image:                   spec,
+			CacheRoot:               cacheRoot,
+			MemoryMiB:               f.memoryMiB,
+			VCPUs:                   f.vcpus,
+			NestedVirt:              f.nestedVirt,
+			ExtraDisks:              bootExtraDisks,
+			Workspace:               bootWorkspace,
+			WorkspaceCapturer:       bootCapturer,
+			BaseRef:                 bootBaseRef, // GIT-SEED: host HEAD at capture time (D-PD-19/D-PD-29)
+			Secrets:                 secrets,
+			AllowedHosts:            allowHosts, // --allow-host, plus the agent's own hosts when --agent is set
+			OpenEgress:              openEgress,
 			ExtraSecretHosts:        resolveExtraSecretHosts(agentProfile, f.extraAgentNames, openEgress),
 			ExtraSecretHostSuffixes: resolveExtraSecretHostSuffixes(agentProfile, f.extraAgentNames, openEgress),
-			ExtraAgentProfiles: resolveExtraAgentProfiles(f.extraAgentNames), // D-TP-09: full profiles so supervisor can seed credentials
-			AgentProfile:      agentProfile,  // zero value when --agent was not passed
-			AllowedRepo:  f.allowedRepo,  // D-PD-36: set by --repo; empty for open-egress sandboxes
-			PathPolicies: f.pathPolicies, // conveyed via --egress-policy-json on the worktree subprocess path
-			Volumes:      namedVS,        // SD2-6-MOUNT: nil when --mount-named not used
-			NamedVolumeMounts: namedMounts,
-			LiveMounts:        bootLiveMounts, // D-PD-53: populated from --mount flags
+			ExtraAgentProfiles:      resolveExtraAgentProfiles(f.extraAgentNames), // D-TP-09: full profiles so supervisor can seed credentials
+			AgentProfile:            agentProfile,                                 // zero value when --agent was not passed
+			AllowedRepo:             f.allowedRepo,                                // D-PD-36: set by --repo; empty for open-egress sandboxes
+			PathPolicies:            f.pathPolicies,                               // conveyed via --egress-policy-json on the worktree subprocess path
+			Volumes:                 namedVS,                                      // SD2-6-MOUNT: nil when --mount-named not used
+			NamedVolumeMounts:       namedMounts,
+			LiveMounts:              bootLiveMounts, // D-PD-53: populated from --mount flags
 		},
 	)
 	if err != nil {
@@ -1719,8 +1719,8 @@ func handoffHumanSupervisor(
 		kernelPath, govBounds, memoryMiB, bootVCPUs,
 		diskPath, extraDisks, cmdline, chBin, socketDir,
 		hasWorkspace, workspaceDiskIndex, numNamedDisks, workspaceGuestPath,
-		hasWorkspace,                             // hasScratchDisk: workspace sandboxes always get scratch
-		numNamedDisks+workspaceDiskIndex+1,        // scratchDiskIndex: after workspace disk
+		hasWorkspace,                       // hasScratchDisk: workspace sandboxes always get scratch
+		numNamedDisks+workspaceDiskIndex+1, // scratchDiskIndex: after workspace disk
 		liveMounts, virtiofsdPath,
 		nestedVirt,
 		mcpOAuthRefreshConfigs,
@@ -1777,26 +1777,26 @@ func buildHumanSupervisorConfig(
 	}
 
 	return supervisor.Config{
-		SandboxRef:         sandboxRef,
-		StoreRoot:          storeRoot,
-		StateDir:           stateDir,
-		CHBin:              chBin,
-		SocketDir:          socketDir,
-		KernelPath:         kernelPath,
-		DiskPath:           diskPath,
-		ExtraDisks:         extraDisks,
-		MemoryMiB:          memoryMiB,
-		BootVCPUs:          bootVCPUs,
-		HasWorkspaceDisk:   hasWorkspace,
-		WorkspaceDiskIndex: numNamedDisks + workspaceDiskIndex,
-		HasScratchDisk:     hasScratchDisk,
-		ScratchDiskIndex:   scratchDiskIndex,
-		ResizableDiskIndices: resizableDiskIndices,
-		WorkspaceGuestPath: workspaceGuestPath,
-		GovBounds:          govBounds,
-		Cmdline:            cmdline,
-		LiveMounts:         liveMounts,
-		VirtiofsdPath:      virtiofsdPath,
+		SandboxRef:             sandboxRef,
+		StoreRoot:              storeRoot,
+		StateDir:               stateDir,
+		CHBin:                  chBin,
+		SocketDir:              socketDir,
+		KernelPath:             kernelPath,
+		DiskPath:               diskPath,
+		ExtraDisks:             extraDisks,
+		MemoryMiB:              memoryMiB,
+		BootVCPUs:              bootVCPUs,
+		HasWorkspaceDisk:       hasWorkspace,
+		WorkspaceDiskIndex:     numNamedDisks + workspaceDiskIndex,
+		HasScratchDisk:         hasScratchDisk,
+		ScratchDiskIndex:       scratchDiskIndex,
+		ResizableDiskIndices:   resizableDiskIndices,
+		WorkspaceGuestPath:     workspaceGuestPath,
+		GovBounds:              govBounds,
+		Cmdline:                cmdline,
+		LiveMounts:             liveMounts,
+		VirtiofsdPath:          virtiofsdPath,
 		CredsFile:              service.DedicatedCredStorePathForProfile(agentProfile),
 		NestedVirt:             nestedVirt,
 		MCPOAuthRefreshConfigs: mcpOAuthRefreshConfigs,

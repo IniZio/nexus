@@ -51,9 +51,9 @@ func TestCPUControlLawConstants(t *testing.T) {
 
 // fakeCPUResizer records ResizeCPU calls.
 type fakeCPUResizer struct {
-	current  int32
-	calls    []int32 // ordered list of targets passed to ResizeCPU
-	resizeErr error  // if non-nil, ResizeCPU returns this error
+	current   int32
+	calls     []int32 // ordered list of targets passed to ResizeCPU
+	resizeErr error   // if non-nil, ResizeCPU returns this error
 }
 
 func newFakeCPUResizer(bootVCPUs int32) *fakeCPUResizer {

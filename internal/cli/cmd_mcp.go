@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/IniZio/nexus3/internal/core/agent"
 	"github.com/IniZio/nexus3/internal/core/domain"
 	"github.com/IniZio/nexus3/internal/core/image"
@@ -16,6 +15,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/core/vmcfg"
 	mcpsrv "github.com/IniZio/nexus3/internal/mcp"
+	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func init() {

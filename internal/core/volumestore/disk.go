@@ -31,8 +31,8 @@ func formatExt4(ctx context.Context, path string) error {
 	}
 	cmd := exec.CommandContext(ctx, mke2fsPath,
 		"-t", "ext4",
-		"-F",                                            // force (no interactive confirmation)
-		"-E", "lazy_itable_init=0,lazy_journal_init=0",  // fully initialise inode table
+		"-F",                                           // force (no interactive confirmation)
+		"-E", "lazy_itable_init=0,lazy_journal_init=0", // fully initialise inode table
 		path,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {

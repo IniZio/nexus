@@ -70,7 +70,7 @@ func TestDiskConfig_FullConfig_DirectScoping(t *testing.T) {
 		Payload: vmPayloadConfig{Kernel: "/boot/kernel"},
 		Memory:  &vmMemoryConfig{SizeBytes: 512 * 1024 * 1024},
 		Disks: []vmDiskConfig{
-			{Path: "/vm/rootfs.raw", ImageType: "Raw"},          // vda — no Direct
+			{Path: "/vm/rootfs.raw", ImageType: "Raw"},                // vda — no Direct
 			{Path: "/vm/scratch.raw", ImageType: "Raw", Direct: true}, // vdb — O_DIRECT
 		},
 	}

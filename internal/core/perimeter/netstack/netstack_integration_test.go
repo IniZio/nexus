@@ -68,8 +68,8 @@ func craftTCPSYN(guestIPv4, dstIPv4 [4]byte, srcPort, dstPort uint16) []byte {
 	frame := make([]byte, 14+20+20)
 
 	// Ethernet header (14 bytes).
-	copy(frame[0:6], gatewayHWAddr[:]) // dst MAC = gateway
-	copy(frame[6:12], guestHWAddr[:])  // src MAC = guest
+	copy(frame[0:6], gatewayHWAddr[:])               // dst MAC = gateway
+	copy(frame[6:12], guestHWAddr[:])                // src MAC = guest
 	binary.BigEndian.PutUint16(frame[12:14], 0x0800) // EtherType IPv4
 
 	// IPv4 header (20 bytes, no options).

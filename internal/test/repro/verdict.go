@@ -27,9 +27,9 @@ func (v Verdict) String() string {
 
 // ProbeResult is a single probe's typed result.
 type ProbeResult struct {
-	Probe       string  // probe name e.g. "stageA.file_32m"
-	Verdict     Verdict
-	Detail      string  // human-readable detail
+	Probe   string // probe name e.g. "stageA.file_32m"
+	Verdict Verdict
+	Detail  string // human-readable detail
 	// SkipVerdict marks informational probes whose result should appear in
 	// output for observability but should NOT contribute to FinalVerdict.
 	// Use only for "not-collected" stages — probes that structurally cannot

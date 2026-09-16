@@ -206,8 +206,8 @@ func TestTracerLaunch(t *testing.T) {
 	const tracerContent = "tracer-ok"
 	var fileOut bytes.Buffer
 	exitCode, err = ac.Exec(execCtx, agent.ExecOptions{
-		Argv: []string{"/bin/sh", "-c", `printf '%s' 'tracer-ok' > "$HOME/tracer.txt" && cat "$HOME/tracer.txt"`},
-		Env:  map[string]string{"HOME": "/root"},
+		Argv:   []string{"/bin/sh", "-c", `printf '%s' 'tracer-ok' > "$HOME/tracer.txt" && cat "$HOME/tracer.txt"`},
+		Env:    map[string]string{"HOME": "/root"},
 		Stdout: &fileOut,
 	})
 	if err != nil {

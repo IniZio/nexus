@@ -985,18 +985,18 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			seedCertPEM, seedKeyPEM = seedCA.CertPEM, seedCA.KeyPEM
 		}
 		proxy, err = mitm.New(mitm.Config{
-			SandboxID:       sb.ID,
-			AllowedHosts:    sb.Envelope.AllowedHosts,
+			SandboxID:          sb.ID,
+			AllowedHosts:       sb.Envelope.AllowedHosts,
 			SecretHosts:        sb.Envelope.SecretHosts,
 			SecretHostSuffixes: sb.Envelope.SecretHostSuffixes,
-			Broker:          s.broker,
-			AllowAll:        allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
-			SeedCACertPEM:   seedCertPEM,
-			SeedCAKeyPEM:    seedKeyPEM,
-			AllowedRepo:     sb.Envelope.AllowedRepo,                         // D-PD-36: per-repo path allowlist
-			PathPolicies:    buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
-			AllowedBranches: sb.Envelope.ResolvedAllowedBranches(),           // TBD-1: worktree-derived branch, or default/sentinel
-			OnEgress:        mitmOnEgress,                                    // shared egress-decisions sink
+			Broker:             s.broker,
+			AllowAll:           allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
+			SeedCACertPEM:      seedCertPEM,
+			SeedCAKeyPEM:       seedKeyPEM,
+			AllowedRepo:        sb.Envelope.AllowedRepo,                         // D-PD-36: per-repo path allowlist
+			PathPolicies:       buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
+			AllowedBranches:    sb.Envelope.ResolvedAllowedBranches(),           // TBD-1: worktree-derived branch, or default/sentinel
+			OnEgress:           mitmOnEgress,                                    // shared egress-decisions sink
 		})
 		if err != nil {
 			fd.Close()

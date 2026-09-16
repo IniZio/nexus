@@ -250,4 +250,3 @@ func writeAndSpawnForkChild(
 	slog.Info("sandbox: fork child spawn spec written", "child", child.ID, "stateDir", childStateDir)
 	return doSpawnForkChildSupervisor(ctx, svc, child.ID, childStateDir)
 }
-

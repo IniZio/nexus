@@ -849,9 +849,9 @@ func TestCriticalColdStart_JumpsToSafeFloor(t *testing.T) {
 	const boot int64 = 512 * 1024 * 1024
 
 	cases := []struct {
-		name    string
+		name     string
 		maxBytes int64
-		want    int64
+		want     int64
 	}{
 		{"max_4GiB", 4 * gib, safeMemFloorBytes},
 		{"max_8GiB", 8 * gib, safeMemFloorBytes},

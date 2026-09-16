@@ -402,8 +402,8 @@ func TestAwaitShutdown_NilDetachChDegradesToTwoWay(t *testing.T) {
 // Removing that arm (or changing the return to shutdownBySignal) causes this
 // test to hang or return the wrong cause — a genuine test FAILURE.
 func TestAwaitShutdown_VMDeath(t *testing.T) {
-	stopCh := make(chan struct{})    // never closed — no stop verb
-	vmDeadCh := make(chan struct{})  // closed — VM died
+	stopCh := make(chan struct{})   // never closed — no stop verb
+	vmDeadCh := make(chan struct{}) // closed — VM died
 	ctx := context.Background()
 
 	close(vmDeadCh)
@@ -720,13 +720,13 @@ func TestBuildSupervisorDriverConfig_FreePageReportingEnabled(t *testing.T) {
 func TestBuildSupervisorDriverConfig_WiresConsoleLogPath(t *testing.T) {
 	const stateDir = "/run/test/supervisor/sb-TESTID"
 	cfg := Config{
-		CHBin:     "/usr/bin/cloud-hypervisor",
-		SocketDir: "/run/user/1000/n3",
-		StateDir:  stateDir,
+		CHBin:      "/usr/bin/cloud-hypervisor",
+		SocketDir:  "/run/user/1000/n3",
+		StateDir:   stateDir,
 		KernelPath: "/k",
-		DiskPath:  "/d",
-		MemoryMiB: 512,
-		BootVCPUs: 1,
+		DiskPath:   "/d",
+		MemoryMiB:  512,
+		BootVCPUs:  1,
 	}
 	got := buildSupervisorDriverConfig(cfg, 4096, 1, nil)
 	want := stateDir + "/console.log"
@@ -763,8 +763,8 @@ func TestBuildSupervisorDriverConfig_NestedVirt(t *testing.T) {
 		cfg.NestedVirt = true
 		got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
 		if !got.NestedVirt {
-			t.Errorf("driver NestedVirt = false, want true — "+
-				"--nested was requested but KVM nested virt is disabled in the VM "+
+			t.Errorf("driver NestedVirt = false, want true — " +
+				"--nested was requested but KVM nested virt is disabled in the VM " +
 				"(D-N3N-02: NestedVirt must flow Config→buildSupervisorDriverConfig→cloudhypervisor.Config)")
 		}
 	})
@@ -774,7 +774,7 @@ func TestBuildSupervisorDriverConfig_NestedVirt(t *testing.T) {
 		cfg.NestedVirt = false
 		got := buildSupervisorDriverConfig(cfg, 16384, 8, nil)
 		if got.NestedVirt {
-			t.Errorf("driver NestedVirt = true for Config.NestedVirt=false — "+
+			t.Errorf("driver NestedVirt = true for Config.NestedVirt=false — " +
 				"nested-ON must never be the default (D-N3N-02 security contract)")
 		}
 	})
@@ -800,8 +800,8 @@ func TestBuildSupervisorArgv_NestedVirtForwarded(t *testing.T) {
 	}
 	argv := BuildSupervisorArgv(cfg)
 	if !slices.Contains(argv, "--nested") {
-		t.Error("argv does not contain --nested for NestedVirt=true — "+
-			"--nested create sandboxes will boot without KVM nested virt "+
+		t.Error("argv does not contain --nested for NestedVirt=true — " +
+			"--nested create sandboxes will boot without KVM nested virt " +
 			"(D-N3N-02: NestedVirt must flow Config→BuildSupervisorArgv→supervisor argv)")
 	}
 }
@@ -826,7 +826,7 @@ func TestBuildSupervisorArgv_NotNestedOmitsFlag(t *testing.T) {
 	}
 	argv := BuildSupervisorArgv(cfg)
 	if slices.Contains(argv, "--nested") {
-		t.Error("argv contains --nested for NestedVirt=false — "+
+		t.Error("argv contains --nested for NestedVirt=false — " +
 			"nested-ON must never be the default (D-N3N-02 security contract)")
 	}
 }

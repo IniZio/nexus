@@ -116,7 +116,6 @@ func (t *SessionTable) get(id string) (*Session, bool) {
 	return s, ok
 }
 
-
 func (t *SessionTable) list() []*Session {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

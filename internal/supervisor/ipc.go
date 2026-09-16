@@ -751,4 +751,3 @@ func RequestAgentHealth(ctx context.Context, sockPath string) (AgentHealth, erro
 	}
 	return result, nil
 }
-

@@ -28,8 +28,8 @@ import (
 // The control plane is a bufconn; the data plane is a single net.Pipe fed
 // through a channel so each dial gets the pre-created host-side connection.
 type copyTestDialer struct {
-	lis      *bufconn.Listener
-	dataCh   chan net.Conn // host-side ends of net.Pipe, one per expected Copy call
+	lis    *bufconn.Listener
+	dataCh chan net.Conn // host-side ends of net.Pipe, one per expected Copy call
 }
 
 func newCopyTestDialer() *copyTestDialer {

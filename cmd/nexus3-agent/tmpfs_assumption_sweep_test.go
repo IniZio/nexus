@@ -264,9 +264,9 @@ echo "nothing to check"
 //     The former same-line-only rule was proven insufficient by a real-package
 //     probe that split the check and the path across two consecutive lines:
 //
-//         if fstype != "tmpfs" {                        // "tmpfs", no /tmp
-//             return fmt.Errorf("/tmp must be …", …)   // /tmp, no "tmpfs"
-//         }
+//     if fstype != "tmpfs" {                        // "tmpfs", no /tmp
+//     return fmt.Errorf("/tmp must be …", …)   // /tmp, no "tmpfs"
+//     }
 //
 //     That probe escaped the old scanner; the proximity window catches it.
 //
@@ -291,7 +291,7 @@ func scanGoForTmpfsMagic(t *testing.T, path string) []string {
 		text string // trimmed
 	}
 
-	var immediatHits []string  // tmpfsMagic — flagged without proximity check
+	var immediatHits []string     // tmpfsMagic — flagged without proximity check
 	var tmpfsLitLines []lineEntry // lines with "tmpfs" string literal
 	var slashTmpLines []lineEntry // lines with /tmp
 

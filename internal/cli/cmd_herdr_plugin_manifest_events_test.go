@@ -147,7 +147,7 @@ func TestHerdrPluginManifest_EventNamesValid_MutationProof(t *testing.T) {
 	}
 	substitutionCount := strings.Count(string(invalidBytes), "worktree_removed")
 	if substitutionCount == 0 {
-		t.Fatalf("AC-19e: no-op patch — invalid fixture contains 0 occurrences of "+
+		t.Fatalf("AC-19e: no-op patch — invalid fixture contains 0 occurrences of " +
 			"'worktree_removed'; the mutation is not applied and cannot be mutation-proven")
 	}
 	t.Logf("AC-19e substitution count: %d occurrence(s) of 'worktree_removed' in invalid fixture", substitutionCount)

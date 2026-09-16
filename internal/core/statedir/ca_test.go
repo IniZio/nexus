@@ -251,7 +251,10 @@ func TestSaveCA_RefusesPartialPair(t *testing.T) {
 	p, _ := mitm.New(mitm.Config{})
 	certPEM, keyPEM, _ := p.CAKeyPair()
 
-	for _, tc := range []struct{ name string; c, k []byte }{
+	for _, tc := range []struct {
+		name string
+		c, k []byte
+	}{
 		{"no key", certPEM, nil},
 		{"no cert", nil, keyPEM},
 		{"neither", nil, nil},

@@ -47,12 +47,12 @@ func TestRunCpWithSvc_Push_ExpectedBytes(t *testing.T) {
 	tmp := t.TempDir()
 
 	tests := []struct {
-		name          string
-		fileContent   string
-		isDir         bool
-		wantExpNil    bool
-		wantExpBytes  int64
-		wantIsDir     bool
+		name         string
+		fileContent  string
+		isDir        bool
+		wantExpNil   bool
+		wantExpBytes int64
+		wantIsDir    bool
 	}{
 		{
 			name:         "regular file 5 bytes",
@@ -71,8 +71,8 @@ func TestRunCpWithSvc_Push_ExpectedBytes(t *testing.T) {
 			wantIsDir:    false,
 		},
 		{
-			name:      "directory push",
-			isDir:     true,
+			name:       "directory push",
+			isDir:      true,
 			wantExpNil: true,
 			wantIsDir:  true,
 		},
@@ -198,9 +198,9 @@ func TestRunCpWithSvc_PushDir_TarEntries(t *testing.T) {
 	}
 	// Verify expected entries are present (relative paths produced by filepath.Walk).
 	wantEntries := map[string]bool{
-		".":       true,
-		"a.txt":   true,
-		"sub":     true,
+		".":         true,
+		"a.txt":     true,
+		"sub":       true,
 		"sub/b.txt": true,
 	}
 	for _, e := range rec.entries {

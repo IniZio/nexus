@@ -372,7 +372,6 @@ func TestAutoResizeDiskTelemetry(t *testing.T) {
 //  1. DiskSupported=true (foundation check, test aborts if false)
 //  2. Workspace backing file apparent size grows from 200 MiB → 512 MiB
 //  3. Shadow backing file size unchanged (proves index routing correct)
-//
 func TestAutoResizeDiskGrowDevice(t *testing.T) {
 	skipUnlessKVMSH(t)
 	chBin := skipUnlessCHBinSH(t)
@@ -473,8 +472,8 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 	nexus3Bin := buildNexus3Bin(t)
 
 	// ── Step 3: CreateAndBoot with 2 extra disks ──────────────────────────────
-	const memCeiling int64 = 1024 * 1024 * 1024  // 1 GiB
-	const diskCeiling int64 = 512 * 1024 * 1024   // 512 MiB grow ceiling (keeps test host-friendly)
+	const memCeiling int64 = 1024 * 1024 * 1024 // 1 GiB
+	const diskCeiling int64 = 512 * 1024 * 1024 // 512 MiB grow ceiling (keeps test host-friendly)
 
 	// Cmdline: shadow at /dev/vdb (not workspace), workspace at /dev/vdc.
 	// PID-1 args follow the -- already in arWsMountCmdline.

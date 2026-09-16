@@ -84,7 +84,7 @@ func TestMotiveStatus_Empty(t *testing.T) {
 	tmpRoot := t.TempDir()
 	idx := NewResourceIndex(IndexConfig{StateRoot: tmpRoot, SocketDir: tmpRoot})
 
-	report, err := svc.labelStatus(ctx, "motive","no-such-motive", idx, msNoopProbe)
+	report, err := svc.labelStatus(ctx, "motive", "no-such-motive", idx, msNoopProbe)
 	if err != nil {
 		t.Fatalf("motiveStatus returned error: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestMotiveStatus_Degradation(t *testing.T) {
 	// sb1 is unreachable; sb2 is fine.
 	probe := msErrorProbeFor(sb1.ID)
 
-	report, err := svc.labelStatus(ctx, "motive",motive, idx, probe)
+	report, err := svc.labelStatus(ctx, "motive", motive, idx, probe)
 	if err != nil {
 		t.Fatalf("motiveStatus returned unexpected error: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestMotiveStatus_AllocatedBytes(t *testing.T) {
 	rawPath := makeSparseRaw(t, stateRoot, sb.ID, apparentSize)
 	_ = rawPath
 
-	report, err := svc.labelStatus(ctx, "motive",motive, idx, msNoopProbe)
+	report, err := svc.labelStatus(ctx, "motive", motive, idx, msNoopProbe)
 	if err != nil {
 		t.Fatalf("motiveStatus: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestMotiveStatus_LeakedCount(t *testing.T) {
 	makeSparseRaw(t, stateRoot, orphan1, 0)
 	makeSparseRaw(t, stateRoot, orphan2, 0)
 
-	report, err := svc.labelStatus(ctx, "motive",motive, idx, msNoopProbe)
+	report, err := svc.labelStatus(ctx, "motive", motive, idx, msNoopProbe)
 	if err != nil {
 		t.Fatalf("motiveStatus: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestMotiveStatus_MultiMotiveIsolation(t *testing.T) {
 	seedMotiveSandbox(t, ctx, svc, "motive-A", domain.Running)
 	seedMotiveSandbox(t, ctx, svc, "motive-B", domain.Stopped)
 
-	report, err := svc.labelStatus(ctx, "motive","motive-A", idx, msNoopProbe)
+	report, err := svc.labelStatus(ctx, "motive", "motive-A", idx, msNoopProbe)
 	if err != nil {
 		t.Fatalf("motiveStatus: %v", err)
 	}

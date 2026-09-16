@@ -3,10 +3,10 @@
 // This file drives BuildInVM through several failure modes using a fake
 // BuilderDriver, a recording execFn, and a fake BuilderStore, asserting that:
 //
-//  (a) drv.Stop is called on every exit path
-//  (b) guest sync is attempted before Stop
-//  (c) the transient sandbox record is deleted on every exit path — build
-//      success, build failure, boot failure, context cancellation, and panic
+//	(a) drv.Stop is called on every exit path
+//	(b) guest sync is attempted before Stop
+//	(c) the transient sandbox record is deleted on every exit path — build
+//	    success, build failure, boot failure, context cancellation, and panic
 //
 // G3's lifecycle_test.go tests the Lifecycle helper in isolation; this file
 // tests BuildInVM end-to-end, including the wiring of the Lifecycle into the

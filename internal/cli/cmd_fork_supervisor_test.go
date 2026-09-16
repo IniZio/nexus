@@ -311,4 +311,3 @@ func TestForkWith_NetworkedCallSite_SpiesAreCalled(t *testing.T) {
 		t.Fatalf("doSpawnForkChildSupervisor called %d times, want %d", n, wantCount)
 	}
 }
-

@@ -60,7 +60,7 @@ func TestReadProcNet_SingleExecCoversTCPAndTCP6(t *testing.T) {
 	execer := &fakeGuestExecer{
 		responses: []fakeExecResponse{
 			{stdout: fakeProcNetTCP + fakeProcNetTCP6, code: 0}, // cat /proc/net/tcp /proc/net/tcp6
-			{stdout: "", code: 0},                                // a second exec must never be issued
+			{stdout: "", code: 0},                               // a second exec must never be issued
 		},
 	}
 	sb := &singleSandboxBackend{

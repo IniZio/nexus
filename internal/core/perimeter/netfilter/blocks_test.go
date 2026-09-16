@@ -131,7 +131,7 @@ func TestChainDecideIP(t *testing.T) {
 		{"192.0.2.7", VerdictDeny, "192.0.2.7"},       // exact tie: deny wins
 		{"10.2.5.5", VerdictDeny, "10.2.0.0/16"},      // deny wins prefix-length tie with itself
 		{"10.9.5.5", VerdictAllow, "10.0.0.0/8"},      // higher block's /8 beats lower block's deny
-		{"198.51.100.1", VerdictNone, ""},              // nobody has an opinion
+		{"198.51.100.1", VerdictNone, ""},             // nobody has an opinion
 		{"::ffff:10.1.2.3", VerdictAllow, "10.1.2.3"}, // 4-in-6 form unmapped
 	}
 	for _, tt := range cases {

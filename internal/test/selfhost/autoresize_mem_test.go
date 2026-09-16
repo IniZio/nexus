@@ -247,7 +247,7 @@ func TestAutoResizeMemGrow(t *testing.T) {
 			DiskPath:   diskPath,
 			MemoryMiB:  512,
 			GovBounds: resize.Bounds{
-				MemMinBytes: 600 << 20, // 600 MiB
+				MemMinBytes: 600 << 20,  // 600 MiB
 				MemMaxBytes: 1024 << 20, // 1 GiB
 				VCPUMin:     1,
 				VCPUMax:     2,
