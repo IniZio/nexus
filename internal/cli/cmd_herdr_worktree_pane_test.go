@@ -293,10 +293,13 @@ func TestOnWorktreeCreated_FallsBackWhenPaneCannotOpen(t *testing.T) {
 	out, _ := e.runScript(t, "on-worktree-created.sh", nil,
 		[]string{"HERDR_WORKSPACE_ID=w42"})
 
-	shim := strings.TrimSpace(e.shimArgv(t))
-	if shim != "herdr worktree-sandbox --auto w42" {
+	shimLines := strings.Split(strings.TrimSpace(e.shimArgv(t)), "\n")
+	if len(shimLines) < 1 || shimLines[0] != "herdr worktree-sandbox --auto w42" {
 		t.Errorf("did not fall back to inline provisioning when the pane could not open; "+
-			"shim argv = %q. A missing pane must cost visibility, not the sandbox.", shim)
+			"first shim argv = %q. A missing pane must cost visibility, not the sandbox.", shimLines)
+	}
+	if len(shimLines) < 2 || shimLines[1] != "herdr focus-changed --workspace w42 --only-if-focused" {
+		t.Errorf("focus-changed must trail provisioning in fallback; shim lines = %q", shimLines)
 	}
 	if !strings.Contains(out, "no progress will be visible") {
 		t.Errorf("fell back silently — the operator has no way to know why nothing appeared:\n%s", out)

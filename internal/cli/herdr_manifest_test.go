@@ -270,8 +270,8 @@ func herdrSubscriptionEventNames(t *testing.T) (set map[string]bool, ok bool) {
 // Both must hold for the mutation to be properly caught.
 func TestHerdrManifestEventNames(t *testing.T) {
 	// wantEventCount is the exact number of [[events]] hooks this test expects.
-	// MUTATION M2: remove blocks → len(gotNames)=0 ≠ 2 → RED.
-	const wantEventCount = 2
+	// MUTATION M2: remove blocks → len(gotNames)=0 ≠ 3 → RED.
+	const wantEventCount = 3
 
 	tomlPath := manifestPath(t)
 	gotNames := herdrManifestEventNames(t, tomlPath)

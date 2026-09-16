@@ -54,5 +54,5 @@ if "$HERDR" plugin pane open \
     exit 0
 fi
 echo "on-worktree-created.sh: could not open the provisioning pane; provisioning inline (no progress will be visible)" >&2
+"$SHIM" herdr worktree-sandbox --auto "$WS"
 "$SHIM" herdr focus-changed --workspace "$WS" --only-if-focused || true
-exec "$SHIM" herdr worktree-sandbox --auto "$WS"
