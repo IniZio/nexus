@@ -1002,7 +1002,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		}
 		agentBytes, agentBytesLoadErr = os.ReadFile(ab)
 		if agentBytesLoadErr != nil {
-			agentBytesLoadErr = fmt.Errorf("agent binary %q: %w", ab, agentBytesLoadErr)
+			agentBytesLoadErr = fmt.Errorf("read agent binary %q: %w", ab, agentBytesLoadErr)
 		}
 	}
 
