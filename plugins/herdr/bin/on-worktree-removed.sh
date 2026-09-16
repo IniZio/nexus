@@ -36,4 +36,5 @@ if [ -z "$WS" ]; then
     echo "on-worktree-removed.sh: no workspace ID (HERDR_WORKSPACE_ID unset, jq fallback failed); refusing global prune" >&2
     exit 0
 fi
+"$SHIM" herdr focus-changed --workspace "$WS" --only-if-focused || true
 exec "$SHIM" herdr prune --apply --workspace "$WS"

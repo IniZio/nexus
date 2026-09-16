@@ -188,3 +188,9 @@ command = ["sh", "bin/on-worktree-removed.sh"]
 [[events]]
 on = "worktree.created"
 command = ["sh", "bin/on-worktree-created.sh"]
+
+# workspace.focused — update the local focus.state with the focused workspace's
+# sandbox binding so nexus3 clients can discover which sandbox holds operator focus.
+[[events]]
+on = "workspace.focused"
+command = ["sh", "bin/on-workspace-focused.sh"]

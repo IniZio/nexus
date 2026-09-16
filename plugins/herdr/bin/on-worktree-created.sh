@@ -50,7 +50,9 @@ if "$HERDR" plugin pane open \
     --no-focus \
     --workspace "$WS" \
     --env "NEXUS3_WORKTREE_AUTO=1"; then
+    "$SHIM" herdr focus-changed --workspace "$WS" --only-if-focused || true
     exit 0
 fi
 echo "on-worktree-created.sh: could not open the provisioning pane; provisioning inline (no progress will be visible)" >&2
+"$SHIM" herdr focus-changed --workspace "$WS" --only-if-focused || true
 exec "$SHIM" herdr worktree-sandbox --auto "$WS"
