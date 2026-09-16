@@ -293,12 +293,15 @@ func New(cfg Config) (*Proxy, error) {
 		return nil, err
 	}
 
-	// hasAnyGitHubPolicy is true when at least one HostPolicy.GitHub is set;
-	// used to gate the belt-and-suspenders GraphQL deny-all handler.
+	// hasAnyGitHubPolicy is true when at least one policy — built-in
+	// AllowedRepo OR generic pattern — is keyed on a GitHub host; used to
+	// gate the belt-and-suspenders GraphQL deny-all handler. The path handler
+	// admits /graphql on GitHub hosts only when a policy exists for the host,
+	// so this handler is registered whenever that pass-through can fire.
 	hasAnyGitHubPolicy := false
 	for _, hostMap := range policies {
-		for _, pol := range hostMap {
-			if pol.GitHub != nil {
+		for host, pol := range hostMap {
+			if pol.GitHub != nil || host == githubWildcardHost || domain.IsGitHubHost(host) {
 				hasAnyGitHubPolicy = true
 				break
 			}
@@ -400,6 +403,14 @@ func New(cfg Config) (*Proxy, error) {
 			// Default-deny: request must satisfy the policy.
 			allowed := false
 			switch {
+			case gitHubHostCarveOut(host, req.Method, req.URL.Path):
+				// Host-scoped carve-outs for github.com / api.github.com that
+				// hold for EVERY policy kind (built-in AllowedRepo and generic
+				// .nexus/config.yaml patterns alike): public archive/release
+				// reads, GET / on api.github.com, and /graphql (which is
+				// admitted here only so the GraphQL handler below can apply
+				// its body-level default-deny). See gitHubHostCarveOut.
+				allowed = true
 			case pol.GitHub != nil:
 				// GitHub built-in: method-aware, allDigits, canonical prefixes.
 				// gitHubPathAllowed is called verbatim — NOT rewritten as a glob.
@@ -939,6 +950,33 @@ func isGitHubPublicArtifactPath(method, path string) bool {
 		return segs[3] != ""
 	case "releases":
 		return len(segs) >= 5 && segs[3] == "download" && segs[4] != ""
+	}
+	return false
+}
+
+// gitHubHostCarveOut reports whether (host, method, path) is one of the
+// host-scoped GitHub allowances that hold regardless of policy kind — the
+// built-in AllowedRepo policy and the generic .nexus/config.yaml pattern
+// policy alike (sandboxes created from config get pattern policies, and a
+// carve-out living only inside gitHubPathAllowed never fired for them):
+//
+//	github.com      — GET/HEAD public archive and release-asset reads
+//	                  (credential stripped by the swap handler, any repo)
+//	api.github.com  — GET / (the API root that `gh auth status` probes)
+//	                — /graphql: admitted here so the GraphQL handler in New
+//	                  can apply its body-level default-deny (viewer{login}
+//	                  only); it is NOT an allowance on its own.
+//
+// host must be lowercase.
+func gitHubHostCarveOut(host, method, path string) bool {
+	switch host {
+	case "github.com":
+		return isGitHubPublicArtifactPath(method, path)
+	case "api.github.com":
+		if method == http.MethodGet && path == "/" {
+			return true
+		}
+		return strings.HasPrefix(path, "/graphql")
 	}
 	return false
 }
