@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus3/internal/core/bootspec"
 )
 
 // swapFunctions holds the injectable seams used by RestartAgent.
@@ -42,15 +44,19 @@ func (cs *controlServer) Exec(_ context.Context, req *agentpb.ExecRequest) (*age
 		return nil, status.Error(codes.InvalidArgument, "argv required")
 	}
 
-	// Build environment: baseline, then req.Env wins over it.
+	// Build environment. Precedence, highest first:
+	//   req.Env > OCI image ENV (boot.json) > /etc/environment > baseline.
 	// When the agent runs as PID 1 (init=), the Linux kernel injects a few
 	// variables into os.Environ() — notably HOME=/ — that are wrong for
 	// interactive use. Rather than passing os.Environ() through (which would
 	// propagate the wrong HOME), we start from guestBaselineEnv() which
-	// supplies correct sane defaults (HOME=/root, PATH), then let the caller's
-	// req.Env override anything. All useful agent-level env (credentials,
+	// supplies correct sane defaults (HOME=/root, PATH) layered with
+	// /etc/environment, then the image's OCI ENV captured into boot.json (the
+	// same manifest runBootTasks consumes), then let the caller's req.Env
+	// override anything. All useful agent-level env (credentials,
 	// NODE_EXTRA_CA_CERTS, etc.) is injected through req.Env by the host.
-	env := mergeEnv(guestBaselineEnv(agentScratchDisk), req.Env)
+	env := mergeEnv(guestBaselineEnv(agentScratchDisk), envToMap(bootSpecEnv()))
+	env = mergeEnv(env, req.Env)
 
 	// Use exec.Command (not CommandContext): the process must outlive the RPC.
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
@@ -230,8 +236,10 @@ var etcEnvironmentPath = "/etc/environment"
 
 // readEtcEnvironment parses /etc/environment (KEY=VALUE pairs, one per line,
 // no shell substitution) and returns the entries as a "KEY=VALUE" slice.
-// Lines starting with '#' and empty lines are skipped. A missing or
-// unreadable file is silently ignored — not every image writes this file.
+// Lines starting with '#' and empty lines are skipped. A value wrapped in a
+// matching pair of double or single quotes is unquoted, per pam_env rules;
+// an unbalanced quote is left untouched. A missing or unreadable file is
+// silently ignored — not every image writes this file.
 func readEtcEnvironment() []string {
 	data, err := os.ReadFile(etcEnvironmentPath)
 	if err != nil {
@@ -243,9 +251,44 @@ func readEtcEnvironment() []string {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if strings.ContainsRune(line, '=') {
-			env = append(env, line)
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
 		}
+		env = append(env, k+"="+unquoteEnvValue(v))
+	}
+	return env
+}
+
+// unquoteEnvValue strips one matching pair of surrounding double or single
+// quotes from v (pam_env semantics). Anything else is returned unchanged.
+func unquoteEnvValue(v string) string {
+	if len(v) >= 2 {
+		q := v[0]
+		if (q == '"' || q == '\'') && v[len(v)-1] == q {
+			return v[1 : len(v)-1]
+		}
+	}
+	return v
+}
+
+// bootSpecEnv returns the KEY=VALUE entries declared by every task in the
+// boot manifest at bootspecPath (/etc/nexus3/boot.json), in task order. That
+// is where the builder captures the OCI image ENV (bootspec.FromOCIImageConfig),
+// so this is how Containerfile ENV reaches exec'd shells. A missing or
+// unparseable manifest yields nil, mirroring runBootTasks' fallback.
+func bootSpecEnv() []string {
+	data, err := os.ReadFile(bootspecPath)
+	if err != nil {
+		return nil
+	}
+	var spec bootspec.Spec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil
+	}
+	var env []string
+	for _, task := range spec.Tasks {
+		env = append(env, task.Env...)
 	}
 	return env
 }
@@ -259,8 +302,8 @@ func readEtcEnvironment() []string {
 // the image's Containerfile to /etc/environment are layered on top, so a
 // single RUN in the Containerfile is the sole source of truth for image-specific
 // variables (GOPATH, GOMODCACHE, CGO_ENABLED, …). OCI ENV metadata is not read
-// here — it lives only in the image config and is never visible to the agent,
-// which boots as init= directly from the ext4 rootfs.
+// here — the builder captures it into boot.json and Exec layers it on top via
+// bootSpecEnv.
 func guestBaselineEnv(scratchDiskPresent bool) []string {
 	base := []string{
 		// uid 0 always maps to /root in the guest's /etc/passwd. Without HOME,

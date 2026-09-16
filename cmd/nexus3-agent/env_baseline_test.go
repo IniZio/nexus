@@ -1,10 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus3/internal/core/agent/wire"
+	"github.com/IniZio/nexus3/internal/core/bootspec"
 )
 
 // TestGuestBaselineEnv verifies that guestBaselineEnv returns a sensible default
@@ -278,5 +285,147 @@ func TestInitPid1EnvPathFromEtcEnvironment(t *testing.T) {
 	// GOPATH from /etc/environment must also be set.
 	if gp := os.Getenv("GOPATH"); gp != "/go" {
 		t.Errorf("GOPATH = %q; want /go from /etc/environment", gp)
+	}
+}
+
+// TestReadEtcEnvironmentUnquotes verifies pam_env quote handling: a value
+// wrapped in matching double or single quotes is unquoted, comments and blank
+// lines are skipped, and an unbalanced quote is left untouched.
+//
+// Mutation guard: removing the unquoteEnvValue call in readEtcEnvironment
+// makes FOO carry literal quotes and this test fails.
+func TestReadEtcEnvironmentUnquotes(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "environment")
+	content := "# leading comment\n\n" +
+		"FOO=\"bar baz\"\n" +
+		"SINGLE='one two'\n" +
+		"PLAIN=plain\n" +
+		"UNBALANCED=\"open\n" +
+		"MIXED=\"a'\n" +
+		"EMPTYQ=\"\"\n" +
+		"   # indented comment\n" +
+		"NOEQ\n"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := etcEnvironmentPath
+	etcEnvironmentPath = p
+	t.Cleanup(func() { etcEnvironmentPath = orig })
+
+	env := guestBaselineEnv(false)
+	m := envFirstValues(env)
+	for key, want := range map[string]string{
+		"FOO":        "bar baz",
+		"SINGLE":     "one two",
+		"PLAIN":      "plain",
+		"UNBALANCED": "\"open",
+		"MIXED":      "\"a'",
+		"EMPTYQ":     "",
+	} {
+		got, ok := m[key]
+		if !ok {
+			t.Errorf("%s missing from guestBaselineEnv()", key)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s = %q; want %q", key, got, want)
+		}
+	}
+	if _, ok := m["NOEQ"]; ok {
+		t.Error("NOEQ (no '=') must not appear")
+	}
+	for _, e := range env {
+		if strings.HasPrefix(e, "#") {
+			t.Errorf("comment line leaked into env: %q", e)
+		}
+	}
+}
+
+// TestExecEnvPrecedence drives the real Exec RPC with a temp /etc/environment
+// and a temp boot.json and reads the child's environment back over the data
+// plane. Precedence: req.Env > OCI ENV (boot.json) > /etc/environment > baseline.
+//
+// Mutation guards: dropping the bootSpecEnv merge in Exec loses OCI_ONLY and
+// lets ETC win BOTH; dropping unquoteEnvValue puts literal quotes in QUOTED.
+func TestExecEnvPrecedence(t *testing.T) {
+	etc := filepath.Join(t.TempDir(), "environment")
+	etcContent := "ETC_ONLY=from-etc\n" +
+		"BOTH=from-etc\n" +
+		"ALL=from-etc\n" +
+		"QUOTED=\"q one\"\n" +
+		"HOME=/etc-home\n"
+	if err := os.WriteFile(etc, []byte(etcContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origEtc := etcEnvironmentPath
+	etcEnvironmentPath = etc
+	t.Cleanup(func() { etcEnvironmentPath = origEtc })
+
+	origSpec := bootspecPath
+	bootspecPath = writeBootspec(t, bootspec.Spec{Tasks: []bootspec.Task{{
+		Argv:       []string{"/bin/true"},
+		Env:        []string{"OCI_ONLY=from-oci", "BOTH=from-oci", "ALL=from-oci"},
+		Background: true,
+	}}})
+	t.Cleanup(func() { bootspecPath = origSpec })
+
+	client, dataLis, cancel := testHarness(t)
+	defer cancel()
+
+	const sid = "s-env-precedence"
+	_, err := client.Exec(context.Background(), &agentpb.ExecRequest{
+		SessionId: sid,
+		Argv: []string{"sh", "-c",
+			`printf 'ETC_ONLY=%s\nOCI_ONLY=%s\nBOTH=%s\nALL=%s\nQUOTED=%s\nHOME=%s\n' "$ETC_ONLY" "$OCI_ONLY" "$BOTH" "$ALL" "$QUOTED" "$HOME"`},
+		Env: map[string]string{"ALL": "from-req"},
+	})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	conn, w, r := dialData(t, dataLis)
+	if err := w.WriteHandshake(wire.Handshake{SessionID: sid}); err != nil {
+		t.Fatalf("WriteHandshake: %v", err)
+	}
+	if ack, err := r.ReadFrame(); err != nil || ack.Type != wire.FrameHandshakeAck {
+		t.Fatalf("expected HandshakeAck, got type=%v err=%v", ack.Type, err)
+	}
+	frames := collectFrames(t, conn, r, 5*time.Second)
+	out := dataBytes(frames)
+	if gotExit, code := hasExitFrame(frames); !gotExit || code != 0 {
+		t.Fatalf("exit frame: got=%v code=%d; output %q", gotExit, code, out)
+	}
+	got := envFirstValues(strings.Split(strings.TrimSpace(string(out)), "\n"))
+	for key, want := range map[string]string{
+		"ETC_ONLY": "from-etc",
+		"OCI_ONLY": "from-oci",
+		"BOTH":     "from-oci",
+		"ALL":      "from-req",
+		"QUOTED":   "q one",
+		"HOME":     "/etc-home",
+	} {
+		if got[key] != want {
+			t.Errorf("%s = %q; want %q (output %q)", key, got[key], want, out)
+		}
+	}
+}
+
+// TestBootSpecEnvAbsentOrUnparseable pins the non-fatal fallback: a missing or
+// corrupt manifest contributes nothing.
+func TestBootSpecEnvAbsentOrUnparseable(t *testing.T) {
+	origSpec := bootspecPath
+	t.Cleanup(func() { bootspecPath = origSpec })
+
+	bootspecPath = filepath.Join(t.TempDir(), "absent.json")
+	if got := bootSpecEnv(); got != nil {
+		t.Errorf("absent manifest: bootSpecEnv() = %v; want nil", got)
+	}
+
+	bootspecPath = filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bootspecPath, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := bootSpecEnv(); got != nil {
+		t.Errorf("unparseable manifest: bootSpecEnv() = %v; want nil", got)
 	}
 }
