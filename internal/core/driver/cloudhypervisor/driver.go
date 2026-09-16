@@ -623,7 +623,6 @@ func (d *CHDriver) Observe(ctx context.Context, id domain.SandboxID) (driver.Obs
 		}, fmt.Errorf("cloudhypervisor: observe %s: %w", id, err)
 	}
 
-	// VMInfo returns nil error for Running, Paused, and Absent.
 	obs := driver.Observation{State: state}
 	switch state {
 	case driver.Running, driver.Paused:
@@ -671,6 +670,14 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 			diskImagePath = candidate
 		}
 	}
+	// Guard: a missing root disk is only ever reported by CH, and CH is
+	// spawned inside the netns child — the caller sees "VMM API not ready
+	// within 10s" plus whatever the child wrote to stderr, ten seconds late.
+	if diskImagePath != "" {
+		if _, serr := os.Stat(diskImagePath); serr != nil {
+			return "", fmt.Errorf("cloudhypervisor: start %s: root disk: %w", id, serr)
+		}
+	}
 
 	socketPath := d.socketPath(id)
 
@@ -684,10 +691,8 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		probeCancel()
 		switch {
 		case pingErr == nil:
-			// A live VMM is already answering. Refuse to collide.
 			return "", fmt.Errorf("cloudhypervisor: start %s: %s: %w", id, socketPath, ErrVMMAlreadyBound)
 		case isAbsent(pingErr):
-			// Socket absent or stale. Remove any stale file.
 			_ = os.Remove(socketPath)
 		default:
 			// Socket state undetermined (hung VMM, I/O error, …).
@@ -755,7 +760,6 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		}
 	}
 
-	// Bound post-readiness API calls (vm.create, vm.boot).
 	apiCtx, apiCancel := d.callCtx(ctx)
 	defer apiCancel()
 
@@ -952,7 +956,6 @@ func (d *CHDriver) Stop(ctx context.Context, id domain.SandboxID) error {
 	// the proc.kill() + clearState in steps 3–4 must always execute.
 	// Worst-case total: 3 × CallTimeout.
 
-	// Step 1: vm.shutdown — best-effort graceful guest power-off.
 	// VMShutdown already tolerates CH's "no VM to shut down" responses (500).
 	// ENOENT/ECONNREFUSED → socket absent → nothing to do.
 	shutCtx, shutCancel := d.callCtx(ctx)
@@ -963,16 +966,13 @@ func (d *CHDriver) Stop(ctx context.Context, id domain.SandboxID) error {
 			d.clearState(id)
 			return nil
 		}
-		// Non-absent error: VMM is alive but confused. Continue to kill it.
 	}
 
-	// Step 2: vm.delete — best-effort; remove VM config from VMM memory.
 	// Ignore errors: if this fails we still proceed to terminate the process.
 	delCtx, delCancel := d.callCtx(ctx)
 	_ = c.VMDelete(delCtx)
 	delCancel()
 
-	// Step 3: vmm.shutdown — terminate the VMM process via the API.
 	// This is the authoritative kill step and covers the post-restart case
 	// where d.procs[id] is nil (no in-memory handle). Without this, vm.delete
 	// removes the VM object from VMM memory but the cloud-hypervisor process
@@ -984,7 +984,6 @@ func (d *CHDriver) Stop(ctx context.Context, id domain.SandboxID) error {
 		return fmt.Errorf("cloudhypervisor: stop %s: vmm.shutdown: %w", id, vmmErr)
 	}
 
-	// Step 4: belt-and-braces SIGKILL on any tracked proc handle.
 	d.mu.Lock()
 	proc := d.procs[id]
 	d.mu.Unlock()

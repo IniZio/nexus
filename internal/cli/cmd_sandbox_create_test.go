@@ -564,9 +564,11 @@ func TestSandboxCreate_WorkspaceEntryPoint_WorkspaceSpec(t *testing.T) {
 	ctx := context.Background()
 
 	// --rootfs /nonexistent enters the boot path without needing a cached
-	// image; resolveExt4 fails inside service.CreateAndBoot (after the hook
-	// fires), so we only care that the hook was reached, not that the command
-	// succeeds.
+	// image; the path reaches the real CH driver, whose Start refuses a
+	// missing root disk before spawning anything (after the hook fires). We
+	// only care that the hook was reached, not that the command succeeds.
+	// Without that refusal this test spawned the real netns runtime on the
+	// host and waited out the 10 s VMM start timeout.
 	_ = runSandboxCreate(ctx, []string{
 		"proj/name",
 		"--rootfs", "/nonexistent-for-test.ext4",
