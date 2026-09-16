@@ -117,3 +117,11 @@ will be added in a future slice.
 - **Ticket 28** — self-hosting base: upstream Go tarball, no gcc, ~117 MB, seeded
   module cache design note.
 - **Ticket 33** — macOS/Apple Virtualization out of scope for near-term image work.
+
+## GHCR Package Visibility (one-time)
+
+The base image (`ghcr.io/inizio/nexus3-base`) is pushed from CI via `GITHUB_TOKEN`.
+GitHub creates GHCR packages as **private** on first push; anonymous pulls will fail
+until the package is set **Public** manually in the GitHub Packages settings UI.
+This is a one-time step — see `docs/site/operations/resource-lifecycle.md` for
+the full procedure.

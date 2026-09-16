@@ -75,7 +75,7 @@ jobs:
           # created. semantic-release --json mixes JSON and log text on stdout
           # making jq unreliable; the tag-diff approach is always accurate.
           git fetch --tags --force origin
-          BEFORE_TAG="$(git tag -l 'v*' | sort -V | tail -1)"
+          BEFORE_TAGS="$(git tag -l 'v*' | sort)"
 
           # Do NOT blanket-swallow the exit code.  semantic-release exits 0 when
           # no release is warranted, so a non-zero exit is a REAL failure (bad
@@ -89,17 +89,18 @@ jobs:
           fi
 
           git fetch --tags --force origin
-          AFTER_TAG="$(git tag -l 'v*' | sort -V | tail -1)"
+          AFTER_TAGS="$(git tag -l 'v*' | sort)"
 
-          if [ "$BEFORE_TAG" != "$AFTER_TAG" ] && [ -n "$AFTER_TAG" ]; then
-            version="${AFTER_TAG#v}"
+          NEW_TAG="$(comm -13 <(echo "$BEFORE_TAGS") <(echo "$AFTER_TAGS") | grep -E '^v' | tail -1)"
+          if [ -n "$NEW_TAG" ]; then
+            version="${NEW_TAG#v}"
             echo "released=true" >> "$GITHUB_OUTPUT"
             echo "version=$version" >> "$GITHUB_OUTPUT"
-            echo "tag=$AFTER_TAG" >> "$GITHUB_OUTPUT"
-            echo "Release created: $AFTER_TAG"
+            echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+            echo "Release created: $NEW_TAG"
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
-            echo "No release this run (before=${BEFORE_TAG:-none} after=${AFTER_TAG:-none})"
+            echo "No release this run"
           fi
 
   # ── Build binaries with the exact version from semantic-release ─────────
@@ -142,7 +143,8 @@ jobs:
             exit 1
           fi
           LDFLAGS="-s -w \
-            -X github.com/IniZio/nexus3/internal/cli.version=${VERSION}"
+            -X github.com/IniZio/nexus3/internal/cli.version=${VERSION} \
+            -X github.com/IniZio/nexus3/internal/cli.herdrDefaultImageTag=${VERSION}"
           go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus3
           echo "Built $OUTFILE ($(du -sh "$OUTFILE" | cut -f1))"
 
@@ -264,7 +266,9 @@ jobs:
             -f images/base/Containerfile \
             images/base/
           docker push "${IMAGE}:${VERSION}"
-          docker push "${IMAGE}:latest"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            docker push "${IMAGE}:latest"
+          fi
 
   # ── Publish: compute checksums ──────────────────────────────────────────
   # Fail-closed gate: `needs: [release-build, release-build-client]` means
@@ -276,7 +280,7 @@ jobs:
   # mechanism.
   release-publish:
     name: Publish release assets
-    needs: [release-create, release-build, release-build-client]
+    needs: [release-create, release-build, release-build-client, release-build-base-image]
     if: needs.release-create.outputs.released == 'true'
     runs-on: ubuntu-latest
     steps:

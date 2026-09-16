@@ -146,3 +146,22 @@ func TestHerdrDefaultImage_IsGHCRRef(t *testing.T) {
 			herdrDefaultImage, wantPrefix)
 	}
 }
+
+func TestHerdrDefaultImage_VarsConsistent(t *testing.T) {
+	want := herdrDefaultImageRepo + ":" + herdrDefaultImageTag
+	if herdrDefaultImage != want {
+		t.Errorf("herdrDefaultImage = %q; want %q\n"+
+			"herdrDefaultImageTag stamping via -ldflags will not propagate to herdrDefaultImage if the var is not derived from it.",
+			herdrDefaultImage, want)
+	}
+}
+
+func TestHerdrDefaultImage_StampedTagNotLatest(t *testing.T) {
+	if herdrDefaultImageTag == "latest" {
+		t.Skip("herdrDefaultImageTag not stamped — skipping (dev build)")
+	}
+	if strings.HasSuffix(herdrDefaultImage, ":latest") {
+		t.Errorf("herdrDefaultImageTag=%q but herdrDefaultImage=%q still ends with :latest — ldflags stamping did not propagate",
+			herdrDefaultImageTag, herdrDefaultImage)
+	}
+}

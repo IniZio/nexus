@@ -338,3 +338,23 @@ Named volume backing files are outside the projection entirely — volume sizes 
 ## Kernel preflight
 
 All sandbox-creation entry points (`nexus3 create`, `nexus3 run`, `nexus3 orca`) call `resolveKernelPath()` before any store or VM setup. If `NEXUS3_KERNEL_PATH` is unset or the file does not exist, creation fails immediately with a legible error. Without this preflight, Cloud Hypervisor's own error is the opaque `"Cannot open kernel file"`.
+
+## Container Image Visibility (one-time setup)
+
+The `nexus3-base` container image is hosted on the GitHub Container Registry (GHCR) at
+`ghcr.io/inizio/nexus3-base`. The first push from a `GITHUB_TOKEN` in CI creates the
+package as **private** — anonymous pulls are denied, which breaks `herdr plugin install`
+for users who have not authenticated to GHCR.
+
+**One-time manual step (performed once per repo/org):**
+
+1. Navigate to <https://github.com/users/IniZio/packages/container/nexus3-base/settings>
+   (or the org equivalent if the repo is under an org).
+2. Under "Danger Zone", change the package visibility to **Public**.
+3. Link the package to the `nexus3` repository so the package appears on the repo page.
+
+This step cannot be automated with `GITHUB_TOKEN` — the GitHub Packages API requires
+a PAT with `write:packages` scope and org-level approval to change package visibility.
+Once set public the setting persists across releases and re-pushes.
+
+See also: ticket `.groundwork/motives/herdr-plugin-ootb/tickets/12-grill-live-proof-through-herdr.md`.

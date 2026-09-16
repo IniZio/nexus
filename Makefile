@@ -128,15 +128,24 @@ install-agent:
 	CGO_ENABLED=0 go build -o $(NEXUS3_AGENT_INSTALL_DIR)/nexus3-agent ./cmd/nexus3-agent
 	@echo "OK: nexus3-agent installed → $(NEXUS3_AGENT_INSTALL_DIR)/nexus3-agent"
 
-# install-kernel places the pinned guest kernel at the cwd-independent XDG
-# data path that resolveKernelPath searches (~/.local/share/nexus3/images/
-# kernel/vmlinux-x86_64). Without it, every guest-dialing verb (exec, shell,
-# forward) fails with "no substrate configured" from any cwd but the repo
-# root — which is exactly where herdr plugin panes run. A symlink, so a
-# kernel rebuild is picked up without reinstalling.
+# install-kernel: dev flow — symlinks the in-tree kernel image into the XDG
+# data path so resolveKernelPath finds it from any cwd (e.g. herdr panes).
+# A symlink means a kernel rebuild is picked up without reinstalling.
+# For production installs use `make install-kernel-release VERSION=x.y.z`
+# (or `nexus3 kernel install`) which downloads the released binary.
 NEXUS3_DATA_DIR ?= $(if $(XDG_DATA_HOME),$(XDG_DATA_HOME),$(HOME)/.local/share)/nexus3
+NEXUS3_KERNEL_DST := $(NEXUS3_DATA_DIR)/images/kernel/vmlinux-x86_64
+NEXUS3_KERNEL_SRC := $(CURDIR)/images/kernel/vmlinux-x86_64
 
 install-kernel:
+	@mkdir -p $(dir $(NEXUS3_KERNEL_DST))
+	ln -sf $(NEXUS3_KERNEL_SRC) $(NEXUS3_KERNEL_DST)
+	@echo "OK: kernel symlinked → $(NEXUS3_KERNEL_DST) → $(NEXUS3_KERNEL_SRC)"
+
+# install-kernel-release: download the kernel matching the installed nexus3
+# binary via `nexus3 kernel install`. Requires a released binary (fails for
+# -dev builds because --version is required). For dev use, use install-kernel.
+install-kernel-release:
 	nexus3 kernel install
 
 # build-agent: legacy alias — installs to NEXUS3_AGENT_INSTALL_DIR (same as install-agent).
@@ -179,6 +188,14 @@ test:
 # test-herdr-live runs the //go:build herdr_live suite against the REAL herdr
 # binary (no VM, no daemon — Tier 1 only by default; Tier 2 tests in this tag
 # require a running herdr daemon + /dev/kvm and are excluded from default CI).
+#
+# Isolation contract: every test in this suite runs under initHerdrLiveEnv
+# (TestMain), which unsets all HERDR_* environment variables before any test
+# runs. Tests that need a herdr daemon call startIsolatedHerdr, which creates
+# a fresh /tmp home and a named isolated session, and wires HOME + HERDR_SESSION
+# via t.Setenv for the test's duration. No test touches the operator's live
+# herdr session; running make test-herdr-live while a session is active leaves
+# it unmodified.
 #
 # Requires herdr in PATH. Install once with:
 #   curl -fsSL https://herdr.dev/install.sh | sh
