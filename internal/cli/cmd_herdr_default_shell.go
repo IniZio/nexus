@@ -100,9 +100,11 @@ var herdrWtSandboxRemoverFn func(ctx context.Context, handle string) error = her
 // herdrAutoCreatePredicateFn gates auto-create attempts in herdrDefaultShellCore.
 //
 // Returns true only when (b) the current working directory is inside a linked
-// worktree AND (c) a binding in the file carries a RepoRoot matching that
-// linked worktree's main repo. Bindings with empty RepoRoot are NO MATCH.
-// Both conditions must hold; false on any I/O error (FAIL-OPEN toward host shell).
+// worktree AND either (c) a binding in the file carries a RepoRoot matching that
+// linked worktree's main repo (bindings with empty RepoRoot are NO MATCH) or
+// (d) the checkout itself is nexus3-onboarded (.nexus/config.yaml or
+// .nexus/Containerfile), so the FIRST worktree of an onboarded repo engages.
+// False on any I/O error (FAIL-OPEN toward host shell).
 //
 // Replaced in tests to avoid filesystem fixtures in integration tests.
 var herdrAutoCreatePredicateFn = func(allBindings []HerdrSpaceBinding) bool {
