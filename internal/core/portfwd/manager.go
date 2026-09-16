@@ -2,6 +2,9 @@ package portfwd
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
+	"os"
 )
 
 type fwdKey struct {
@@ -9,13 +12,71 @@ type fwdKey struct {
 	port      uint16
 }
 
-type Manager struct {
-	fw      *Forwarder
-	applied map[fwdKey]struct{}
+type persistedEntry struct {
+	SandboxID string `json:"sandbox_id"`
+	Port      uint16 `json:"port"`
 }
 
+type persistedApplied struct {
+	Entries []persistedEntry `json:"entries"`
+}
+
+type Manager struct {
+	fw          *Forwarder
+	applied     map[fwdKey]struct{}
+	persistPath string
+}
+
+// NewManager loads a persisted applied-set from <controlpath>.applied.json so
+// a restarted client can cancel orphaned forwards from the previous process.
 func NewManager(fw *Forwarder) *Manager {
-	return &Manager{fw: fw, applied: make(map[fwdKey]struct{})}
+	m := &Manager{
+		fw:      fw,
+		applied: make(map[fwdKey]struct{}),
+	}
+	if fw.ControlPath != "" {
+		m.persistPath = fw.ControlPath + ".applied.json"
+		m.loadApplied()
+	}
+	return m
+}
+
+func (m *Manager) loadApplied() {
+	data, err := os.ReadFile(m.persistPath)
+	if err != nil {
+		return
+	}
+	var pa persistedApplied
+	if err := json.Unmarshal(data, &pa); err != nil {
+		return
+	}
+	for _, e := range pa.Entries {
+		m.applied[fwdKey{sandboxID: e.SandboxID, port: e.Port}] = struct{}{}
+	}
+}
+
+func (m *Manager) saveApplied() {
+	if m.persistPath == "" {
+		return
+	}
+	pa := persistedApplied{Entries: make([]persistedEntry, 0, len(m.applied))}
+	for k := range m.applied {
+		pa.Entries = append(pa.Entries, persistedEntry{SandboxID: k.sandboxID, Port: k.port})
+	}
+	data, err := json.Marshal(pa)
+	if err != nil {
+		slog.Warn("portfwd: marshal applied set", "err", err)
+		return
+	}
+	tmp := m.persistPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		slog.Warn("portfwd: write applied set", "err", err)
+		return
+	}
+	if err := os.Rename(tmp, m.persistPath); err != nil {
+		slog.Warn("portfwd: rename applied set", "err", err)
+		_ = os.Remove(tmp)
+	}
 }
 
 func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
@@ -33,6 +94,8 @@ func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 			delete(m.applied, key)
 		}
 	}
+	m.saveApplied()
+
 	for _, l := range desired {
 		if l.Sandbox.Status != SandboxStatusRunning {
 			continue
@@ -46,7 +109,9 @@ func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 			return err
 		}
 		if present {
-			m.applied[key] = struct{}{}
+			// Not in our applied set but port is bound — conflict with another process.
+			slog.Warn("portfwd: port in use by another process, forward skipped",
+				"port", l.Port, "sandbox", l.Sandbox.ID)
 			continue
 		}
 		if err := m.fw.Apply(ctx, l.Port); err != nil {
@@ -54,6 +119,7 @@ func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 		}
 		m.applied[key] = struct{}{}
 	}
+	m.saveApplied()
 	return nil
 }
 
@@ -66,5 +132,6 @@ func (m *Manager) TeardownSandbox(ctx context.Context, ref SandboxRef) error {
 			delete(m.applied, key)
 		}
 	}
+	m.saveApplied()
 	return nil
 }

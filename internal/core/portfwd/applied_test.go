@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestPresentWiredBeforeApply(t *testing.T) {
+func TestConflictPortNotApplied(t *testing.T) {
 	mgr, calls := makeMgr([]runResp{
 		{stdout: "tcp LISTEN 0 128 0.0.0.0:3000 0.0.0.0:*", code: 0},
 	})
@@ -14,11 +14,10 @@ func TestPresentWiredBeforeApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(*calls) != 1 {
-		t.Fatalf("want 1 call (ss only), got %d", len(*calls))
+		t.Fatalf("want 1 call (ss only, no apply for conflict), got %d", len(*calls))
 	}
-	entries := mgr.Applied()
-	if len(entries) != 1 || entries[0].Port != 3000 {
-		t.Fatalf("want Applied=[{abc 3000}], got %v", entries)
+	if entries := mgr.Applied(); len(entries) != 0 {
+		t.Fatalf("conflict port must not be in Applied(), got %v", entries)
 	}
 }
 

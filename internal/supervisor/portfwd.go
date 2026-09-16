@@ -278,8 +278,13 @@ func (p *portForwardSupervisor) forwardConn(ctx context.Context, hostConn net.Co
 
 func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error {
 	now := time.Now().UTC()
+	seen := make(map[uint16]struct{}, len(forwardable))
 	entries := make([]portfwd.Entry, 0, len(forwardable))
 	for _, l := range forwardable {
+		if _, dup := seen[l.Port]; dup {
+			continue
+		}
+		seen[l.Port] = struct{}{}
 		e := portfwd.Entry{Port: l.Port, Sandbox: p.sandboxRef}
 		if _, bound := p.listeners[l.Port]; bound {
 			e.Status = portFwdStatusLive

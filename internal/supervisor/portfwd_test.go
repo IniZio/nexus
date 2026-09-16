@@ -364,3 +364,58 @@ func TestReconcile_DiscoverTimeoutReturnsError(t *testing.T) {
 		t.Fatal("reconcile did not return within 10s: discovery timeout not enforced")
 	}
 }
+
+func TestWriteState_DedupesTCPAndTCP6Rows(t *testing.T) {
+	port := freeForwardablePort(t)
+	portHex := fmt.Sprintf("%04X", port)
+
+	tcpLine := fmt.Sprintf("   0: 00000000:%s 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000000000000000 100 0 0 10 0\n", portHex)
+	tcp6Line := fmt.Sprintf("   0: 00000000000000000000000000000000:%s 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 23456 1 0000000000000000 100 0 0 10 0\n", portHex)
+	combined := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n" +
+		tcpLine +
+		"  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n" +
+		tcp6Line
+
+	execer := &fakeGuestExecer{responses: []fakeExecResponse{{stdout: combined, code: 0}}}
+	sb := &singleSandboxBackend{
+		ref:    portfwd.SandboxRef{ID: "dedup-test", Name: "dedup/sb", Status: portfwd.SandboxStatusRunning},
+		client: execer,
+	}
+	tmpDir := t.TempDir()
+	sup := &portForwardSupervisor{
+		sandboxRef:      "dedup/sb",
+		backend:         sb,
+		disc:            &portfwd.Discoverer{Backend: sb},
+		dialer:          fakeDialer{},
+		stateDir:        tmpDir,
+		interval:        time.Second,
+		discoverTimeout: 5 * time.Second,
+		listeners:       make(map[uint16]net.Listener),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	defer func() {
+		for _, l := range sup.listeners {
+			l.Close()
+		}
+	}()
+
+	st, err := portfwd.Merge(tmpDir, time.Now())
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	count := 0
+	for _, e := range st.Forwards {
+		if e.Port == port {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("want 1 entry for port %d after dedup, got %d; forwards=%v", port, count, st.Forwards)
+	}
+}
