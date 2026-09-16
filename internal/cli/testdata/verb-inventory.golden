@@ -1,6 +1,7 @@
 __herdr-plugin
 attach
 auth
+config validate
 config-ssh
 cp
 create

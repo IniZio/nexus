@@ -21,6 +21,7 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "herdr", CanonicalMethods: []string{"service.CreateAndBoot", "service.List", "service.Remove"}, MCPTools: []string{"delegate_worktree_create", "delegate_agent_dispatch", "delegate_teardown"}},
 	{CLIVerb: "attach", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
 	{CLIVerb: "auth", CLIOnly: true},
+	{CLIVerb: "config validate", CLIOnly: true},
 	{CLIVerb: "config-ssh", CanonicalMethods: []string{"service.SSHConn"}, MCPTools: nil},
 	{CLIVerb: "cp", CanonicalMethods: []string{"service.Copy"}, MCPTools: nil},
 	{CLIVerb: "disk", CanonicalMethods: []string{"service.DiskUsage"}, MCPTools: nil},

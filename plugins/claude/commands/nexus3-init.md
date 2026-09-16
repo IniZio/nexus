@@ -10,7 +10,7 @@ Loads the `nexus3:nexus3` skill, opens `references/onboard.md`, and walks throug
 2. Scans all Dockerfiles and compose files to derive the build-time egress host list.
 3. Authors `.nexus/config.yaml` inside the `.nexus/` directory at the repo root.
 4. Authors `.nexus/Containerfile` if one does not already exist.
-5. Validates the generated config (nexus3 has no `config show`; any config-reading command parses it — see the onboarding reference, Step 5).
+5. Validates the generated config with `nexus3 config validate` (prints the resolved path and an effective-config summary, or the load error — see the onboarding reference, Step 5).
 6. Explains where egress config is read from: the checkout's `.nexus/config.yaml`, effective on the next worktree-sandbox create.
 
 ## When to use it

@@ -58,6 +58,16 @@ Subcommands: `login`, `logout`, `status`
 
 ---
 
+### ## config validate
+
+Summary: Load and validate .nexus/config.yaml; print the resolved path and an effective-config summary
+
+No flags beyond global `--json`. Args: `[dir]` (default `.`); the file is located by `config.Load`, searching from `dir` up to the repository root.
+
+On success prints `ok: <path>` plus version, image, containerfile (path or `(absent)`) and an egress summary (`mode=<default|allow-only|policy-gated> allow=<n> policy=<n> secrets=<n>`); `--json` envelope kind is `config_validate`. A missing file or a `config.Load` error is reported as an error and exits 1.
+
+---
+
 ### ## config-ssh
 
 Summary: Write an SSH config stanza for a sandbox (ProxyCommand via nexus3 ssh --stdio)
