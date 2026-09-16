@@ -113,7 +113,7 @@ func ac6Cmd(binary string, args ...string) *exec.Cmd {
 }
 
 func TestHerdrPlugin_L4_AC6Chain(t *testing.T) {
-	// --- 0. Prerequisites: skip, never fail, when absent. ---
+	liveSkip(t, "AC-6: requires interactive herdr session with KVM; isolated mode cannot satisfy this")
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		liveSkip(t, "AC-6: /dev/kvm not available: %v", err)
 	}

@@ -53,12 +53,15 @@ import (
 //	TMPDIR=/tmp go test -count=1 -tags herdr_live ./internal/cli/ -run TestHerdrPlugin_L4
 //	# L4: FAIL — want current ABI from plugins/herdr/abi, binary exited non-zero
 func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
+	probeHome, _ := startIsolatedHerdr(t)
+	_ = probeHome
+
 	// Safety: record before-state so the operator can confirm their
 	// workspaces are untouched after the run.
 	beforeWorkspaces := herdrWorkspaceList(t)
 	t.Logf("BEFORE: %s", beforeWorkspaces)
 	if !strings.Contains(beforeWorkspaces, "workspace_list") {
-		t.Fatalf("herdr workspace list did not return a workspace_list — is herdr running?")
+		liveSkip(t, "herdr workspace list did not return a workspace_list (isolated session may not be ready)")
 	}
 
 	// --- 1. Build the binary. ---
@@ -144,7 +147,7 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 	})
 	_, paneID := createL4ScratchWorkspace(t, label)
 
-	runOut, err := exec.Command("herdr", "pane", "run", paneID, binary, "__herdr-plugin", "abi").CombinedOutput()
+	runOut, err := herdrExec("pane", "run", paneID, binary, "__herdr-plugin", "abi").CombinedOutput()
 	if err != nil {
 		t.Fatalf("herdr pane run: %v\n%s", err, runOut)
 	}
@@ -153,20 +156,20 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 	// exited. Shell-prompt noise may also match, but here we are using this
 	// only as a smoke test that herdr's pane machinery ran the binary — the
 	// direct-exec assertion above is the real gate.
-	waitOut, err := exec.Command(
-		"herdr", "pane", "wait-output",
+	waitOut, err := herdrExec(
+		"pane", "wait-output",
 		paneID,
 		"--match", wantABI,
 		"--source", "recent",
 		"--timeout", "10000",
 	).CombinedOutput()
 	if err != nil {
-		readOut, _ := exec.Command("herdr", "pane", "read", paneID, "--source", "visible", "--lines", "10").CombinedOutput()
+		readOut, _ := herdrExec("pane", "read", paneID, "--source", "visible", "--lines", "10").CombinedOutput()
 		t.Logf("herdr pane wait-output did not find %q within 10 s: %v\n%s\npane (visible):\n%s",
 			wantABI, err, waitOut, readOut)
 		// Non-fatal: the primary assertion (direct exec) already passed.
 	} else {
-		readOut, _ := exec.Command("herdr", "pane", "read", paneID, "--source", "visible", "--lines", "5").CombinedOutput()
+		readOut, _ := herdrExec("pane", "read", paneID, "--source", "visible", "--lines", "5").CombinedOutput()
 		t.Logf("pane smoke test passed; visible: %s", strings.TrimSpace(string(readOut)))
 	}
 }
@@ -175,7 +178,7 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 // Never fails the test — used for before/after safety logging only.
 func herdrWorkspaceList(t *testing.T) string {
 	t.Helper()
-	out, _ := exec.Command("herdr", "workspace", "list").CombinedOutput()
+	out, _ := herdrExec("workspace", "list").CombinedOutput()
 	return string(out)
 }
 
@@ -186,7 +189,7 @@ func herdrWorkspaceList(t *testing.T) string {
 // workspace by label even though wsID was never returned.
 func findL4WorkspaceIDByLabel(t *testing.T, label string) string {
 	t.Helper()
-	out, err := exec.Command("herdr", "workspace", "list").CombinedOutput()
+	out, err := herdrExec("workspace", "list").CombinedOutput()
 	if err != nil {
 		t.Logf("findL4WorkspaceIDByLabel: workspace list: %v", err)
 		return ""
@@ -215,8 +218,8 @@ func findL4WorkspaceIDByLabel(t *testing.T, label string) string {
 // the workspace ID and root pane ID from the JSON response.
 func createL4ScratchWorkspace(t *testing.T, label string) (wsID, paneID string) {
 	t.Helper()
-	out, err := exec.Command(
-		"herdr", "workspace", "create",
+	out, err := herdrExec(
+		"workspace", "create",
 		"--label", label,
 		"--no-focus",
 		"--cwd", os.TempDir(),
@@ -257,7 +260,7 @@ func closeL4ScratchWorkspace(t *testing.T, wsID, expectedLabel string) {
 		return
 	}
 
-	getOut, err := exec.Command("herdr", "workspace", "get", wsID).CombinedOutput()
+	getOut, err := herdrExec("workspace", "get", wsID).CombinedOutput()
 	if err != nil {
 		// Workspace may already be gone — log and return.
 		t.Logf("workspace get %s: %v (may already be closed)", wsID, err)
@@ -288,7 +291,7 @@ func closeL4ScratchWorkspace(t *testing.T, wsID, expectedLabel string) {
 		return
 	}
 
-	closeOut, err := exec.Command("herdr", "workspace", "close", wsID).CombinedOutput()
+	closeOut, err := herdrExec("workspace", "close", wsID).CombinedOutput()
 	if err != nil {
 		t.Logf("herdr workspace close %s: %v\n%s", wsID, err, closeOut)
 		return

@@ -44,13 +44,15 @@ import (
 // (XDG_STATE_HOME unredirected so the real sandbox store is used).
 func overlayCmd(binary string, args ...string) *exec.Cmd {
 	env := os.Environ()
-	out := env[:0]
+	out := make([]string, 0, len(env))
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "XDG_STATE_HOME=") {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "HOME" || k == "XDG_CONFIG_HOME" || k == "XDG_STATE_HOME" {
 			continue
 		}
 		out = append(out, kv)
 	}
+	out = append(out, "HOME="+herdrLiveRealHome)
 	cmd := exec.Command(binary, args...)
 	cmd.Env = out
 	return cmd
@@ -147,6 +149,13 @@ func TestOverlayOnVirtiofs(t *testing.T) {
 		"--mount", curatedDir+":"+guestMount+":ro",
 	).CombinedOutput()
 	if err != nil {
+		s := string(createOut)
+		if strings.Contains(s, "DENIED") || strings.Contains(s, "pull OCI image") {
+			liveSkip(t, "overlay: base image %q not cached and registry access denied; pre-pull the image first", image)
+		}
+		if strings.Contains(s, "below the") && strings.Contains(s, "floor") {
+			liveSkip(t, "overlay: insufficient free disk space to create sandbox: %s", s[strings.LastIndex(s, "error:"):])
+		}
 		t.Fatalf("nexus3 create: %v\n%s\n(check NEXUS3_KERNEL_PATH and that %q is a cached image)", err, createOut, image)
 	}
 	t.Logf("nexus3 create: %s", createOut)

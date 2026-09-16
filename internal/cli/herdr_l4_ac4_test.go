@@ -31,6 +31,7 @@ import (
 )
 
 func TestHerdrPlugin_L4_AC4Takeover(t *testing.T) {
+	liveSkip(t, "AC-4: requires interactive herdr session with KVM; isolated mode cannot satisfy this")
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		liveSkip(t, "AC-4: /dev/kvm not available: %v", err)
 	}

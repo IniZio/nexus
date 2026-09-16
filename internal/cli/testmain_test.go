@@ -12,6 +12,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	initHerdrLiveEnv()
 	if proc1comm, err := os.ReadFile("/proc/1/comm"); err == nil {
 		if strings.TrimSpace(string(proc1comm)) == "nexus3-agent" {
 			fmt.Fprintln(os.Stderr, "cli: skipping tests — running inside nexus3 guest VM (host-side package)")
@@ -53,5 +54,6 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	_ = os.RemoveAll(stateRoot)
 	_ = os.RemoveAll(kernelDir)
+	herdrLiveCleanup()
 	os.Exit(code)
 }

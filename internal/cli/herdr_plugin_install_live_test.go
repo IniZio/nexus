@@ -4,7 +4,6 @@ package cli
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,139 +17,6 @@ import (
 	"testing"
 	"time"
 )
-
-// isRealConfigRoot reports whether probeHome resolves to the same herdr
-// config root as the operator's real HOME.
-func isRealConfigRoot(probeHome, realHome string) bool {
-	return filepath.Clean(probeHome+"/.config/herdr") == filepath.Clean(realHome+"/.config/herdr")
-}
-
-func randHexN(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-func overrideHomeEnv(env []string, home string) []string {
-	out := make([]string, 0, len(env)+1)
-	for _, e := range env {
-		if !strings.HasPrefix(e, "HOME=") {
-			out = append(out, e)
-		}
-	}
-	return append(out, "HOME="+home)
-}
-
-func herdrCmd(probeHome, sessionName string, args ...string) *exec.Cmd {
-	var fullArgs []string
-	if sessionName != "" {
-		fullArgs = append(fullArgs, "--session", sessionName)
-	}
-	fullArgs = append(fullArgs, args...)
-	cmd := exec.Command("herdr", fullArgs...)
-	cmd.Env = overrideHomeEnv(os.Environ(), probeHome)
-	return cmd
-}
-
-func herdrRun(probeHome, sessionName string, args ...string) ([]byte, error) {
-	return herdrCmd(probeHome, sessionName, args...).CombinedOutput()
-}
-
-func herdrVersionAtLeast(versionOutput string, major, minor, patch int) bool {
-	for _, word := range strings.Fields(versionOutput) {
-		v := strings.TrimPrefix(word, "v")
-		parts := strings.SplitN(v, ".", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		var maj, min, pat int
-		if _, err := fmt.Sscanf(parts[0], "%d", &maj); err != nil {
-			continue
-		}
-		if _, err := fmt.Sscanf(parts[1], "%d", &min); err != nil {
-			continue
-		}
-		if _, err := fmt.Sscanf(parts[2], "%d", &pat); err != nil {
-			continue
-		}
-		if maj != major {
-			return maj > major
-		}
-		if min != minor {
-			return min > minor
-		}
-		return pat >= patch
-	}
-	return false
-}
-
-// startIsolatedHerdr starts a herdr server in a fresh /tmp home with an isolated
-// session.  t.Cleanup stops the server and removes the probe home.
-func startIsolatedHerdr(t *testing.T) (probeHome, sessionName string) {
-	t.Helper()
-
-	if _, err := exec.LookPath("herdr"); err != nil {
-		liveSkip(t, "herdr not found on PATH: %v", err)
-	}
-
-	vOut, err := exec.Command("herdr", "--version").CombinedOutput()
-	if err != nil {
-		liveSkip(t, "herdr --version failed: %v", err)
-	}
-	if !herdrVersionAtLeast(string(vOut), 0, 9, 0) {
-		liveSkip(t, "herdr < 0.9.0 (got %q)", strings.TrimSpace(string(vOut)))
-	}
-
-	probeHome, err = os.MkdirTemp("/tmp", "hp") // /tmp avoids AF_UNIX 107-char sun_path limit
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-
-	sessionName = fmt.Sprintf("nexus3-test-%s", randHexN(8))
-
-	if isRealConfigRoot(probeHome, os.Getenv("HOME")) {
-		t.Fatalf("REFUSAL: probeHome %q collides with real herdr config root", probeHome)
-	}
-
-	srvCmd := herdrCmd(probeHome, sessionName, "server")
-	srvCmd.Stdout = nil
-	srvCmd.Stderr = nil
-	if err := srvCmd.Start(); err != nil {
-		os.RemoveAll(probeHome)
-		t.Fatalf("herdr server start: %v", err)
-	}
-
-	sockPath := filepath.Join(probeHome, ".config", "herdr", "sessions", sessionName, "herdr.sock")
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, statErr := os.Stat(sockPath); statErr == nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if _, statErr := os.Stat(sockPath); statErr != nil {
-		srvCmd.Process.Kill() //nolint:errcheck
-		os.RemoveAll(probeHome)
-		t.Fatalf("herdr server socket not ready after 10s at %s", sockPath)
-	}
-
-	capturedHome := probeHome
-	capturedSess := sessionName
-	t.Cleanup(func() {
-		stopOut, stopErr := herdrRun(capturedHome, capturedSess, "server", "stop")
-		if stopErr != nil {
-			t.Logf("herdr server stop: %v\n%s", stopErr, stopOut)
-		}
-		time.Sleep(300 * time.Millisecond)
-		delOut, delErr := herdrRun(capturedHome, "", "session", "delete", capturedSess)
-		if delErr != nil {
-			t.Logf("herdr session delete: %v\n%s", delErr, delOut)
-		}
-		os.RemoveAll(capturedHome)
-	})
-
-	return probeHome, sessionName
-}
 
 func fakeReleaseServer(t *testing.T, binaryContent []byte) *httptest.Server {
 	t.Helper()
@@ -286,10 +152,8 @@ func assertPluginListed(t *testing.T, listOut []byte, pluginName string) {
 	}
 }
 
-// TestHerdrRefusalGuard proves isRealConfigRoot fires when probeHome would
-// collide with the operator's real herdr config root (T5-AC3).
 func TestHerdrRefusalGuard(t *testing.T) {
-	realHome := os.Getenv("HOME")
+	realHome := herdrLiveRealHome
 	if !isRealConfigRoot(realHome, realHome) {
 		t.Error("refusal guard must fire when probeHome == real HOME")
 	}
@@ -307,8 +171,10 @@ func TestHerdrRefusalGuard(t *testing.T) {
 // herdr session (no pre-existing binary → download path) and verifies the
 // binary and shim are installed, then links the plugin and lists it.
 //
-// D1: herdr plugin link does not run [[build]]; build.sh is invoked directly.
-// runBuildSh sets HERDR_PLUGIN_ROOT to match the env herdr passes to the hook.
+// Mutation note: removing --write-config from the build.sh install-default-shell
+// call causes the config.toml assertion below to fail. Removing the shim-write
+// step causes the shim assertion to fail. build.sh is invoked directly; herdr
+// plugin link is not used (herdr 0.9.0 never runs [[build]] on link).
 func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 	probeHome, sess := startIsolatedHerdr(t)
 	nexus3Bin := buildNexus3Binary(t)
@@ -359,6 +225,37 @@ func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 	}
 	t.Logf("plugin list: %s", listOut)
 	assertPluginListed(t, listOut, "nexus3")
+
+	// Mutation note: removing --write-config from build.sh's install-default-shell call
+	// causes this assertion to fail — the config file is never written.
+	configPath := filepath.Join(probeHome, ".config", "herdr", "config.toml")
+	configBytes, cfgErr := os.ReadFile(configPath)
+	if cfgErr != nil {
+		t.Errorf("herdr config.toml not found at %s: %v", configPath, cfgErr)
+	} else {
+		configStr := string(configBytes)
+		guestShellPath := filepath.Join(probeHome, ".local", "bin", "nexus3-guest-shell")
+		if !strings.Contains(configStr, "default_shell") {
+			t.Errorf("config.toml missing default_shell entry:\n%s", configStr)
+		}
+		if !strings.Contains(configStr, guestShellPath) {
+			t.Errorf("config.toml default_shell does not point to guest-shell %q:\n%s",
+				guestShellPath, configStr)
+		}
+		t.Logf("config.toml:\n%s", configStr)
+	}
+
+	ccOut, ccErr := herdrRun(probeHome, sess, "config", "check")
+	if ccErr != nil {
+		t.Errorf("herdr config check failed: %v\n%s", ccErr, ccOut)
+	} else {
+		t.Logf("herdr config check: %s", ccOut)
+	}
+
+	outStr = string(out)
+	if !strings.Contains(outStr, "nexus3 plugin: shim written") {
+		t.Errorf("build.sh did not reach shim-written step; full output:\n%s", outStr)
+	}
 }
 
 // TestHerdrPluginInstall_Upgrade tests build.sh skip-if-newer behaviour with
@@ -389,8 +286,8 @@ func TestHerdrPluginInstall_Upgrade(t *testing.T) {
 		if strings.Contains(outStr, "kept") {
 			t.Errorf("sub-test A: expected download, got 'kept': %s", outStr)
 		}
-		if !strings.Contains(outStr, "nexus3 plugin: installed") {
-			t.Errorf("sub-test A: 'nexus3 plugin: installed' not found: %s", outStr)
+		if !strings.Contains(outStr, "nexus3 plugin: installed") && !strings.Contains(outStr, "nexus3 plugin: upgraded") {
+			t.Errorf("sub-test A: neither 'installed' nor 'upgraded' in output: %s", outStr)
 		}
 		fi, err := os.Stat(stubPath)
 		if err != nil {

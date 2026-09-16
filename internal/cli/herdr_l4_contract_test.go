@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +65,8 @@ import (
 //	# FAIL: WorktreeList_LiveAndShape — herdr exited non-zero (rc=2)
 //	# Revert before continuing.
 func TestHerdrPlugin_L4_Contract(t *testing.T) {
+	startIsolatedHerdr(t)
+
 	// Safety: record before-state so the operator can confirm their
 	// workspaces are untouched after the run.
 	beforeWorkspaces := herdrWorkspaceList(t)
@@ -103,7 +104,7 @@ func TestHerdrPlugin_L4_Contract(t *testing.T) {
 // would silently disable the backfill without this assertion.
 func testHerdrContract_WorkspaceList(t *testing.T) {
 	t.Helper()
-	out, err := exec.Command("herdr", "workspace", "list").CombinedOutput()
+	out, err := herdrExec("workspace", "list").CombinedOutput()
 	if err != nil {
 		t.Fatalf("herdr workspace list: exit non-zero: %v\n%s", err, out)
 	}
@@ -179,7 +180,7 @@ func testHerdrContract_WorktreeList(t *testing.T) {
 
 	// Direct exec with the correct argv to assert the JSON response shape
 	// independently of the production parsing logic.
-	out, err := exec.Command("herdr", "worktree", "list", "--workspace", wsID).CombinedOutput()
+	out, err := herdrExec("worktree", "list", "--workspace", wsID).CombinedOutput()
 	if err != nil {
 		t.Fatalf("herdr worktree list --workspace %s: exit non-zero: %v\n%s", wsID, err, out)
 	}
@@ -243,7 +244,7 @@ func testHerdrContract_WorktreeList(t *testing.T) {
 // none exists or on any error. Never fails the test.
 func firstWorktreeWorkspaceID(t *testing.T) string {
 	t.Helper()
-	out, err := exec.Command("herdr", "workspace", "list").CombinedOutput()
+	out, err := herdrExec("workspace", "list").CombinedOutput()
 	if err != nil {
 		return ""
 	}
@@ -294,7 +295,7 @@ func testHerdrContract_WorkspaceRename(t *testing.T) {
 		}
 	})
 
-	out, err := exec.Command("herdr", "workspace", "rename", wsID, renamedLabel).CombinedOutput()
+	out, err := herdrExec("workspace", "rename", wsID, renamedLabel).CombinedOutput()
 	if err != nil {
 		t.Fatalf("herdr workspace rename %s %q: exit non-zero: %v\n%s", wsID, renamedLabel, err, out)
 	}
@@ -318,7 +319,7 @@ func testHerdrContract_TabCreate(t *testing.T) {
 		}
 	})
 
-	out, err := exec.Command("herdr", "tab", "create", "--workspace", wsID, "--focus").CombinedOutput()
+	out, err := herdrExec("tab", "create", "--workspace", wsID, "--focus").CombinedOutput()
 	if err != nil {
 		t.Fatalf("herdr tab create --workspace %s --focus: exit non-zero: %v\n%s", wsID, err, out)
 	}
@@ -338,7 +339,7 @@ func testHerdrContract_TabCreate(t *testing.T) {
 func assertHerdrHelp(t *testing.T, wantTokens []string, args ...string) {
 	t.Helper()
 	helpArgs := append(args, "--help") //nolint:gocritic
-	out, _ := exec.Command("herdr", helpArgs...).CombinedOutput()
+	out, _ := herdrExec(helpArgs...).CombinedOutput()
 	helpText := string(out)
 	for _, tok := range wantTokens {
 		if !strings.Contains(helpText, tok) {
