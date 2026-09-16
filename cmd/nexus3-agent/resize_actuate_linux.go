@@ -82,7 +82,7 @@ func collectSample(disks []resizableDisk) (resize.Sample, error) {
 		MemTotalBytes:     total * 1024,
 		SwapTotalBytes:    swapTotal * 1024,
 		SwapFreeBytes:     swapFree * 1024,
-		SwapInPages:       readVmstatPswpin(sampleVmstatPath),
+		SwapInPages:       readSwapInPages(sampleSwapsPath, sampleBlockSysDir, sampleVmstatPath),
 		MemPSISomeAvg10:   memSomeAvg10,
 		MemPSIFullAvg10:   memFullAvg10,
 		MemPSISupported:   memPSISupported,

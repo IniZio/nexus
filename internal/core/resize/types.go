@@ -143,7 +143,12 @@ type Sample struct {
 	SwapTotalBytes uint64 `json:"swap_total_bytes,omitempty"`
 	SwapFreeBytes  uint64 `json:"swap_free_bytes,omitempty"`
 
-	// SwapInPages is the cumulative /proc/vmstat pswpin counter. SwapUsed is a
+	// SwapInPages is a monotonic count of 4 KiB pages swapped in since boot.
+	// The agent derives it from the active block swap device's read sectors
+	// (/sys/class/block/<dev>/stat field 3, / 8) because the shipped guest
+	// kernel has CONFIG_VM_EVENT_COUNTERS unset and /proc/vmstat carries no
+	// pswpin; kernels with event counters and no block swap device fall back
+	// to pswpin. Only the delta between samples is meaningful. SwapUsed is a
 	// stock; a stable-but-high swap can still be paging hard, and shrinking such
 	// a guest storms it (HAN-941 F7/F13/F20). The governor refuses to shrink
 	// while the delta vs the previous sample is > 0. Zero for older agents.

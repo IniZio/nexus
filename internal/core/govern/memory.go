@@ -485,6 +485,14 @@ func (g *Governor) evaluate(ctx context.Context) {
 		current = minBytes
 	}
 
+	if g.latest.SwapInPages > g.prevSwapInPages &&
+		float64(g.latest.MemAvailableBytes)/float64(g.latest.MemTotalBytes) > defaultShrinkThreshold {
+		slog.Info("govern.memory.shrink_blocked",
+			"reason", "swap_in",
+			"delta", g.latest.SwapInPages-g.prevSwapInPages,
+			"swap_in_pages", g.latest.SwapInPages)
+	}
+
 	// Update consecutive-sample counters.
 	// These accumulate unconditionally (including during cooldown) so that
 	// when the cooldown expires the count is already built up. Matches OLD

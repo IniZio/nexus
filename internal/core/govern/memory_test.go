@@ -1,8 +1,11 @@
 package govern
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +113,38 @@ func TestSample_SwapInPagesOmittedDecodesZero(t *testing.T) {
 	}
 	if s.SwapInPages != 0 {
 		t.Fatalf("SwapInPages = %d, want 0", s.SwapInPages)
+	}
+}
+
+// The swap-in gate must be visible in supervisor.log (Info level): a sample
+// whose SwapInPages advanced past the previous one emits
+// govern.memory.shrink_blocked reason=swap_in delta=N. Not parallel: swaps
+// the default slog handler.
+func TestGovernor_SwapInBlockLogsInfo(t *testing.T) {
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	const boot = 4 * gib
+	g, clk := newTestGovernorMinMax(t, boot/2, boot*4, newFakeResizer(boot), nil)
+	ctx := context.Background()
+
+	clk.Advance(memoryEvalInterval)
+	g.acceptSample(ctx, pagingSample(uint64(boot), 1000))
+	buf.Reset()
+	clk.Advance(memoryEvalInterval)
+	g.acceptSample(ctx, pagingSample(uint64(boot), 1000))
+	if strings.Contains(buf.String(), "shrink_blocked") {
+		t.Fatalf("shrink_blocked logged with flat swap-in counter:\n%s", buf.String())
+	}
+
+	clk.Advance(memoryEvalInterval)
+	g.acceptSample(ctx, pagingSample(uint64(boot), 1416))
+	out := buf.String()
+	for _, want := range []string{"govern.memory.shrink_blocked", "reason=swap_in", "delta=416", "swap_in_pages=1416"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q:\n%s", want, out)
+		}
 	}
 }
