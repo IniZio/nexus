@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,7 +145,7 @@ func TestBuildSharedMCPServers_StdioLiteralKeptAndEnvResolved(t *testing.T) {
 
 	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
 		"mytool": map[string]any{
-			"command": "/usr/bin/mytool",
+			"command": "mytool",
 			"env": map[string]any{
 				"API_TOKEN": "${MY_TOK}",
 				"PLAIN":     "literalvalue",
@@ -192,17 +194,17 @@ func TestBuildSharedMCPServers_UnionSource(t *testing.T) {
 	// alpha only in .mcp.json (lower priority).
 	writeMCPJSON(t, filepath.Join(dir, ".mcp.json"), map[string]any{
 		"alpha": map[string]any{
-			"command": "/mcp-bin",
+			"command": "mcp-bin",
 			"env":     map[string]any{"VER": "from-mcp"},
 		},
 	})
 	// beta only in .claude.json; alpha is also present to test collision.
 	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
 		"beta": map[string]any{
-			"command": "/beta-bin",
+			"command": "beta-bin",
 		},
 		"alpha": map[string]any{
-			"command": "/mcp-bin",
+			"command": "mcp-bin",
 			"env":     map[string]any{"VER": "from-claude-json"},
 		},
 	})
@@ -722,5 +724,143 @@ func TestBuildSharedMCPServers_ProjectScopedOAuthInjected(t *testing.T) {
 	// Placeholder must be injected (existing branch, not synthesis).
 	if e.Headers["Authorization"] != "${"+synVar+"}" {
 		t.Errorf("Authorization header = %q, want ${%s}", e.Headers["Authorization"], synVar)
+	}
+}
+
+// captureSlog routes the default slog logger into a buffer for the test's
+// lifetime and returns the buffer.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+func TestBuildSharedMCPServers_StdioHostOnlyAbsoluteDropped(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	t.Setenv("HOME", dir)
+	logs := captureSlog(t)
+
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"nexus3": map[string]any{
+			"type":    "stdio",
+			"command": "/home/host/magic/nexus3/nexus3",
+			"args":    []string{"mcp"},
+		},
+		"opencode": map[string]any{
+			"command": "~/.config/opencode/bin/opencode",
+		},
+		"npx-one": map[string]any{
+			"command": "npx",
+			"args":    []string{"-y", "some-server"},
+		},
+	})
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := got.Servers["nexus3"]; ok {
+		t.Fatal("host-only absolute stdio command must be dropped")
+	}
+	if _, ok := got.Servers["opencode"]; ok {
+		t.Fatal("host-only ~-relative stdio command must be dropped")
+	}
+	if _, ok := got.Servers["npx-one"]; !ok {
+		t.Fatal("PATH-relative stdio command must be kept")
+	}
+	logStr := logs.String()
+	for _, want := range []string{"server=nexus3", "/home/host/magic/nexus3/nexus3", "server=opencode", filepath.Join(dir, ".config/opencode/bin/opencode")} {
+		if !strings.Contains(logStr, want) {
+			t.Errorf("drop log missing %q; got:\n%s", want, logStr)
+		}
+	}
+	if n := strings.Count(logStr, "dropping stdio MCP server"); n != 2 {
+		t.Errorf("want exactly 2 drop log lines, got %d:\n%s", n, logStr)
+	}
+}
+
+func TestBuildSharedMCPServers_StdioMountMappedAbsoluteRewritten(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	t.Setenv("HOME", dir)
+	logs := captureSlog(t)
+
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"tool": map[string]any{
+			"command": "~/.local/bin/tool",
+			"args":    []string{"serve"},
+			"env":     map[string]any{"TOOL_TOKEN": "${TOOL_TOKEN}"},
+		},
+	})
+	mounts := []ResolvedUserMount{
+		{HostPath: filepath.Join(dir, ".local"), GuestPath: "/root/.local"},
+		{HostPath: filepath.Join(dir, ".local/bin"), GuestPath: "/root/.local/bin"},
+	}
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "", mounts...)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	raw, ok := got.Servers["tool"]
+	if !ok {
+		t.Fatal("mount-mapped stdio command must be kept")
+	}
+	var e rawMCPEntry
+	if err := json.Unmarshal(raw, &e); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if e.Command != "/root/.local/bin/tool" {
+		t.Fatalf("command = %q, want guest path /root/.local/bin/tool", e.Command)
+	}
+	if len(e.Args) != 1 || e.Args[0] != "serve" {
+		t.Errorf("args not preserved: %v", e.Args)
+	}
+	if e.Env["TOOL_TOKEN"] != "${TOOL_TOKEN}" {
+		t.Errorf("env not preserved: %v", e.Env)
+	}
+	if strings.Contains(string(raw), "\"type\"") || strings.Contains(string(raw), "\"url\"") {
+		t.Errorf("absent fields must stay absent, got %s", raw)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("no drop log expected, got:\n%s", logs.String())
+	}
+}
+
+func TestBuildSharedMCPServers_StdioRelativeAndHTTPUntouched(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	t.Setenv("HOME", dir)
+	logs := captureSlog(t)
+
+	stdio := map[string]any{"command": "uvx", "args": []string{"mcp-x"}}
+	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
+		"uvx-one": stdio,
+		"remote": map[string]any{
+			"type": "http",
+			"url":  "https://example.com/mcp",
+		},
+	})
+	wantStdio, _ := json.Marshal(stdio)
+
+	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got.Servers["uvx-one"]) != string(wantStdio) {
+		t.Errorf("relative stdio entry must pass verbatim: got %s want %s", got.Servers["uvx-one"], wantStdio)
+	}
+	var e rawMCPEntry
+	if err := json.Unmarshal(got.Servers["remote"], &e); err != nil {
+		t.Fatalf("unmarshal http: %v", err)
+	}
+	if e.Type != "http" || e.URL != "https://example.com/mcp" {
+		t.Errorf("http entry altered: %s", got.Servers["remote"])
+	}
+	if logs.Len() != 0 {
+		t.Errorf("no drop log expected, got:\n%s", logs.String())
 	}
 }

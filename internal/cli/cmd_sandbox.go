@@ -1349,7 +1349,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	} else if cwd, cwdErr := os.Getwd(); cwdErr == nil {
 		mcpSourceDir = cwd
 	}
-	sharedMCP, mcpErr := service.BuildSharedMCPServers(agentProfile, mcpSourceDir)
+	sharedMCP, mcpErr := buildGuestMCPServers(f, agentProfile, mcpSourceDir)
 	if mcpErr != nil {
 		return errSandbox("sandbox create", mcpErr)
 	}
@@ -1562,6 +1562,31 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	out.EmitSuccess("sandbox.created", toSandboxInfoJSON(sb),
 		fmt.Sprintf("created sandbox %s (%s)", sb.Handle(), sb.ID))
 	return nil
+}
+
+// buildGuestMCPServers resolves the user mounts the guest will see (the same
+// operator config the staging block below turns into usermounts.json, plus the
+// live ~/.claude mount when the profile wires one) and builds the guest MCP
+// config against them, so stdio commands under a mounted host dir are
+// rewritten to their guest path and host-only absolute commands are dropped.
+func buildGuestMCPServers(f sandboxCreateFlags, agentProfile cred.AgentProfile, mcpSourceDir string) (service.SharedMCPServers, error) {
+	var mounts []service.ResolvedUserMount
+	if !f.noShareSettings {
+		if hostHome, homeErr := os.UserHomeDir(); homeErr == nil {
+			if agentProfile.Capabilities.CredDirLiveMount {
+				mounts = append(mounts, service.ResolvedUserMount{
+					HostPath:  filepath.Join(hostHome, ".claude"),
+					GuestPath: "/root/.claude",
+				})
+			}
+			if !f.noUserMounts {
+				if userGlobalCfg, ugErr := config.LoadUserGlobal(); ugErr == nil {
+					mounts = append(mounts, service.BuildUserMountManifest(hostHome, []string(userGlobalCfg.Sandbox.Mounts)).Mounts...)
+				}
+			}
+		}
+	}
+	return service.BuildSharedMCPServers(agentProfile, mcpSourceDir, mounts...)
 }
 
 func resolveCreateSecrets(ctx context.Context, f sandboxCreateFlags) ([]service.SecretBind, error) {

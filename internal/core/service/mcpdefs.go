@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -50,7 +51,14 @@ var buildMCPOAuthBindsFn = BuildMCPOAuthBinds
 // sourceDir must be an absolute, cleaned path matching the projects map key in
 // ~/.claude.json exactly. Pass "" to skip project-scoped lookup. Parent-walk
 // and worktree-vs-main-repo key ambiguity are deferred to v2.
-func BuildSharedMCPServers(profile cred.AgentProfile, sourceDir string) (SharedMCPServers, error) {
+//
+// mounts are the resolved user mounts (BuildUserMountManifest(...).Mounts)
+// that will be visible in the guest. A stdio entry whose command is an
+// absolute host path (after ~/$HOME expansion) is rewritten to the guest path
+// when it lives under one of these mounts; otherwise the entry is DROPPED and
+// one log line names the server and path, because the guest would ENOENT on
+// it. PATH-relative commands and http/sse entries are untouched.
+func BuildSharedMCPServers(profile cred.AgentProfile, sourceDir string, mounts ...ResolvedUserMount) (SharedMCPServers, error) {
 	if profile.MCPConfigFormat != cred.MCPConfigFormatClaudeJSON {
 		return SharedMCPServers{}, nil
 	}
@@ -101,7 +109,11 @@ func BuildSharedMCPServers(profile cred.AgentProfile, sourceDir string) (SharedM
 		case MCPTransportStdio:
 			// Pass the ORIGINAL raw bytes verbatim so absent fields (env, args)
 			// remain absent in the guest — no null/empty junk from re-marshal.
-			result.Servers[name] = rawBytes
+			guestBytes, ok := remapStdioCommand(name, rawBytes, entry.Command, mounts)
+			if !ok {
+				continue
+			}
+			result.Servers[name] = guestBytes
 			for _, varName := range srv.CredVarRefs {
 				if _, ok := stdioVars[varName]; ok {
 					continue
@@ -194,6 +206,60 @@ func BuildSharedMCPServers(profile cred.AgentProfile, sourceDir string) (SharedM
 	}
 
 	return result, nil
+}
+
+// remapStdioCommand decides what the guest sees for a stdio entry's command.
+// PATH-relative commands (npx, uvx, nexus3) return rawBytes verbatim. An
+// absolute host path (after ~/$HOME expansion via expandHome, the same rule
+// user mounts use) is rewritten to its guest path when it lies under a user
+// mount's HostPath (longest match wins); otherwise the entry is dropped
+// (ok=false) with one log line naming the server and the path.
+func remapStdioCommand(name string, rawBytes json.RawMessage, command string, mounts []ResolvedUserMount) (json.RawMessage, bool) {
+	hostHome, _ := os.UserHomeDir()
+	hostCmd := expandHome(command, hostHome)
+	if !filepath.IsAbs(hostCmd) {
+		return rawBytes, true
+	}
+	hostCmd = filepath.Clean(hostCmd)
+
+	guestCmd := ""
+	bestLen := -1
+	for _, m := range mounts {
+		hp := filepath.Clean(m.HostPath)
+		if hp == "" || m.GuestPath == "" {
+			continue
+		}
+		if hostCmd != hp && !strings.HasPrefix(hostCmd, hp+"/") {
+			continue
+		}
+		if len(hp) > bestLen {
+			bestLen = len(hp)
+			guestCmd = m.GuestPath + strings.TrimPrefix(hostCmd, hp)
+		}
+	}
+	if guestCmd == "" {
+		slog.Warn("mcp defs: dropping stdio MCP server; command is a host path with no user mount into the guest",
+			"server", name, "command", hostCmd)
+		return nil, false
+	}
+	if guestCmd == command {
+		return rawBytes, true
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBytes, &fields); err != nil {
+		return rawBytes, true
+	}
+	cmdJSON, err := json.Marshal(guestCmd)
+	if err != nil {
+		return rawBytes, true
+	}
+	fields["command"] = cmdJSON
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return rawBytes, true
+	}
+	return out, true
 }
 
 // readRawMCPFile opens path and decodes the mcpServers map, preserving each
