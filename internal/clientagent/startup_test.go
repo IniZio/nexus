@@ -309,6 +309,31 @@ func TestRemoteNexus3HerdrListCmd_PathFallback(t *testing.T) {
 	}
 }
 
+// MUTATION TARGET: remoteNexus3HerdrListCmd return value → "nexus3 herdr list" → RED.
+func TestResolveRemoteHandleForWorkspace_ArgvContainsLocalBin(t *testing.T) {
+	var capturedArgv []string
+	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
+		capturedArgv = argv
+		return "workspace_id=ws1\thandle=worktree/main\n", "", 0, nil
+	}
+	ctx := context.Background()
+	handle, err := resolveRemoteHandleForWorkspace(ctx, "/fake.ctl", "myhost", "ws1", fakeRunner)
+	if err != nil {
+		t.Fatalf("resolveRemoteHandleForWorkspace: %v", err)
+	}
+	if handle != "worktree/main" {
+		t.Errorf("handle: got %q, want worktree/main", handle)
+	}
+	if len(capturedArgv) == 0 {
+		t.Fatal("runner was not called")
+	}
+	lastArg := capturedArgv[len(capturedArgv)-1]
+	if !strings.Contains(lastArg, "$HOME/.local/bin/nexus3") {
+		t.Errorf("last argv element %q does not contain $HOME/.local/bin/nexus3 — "+
+			"remoteNexus3HerdrListCmd must try the local install path first", lastArg)
+	}
+}
+
 func TestParseHandleFromSpaceList_ContractFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/herdr-list.txt")
 	if err != nil {

@@ -25,6 +25,9 @@ var (
 
 func initHerdrLiveEnv() {
 	herdrLiveRealHome = os.Getenv("HOME")
+	if os.Getenv("NEXUS3_TEST_SIGHUP_CHILD") == "1" {
+		return
+	}
 
 	var gomodcache, gocache, gopath string
 	if out, err := exec.Command("go", "env", "GOMODCACHE", "GOCACHE", "GOPATH").Output(); err == nil {

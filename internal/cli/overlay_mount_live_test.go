@@ -1,31 +1,5 @@
 //go:build herdr_live
 
-// T0-OVERLAY-TEST: codifies the proven live experiment that overlayfs-on-virtiofs
-// works in a real nexus3 sandbox.
-//
-// # What is under test
-//
-// A read-only virtiofs share is mounted into the guest at /mnt/roconfig. The
-// test then mounts an overlay filesystem on top of that virtiofs lower layer.
-// This proves:
-//
-//  1. virtiofs ro mount lands at the expected path (grep /proc/mounts).
-//  2. overlayfs can use a virtiofs share as its lower dir (mount -t overlay).
-//  3. Lower-dir content is visible through the merged dir (cat CLAUDE.md).
-//  4. Writes into the overlay merged dir work (new file + copy-up of existing file).
-//  5. Host curated dir is BYTE-IDENTICAL after the sandbox is removed —
-//     the guest's copy-up lands in the tmpfs upper and never touches the host.
-//
-// Run with:
-//
-//	TMPDIR=/tmp NEXUS3_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
-//	  NEXUS3_LIVE_REQUIRED=1 \
-//	  go test -count=1 -tags herdr_live ./internal/cli/ -run TestOverlayOnVirtiofs -v -timeout 300s
-//
-// Prerequisites:
-//   - /dev/kvm must be present
-//   - NEXUS3_KERNEL_PATH must be set to a vmlinux image
-//   - nexus3-agent-base image must be locally cached (or set NEXUS3_OVERLAY_IMAGE)
 package cli
 
 import (
@@ -40,8 +14,6 @@ import (
 	"time"
 )
 
-// overlayCmd builds a nexus3 subprocess with the live-state environment
-// (XDG_STATE_HOME unredirected so the real sandbox store is used).
 func overlayCmd(binary string, args ...string) *exec.Cmd {
 	env := os.Environ()
 	out := make([]string, 0, len(env))
@@ -52,14 +24,13 @@ func overlayCmd(binary string, args ...string) *exec.Cmd {
 		}
 		out = append(out, kv)
 	}
-	out = append(out, "HOME="+herdrLiveRealHome)
+	out = append(out, "HOME="+herdrLiveIsolatedHome)
+	out = append(out, "XDG_STATE_HOME="+filepath.Join(herdrLiveIsolatedHome, ".local", "state"))
 	cmd := exec.Command(binary, args...)
 	cmd.Env = out
 	return cmd
 }
 
-// sha256Dir returns a deterministic map[relpath]hexsum for every regular file
-// under root. Used to assert the host curated dir is untouched after the run.
 func sha256Dir(root string) (map[string]string, error) {
 	sums := make(map[string]string)
 	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
@@ -89,7 +60,9 @@ func sha256Dir(root string) (map[string]string, error) {
 }
 
 func TestOverlayOnVirtiofs(t *testing.T) {
-	// --- 0. Prerequisites: skip, never fail, when absent. ---
+	if os.Getenv("NEXUS3_LIVE_REQUIRED") == "" {
+		t.Skip("set NEXUS3_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
+	}
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		liveSkip(t, "overlay: /dev/kvm not available: %v", err)
 	}
@@ -97,7 +70,6 @@ func TestOverlayOnVirtiofs(t *testing.T) {
 		liveSkip(t, "overlay: NEXUS3_KERNEL_PATH is not set; set it to a vmlinux image to run this test")
 	}
 
-	// --- 1. Build the nexus3 binary. ---
 	binDir := t.TempDir()
 	binary := filepath.Join(binDir, "nexus3-overlay")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
@@ -106,7 +78,6 @@ func TestOverlayOnVirtiofs(t *testing.T) {
 		liveSkip(t, "overlay: nexus3 binary cannot be built: %v\n%s", err, out)
 	}
 
-	// --- 2. Host curated dir with known content. ---
 	curatedDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(curatedDir, "CLAUDE.md"), []byte("GLOBAL INSTRUCTIONS v1\n"), 0o644); err != nil {
 		t.Fatalf("write CLAUDE.md: %v", err)
@@ -160,20 +131,6 @@ func TestOverlayOnVirtiofs(t *testing.T) {
 	}
 	t.Logf("nexus3 create: %s", createOut)
 
-	// --- 4. In-guest overlay script. ---
-	//
-	// The script is written as a single -c argument to /bin/bash. It:
-	//  a) asserts /mnt/roconfig is a virtiofs ro mount via /proc/mounts
-	//  b) mounts a tmpfs base, creates upper/work/merged dirs
-	//  c) mounts overlay with virtiofs as lowerdir
-	//  d) reads the lower content through merged
-	//  e) writes a new file into merged (verifies overlay is writable)
-	//  f) appends to CLAUDE.md through merged (exercises copy-up)
-	//  g) prints OVERLAY_TRACER_OK and the lower content as the assertion token
-	//
-	// Any step failure causes exit 1 (set -e). The token never appears in the
-	// command line itself so matching it in stdout proves the script ran to
-	// completion, not just that the shell echoed the command.
 	script := `
 set -euo pipefail
 
