@@ -155,6 +155,7 @@ var ClaudeCodeProfile = AgentProfile{
 					"x64": "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
 				},
 				InstallDir: "/usr/local",
+				VersionCmd: "node --version",
 			},
 			{
 				// Floats: resolved against the npm registry on the host at create

@@ -27,6 +27,21 @@ func TestClaudeCodeProfile_Fields(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeProfile_NodeRecipeDeclaresVersionCmd(t *testing.T) {
+	var node *cred.RecipePackage
+	for i := range cred.ClaudeCodeProfile.ToolRecipe.Packages {
+		if p := &cred.ClaudeCodeProfile.ToolRecipe.Packages[i]; p.Kind == cred.RecipeKindTarball && p.Name == "node" {
+			node = p
+		}
+	}
+	if node == nil {
+		t.Fatal("ClaudeCodeProfile has no tarball package named node")
+	}
+	if node.VersionCmd != "node --version" {
+		t.Fatalf("node recipe VersionCmd = %q, want %q (guard against clobbering a user-installed node)", node.VersionCmd, "node --version")
+	}
+}
+
 func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 	p := cred.ClaudeCodeProfile
 

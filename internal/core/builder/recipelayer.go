@@ -74,7 +74,17 @@ func renderTarball(pkg cred.RecipePackage, arch string) (string, error) {
 	tmpFile := "/tmp/" + recipeTmpName(pkg.Name) + ".tar.gz"
 
 	var sb strings.Builder
-	sb.WriteString("RUN mkdir -p ")
+	sb.WriteString("RUN ")
+	if pkg.VersionCmd != "" {
+		if !isDottedNumeric(pkg.Version) {
+			return "", fmt.Errorf(
+				"recipelayer: %s: VersionCmd requires a dotted-numeric Version, got %q",
+				pkg.Name, pkg.Version,
+			)
+		}
+		sb.WriteString(versionGuardPrefix(pkg.Name, pkg.Version, pkg.VersionCmd))
+	}
+	sb.WriteString("mkdir -p ")
 	sb.WriteString(installDir)
 	sb.WriteString(" && \\\n    curl -fsSL \"")
 	sb.WriteString(url)
@@ -99,8 +109,38 @@ func renderTarball(pkg cred.RecipePackage, arch string) (string, error) {
 		sb.WriteString(" ")
 		sb.WriteString(link)
 	}
+	if pkg.VersionCmd != "" {
+		sb.WriteString("; \\\n    fi")
+	}
 	sb.WriteString("\n")
 	return sb.String(), nil
+}
+
+// versionGuardPrefix opens a POSIX sh `if` (no bash-isms; caller closes with `fi`) that skips the install chain when versionCmd reports a version >= pinned.
+func versionGuardPrefix(name, pinned, versionCmd string) string {
+	return `recipe_ver_ge() { a="$1"; b="$2"; while [ -n "$a" ] || [ -n "$b" ]; do ah="${a%%.*}"; bh="${b%%.*}"; if [ "$a" = "$ah" ]; then a=""; else a="${a#*.}"; fi; if [ "$b" = "$bh" ]; then b=""; else b="${b#*.}"; fi; if [ "${ah:-0}" -gt "${bh:-0}" ]; then return 0; fi; if [ "${ah:-0}" -lt "${bh:-0}" ]; then return 1; fi; done; return 0; }; \
+    existing="$(` + versionCmd + ` 2>/dev/null || true)"; existing="${existing#v}"; existing="${existing%%[!0-9.]*}"; \
+    if [ -n "$existing" ] && recipe_ver_ge "$existing" "` + pinned + `"; then \
+    echo "recipe ` + name + `: existing $existing >= ` + pinned + `, skipped"; \
+    else \
+    `
+}
+
+func isDottedNumeric(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, part := range strings.Split(v, ".") {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // renderNPM emits one RUN instruction that installs an npm package globally at

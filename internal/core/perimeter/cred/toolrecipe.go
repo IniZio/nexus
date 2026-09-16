@@ -26,6 +26,8 @@ type RecipePackage struct {
 	SHA256ByArch map[string]string
 	InstallDir   string
 	Symlinks     []RecipeSymlink
+	// VersionCmd (tarball only): POSIX sh command printing the version of a copy already in the image; the layer skips install when it is >= Version (Version must be dotted-numeric).
+	VersionCmd string
 }
 
 func (p RecipePackage) IsFloating() bool {
