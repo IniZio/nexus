@@ -208,7 +208,7 @@ jobs:
             echo "ERROR: invalid version '$VERSION' — expected semver"
             exit 1
           fi
-          LDFLAGS="-s -w -X 'github.com/IniZio/nexus3/cmd/nexus3-client.version=${VERSION}'"
+          LDFLAGS="-s -w -X 'main.version=${VERSION}'"
           go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus3-client
           echo "Built $OUTFILE ($(du -sh "$OUTFILE" | cut -f1))"
 
