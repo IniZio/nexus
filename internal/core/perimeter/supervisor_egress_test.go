@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
 )
 
 // newTestProxy creates a minimal mitm.Proxy with no initially allowed hosts.

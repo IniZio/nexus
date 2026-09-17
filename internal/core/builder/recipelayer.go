@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // RenderRecipeLayer converts a [cred.ToolRecipe] into a deterministic sequence

@@ -130,7 +130,7 @@ func TestParseStateBackend_NoBackendLine(t *testing.T) {
 
 // TestParseStateBackend_MissingLog verifies HIF on a missing log file.
 func TestParseStateBackend_MissingLog(t *testing.T) {
-	backend, probe := ParseStateBackend("/tmp/does-not-exist-nexus3-repro-state-backend-test.log")
+	backend, probe := ParseStateBackend("/tmp/does-not-exist-nexus-repro-state-backend-test.log")
 
 	if backend != Unknown {
 		t.Errorf("backend: got %s, want Unknown", backend)

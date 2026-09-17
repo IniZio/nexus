@@ -10,7 +10,7 @@ package selfhost
 //  1. The REAL production chain works:
 //     builderimage.EnsureBuilderImage → builder.PrivateRootfs →
 //     builder.ContextToDisk → builder.SelectCacheDisks → builder.BuildInVM →
-//     (guest) nexus3-agent --builder-role → RunBuilderRole → BuildInGuestImage
+//     (guest) nexus-agent --builder-role → RunBuilderRole → BuildInGuestImage
 //     (buildkitd solve) → artifact ext4 → boot sandbox.
 //
 //  2. No host buildkitd is involved: BUILDKIT_HOST is unset and
@@ -25,8 +25,8 @@ package selfhost
 // # Builder-role evidence
 //
 // The builder VM's CHDriver is configured with SerialOutputPath, capturing
-// everything nexus3-agent (PID 1) writes to /dev/console — including the
-// "nexus3-agent: builder role starting" message. The --builder-role exec's
+// everything nexus-agent (PID 1) writes to /dev/console — including the
+// "nexus-agent: builder role starting" message. The --builder-role exec's
 // stderr (buildkitd logs via log.Printf) is also captured via a tee in the
 // test's execFn closure, providing "in-guest build: buildkitd started pid=…"
 // evidence.
@@ -37,7 +37,7 @@ package selfhost
 //   - cloud-hypervisor binary (CLOUD_HYPERVISOR_BIN or default path)
 //   - mke2fs in PATH (e2fsprogs)
 //   - images/kernel/vmlinux-x86_64 or testdata fallback
-//   - nexus3-agent binary (NEXUS3_AGENT_BIN, PATH, or built in t.TempDir)
+//   - nexus-agent binary (NEXUS_AGENT_BIN, PATH, or built in t.TempDir)
 //
 // # Running
 //
@@ -60,45 +60,45 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	cloudhypervisor "github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	cloudhypervisor "github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── skip guards ───────────────────────────────────────────────────────────────
 
-// skipUnlessAgentBinG8 returns the path to the nexus3-agent binary, skipping
+// skipUnlessAgentBinG8 returns the path to the nexus-agent binary, skipping
 // if it cannot be found or built.
 func skipUnlessAgentBinG8(t *testing.T, repoRoot string) string {
 	t.Helper()
 	// Env var override
-	if p := os.Getenv("NEXUS3_AGENT_BIN"); p != "" {
+	if p := os.Getenv("NEXUS_AGENT_BIN"); p != "" {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
 	// PATH
-	if p, err := exec.LookPath("nexus3-agent"); err == nil {
+	if p, err := exec.LookPath("nexus-agent"); err == nil {
 		return p
 	}
 	// Build from source into a temp dir (takes ~30s; cached after first run by
 	// the Go build cache).
-	binPath := filepath.Join(t.TempDir(), "nexus3-agent")
-	t.Logf("nexus3-agent not in PATH — building from source (one-time, ~30s) …")
-	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/nexus3-agent")
+	binPath := filepath.Join(t.TempDir(), "nexus-agent")
+	t.Logf("nexus-agent not in PATH — building from source (one-time, ~30s) …")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/nexus-agent")
 	buildCmd.Dir = repoRoot
 	buildCmd.Env = append(os.Environ(), "CGO_ENABLED=0") // static binary: builder rootfs lacks glibc
 	buildCmd.Stdout = os.Stderr
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
-		t.Skipf("skipping: failed to build nexus3-agent: %v", err)
+		t.Skipf("skipping: failed to build nexus-agent: %v", err)
 	}
 	return binPath
 }
@@ -358,7 +358,7 @@ func TestBuilderVME2E(t *testing.T) {
 	mainCtx, mainCancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer mainCancel()
 
-	// ── 3. Pull builder rootfs (moby/buildkit + nexus3-agent) ─────────────────
+	// ── 3. Pull builder rootfs (moby/buildkit + nexus-agent) ─────────────────
 	t.Log("EnsureBuilderImage: resolving OCI digest + pulling if not cached …")
 	ensureStart := time.Now()
 	builderRootfs, err := builderimage.EnsureBuilderImage(mainCtx, storeRoot, agentBytes)
@@ -369,7 +369,7 @@ func TestBuilderVME2E(t *testing.T) {
 
 	// ── 4. Proof 1: debian:stable-slim build ─────────────────────────────────
 	// Exercises the REAL production chain end-to-end:
-	//   nexus3-agent --builder-role → RunBuilderRole → BuildInGuestImage → buildkitd
+	//   nexus-agent --builder-role → RunBuilderRole → BuildInGuestImage → buildkitd
 	t.Log("=== PROOF 1: debian:stable-slim build (proves builder-role + buildkitd) ===")
 
 	debianCacheDisks, leasesDebianCacheDisks, err := builder.SelectCacheDisks(mainCtx, storeRoot, []string{"buildkit"})
@@ -398,7 +398,7 @@ func TestBuilderVME2E(t *testing.T) {
 
 	if !strings.Contains(debSerialStr, "builder role starting") {
 		t.Errorf("PROOF FAIL: 'builder role starting' not found in builder VM serial log — " +
-			"expected nexus3-agent main.go consoleLog to emit it")
+			"expected nexus-agent main.go consoleLog to emit it")
 	}
 	if !strings.Contains(debExecLog, "buildkitd") && !strings.Contains(debExecLog, "in-guest build") {
 		t.Logf("NOTE: buildkitd log lines not captured in exec log (may be in serial). " +
@@ -588,7 +588,7 @@ func TestBuilderVME2E(t *testing.T) {
 	// Summary
 	t.Logf("=== G8 SUMMARY ===")
 	t.Logf("Production path: EnsureBuilderImage → PrivateRootfs → ContextToDisk → SelectCacheDisks → BuildInVM")
-	t.Logf("  → nexus3-agent --builder-role → RunBuilderRole → BuildInGuestImage → buildkitd solve")
+	t.Logf("  → nexus-agent --builder-role → RunBuilderRole → BuildInGuestImage → buildkitd solve")
 	t.Logf("BUILDKIT_HOST: unset (verified)")
 	t.Logf("Host buildkitd socket: %v", func() string {
 		if _, err := os.Stat("/run/buildkit/buildkitd.sock"); err == nil {

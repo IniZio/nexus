@@ -5,7 +5,7 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // harvestErrCodePartialFailure is emitted when HarvestMotive succeeds for some
@@ -45,7 +45,7 @@ type harvestDoneJSON struct {
 
 // runHarvest is the registered Run function for the "harvest" command.
 //
-// Usage: nexus3 harvest <motive-id> <guest-src-path> <host-dest-dir>
+// Usage: nexus harvest <motive-id> <guest-src-path> <host-dest-dir>
 //
 // Copies <guest-src-path> from every sandbox belonging to <motive-id> into
 // <host-dest-dir>. Each sandbox's output is placed in a per-sandbox

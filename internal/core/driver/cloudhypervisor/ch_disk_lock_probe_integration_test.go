@@ -9,11 +9,11 @@ package cloudhypervisor
 // one refuse to start, start with errors, or start silently (and potentially
 // corrupt the disk)?
 //
-// WHY IT MATTERS: nexus3 rule D-PD-95 forbids fork on sandboxes that carry
+// WHY IT MATTERS: nexus rule D-PD-95 forbids fork on sandboxes that carry
 // a kind=disk named volume, because two VMs sharing one read-write ext4
-// corrupts it.  That rule is enforced only in nexus3's service layer.  If CH
-// itself refuses via a disk lock, nexus3 has a VMM-level backstop.  If not,
-// nexus3's check is the ONLY protection.
+// corrupts it.  That rule is enforced only in nexus's service layer.  If CH
+// itself refuses via a disk lock, nexus has a VMM-level backstop.  If not,
+// nexus's check is the ONLY protection.
 //
 // WHAT WE DO:
 //  1. Create a 64 MiB sparse .raw file (the "named volume").
@@ -53,7 +53,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 func TestCHDiskLockProbe(t *testing.T) {
@@ -378,7 +378,7 @@ func TestCHDiskLockProbe(t *testing.T) {
 
 		t.Logf("VERDICT: Cloud Hypervisor does NOT enforce a disk lock — " +
 			"BOTH instances share the same disk file with no error. " +
-			"nexus3's service-layer check (D-PD-95) is the ONLY protection.")
+			"nexus's service-layer check (D-PD-95) is the ONLY protection.")
 	}
 
 	appendLockProbeVerification(t)
@@ -438,7 +438,7 @@ func appendLockProbeVerification(t *testing.T) {
 	t.Helper()
 	// The journal binary path; the exact location is injected by the harness.
 	// Try the known location; skip silently if absent.
-	journalBin := os.Getenv("NEXUS3_JOURNAL_BIN")
+	journalBin := os.Getenv("NEXUS_JOURNAL_BIN")
 	if _, err := os.Stat(journalBin); err != nil {
 		t.Logf("journal binary not found at %s — skipping VERIFICATION event", journalBin)
 		return

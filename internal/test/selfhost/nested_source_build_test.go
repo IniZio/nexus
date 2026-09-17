@@ -2,21 +2,21 @@
 
 // Package selfhost — S-NESTED-BUILD nested source-build integration proof.
 //
-// Proves end-to-end that an outer nexus3 microVM (booted with NestedVirt=true)
-// can build an inner VM image that contains the nexus3 source tree, boot that
+// Proves end-to-end that an outer nexus microVM (booted with NestedVirt=true)
+// can build an inner VM image that contains the nexus source tree, boot that
 // inner VM, and run `go build ./...` successfully inside it.
 //
 // This is the nested mirror of TestBuildDogfood: where that test proves an
-// OUTER guest can build nexus3, this test proves an INNER (nested) guest can
+// OUTER guest can build nexus, this test proves an INNER (nested) guest can
 // do the same, traversing the full three-layer stack:
 //
-//	host → outer guest (NestedVirt) → inner KVM VM → go build nexus3
+//	host → outer guest (NestedVirt) → inner KVM VM → go build nexus
 //
 // # Acceptance criteria
 //
 //   - (S-NESTED-BUILD-AC1) Outer guest has /dev/kvm (NestedVirt=true).
 //   - (S-NESTED-BUILD-AC2) In-guest buildkitd builds an inner VM image
-//     containing Go 1.26.5, the nexus3 source tree, and a pre-seeded module
+//     containing Go 1.26.5, the nexus source tree, and a pre-seeded module
 //     cache (no network access required at inner VM runtime).
 //   - (S-NESTED-BUILD-AC3) The inner cloud-hypervisor boots the inner VM.
 //   - (S-NESTED-BUILD-AC4) `go build ./...` inside the inner VM exits 0; the
@@ -66,23 +66,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // nestedSrcBuildDockerTag is the docker image tag for the outer VM image.
-const nestedSrcBuildDockerTag = "nexus3-nested-source-build-test:dev"
+const nestedSrcBuildDockerTag = "nexus-nested-source-build-test:dev"
 
 // nestedSrcBuildImageSizeGB is the outer VM ext4 size.
 //
@@ -91,7 +91,7 @@ const nestedSrcBuildDockerTag = "nexus3-nested-source-build-test:dev"
 // Go installed at /usr/local/go (~700 MB, from the warm-cache RUN) +
 // warm GOCACHE at /root/.cache/go-build (~400 MB) +
 // module cache at /root/go/pkg/mod (~400 MB) +
-// nexus3 source at /workspace (~50 MB) + vmlinux (~30 MB) + nexus3-agent
+// nexus source at /workspace (~50 MB) + vmlinux (~30 MB) + nexus-agent
 // (~20 MB) = ~2.6 GB image content.  Inner build context, rootfs export, and
 // inner ext4 now live on the 20 GiB scratch disk (/var/lib/buildkit) rather than
 // /tmp, so the outer VM's RAM-backed tmpfs is not pressured. 20 GiB gives ample
@@ -110,7 +110,7 @@ const nestedDefaultInnerMiB = int64(4096)
 //  1. The Go 1.26.5 tarball pre-staged at /opt/go.tar.gz — the in-guest build
 //     script copies it into the inner Containerfile build context so the inner
 //     image installs Go without any internet access at inner-image-build time.
-//  2. The nexus3 source tree at /workspace (COPY from HOST build context) —
+//  2. The nexus source tree at /workspace (COPY from HOST build context) —
 //     the in-guest script copies it into the inner build context so the inner
 //     VM has the full source tree to build.
 //  3. A HOST-compiled warm GOCACHE at /root/.cache/go-build — the outer
@@ -122,7 +122,7 @@ const nestedDefaultInnerMiB = int64(4096)
 //
 // The Go tarball is downloaded at HOST docker-build time so it is baked into
 // the outer image and requires no egress from the outer sandbox at test time.
-const nestedSrcBuildContainerfile = `# nexus3 nested-source-build test fixture — outer VM image.
+const nestedSrcBuildContainerfile = `# nexus nested-source-build test fixture — outer VM image.
 FROM ubuntu:24.04
 
 # ── Base tools ────────────────────────────────────────────────────────────────
@@ -162,7 +162,7 @@ RUN curl -fsSL --retry 5 --retry-delay 2 \
 # ── Inner-VM kernel ───────────────────────────────────────────────────────────
 COPY vmlinux /boot/vmlinux
 
-# ── nexus3 source tree ────────────────────────────────────────────────────────
+# ── nexus source tree ────────────────────────────────────────────────────────
 # Staged from the HOST build context by buildNestedSourceBuildImage.
 # Available at /workspace in the outer guest so the in-guest script can copy
 # it into the inner buildkitd build context.
@@ -193,8 +193,8 @@ RUN tar -C /usr/local -xzf /opt/go.tar.gz \
               /usr/local/go/pkg/tool/*/test2json 2>/dev/null || true
 
 # ── Guest agent (outer PID 1) ─────────────────────────────────────────────────
-COPY nexus3-agent /sbin/nexus3-agent
-RUN chmod 755 /sbin/nexus3-agent
+COPY nexus-agent /sbin/nexus-agent
+RUN chmod 755 /sbin/nexus-agent
 
 ENV IS_SANDBOX=1
 `
@@ -217,7 +217,7 @@ func readEnvInt64(key string, def int64) int64 {
 //   - rung: "full" runs real go build ./...; "dummy" runs go version only (no compile).
 //
 // The script drives the complete in-guest build + inner VM boot + go build sequence:
-//  1. Mount kernel pseudo-FSes (idempotent; nexus3-agent may already have some).
+//  1. Mount kernel pseudo-FSes (idempotent; nexus-agent may already have some).
 //  2. Format /dev/vdb as ext4 and mount at /var/lib/buildkit (sparse scratch disk, off-RAM).
 //  3. Write the runc --no-new-keyring wrapper (prevents session-keyring exhaustion).
 //  4. Start buildkitd rootful with --oci-worker-snapshotter=native.
@@ -408,10 +408,10 @@ cp /opt/go.tar.gz /var/lib/buildkit/inner-ctx/go.tar.gz
 # CA cert bundle: copied from the outer guest's system store.
 cp /etc/ssl/certs/ca-certificates.crt /var/lib/buildkit/inner-ctx/ca-certificates.crt
 
-# MITM CA: the outer sandbox's egress is MITM'd by the nexus3 perimeter proxy.
-cp /tmp/mitm-ca.pem /var/lib/buildkit/inner-ctx/nexus3-mitm.crt
+# MITM CA: the outer sandbox's egress is MITM'd by the nexus perimeter proxy.
+cp /tmp/mitm-ca.pem /var/lib/buildkit/inner-ctx/nexus-mitm.crt
 
-# nexus3 source tree: baked into the outer image at /workspace.
+# nexus source tree: baked into the outer image at /workspace.
 cp -r /workspace/. /var/lib/buildkit/inner-ctx/workspace/
 
 # GOCACHE (warm): pre-compiled by HOST docker build into the outer image.
@@ -448,8 +448,8 @@ COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY init-build.sh /sbin/init-build
 # Go tarball + MITM CA in one layer: both land in /tmp before the single RUN
 # below, avoiding an extra 900-MB native-snapshotter copy.
-COPY nexus3-mitm.crt go.tar.gz /tmp/
-# Full nexus3 source tree: includes go.mod, go.sum, third_party, and all source
+COPY nexus-mitm.crt go.tar.gz /tmp/
+# Full nexus source tree: includes go.mod, go.sum, third_party, and all source
 # dirs.  Placed before the RUN so go mod download runs against the complete
 # workspace in the same step.
 COPY workspace /workspace
@@ -468,8 +468,8 @@ COPY gocache /root/.cache/go-build
 # inner VM's go build can find them with GOPROXY=off GOFLAGS=-mod=readonly.
 # All heavyweight work in ONE snapshot so the native snapshotter copies the
 # accumulated FS exactly once instead of once per layer.
-RUN cat /tmp/nexus3-mitm.crt >> /etc/ssl/certs/ca-certificates.crt \
-    && rm /tmp/nexus3-mitm.crt \
+RUN cat /tmp/nexus-mitm.crt >> /etc/ssl/certs/ca-certificates.crt \
+    && rm /tmp/nexus-mitm.crt \
     && chmod 755 /sbin/init-build \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz \
@@ -554,7 +554,7 @@ echo "==> [S-NESTED-BUILD] step 9: mke2fs → inner ext4 (8 GiB, on scratch disk
 INNER_EXT4=/var/lib/buildkit/inner.ext4
 truncate -s 8G "$INNER_EXT4"
 mke2fs -t ext4 -d /var/lib/buildkit/inner-rootfs \
-  -L nexus3-inner-src \
+  -L nexus-inner-src \
   -U 00000000-0000-0000-0000-000000000002 \
   "$INNER_EXT4"
 
@@ -609,8 +609,8 @@ fi
 `
 }
 
-// TestNestedSourceBuild proves end-to-end that an outer nexus3 microVM can
-// build and boot an inner nexus3 microVM that compiles the nexus3 source tree
+// TestNestedSourceBuild proves end-to-end that an outer nexus microVM can
+// build and boot an inner nexus microVM that compiles the nexus source tree
 // with `go build ./...`, exiting 0.
 //
 // Acceptance criteria:
@@ -726,7 +726,7 @@ func TestNestedSourceBuild(t *testing.T) {
 
 	// ── 5. Boot outer sandbox with NestedVirt=true ────────────────────────────
 	// Memory: outer needs enough RAM to allocate the inner VM (innerMiB) plus
-	// outer kernel, nexus3-agent, and buildkitd overhead (~2 GiB).
+	// outer kernel, nexus-agent, and buildkitd overhead (~2 GiB).
 	var bootDrv *cloudhypervisor.CHDriver
 	factory := service.DriverFactory(func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		var chExtraDisks []cloudhypervisor.ExtraDisk
@@ -896,7 +896,7 @@ func TestNestedSourceBuild(t *testing.T) {
 			Argv: []string{
 				"/bin/sh", "-c",
 				"mkdir -p /usr/local/share/ca-certificates && " +
-					"tee /usr/local/share/ca-certificates/nexus3-mitm.crt > /tmp/mitm-ca.pem && " +
+					"tee /usr/local/share/ca-certificates/nexus-mitm.crt > /tmp/mitm-ca.pem && " +
 					"update-ca-certificates",
 			},
 			Env:    map[string]string{"PATH": "/usr/local/sbin:/usr/local/bin:/sbin:/usr/sbin:/usr/bin:/bin"},
@@ -1077,9 +1077,9 @@ func TestNestedSourceBuild(t *testing.T) {
 //   - buildkitd suite (buildkitd, buildctl, buildkit-runc)
 //   - cloud-hypervisor static binary
 //   - Go 1.26.5 tarball at /opt/go.tar.gz (for the inner VM image build)
-//   - nexus3 source tree at /workspace (for the inner VM image build context)
+//   - nexus source tree at /workspace (for the inner VM image build context)
 //   - vmlinux at /boot/vmlinux (for inner VM boot)
-//   - nexus3-agent at /sbin/nexus3-agent (outer VM PID 1)
+//   - nexus-agent at /sbin/nexus-agent (outer VM PID 1)
 //
 // Prerequisites:
 //   - docker in PATH (returns [ErrDockerUnavailable] if absent)
@@ -1098,14 +1098,14 @@ func buildNestedSourceBuildImage(ctx context.Context, cache *image.Cache, repoRo
 		return domain.Image{}, fmt.Errorf("nested-source-build-image: kernel not found at %s: %w", kernelSrc, err)
 	}
 
-	workDir, err := os.MkdirTemp("", "nexus3-nested-source-build-*")
+	workDir, err := os.MkdirTemp("", "nexus-nested-source-build-*")
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("nested-source-build-image: mktemp: %w", err)
 	}
 	defer os.RemoveAll(workDir) //nolint:errcheck
 
-	// Compile nexus3-agent (outer PID 1).
-	agentBin := filepath.Join(workDir, "nexus3-agent")
+	// Compile nexus-agent (outer PID 1).
+	agentBin := filepath.Join(workDir, "nexus-agent")
 	if err := buildAgent(ctx, repoRoot, agentBin); err != nil {
 		return domain.Image{}, fmt.Errorf("nested-source-build-image: build agent: %w", err)
 	}
@@ -1127,8 +1127,8 @@ func buildNestedSourceBuildImage(ctx context.Context, cache *image.Cache, repoRo
 		return domain.Image{}, fmt.Errorf("nested-source-build-image: copy kernel: %w", err)
 	}
 
-	// Stage nexus3-agent.
-	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus3-agent"), 0o755); err != nil {
+	// Stage nexus-agent.
+	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus-agent"), 0o755); err != nil {
 		return domain.Image{}, fmt.Errorf("nested-source-build-image: copy agent: %w", err)
 	}
 
@@ -1139,7 +1139,7 @@ func buildNestedSourceBuildImage(ctx context.Context, cache *image.Cache, repoRo
 		}
 	}
 
-	// Stage nexus3 source directories into ctx/src/ for the `COPY src /workspace/` directive.
+	// Stage nexus source directories into ctx/src/ for the `COPY src /workspace/` directive.
 	// Only directories that exist are staged; the Containerfile references them collectively.
 	srcCtxDir := filepath.Join(ctxDir, "src")
 	for _, srcDir := range []string{"internal", "cmd", "pkg"} {
@@ -1212,7 +1212,7 @@ func buildNestedSourceBuildImage(ctx context.Context, cache *image.Cache, repoRo
 
 	img := domain.Image{
 		Digest:    digest,
-		Ref:       "nexus3-nested-source-build",
+		Ref:       "nexus-nested-source-build",
 		Kind:      domain.KindBase,
 		Size:      info.Size(),
 		CreatedAt: time.Now().UTC(),

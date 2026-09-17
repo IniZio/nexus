@@ -58,16 +58,16 @@ mkfs.ext4 -q "$EXT4_IMG" 2>/dev/null
 STUB_DIR="$SCRATCHPAD/stubs"
 mkdir -p "$STUB_DIR"
 
-# nexus3-agent stub: text file so strings(1) finds the freshness tokens
-cat > "$STUB_DIR/nexus3-agent" << 'STUB'
+# nexus-agent stub: text file so strings(1) finds the freshness tokens
+cat > "$STUB_DIR/nexus-agent" << 'STUB'
 #!/usr/bin/env bash
 echo "rootfs-size-manifest rootfs export truncated"
 STUB
-chmod +x "$STUB_DIR/nexus3-agent"
+chmod +x "$STUB_DIR/nexus-agent"
 
-# nexus3 stub: returns empty image lists; create writes one valid manifest line
+# nexus stub: returns empty image lists; create writes one valid manifest line
 # (prevents the declare -A msizes / set -u unbound-variable crash in parse_manifest_stage_a)
-cat > "$STUB_DIR/nexus3" << 'STUB'
+cat > "$STUB_DIR/nexus" << 'STUB'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--json" && "${2:-}" == "image" && "${3:-}" == "ls" ]]; then
     printf '{"data":{"images":[]}}\n'
@@ -82,7 +82,7 @@ elif [[ "${1:-}" == "stop" || "${1:-}" == "rm" ]]; then
 fi
 exit 0
 STUB
-chmod +x "$STUB_DIR/nexus3"
+chmod +x "$STUB_DIR/nexus"
 
 # debugfs stub: returns nothing for stat/dump; something parseable for stats
 cat > "$STUB_DIR/debugfs" << 'STUB'
@@ -109,16 +109,16 @@ for _t in jq sha256sum dd; do
     ln -sf "$(command -v "$_t")" "$STUB_DIR/$_t"
 done
 
-NEXUS3_STATE="$SCRATCHPAD/state"
-mkdir -p "$NEXUS3_STATE"
+NEXUS_STATE="$SCRATCHPAD/state"
+mkdir -p "$NEXUS_STATE"
 # No buildkit.ext4 here — ensure_buildkit_disk_size returns early.
 
 run_script_with_stubs() {
     local src="$1"; shift
     PATH="$STUB_DIR:$PATH" \
-    NEXUS3="nexus3" \
-    NEXUS3_STATE_DIR="$NEXUS3_STATE" \
-    NEXUS3_BUILD_TASK_TIMEOUT="5s" \
+    NEXUS="nexus" \
+    NEXUS_STATE_DIR="$NEXUS_STATE" \
+    NEXUS_BUILD_TASK_TIMEOUT="5s" \
     BASH_BUILD_TIMEOUT=10 \
     bash "$src" "$@" 2>&1 || true
 }
@@ -211,7 +211,7 @@ assert_not_contains "b/post: post-fix does NOT emit OK(" "$post_b" "OK("
 # ── PROOF (c): harness-only failure → HARNESS INTEGRITY FAILURE, not TRUNCATION REPRODUCED ──
 # Bug (FIX 3): pre-fix verdict: TOTAL_FAIL > 0 → "TRUNCATION REPRODUCED" regardless of cause.
 # Post-fix: TOTAL_TRUNC=0, TOTAL_FAIL>0 → "HARNESS INTEGRITY FAILURE (no truncation evidence)".
-# Full script run with stubs; nexus3 image ls always returns empty list, so every build
+# Full script run with stubs; nexus image ls always returns empty list, so every build
 # hits the NO_NEW_IMAGE harness integrity path (TOTAL_FAIL++ but TOTAL_TRUNC stays 0).
 echo ""
 echo "=== PROOF (c): harness-only failure → distinct verdict (not TRUNCATION REPRODUCED) ==="
@@ -422,9 +422,9 @@ chmod +x "$STUB_DIR_H/debugfs"
 run_h_script() {
     local src="$1"
     PATH="$STUB_DIR_H:$PATH" \
-    NEXUS3="nexus3" \
-    NEXUS3_STATE_DIR="$NEXUS3_STATE" \
-    NEXUS3_BUILD_TASK_TIMEOUT="5s" \
+    NEXUS="nexus" \
+    NEXUS_STATE_DIR="$NEXUS_STATE" \
+    NEXUS_BUILD_TASK_TIMEOUT="5s" \
     BASH_BUILD_TIMEOUT=10 \
     bash "$src" 1 --disk-pressure 2>&1 || true
 }

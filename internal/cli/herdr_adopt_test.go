@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // fakeAdoptGetter resolves a fixed set of sandboxes by handle or ID.
@@ -156,7 +156,7 @@ func TestHerdrSpaceResolveOrAdopt_AdoptsByID(t *testing.T) {
 // exists, and must refuse (rather than silently produce an empty ID) when it
 // needs to create one and herdr is not reachable.
 func TestHerdrSpaceEnsureWorkspace_NoopWhenPresent(t *testing.T) {
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:proj/x", SandboxHandle: "proj/x", HerdrWorkspaceID: "wZ"}
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:proj/x", SandboxHandle: "proj/x", HerdrWorkspaceID: "wZ"}
 	got, rootPaneID, err := herdrSpaceEnsureWorkspace(context.Background(), nil, t.TempDir(), "", b)
 	if err != nil {
 		t.Fatalf("ensure with an existing workspace consulted herdr: %v", err)
@@ -171,7 +171,7 @@ func TestHerdrSpaceEnsureWorkspace_NoopWhenPresent(t *testing.T) {
 
 func TestHerdrSpaceEnsureWorkspace_RefusesWithoutHerdrBin(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "")
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:proj/x", SandboxHandle: "proj/x"}
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:proj/x", SandboxHandle: "proj/x"}
 	got, rootPaneID, err := herdrSpaceEnsureWorkspace(context.Background(), nil, t.TempDir(), "", b)
 	if err == nil {
 		t.Fatal("returned nil error with no herdr binary and no workspace to reuse")

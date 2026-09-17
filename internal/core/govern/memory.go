@@ -1,5 +1,5 @@
 // Package govern implements the per-sandbox auto-resize governor loop for
-// nexus3. It is single-tenant: one Governor per supervisor process, owning
+// nexus. It is single-tenant: one Governor per supervisor process, owning
 // one sandbox. Multi-axis (CPU, disk) is planned for later waves; this file
 // carries the MEMORY axis only (D-DC-18).
 //
@@ -14,7 +14,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // Control law constants.
@@ -33,7 +33,7 @@ const (
 
 	// memoryPressurePollInterval is the fast-poll interval used once the
 	// previous sample shows pressure. Not in OLD (which used event-driven push).
-	// nexus3 uses adaptive polling (D-DC-10); 2s reduces actuation lag while
+	// nexus uses adaptive polling (D-DC-10); 2s reduces actuation lag while
 	// the VM is thrashing.
 	memoryPressurePollInterval = 2 * time.Second
 
@@ -148,7 +148,7 @@ const (
 	// floor vs. hotplug alignment) and must be free to diverge.
 	//
 	// EMPIRICAL, not read from CH: CH exposes no block-granularity field in the
-	// vm.info / VmConfig subset nexus3 parses (see driver client.go —
+	// vm.info / VmConfig subset nexus parses (see driver client.go —
 	// vmInfoResponse carries only "state"). 256 MiB is the observed floor at
 	// which every live resize succeeded; if a rebuilt CH advertises a different
 	// section size this constant is the single point to adjust.
@@ -314,7 +314,7 @@ func sampleIsCritical(s resize.Sample) bool {
 //
 // Source: OLD memory_resize.go:514-554.
 //
-// Deviation from OLD: nexus3 applies minGrowStepBytes as the initial step
+// Deviation from OLD: nexus applies minGrowStepBytes as the initial step
 // value (floor-before-cap), whereas OLD applies the floor after the cap
 // (memory_resize.go:546-547). The behaviors are equivalent here because
 // stepCap is itself floored at minGrowStepBytes (lines below), so stepCap is
@@ -457,10 +457,10 @@ func alignDown(n, align int64) int64 {
 //
 // Deviations from OLD:
 //   - No workspaceID parameter (single-tenant, D-DC-12).
-//   - No bootToRequest path (nexus3 has no user-requested allocation field).
+//   - No bootToRequest path (nexus has no user-requested allocation field).
 //   - Host headroom fails CONSERVATIVE (not fail-open as in OLD). OLD fails
 //     open because a transient read failure must not starve a multi-workspace
-//     system; nexus3 fails conservative because the motivating failure was a
+//     system; nexus fails conservative because the motivating failure was a
 //     HOST OOM wall during nested builds, and a failed headroom check must
 //     never amplify that failure.
 //
@@ -605,11 +605,11 @@ func (g *Governor) evaluate(ctx context.Context) {
 	// This is the primary guard against host OOM during nested builds
 	// (the motivating failure for this entire effort). It is a deliberate
 	// deviation from OLD which fails open because a transient read error must
-	// not starve a PSI-pressured workspace in a multi-tenant system. In nexus3
+	// not starve a PSI-pressured workspace in a multi-tenant system. In nexus
 	// the analogous risk is causing the HOST to OOM, which is worse.
 	//
-	// Future consideration (not for now): when nexus3 itself runs inside an
-	// outer nexus3 sandbox, host MemAvailable underestimates true headroom
+	// Future consideration (not for now): when nexus itself runs inside an
+	// outer nexus sandbox, host MemAvailable underestimates true headroom
 	// because the outer host can itself grow (G-3 from ticket-13).
 	if !isShrink {
 		ok, err := g.headroom.HasHeadroom(ctx, target-current)

@@ -28,14 +28,14 @@ type CredGuardian struct {
 }
 
 // Concurrent refreshes are serialised by an advisory flock(2) on a sidecar lock file
-// (<credsPath>.nexus3.lock), with a re-read after acquiring the lock so the loser of
+// (<credsPath>.nexus.lock), with a re-read after acquiring the lock so the loser of
 // the race skips the refresh if the winner already did it. Never writes expiresAt:0;
 // never caps the token response body (memory: an unparsed 2xx costs the credential).
 
 func NewCredGuardian(credsPath string) *CredGuardian {
 	return &CredGuardian{
 		credsPath:     credsPath,
-		lockPath:      credsPath + ".nexus3.lock",
+		lockPath:      credsPath + ".nexus.lock",
 		tokenEndpoint: ClaudeCodeTokenEndpoint,
 		client:        &http.Client{Timeout: 30 * time.Second},
 	}
@@ -134,7 +134,7 @@ func (g *CredGuardian) GuardOnce(ctx context.Context) error {
 		return fmt.Errorf("guardian: marshal: %w", err)
 	}
 
-	tmp := g.credsPath + ".nexus3guardian.tmp"
+	tmp := g.credsPath + ".nexusguardian.tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("guardian: write tmp: %w", err)
 	}

@@ -35,7 +35,7 @@ type MCPOAuthBind struct {
 // MCPOAuthVarName returns the synthetic guest env-var name for the given MCP
 // server and header name. It matches the naming convention in sanitizeHTTPEntry.
 // Example: MCPOAuthVarName("linear-server", "Authorization") →
-// "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION".
+// "NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION".
 func MCPOAuthVarName(serverName, headerName string) string {
 	return syntheticMCPVar(serverName, headerName)
 }

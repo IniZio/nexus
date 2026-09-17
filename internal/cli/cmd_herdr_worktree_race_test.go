@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // TestHerdrWorktreeSandboxConcurrentCreateConverges drives two concurrent
@@ -78,7 +78,7 @@ func TestHerdrWorktreeSandboxConcurrentCreateConverges(t *testing.T) {
 		<-release // block until test releases
 		// Write the binding so getFn finds it.
 		_ = HerdrSpacePut(ctx, storeRoot, HerdrSpaceBinding{
-			SpaceLabel:       "nexus3:" + h,
+			SpaceLabel:       "nexus:" + h,
 			HerdrWorkspaceID: "wTEST-winner",
 			SandboxHandle:    h,
 			SandboxID:        stubID.String(),

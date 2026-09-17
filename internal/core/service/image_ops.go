@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 type ImageBuilder interface {
@@ -20,7 +20,7 @@ type ImageService struct {
 	store   SandboxImageLister
 	// versionResolver resolves floating tool versions; nil means use cred.ResolveFloatingVersions.
 	versionResolver func(context.Context, cred.ToolRecipe) (cred.ToolRecipe, error)
-	// builderAgentTag: image.BuilderAgentTag of the host's nexus3-agent; "" skips the template sweep.
+	// builderAgentTag: image.BuilderAgentTag of the host's nexus-agent; "" skips the template sweep.
 	builderAgentTag string
 }
 

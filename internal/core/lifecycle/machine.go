@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // Machine evaluates the sandbox lifecycle transition table. All methods are

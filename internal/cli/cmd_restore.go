@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 func init() {

@@ -3,7 +3,7 @@
 #
 # herdr fires this hook when a worktree workspace is closed via
 # `herdr worktree remove`.  It tears down ONLY the sandbox bound to that
-# workspace: `nexus3 herdr prune --apply --workspace <id>` looks up the one
+# workspace: `nexus herdr prune --apply --workspace <id>` looks up the one
 # binding whose herdr workspace id matches, reaps its VM, and deletes the
 # binding.  Nothing else in the binding store is touched.
 #
@@ -23,9 +23,9 @@
 #
 # OQ-1 (answered in session): worktree.removed fires ONLY when herdr drives
 # the removal (herdr worktree remove).  A plain `git worktree remove` outside
-# herdr does NOT fire this hook; a manual `nexus3 herdr prune` remains the
+# herdr does NOT fire this hook; a manual `nexus herdr prune` remains the
 # backstop for that path.
-SHIM="$(dirname "$0")/../nexus3-shim.sh"
+SHIM="$(dirname "$0")/../nexus-shim.sh"
 
 WS="${HERDR_WORKSPACE_ID:-}"
 if [ -z "$WS" ] && command -v jq >/dev/null 2>&1; then

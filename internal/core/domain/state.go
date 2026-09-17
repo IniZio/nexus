@@ -1,4 +1,4 @@
-// Package domain defines the core entities and value objects for nexus3.
+// Package domain defines the core entities and value objects for nexus.
 //
 // # State machine design rationale
 //

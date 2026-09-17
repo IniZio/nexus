@@ -20,7 +20,7 @@ package service
 //
 // Both holes close the same way: a marker keyed by handle, published before
 // the first shadow disk is materialised, leased for as long as the create
-// runs. Concretely, a concurrent `nexus3 reap --apply` used to see a shadow
+// runs. Concretely, a concurrent `nexus reap --apply` used to see a shadow
 // disk whose handle matched no committed record and delete a live sandbox's
 // node_modules mid-create.
 //

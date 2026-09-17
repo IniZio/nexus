@@ -5,20 +5,20 @@ description: "The in-guest PID 1: gRPC control plane, session reattach, workload
 
 # Guest agent
 
-> `nexus3-agent` is a thin Go binary that runs as PID 1 inside every sandbox — the sole interface between the host and the workload.
+> `nexus-agent` is a thin Go binary that runs as PID 1 inside every sandbox — the sole interface between the host and the workload.
 
 The agent is purpose-built: OSS process supervisors (tini, s6, systemd) do not provide session-reattach-across-snapshot. The protocol is small (~10 RPCs) and owned entirely by the project.
 
 ```sh
-nexus3 exec my-app -- uname -a          # gRPC Exec → data plane stdio
-nexus3 exec my-app                      # gRPC Exec with PTY → data plane (auto-TTY target)
-nexus3 attach my-app <session-id>       # reconnect to an existing session
-nexus3 cp my-app:/path/to/file ./local  # gRPC Copy
+nexus exec my-app -- uname -a          # gRPC Exec → data plane stdio
+nexus exec my-app                      # gRPC Exec with PTY → data plane (auto-TTY target)
+nexus attach my-app <session-id>       # reconnect to an existing session
+nexus cp my-app:/path/to/file ./local  # gRPC Copy
 ```
 
 ## Startup sequence (PID 1 mode)
 
-When the kernel hands control to `nexus3-agent` as PID 1:
+When the kernel hands control to `nexus-agent` as PID 1:
 
 1. Mount standard pseudo-filesystems: `devtmpfs`, `proc`, `sysfs`.
 2. Set a default `PATH` (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`).
@@ -26,12 +26,12 @@ When the kernel hands control to `nexus3-agent` as PID 1:
 4. Configure the virtio-net interface with static IP `192.168.127.2/24`.
 5. Start `sshd` (if present in the image).
 6. Process kernel cmdline args (mount specs, `--mem-ceiling`, builder role flag).
-7. Read the services table (`/etc/nexus3/services.yaml` merged with create-time overrides); start declared services in order; poll readiness probes until all pass or the 30s cap expires — create fails if the cap is exceeded. <Badge type="danger" text="not built" />
-8. Open the vsock control port and begin serving the `nexus3.agent.v1` gRPC service. The host's `create` call unblocks only after this port is open.
+7. Read the services table (`/etc/nexus/services.yaml` merged with create-time overrides); start declared services in order; poll readiness probes until all pass or the 30s cap expires — create fails if the cap is exceeded. <Badge type="danger" text="not built" />
+8. Open the vsock control port and begin serving the `nexus.agent.v1` gRPC service. The host's `create` call unblocks only after this port is open.
 
 The agent build tag (`YYYYMMDD-<git-short-sha>`) is printed at startup so operators can detect image staleness.
 
-## The `nexus3.agent.v1` protocol
+## The `nexus.agent.v1` protocol
 
 ### Control plane — gRPC over vsock (fixed port)
 
@@ -64,15 +64,15 @@ This is how the data plane survives snapshot: after `fork` produces a child VM, 
 
 ```sh
 # Start a long-running session
-nexus3 exec my-app -- go test -count=1 ./...
+nexus exec my-app -- go test -count=1 ./...
 
 # Later — reconnect and see output from before the disconnect
-nexus3 attach my-app <session-id>
+nexus attach my-app <session-id>
 ```
 
 ## Builder role
 
-The same `nexus3-agent` binary serves a second role: the **builder VM** used during image builds. When passed `--builder-role` on the kernel cmdline, the agent runs the BuildKit lifecycle and exits — it does not start the gRPC control server. This keeps the image pipeline from needing a second binary.
+The same `nexus-agent` binary serves a second role: the **builder VM** used during image builds. When passed `--builder-role` on the kernel cmdline, the agent runs the BuildKit lifecycle and exits — it does not start the gRPC control server. This keeps the image pipeline from needing a second binary.
 
 See [Images](images.md) for the full build pipeline.
 
@@ -83,21 +83,21 @@ The agent does not know or care what the user runs inside the sandbox. Any conta
 The agent does not auto-start Docker in the workload path. Start dockerd explicitly after the sandbox boots, or declare it as a [startup service](#startup-services) in the image so `create` blocks until Docker is ready.
 
 ```sh
-nexus3 exec my-app -- dockerd &
-nexus3 exec my-app -- docker ps
+nexus exec my-app -- dockerd &
+nexus exec my-app -- docker ps
 ```
 
 ## Startup services <Badge type="danger" text="not built" />
 
-The agent reads a **services table** at startup and starts declared services before opening the vsock control port. This makes `nexus3 create` readiness-gated — the CLI returns only once all declared service probes pass (30s cap; create fails if exceeded). Blocking is the only behaviour; there is no opt-out. <Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+The agent reads a **services table** at startup and starts declared services before opening the vsock control port. This makes `nexus create` readiness-gated — the CLI returns only once all declared service probes pass (30s cap; create fails if exceeded). Blocking is the only behaviour; there is no opt-out. <Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 | Site | Where declared | Priority |
 |------|---------------|----------|
-| Image-level | `/etc/nexus3/services.yaml` baked into the rootfs | Base |
-| Create-time | `--service 'name:cmd[:readyprobe]'` flag on `nexus3 create` | Overrides same-named image entry |
+| Image-level | `/etc/nexus/services.yaml` baked into the rootfs | Base |
+| Create-time | `--service 'name:cmd[:readyprobe]'` flag on `nexus create` | Overrides same-named image entry |
 
 ```yaml
-# /etc/nexus3/services.yaml
+# /etc/nexus/services.yaml
 services:
   - name: dockerd
     command: [dockerd, --storage-driver=overlay2]
@@ -108,4 +108,4 @@ A service with no `ready` probe is fire-and-forget (same behaviour as `sshd` tod
 
 ## macOS <Badge type="info" text="backlogged" />
 
-On macOS, the vsock data path uses fd-passing (`nexus3-vzd`). The control protocol semantics are identical; only the transport differs. This path is backlogged. See [Execution substrate](execution-substrate.md).
+On macOS, the vsock data path uses fd-passing (`nexus-vzd`). The control protocol semantics are identical; only the transport differs. This path is backlogged. See [Execution substrate](execution-substrate.md).

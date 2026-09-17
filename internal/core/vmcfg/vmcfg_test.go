@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
+	"github.com/IniZio/nexus/internal/core/vmcfg"
 )
 
 // mib converts MiB to bytes.

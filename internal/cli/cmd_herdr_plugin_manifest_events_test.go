@@ -32,14 +32,14 @@
 //
 // # Mutation proof (AC-19e)
 //
-// Set NEXUS3_TEST_MANIFEST to the fixture paths in internal/cli/testdata/ to
+// Set NEXUS_TEST_MANIFEST to the fixture paths in internal/cli/testdata/ to
 // verify RED/GREEN behaviour without touching the live manifest:
 //
-//	NEXUS3_TEST_MANIFEST=internal/cli/testdata/herdr-plugin-invalid-events.toml \
+//	NEXUS_TEST_MANIFEST=internal/cli/testdata/herdr-plugin-invalid-events.toml \
 //	  go test -tags herdr_live ./internal/cli/ -run TestHerdrPluginManifest_EventNamesValid -v
 //	# FAIL: manifest event "worktree_removed" is NOT in herdr's event registry
 //
-//	NEXUS3_TEST_MANIFEST=internal/cli/testdata/herdr-plugin-valid-events.toml \
+//	NEXUS_TEST_MANIFEST=internal/cli/testdata/herdr-plugin-valid-events.toml \
 //	  go test -tags herdr_live ./internal/cli/ -run TestHerdrPluginManifest_EventNamesValid -v
 //	# PASS
 //
@@ -81,9 +81,9 @@ func TestHerdrPluginManifest_EventNamesValid(t *testing.T) {
 	}
 	t.Logf("herdr binary: %s (%s)", herdrBin, strings.TrimSpace(string(out)))
 
-	// Determine manifest path. NEXUS3_TEST_MANIFEST overrides for fixture-based
+	// Determine manifest path. NEXUS_TEST_MANIFEST overrides for fixture-based
 	// mutation proofing — do NOT use the live manifest for that; write to testdata/.
-	manifestPath := os.Getenv("NEXUS3_TEST_MANIFEST")
+	manifestPath := os.Getenv("NEXUS_TEST_MANIFEST")
 	if manifestPath == "" {
 		manifestPath = filepath.Join(moduleRoot(t), "plugins", "herdr", "herdr-plugin.toml")
 	}

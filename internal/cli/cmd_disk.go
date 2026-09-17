@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func init() {
@@ -45,13 +45,13 @@ func runDisk(ctx context.Context, args []string, out *Output) error {
 // currentAgentTag mirrors the --file build path: PATH first, then the agent
 // binary next to the kernel. No binary => "" (templates cannot be classed stale).
 func currentAgentTag() string {
-	agentBin, err := exec.LookPath("nexus3-agent")
+	agentBin, err := exec.LookPath("nexus-agent")
 	if err != nil {
 		kernelPath, kerr := resolveKernelPath()
 		if kerr != nil {
 			return ""
 		}
-		agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus3-agent")
+		agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus-agent")
 	}
 	b, err := os.ReadFile(agentBin)
 	if err != nil {

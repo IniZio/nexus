@@ -5,13 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // TestDedicatedCredStorePathForProfile_ClaudeCodeLegacyPath is the primary
 // regression guard for live operator credentials. claude-code must resolve to
-// exactly ~/.config/nexus3/creds.json. Any change to this literal silently
+// exactly ~/.config/nexus/creds.json. Any change to this literal silently
 // invalidates every existing operator sandbox — do not adjust the assertion.
 //
 // MUTATION PROOF: make DedicatedCredStorePathForProfile ignore the profile
@@ -19,13 +19,13 @@ import (
 // → this test goes RED. Restore the claude-code special-case → GREEN.
 func TestDedicatedCredStorePathForProfile_ClaudeCodeLegacyPath(t *testing.T) {
 	// Ensure the env-var override is absent so we test the default derivation.
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "")
 
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
-	want := filepath.Join(home, ".config", "nexus3", "creds.json")
+	want := filepath.Join(home, ".config", "nexus", "creds.json")
 
 	got := service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
 	if got != want {
@@ -39,7 +39,7 @@ func TestDedicatedCredStorePathForProfile_ClaudeCodeLegacyPath(t *testing.T) {
 // profiles produce two distinct store paths. The test fails if
 // DedicatedCredStorePathForProfile ignores the agent argument.
 func TestDedicatedCredStorePathForProfile_DistinctPaths(t *testing.T) {
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "")
 
 	claudePath := service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
 	cursorPath := service.DedicatedCredStorePathForProfile(cred.CursorAgentProfile)
@@ -54,7 +54,7 @@ func TestDedicatedCredStorePathForProfile_DistinctPaths(t *testing.T) {
 // profiles produce two distinct lockfile paths. A shared lock would serialise
 // unrelated agents and give false cross-agent safety.
 func TestDedicatedLockFilePathForProfile_DistinctPaths(t *testing.T) {
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "")
 
 	claudeLock := service.DedicatedLockFilePathForProfile(cred.ClaudeCodeProfile)
 	cursorLock := service.DedicatedLockFilePathForProfile(cred.CursorAgentProfile)
@@ -66,27 +66,27 @@ func TestDedicatedLockFilePathForProfile_DistinctPaths(t *testing.T) {
 }
 
 // TestDedicatedCredStorePathForProfile_ClaudeCodeEnvOverride verifies that
-// NEXUS3_DEDICATED_CRED_STORE still overrides the claude-code path (backward
+// NEXUS_DEDICATED_CRED_STORE still overrides the claude-code path (backward
 // compatibility for users who pin a custom path).
 func TestDedicatedCredStorePathForProfile_ClaudeCodeEnvOverride(t *testing.T) {
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/custom/creds.json")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "/custom/creds.json")
 
 	got := service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
 	if got != "/custom/creds.json" {
-		t.Errorf("NEXUS3_DEDICATED_CRED_STORE override ignored: got %q, want /custom/creds.json", got)
+		t.Errorf("NEXUS_DEDICATED_CRED_STORE override ignored: got %q, want /custom/creds.json", got)
 	}
 }
 
 // TestDedicatedCredStorePathForProfile_CursorLayout verifies the on-disk layout
-// for cursor: ~/.config/nexus3/agent-creds/cursor.json.
+// for cursor: ~/.config/nexus/agent-creds/cursor.json.
 func TestDedicatedCredStorePathForProfile_CursorLayout(t *testing.T) {
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "")
 
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
-	want := filepath.Join(home, ".config", "nexus3", "agent-creds", "cursor.json")
+	want := filepath.Join(home, ".config", "nexus", "agent-creds", "cursor.json")
 
 	got := service.DedicatedCredStorePathForProfile(cred.CursorAgentProfile)
 	if got != want {

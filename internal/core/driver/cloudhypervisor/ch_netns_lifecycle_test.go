@@ -31,10 +31,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/recovery"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/recovery"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ─── shared lifecycle test infrastructure ────────────────────────────────────
@@ -714,7 +714,7 @@ func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
 //	CHDriver.Start (ConsoleLogPath set, no SerialOutputPath)
 //	  → driver.go injects serial:{mode:"Tty"} into vm.create
 //	  → CH maps guest ttyS0 → CH stdout
-//	  → netns child reads NEXUS3_NETNS_CONSOLE_LOG
+//	  → netns child reads NEXUS_NETNS_CONSOLE_LOG
 //	  → newCappedConsoleWriter drains CH stdout → console.log
 //	  → "Linux version" kernel line appears in console.log
 //

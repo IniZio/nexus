@@ -86,7 +86,7 @@ KVM host. For a builder VM whose primary workload is source compilation and
 **D-DC-09 verdict: use ext4 virtio-blk for `/workspace`.**
 
 The working tree is captured to a sparse ext4 image at sandbox-create time
-(`nexus3 sandbox create`) and mounted as a virtio-blk device inside the VM.
+(`nexus sandbox create`) and mounted as a virtio-blk device inside the VM.
 Live host-directory sharing via virtiofs is not used.
 
 Named volumes (D-PD-82) absorb the write-heavy paths for `node_modules` and

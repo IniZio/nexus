@@ -21,7 +21,7 @@ package selfhost
 // The Refresher's oauth2 HTTP refresh path (Token() → token endpoint → real
 // bearer) is not exercised here: no live Anthropic account is available in CI.
 // S4 will dogfood via TestRefresherLiveRefreshGrant with real refresh creds at
-// NEXUS3_DEDICATED_CRED_STORE.
+// NEXUS_DEDICATED_CRED_STORE.
 //
 // # Running
 //
@@ -43,17 +43,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // ── TestSupervisorS3RefresherWiring (unit) ────────────────────────────────────
@@ -141,10 +141,10 @@ func TestSupervisorS3CAInGuest(t *testing.T) {
 	}
 	t.Logf("base image ready: digest=%s", img.Digest)
 
-	// ── Step 2: build nexus3 binary for SpawnDetached ─────────────────────────
-	t.Log("building nexus3 binary …")
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	// ── Step 2: build nexus binary for SpawnDetached ─────────────────────────
+	t.Log("building nexus binary …")
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	// ── Step 3: infrastructure ─────────────────────────────────────────────────
 	socketDir, err := os.MkdirTemp("/tmp", "sv-s3-sock-")
@@ -274,7 +274,7 @@ func TestSupervisorS3CAInGuest(t *testing.T) {
 			KernelPath: kernelPath,
 			DiskPath:   diskPath,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		ReadyTimeout: 5 * time.Minute,
 	}
 	pid, _, err := supervisor.SpawnDetached(spawnCfg)

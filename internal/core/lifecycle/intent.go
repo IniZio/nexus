@@ -3,7 +3,7 @@ package lifecycle
 import (
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // Intent carries the options set when a sandbox was created that govern how

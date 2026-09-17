@@ -2,7 +2,7 @@
 """
 validate-cli-examples.py
 ========================
-Validates every `nexus3 ...` invocation found in docs/site/**/*.md code blocks
+Validates every `nexus ...` invocation found in docs/site/**/*.md code blocks
 against the real flag sets parsed from internal/cli/cmd_*.go.
 
 Exit 0  — all invocations are clean.
@@ -33,7 +33,7 @@ BADGE VOCABULARY — CLOSED SET (R4)
   mechanically verifiable.
 
 BUILT BADGE ENFORCEMENT (R5)
-  A section carrying <Badge type="tip" text="built" /> that contains a nexus3
+  A section carrying <Badge type="tip" text="built" /> that contains a nexus
   invocation in a fenced code block must use a verb — and for the five
   noun-group verbs (image, snapshot, auth, sandbox, ssh) also a subverb —
   that actually exists in Go source (cmd_*.go Name: fields plus the
@@ -56,11 +56,11 @@ BUILT BADGE ENFORCEMENT (R5)
   - A verb or subverb that exists but whose documented behaviour is wrong is
     not detectable (no semantic model of behaviour is available).
   - A flag placed BEFORE the subverb evades the subverb check:
-    `nexus3 image --json frobnicate` passes, because a token starting with
+    `nexus image --json frobnicate` passes, because a token starting with
     "-" is skipped.  This mirrors parse_invocation's own token handling, so
     it is consistent rather than a new inconsistency.  Zero doc invocations
     use that spelling.
-  - A bare noun-group verb with no subverb (`nexus3 image`) is not checked by
+  - A bare noun-group verb with no subverb (`nexus image`) is not checked by
     this or any other rule; it is arity, not a fabricated name.
 
   LATENT PARSER LIMIT (zero current instances; documentation note only):
@@ -83,7 +83,7 @@ TARGET SPELLINGS (R1)
   resume. Today's source uses `sandbox <verb>`. The validator maps the flat
   target verbs to the `sandbox` source verb for flag lookup.
 
-  `nexus3 up` is REMOVED from the target — any occurrence is a violation.
+  `nexus up` is REMOVED from the target — any occurrence is a violation.
 
 REMOVED FLAGS (R2)
   Some flags are removed from the target even though they exist in source today.
@@ -91,7 +91,7 @@ REMOVED FLAGS (R2)
   docs/site/cli-surface.toml for the current list.
 
 OLD SPELLING (R3)
-  `nexus3 sandbox <lifecycle-verb>` in a code block is a violation on every page.
+  `nexus sandbox <lifecycle-verb>` in a code block is a violation on every page.
   The target spells lifecycle verbs flat: create/ps/rm/start/stop/pause/resume.
   Prose mapping notes are prose, not code-block invocations, so they are not checked.
 
@@ -134,16 +134,16 @@ from collections import defaultdict
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.environ.get(
-    "NEXUS3_REPO_ROOT", os.path.join(_script_dir, "..", "..")
+    "NEXUS_REPO_ROOT", os.path.join(_script_dir, "..", "..")
 )
 CLI_DIR = os.environ.get(
-    "NEXUS3_CLI_DIR", os.path.join(REPO_ROOT, "internal", "cli")
+    "NEXUS_CLI_DIR", os.path.join(REPO_ROOT, "internal", "cli")
 )
 DOCS_DIR = os.environ.get(
-    "NEXUS3_DOCS_DIR", os.path.join(REPO_ROOT, "docs", "site")
+    "NEXUS_DOCS_DIR", os.path.join(REPO_ROOT, "docs", "site")
 )
 SURFACE_MANIFEST = os.environ.get(
-    "NEXUS3_SURFACE_MANIFEST", os.path.join(DOCS_DIR, "cli-surface.toml")
+    "NEXUS_SURFACE_MANIFEST", os.path.join(DOCS_DIR, "cli-surface.toml")
 )
 
 
@@ -392,12 +392,12 @@ def _page_sections(page_path: str) -> list[str]:
     return ["\n".join(lines[s:e]) for s, e, _, _ in meta]
 
 
-# ── Extract nexus3 invocations from markdown ─────────────────────────────────
+# ── Extract nexus invocations from markdown ─────────────────────────────────
 
 def extract_invocations(md_path: str) -> list[tuple[int, str, bool, bool]]:
     """
     Returns list of (line_number, invocation_string, has_danger_badge, has_warning_badge).
-    Only lines inside fenced code blocks (``` or ~~~) starting with 'nexus3 '
+    Only lines inside fenced code blocks (``` or ~~~) starting with 'nexus '
     are extracted.
 
     Badge presence is SECTION-LEVEL: the heading-delimited section that contains
@@ -432,13 +432,13 @@ def extract_invocations(md_path: str) -> list[tuple[int, str, bool, bool]]:
         if in_block:
             # Strip trailing inline comment
             code = re.sub(r'\s+#.*$', '', line).strip()
-            if code.startswith("nexus3 "):
+            if code.startswith("nexus "):
                 start = i
                 # Join backslash continuations into ONE logical invocation.
                 #
                 # Without this every flag on a continued line is invisible to
                 # the checks below, because they only ever saw lines beginning
-                # with "nexus3 ". That blind spot let a fabricated --shadow
+                # with "nexus ". That blind spot let a fabricated --shadow
                 # flag (and its --context companion) sit in the docs through
                 # repeated green runs; a probe confirmed --totally-bogus-flag
                 # on a continuation line also passed clean. 20 of 128 fenced
@@ -549,26 +549,26 @@ def check_manifest_coverage(docs_dir: str, manifest_entries: dict) -> list[str]:
     return violations
 
 
-# ── Parse a nexus3 invocation ────────────────────────────────────────────────
+# ── Parse a nexus invocation ────────────────────────────────────────────────
 
 def parse_invocation(inv: str) -> tuple[str, str | None, set[str]] | None:
     """
     Returns (verb, subverb_or_None, flags_set) or None if unparseable.
 
     Returns None if:
-    - The first token is not 'nexus3'
-    - There is no verb token after 'nexus3'
+    - The first token is not 'nexus'
+    - There is no verb token after 'nexus'
 
     Positionals are not returned (positional arity is not checked — see
     module docstring for rationale).
     """
     tokens = inv.split()
-    if not tokens or tokens[0] != "nexus3":
+    if not tokens or tokens[0] != "nexus":
         return None
-    tokens = tokens[1:]  # drop 'nexus3'
+    tokens = tokens[1:]  # drop 'nexus'
 
     if not tokens:
-        # 'nexus3' with no verb — skip, nothing to validate
+        # 'nexus' with no verb — skip, nothing to validate
         return None
     verb: str = tokens[0]
     rest = tokens[1:]
@@ -600,7 +600,7 @@ def parse_invocation(inv: str) -> tuple[str, str | None, set[str]] | None:
 
 # ── Main validation ──────────────────────────────────────────────────────────
 
-# Inline-prose exemptions for the old `nexus3 sandbox <verb>` spelling.
+# Inline-prose exemptions for the old `nexus sandbox <verb>` spelling.
 #
 # The spelling is legitimate in prose in exactly two places: the target ->
 # implementation mapping table, and the recurring "current implementation
@@ -609,20 +609,20 @@ def parse_invocation(inv: str) -> tuple[str, str | None, set[str]] | None:
 #
 # These are deliberately narrow and matched against the surrounding line, not
 # against a file or a directory. A blanket per-file skip would recreate the
-# blind spot this check exists to close: the two `nexus3 sandbox rm`
+# blind spot this check exists to close: the two `nexus sandbox rm`
 # occurrences that survived a green run on 2026-08-19 were on pages that also
 # carry legitimate mapping prose.
 INLINE_SPELLING_EXEMPTIONS: tuple[tuple[str, str], ...] = (
     ("impl-note", r"current implementation uses"),
-    ("mapping-row", r"^\s*\|\s*`nexus3 [^`]+`\s*\|\s*`nexus3 sandbox [^`]+`\s*\|"),
+    ("mapping-row", r"^\s*\|\s*`nexus [^`]+`\s*\|\s*`nexus sandbox [^`]+`\s*\|"),
     ("explicit-marker", r"<!--\s*cli-spelling-exempt\s*-->"),
 )
 
 
 def check_inline_cli_spelling(md_path: str, rel: str) -> tuple[list[str], int]:
     """
-    Return (violations, exemptions_applied) for inline-backtick `nexus3 ...`
-    spans in PROSE that use the old `nexus3 sandbox <lifecycle-verb>` spelling.
+    Return (violations, exemptions_applied) for inline-backtick `nexus ...`
+    spans in PROSE that use the old `nexus sandbox <lifecycle-verb>` spelling.
 
     Fenced blocks are handled by check_old_sandbox_spelling; this covers the
     narrative text that check could not see. The exemption count is returned so
@@ -642,9 +642,9 @@ def check_inline_cli_spelling(md_path: str, rel: str) -> tuple[list[str], int]:
             continue
         if in_block:
             continue
-        for m in re.finditer(r'`(nexus3\s+sandbox\s+[^`]*)`', line):
+        for m in re.finditer(r'`(nexus\s+sandbox\s+[^`]*)`', line):
             span = m.group(1).strip()
-            vm = re.match(r'nexus3\s+sandbox\s+(\S+)', span)
+            vm = re.match(r'nexus\s+sandbox\s+(\S+)', span)
             if not vm or vm.group(1) not in lifecycle_verbs:
                 continue
             exempt = next(
@@ -667,7 +667,7 @@ def check_inline_cli_spelling(md_path: str, rel: str) -> tuple[list[str], int]:
 def check_old_sandbox_spelling(md_path: str, rel: str) -> list[str]:
     """
     Return violations for any code-block line matching
-    `nexus3 sandbox <lifecycle-verb>` — the old spelling, replaced by flat verbs.
+    `nexus sandbox <lifecycle-verb>` — the old spelling, replaced by flat verbs.
     Prose is covered separately by check_inline_cli_spelling.
     """
     lifecycle_verbs = set(FLAT_LIFECYCLE_VERBS.keys())
@@ -682,10 +682,10 @@ def check_old_sandbox_spelling(md_path: str, rel: str) -> list[str]:
             continue
         if in_block:
             code = re.sub(r'\s+#.*$', '', line).strip()
-            m = re.match(r'nexus3\s+sandbox\s+(\S+)', code)
+            m = re.match(r'nexus\s+sandbox\s+(\S+)', code)
             if m and m.group(1) in lifecycle_verbs:
                 violations.append(
-                    f"{rel}:{i + 1}: old spelling 'nexus3 sandbox {m.group(1)}'"
+                    f"{rel}:{i + 1}: old spelling 'nexus sandbox {m.group(1)}'"
                     f" — use flat verb '{m.group(1)}' (target spelling)"
                     f"\n  invocation: {code}"
                 )
@@ -796,7 +796,7 @@ def _all_go_verbs(cli_dir: str) -> set[str]:
 def check_built_badge_claims(docs_dir: str, verb_flags: dict) -> list[str]:
     """
     R5 — a section carrying <Badge type="tip" text="built" /> that contains a
-    nexus3 invocation in a fenced code block must use a verb that actually exists
+    nexus invocation in a fenced code block must use a verb that actually exists
     in Go source.  Fabricated verbs with no flags silently pass the flag checker
     but are caught here.
     """
@@ -833,7 +833,7 @@ def check_built_badge_claims(docs_dir: str, verb_flags: dict) -> list[str]:
                     for k in range(start, min(end, n)):
                         line_in_built[k] = True
 
-            # Scan fenced code blocks for nexus3 invocations in built sections
+            # Scan fenced code blocks for nexus invocations in built sections
             in_block = False
             for i, line in enumerate(lines):
                 stripped = line.strip()
@@ -843,7 +843,7 @@ def check_built_badge_claims(docs_dir: str, verb_flags: dict) -> list[str]:
                 if not in_block or not line_in_built[i]:
                     continue
                 code = re.sub(r'\s+#.*$', '', line).strip()
-                if not code.startswith("nexus3 "):
+                if not code.startswith("nexus "):
                     continue
                 tokens = code.split()
                 if len(tokens) < 2:
@@ -866,7 +866,7 @@ def check_built_badge_claims(docs_dir: str, verb_flags: dict) -> list[str]:
                 elif verb in _SUBVERBS:
                     # Noun-group verb: the next token is the subverb.  Validate it.
                     if len(tokens) < 3:
-                        continue  # bare "nexus3 image": missing subverb is arity, which
+                        continue  # bare "nexus image": missing subverb is arity, which
                         # this module declines to enforce (see "Positional arity").
                         # Nothing else catches it either — listed under KNOWN MISSES.
                     candidate = tokens[2]
@@ -1004,7 +1004,7 @@ def main() -> None:
             print(f"  {v}\n")
         sys.exit(1)
     else:
-        print(f"OK: {checked} nexus3 invocations checked — all clean"
+        print(f"OK: {checked} nexus invocations checked — all clean"
               f" ({exempted} inline spelling exemption(s) in force)")
 
 

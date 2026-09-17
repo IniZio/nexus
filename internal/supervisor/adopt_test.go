@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // refuseFastBound is the ceiling asserted for a refusal that must happen
@@ -84,24 +84,24 @@ func TestRunAdopt_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing.T) {
 		{"only PID", func(sb *domain.Sandbox) { sb.NetnsChildPID = 4242 }},
 		{"only PGID", func(sb *domain.Sandbox) { sb.NetnsChildPGID = 4242 }},
 		{"only StartTime", func(sb *domain.Sandbox) { sb.NetnsChildStartTime = 123456 }},
-		{"only GuestTapName", func(sb *domain.Sandbox) { sb.GuestTapName = "nx3g-test" }},
+		{"only GuestTapName", func(sb *domain.Sandbox) { sb.GuestTapName = "nxg-test" }},
 		{"only CHAPISocket", func(sb *domain.Sandbox) { sb.CHAPISocket = "/tmp/fake.sock" }},
 		{"missing only PID", func(sb *domain.Sandbox) {
 			sb.NetnsChildPGID = 4242
 			sb.NetnsChildStartTime = 123456
-			sb.GuestTapName = "nx3g-test"
+			sb.GuestTapName = "nxg-test"
 			sb.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only PGID", func(sb *domain.Sandbox) {
 			sb.NetnsChildPID = 4242
 			sb.NetnsChildStartTime = 123456
-			sb.GuestTapName = "nx3g-test"
+			sb.GuestTapName = "nxg-test"
 			sb.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only StartTime", func(sb *domain.Sandbox) {
 			sb.NetnsChildPID = 4242
 			sb.NetnsChildPGID = 4242
-			sb.GuestTapName = "nx3g-test"
+			sb.GuestTapName = "nxg-test"
 			sb.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only GuestTapName", func(sb *domain.Sandbox) {
@@ -114,7 +114,7 @@ func TestRunAdopt_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing.T) {
 			sb.NetnsChildPID = 4242
 			sb.NetnsChildPGID = 4242
 			sb.NetnsChildStartTime = 123456
-			sb.GuestTapName = "nx3g-test"
+			sb.GuestTapName = "nxg-test"
 		}},
 	}
 	for _, tc := range cases {

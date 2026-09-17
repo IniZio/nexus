@@ -5,7 +5,7 @@
 // cmd_herdr_plugin.go would NOT fail plain `go test ./...` — exactly the
 // dead-feature shape of the historic --agent-egress defect.
 //
-// This file closes that gap: it builds the real nexus3 binary (no build tags
+// This file closes that gap: it builds the real nexus binary (no build tags
 // required) and drives it through the __herdr-plugin argv boundary using the
 // `abi` subverb, which is fully hermetic — no KVM, no VM, no sandbox service,
 // no filesystem writes. The `abi` case simply prints herdrPluginABIVersion and
@@ -27,8 +27,8 @@ import (
 	"testing"
 )
 
-// TestHerdrPluginABI_binaryBoundary compiles the real nexus3 binary and
-// invokes it as `nexus3 __herdr-plugin abi`. It asserts:
+// TestHerdrPluginABI_binaryBoundary compiles the real nexus binary and
+// invokes it as `nexus __herdr-plugin abi`. It asserts:
 //  1. The process exits 0 (verb is registered and dispatch succeeds).
 //  2. Stdout is the ABI version string "2" (the hermetic abi subverb ran).
 //
@@ -42,18 +42,18 @@ import (
 func TestHerdrPluginABI_binaryBoundary(t *testing.T) {
 	t.Helper()
 
-	// Build the real nexus3 binary into a temp directory.
+	// Build the real nexus binary into a temp directory.
 	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "nexus3")
+	binPath := filepath.Join(binDir, "nexus")
 
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/nexus3")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/nexus")
 	build.Dir = filepath.Join(moduleRoot(t), "") // repo root
 	out, err := build.CombinedOutput()
 	if err != nil {
-		t.Fatalf("go build ./cmd/nexus3 failed:\n%s", out)
+		t.Fatalf("go build ./cmd/nexus failed:\n%s", out)
 	}
 
-	// Invoke: nexus3 __herdr-plugin abi
+	// Invoke: nexus __herdr-plugin abi
 	// This is the sharpest hermetic probe:
 	//   - verb registered   → exit 0, stdout == "2\n"
 	//   - verb absent       → exit 2, stderr contains "unknown command: __herdr-plugin"
@@ -73,7 +73,7 @@ func TestHerdrPluginABI_binaryBoundary(t *testing.T) {
 				"  Fix: ensure Register(Command{Name: \"__herdr-plugin\", …}) "+
 				"exists in cmd_herdr_plugin.go", exitCode, stderr)
 		}
-		t.Fatalf("nexus3 __herdr-plugin abi exited %d\n  stdout=%q stderr=%q",
+		t.Fatalf("nexus __herdr-plugin abi exited %d\n  stdout=%q stderr=%q",
 			exitCode, stdout, stderr)
 	}
 
@@ -86,7 +86,7 @@ func TestHerdrPluginABI_binaryBoundary(t *testing.T) {
 
 // moduleRoot walks up from the package directory to find go.mod, returning
 // the repo root. Required because exec.Command needs an absolute repo root
-// to run `go build ./cmd/nexus3`.
+// to run `go build ./cmd/nexus`.
 func moduleRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()

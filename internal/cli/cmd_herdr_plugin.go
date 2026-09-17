@@ -17,18 +17,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/clientagent"
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/config"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/portfwd"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/clientagent"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 	ociname "github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
@@ -50,7 +50,7 @@ func init() {
 
 /**
  * herdrPluginABIVersion is the integer probed by build.sh to detect skew
- * between the installed plugin manifest and the nexus3 binary. Bump this
+ * between the installed plugin manifest and the nexus binary. Bump this
  * whenever the herdr subcommand surface changes in an incompatible way.
  */
 const herdrPluginABIVersion = "3"
@@ -120,7 +120,7 @@ func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: fmt.Sprintf(
 			"herdr: unknown subcommand %q\n\n"+
 				"The binary is likely stale. Executed: %s\n"+
-				"Rebuild: go build -o nexus3 ./cmd/nexus3 && nexus3 herdr install-default-shell",
+				"Rebuild: go build -o nexus ./cmd/nexus && nexus herdr install-default-shell",
 			sub, exe)}
 	}
 	return runHerdrPlugin(ctx, append([]string{pluginSub}, rest...), out)
@@ -149,12 +149,12 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		return herdrPluginWorkspaces(ctx, out.w, svc)
 
 	case "attach":
-		ref := os.Getenv("NEXUS3_WORKSPACE")
+		ref := os.Getenv("NEXUS_WORKSPACE")
 		if ref == "" && len(rest) > 0 {
 			ref = rest[0]
 		}
 		if ref == "" {
-			return &UsageError{Msg: "__herdr-plugin attach: sandbox ref required (set NEXUS3_WORKSPACE or pass as argument)"}
+			return &UsageError{Msg: "__herdr-plugin attach: sandbox ref required (set NEXUS_WORKSPACE or pass as argument)"}
 		}
 		svc, err := newSandboxService()
 		if err != nil {
@@ -473,7 +473,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: fmt.Sprintf(
 			"__herdr-plugin: unknown subcommand %q\n\n"+
 				"The binary is likely stale. Executed: %s\n"+
-				"Rebuild: go build -o nexus3 ./cmd/nexus3 && nexus3 herdr install-default-shell",
+				"Rebuild: go build -o nexus ./cmd/nexus && nexus herdr install-default-shell",
 			sub, exe)}
 	}
 }
@@ -526,7 +526,7 @@ func herdrPluginWorkspaces(ctx context.Context, w io.Writer, svc *service.Servic
 
 	fmt.Fprint(w, renderTable(workspaceTableHeaders[:], rows))
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "(no sandboxes — use `nexus3: create sandbox space` to make one)")
+		fmt.Fprintln(w, "(no sandboxes — use `nexus: create sandbox space` to make one)")
 	}
 	return nil
 }
@@ -573,14 +573,14 @@ func herdrPluginAttach(ctx context.Context, ref string, out *Output, svc *servic
 
 	if haveReporter {
 		_ = runHerdrCmd(herdrBin, "pane", "report-agent", herdrPane,
-			"--source", "nexus3", "--state", "working", "--seq", "1")
+			"--source", "nexus", "--state", "working", "--seq", "1")
 	}
 
 	err := runAttachWithSvc(ctx, ref, "", 0, out, svc)
 
 	if haveReporter {
 		_ = runHerdrCmd(herdrBin, "pane", "release-agent", herdrPane,
-			"--source", "nexus3")
+			"--source", "nexus")
 	}
 
 	return err
@@ -616,7 +616,7 @@ func herdrPrintImages(ctx context.Context, w io.Writer) {
 		rows = append(rows, []string{r.Ref, r.Digest, r.CreatedAt.UTC().Format("2006-01-02 15:04")})
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "no base images cached — build one with: nexus3 image build")
+		fmt.Fprintln(w, "no base images cached — build one with: nexus image build")
 		return
 	}
 	fmt.Fprintln(w, "available base images:")
@@ -645,7 +645,7 @@ func herdrRepoFlags(scanner *bufio.Scanner) ([]string, error) {
 	return []string{"--repo", repo, "--secret", "GH_TOKEN@github.com,api.github.com,uploads.github.com"}, nil
 }
 
-const herdrDefaultImageRepo = "ghcr.io/inizio/nexus3-base"
+const herdrDefaultImageRepo = "ghcr.io/inizio/nexus-base"
 
 var herdrDefaultImageTag = "latest"
 
@@ -740,7 +740,7 @@ func herdrPluginCreate(ctx context.Context, r io.Reader, w io.Writer, svc *servi
 		if err := herdrBaseImageRegistryReachableFn(herdrDefaultImage); err != nil {
 			return &CodedError{
 				Code: ErrCodeInternalError,
-				Msg:  fmt.Sprintf("__herdr-plugin create: base image %q not cached and registry unreachable (%v); run: nexus3 sandbox create --image %s", herdrDefaultImage, err, herdrDefaultImage),
+				Msg:  fmt.Sprintf("__herdr-plugin create: base image %q not cached and registry unreachable (%v); run: nexus sandbox create --image %s", herdrDefaultImage, err, herdrDefaultImage),
 			}
 		}
 	}
@@ -834,7 +834,7 @@ func resolveDockerfilePath(contextDir, overridePath string) (resolved string, wa
 	df := filepath.Join(contextDir, ".nexus", "Dockerfile")
 	if _, e := os.Stat(df); e == nil {
 		return df, fmt.Sprintf(
-			"warning: found %q but the nexus3 build engine requires %q — please rename it",
+			"warning: found %q but the nexus build engine requires %q — please rename it",
 			df, cf), nil
 	}
 	return "", "", fmt.Errorf(
@@ -966,7 +966,7 @@ func herdrPluginDoctor(w io.Writer) error {
 			herdrBinStatus += "  (resolved from PATH; HERDR_BIN_PATH unset)"
 		}
 	}
-	fmt.Fprintf(w, "nexus3 binary:  %s\n", exe)
+	fmt.Fprintf(w, "nexus binary:  %s\n", exe)
 	fmt.Fprintf(w, "plugin ABI:     %s\n", herdrPluginABIVersion)
 	fmt.Fprintf(w, "herdr version:  %s\n", herdrVer)
 	fmt.Fprintf(w, "HERDR_BIN_PATH: %s\n", herdrBinStatus)
@@ -991,7 +991,7 @@ func herdrPluginDoctor(w io.Writer) error {
 	}
 
 	if pluginRoot != "" {
-		pinPath := filepath.Join(pluginRoot, "nexus3-version")
+		pinPath := filepath.Join(pluginRoot, "nexus-version")
 		pinBytes, err := os.ReadFile(pinPath)
 		if err != nil {
 			fmt.Fprintf(w, "version check: cannot read %s: %v\n", pinPath, err)
@@ -1036,8 +1036,8 @@ func herdrPluginOpenPane(ws string, extraArgs []string) error {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin open-pane: " + binErr.Error(), Err: binErr}
 	}
 	args := []string{"plugin", "pane", "open",
-		"--plugin", "nexus3",
-		"--env", "NEXUS3_WORKSPACE=" + ws,
+		"--plugin", "nexus",
+		"--env", "NEXUS_WORKSPACE=" + ws,
 	}
 	args = append(args, extraArgs...)
 	cmd := exec.Command(herdrBin, args...)
@@ -1072,7 +1072,7 @@ func launchCredSourcedArgv(argv []string) []string {
 		". " + service.GuestCredEnvPath + "\n" +
 		"set +a\n" +
 		"exec \"$@\"\n"
-	return append([]string{"/bin/sh", "-c", script, "nexus3-launch"}, argv...)
+	return append([]string{"/bin/sh", "-c", script, "nexus-launch"}, argv...)
 }
 
 func handoffLaunchSupervisor(
@@ -1371,10 +1371,10 @@ func runHerdrLaunch(ctx context.Context, d launchDeps, imageRef string, argv []s
 
 /**
  * herdrSpaceLabelForRef derives the canonical herdr workspace label for a sandbox ref.
- * Convention: "nexus3:<handle>" where handle is the ref (sandbox handles ARE the ref).
+ * Convention: "nexus:<handle>" where handle is the ref (sandbox handles ARE the ref).
  */
 func herdrSpaceLabelForRef(ref string) string {
-	return "nexus3:" + ref
+	return "nexus:" + ref
 }
 
 /**
@@ -1428,10 +1428,10 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 	 * Idempotency: reuse an existing binding for this handle — but only after
 	 * confirming the workspace it names still EXISTS. A binding is a stored
 	 * pointer and the operator can close a workspace in herdr at any time;
-	 * nothing tells nexus3. Trusting the pointer blindly made space-create
+	 * nothing tells nexus. Trusting the pointer blindly made space-create
 	 * fail outright against a closed workspace:
 	 *
-	 * 	reusing space: label=nexus3:ac3/vcpuctl workspace_id=w35
+	 * 	reusing space: label=nexus:ac3/vcpuctl workspace_id=w35
 	 * 	{"error":{"code":"workspace_not_found",...}}
 	 * 	error: space-create: open shell pane: exit status 1
 	 *
@@ -1458,7 +1458,7 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 		 * If the binding records a guest pane that is still alive, adopt it
 		 * rather than opening another. A stored pane ID is a pointer the
 		 * operator can invalidate at any time (pane closed, workspace restarted).
-		 * Nothing tells nexus3 when that happens, so we probe liveness first.
+		 * Nothing tells nexus when that happens, so we probe liveness first.
 		 *
 		 * Fail-safe: if the pane probe errors (herdr unreachable, unexpected
 		 * shape), herdrPaneExistsFn returns false and we fall through to open a
@@ -1609,7 +1609,7 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
  * When rootPaneID is known, the pane is opened as a horizontal split beside
  * the workspace's root pane via --target-pane, rather than as a second tab.
  * The caller then closes that root pane, leaving the workspace GUEST-ONLY —
- * a nexus3:<handle> workspace represents a sandbox, so a host shell sitting
+ * a nexus:<handle> workspace represents a sandbox, so a host shell sitting
  * in it is noise, and it made "new tab" land in a host path.
  *
  * Closing the root PANE is safe; closing the root TAB is not. An earlier
@@ -1635,7 +1635,7 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
  *
  * focus controls whether --focus is passed. herdr agent start requires
  * --pane <ID>, which is why this function's return value matters: without it
- * the id nexus3 opens is thrown away and the rest of the agent-start chain
+ * the id nexus opens is thrown away and the rest of the agent-start chain
  * can never be scripted (see the package doc comment on the chain this
  * closes). focus is a separate concern from the pane ID: under N-way
  * spawning, every new sandbox stealing the operator's focus away from
@@ -1647,7 +1647,7 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
  */
 func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, rootPaneID string, focus bool) (string, error) {
 	args := []string{"plugin", "pane", "open",
-		"--plugin", "nexus3",
+		"--plugin", "nexus",
 		"--entrypoint", "shell",
 	}
 	if rootPaneID != "" {
@@ -1662,7 +1662,7 @@ func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, ro
 		 */
 		args = append(args, "--workspace", workspaceID)
 	}
-	args = append(args, "--env", "NEXUS3_WORKSPACE="+ref)
+	args = append(args, "--env", "NEXUS_WORKSPACE="+ref)
 	if focus {
 		args = append(args, "--focus")
 	} else {
@@ -1761,7 +1761,7 @@ func herdrPluginNewTab(ctx context.Context, workspaceID, storeRoot string, svc h
 	herdrBin, binErr := resolveHerdrBin()
 
 	/**
-	 * Look up a nexus3 binding for this herdr workspace ID.
+	 * Look up a nexus binding for this herdr workspace ID.
 	 * herdrSpaceResolve's last-resort scan matches HerdrWorkspaceID, so
 	 * passing a workspace ID here works without a dedicated index.
 	 */
@@ -2035,7 +2035,7 @@ func herdrSpacePruneFull(
 
 /**
  * herdrSpacePruneBindings classifies and (under apply) reconciles the given
- * bindings; sweepOrphans additionally closes unbound "nexus3:" workspaces.
+ * bindings; sweepOrphans additionally closes unbound "nexus:" workspaces.
  */
 func herdrSpacePruneBindings(
 	ctx context.Context,
@@ -2137,7 +2137,7 @@ func herdrSpacePruneBindings(
 
 /**
  * herdrSpaceSweepOrphanWorkspaces closes herdr workspaces whose label starts
- * with "nexus3:" but have no corresponding binding. These are created when
+ * with "nexus:" but have no corresponding binding. These are created when
  * herdrSpaceEnsureWorkspaceTxn fails after workspace creation (TBD-SHL-7).
  * A failure to list workspaces is a no-op (fail-safe).
  */
@@ -2163,7 +2163,7 @@ func herdrSpaceSweepOrphanWorkspaces(ctx context.Context, w io.Writer, storeRoot
 		return
 	}
 	for _, ws := range resp.Result.Workspaces {
-		if !strings.HasPrefix(ws.Label, "nexus3:") {
+		if !strings.HasPrefix(ws.Label, "nexus:") {
 			continue
 		}
 		if _, err := HerdrSpaceGetByLabel(ctx, storeRoot, ws.Label); err == nil {
@@ -2183,7 +2183,7 @@ func herdrSpaceSweepOrphanWorkspaces(ctx context.Context, w io.Writer, storeRoot
  * WHY THIS EXISTS, AND WHY IT IS A FALLBACK AND NOT A REPLACEMENT.
  *
  * herdrSpacePruneFull enumerates BINDINGS. That is deliberate: the binding
- * store is the index of what nexus3 is permitted to reap, and it is the reason
+ * store is the index of what nexus is permitted to reap, and it is the reason
  * a reaper cannot classify a live developer's VM as an orphan. This repo has a
  * proven incident where exactly that happened, so nothing below widens what the
  * binding-indexed path reaps, and nothing below runs on a sandbox that HAS a
@@ -2663,7 +2663,7 @@ func guestAgentLaunchCommand(_ bool) string {
  * 	→ Plan, search, build anything
  *
  * 	Cursor Grok 4.5 High Fast
- * 	~/magic/nexus3/... · nexus3/cursor-s6-readymatch
+ * 	~/magic/nexus/... · nexus/cursor-s6-readymatch
  *
  * "Plan, search, build anything" is the placeholder text in the input box.
  * It is assembled by cursor-addressing escape sequences (not emitted as a
@@ -3087,7 +3087,7 @@ func herdrPaneWaitOutput(ctx context.Context, herdrBin, paneID, match string, ti
  */
 func herdrPaneReportAgent(ctx context.Context, herdrBin, paneID, source string) error {
 	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "report-agent", paneID,
-		"--source", source, "--agent", "nexus3-slice-agent", "--state", "working")
+		"--source", source, "--agent", "nexus-slice-agent", "--state", "working")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -3147,7 +3147,7 @@ var herdrEnsureFn = herdrAgentEnsureSandboxExists
  * and delivers brief to it.
  *
  * The sandbox must have at least one live mount or mounted volume so that the
- * nexus3 source is present in the guest. If herdrShellCwd returns /root (no
+ * nexus source is present in the guest. If herdrShellCwd returns /root (no
  * mount), the function refuses with an actionable error naming the flag the
  * operator should have passed.
  * herdrSpaceAgentProjectDir resolves the guest directory an agent should work
@@ -3167,7 +3167,7 @@ var herdrEnsureFn = herdrAgentEnsureSandboxExists
 func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGetter) (string, error) {
 	if _, getErr := svc.Get(ctx, ref); getErr != nil {
 		return "", &UsageError{
-			Msg: fmt.Sprintf("space-agent: no such sandbox %q: %v (list them with: nexus3 sandbox list)", ref, getErr),
+			Msg: fmt.Sprintf("space-agent: no such sandbox %q: %v (list them with: nexus sandbox list)", ref, getErr),
 		}
 	}
 	projectDir := herdrShellCwd(ctx, ref, svc)
@@ -3175,7 +3175,7 @@ func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGette
 		return "", &UsageError{
 			Msg: fmt.Sprintf("space-agent: sandbox %q has no mounted source directory, so an agent "+
 				"started in it would have nothing to work on; re-create it with: "+
-				"nexus3 create --mount <host-path>:<guest-path> %s", ref, ref),
+				"nexus create --mount <host-path>:<guest-path> %s", ref, ref),
 		}
 	}
 	return projectDir, nil
@@ -3242,7 +3242,7 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	/**
 	 * 5. Wait for the guest shell itself before typing at it.
 	 *
-	 *    The pane runs `nexus3 exec --pty` and only then attaches a shell in
+	 *    The pane runs `nexus exec --pty` and only then attaches a shell in
 	 *    the guest; keystrokes sent before that attaches go nowhere, and the
 	 *    launch silently does not happen. Waiting on the guest hostname in the
 	 *    prompt is what distinguishes the guest shell from the host pane the
@@ -3314,17 +3314,17 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 /**
  * herdrPluginSpaceAgentFromFile is the interactive stdin-based variant of
  * herdrPluginSpaceAgent. It prompts for the sandbox ref (defaulting to
- * NEXUS3_WORKSPACE or the sandbox bound to HERDR_WORKSPACE_ID) and the
+ * NEXUS_WORKSPACE or the sandbox bound to HERDR_WORKSPACE_ID) and the
  * slice brief, then delegates to herdrPluginSpaceAgent.
  */
 func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer, svc *service.Service, storeRoot string) error {
 	scanner := bufio.NewScanner(r)
 
 	/**
-	 * Resolve a sensible default sandbox ref: NEXUS3_WORKSPACE env var first,
+	 * Resolve a sensible default sandbox ref: NEXUS_WORKSPACE env var first,
 	 * then the sandbox bound to the currently-focused herdr workspace.
 	 */
-	defaultRef := os.Getenv("NEXUS3_WORKSPACE")
+	defaultRef := os.Getenv("NEXUS_WORKSPACE")
 	if defaultRef == "" {
 		if wsID := os.Getenv("HERDR_WORKSPACE_ID"); wsID != "" {
 			if b, err := herdrSpaceResolve(ctx, storeRoot, wsID); err == nil {
@@ -3342,7 +3342,7 @@ func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer
 		ref = defaultRef
 	}
 	if ref == "" {
-		return &UsageError{Msg: "space-agent-from-file: sandbox ref required (set NEXUS3_WORKSPACE or pass as argument)"}
+		return &UsageError{Msg: "space-agent-from-file: sandbox ref required (set NEXUS_WORKSPACE or pass as argument)"}
 	}
 
 	fmt.Fprintf(os.Stderr, "slice brief: ")
@@ -3393,7 +3393,7 @@ type herdrWorktreeInfo struct {
 
 /**
  * herdrRepoHasBoundSandbox is THE SINGLE MECHANISM for the question
- * "does this repo have at least one nexus3-bound sandbox?"
+ * "does this repo have at least one nexus-bound sandbox?"
  *
  * It returns true when at least one binding's RepoRoot equals mainRepo
  * (after filepath.Clean normalisation). An empty mainRepo or an empty
@@ -3442,10 +3442,10 @@ func herdrWorktreeSandboxRepoCheck(ctx context.Context, storeRoot string, info h
 }
 
 /**
- * herdrRepoHasNexus3Config reports whether the checkout at dir is nexus3-
+ * herdrRepoHasNexusConfig reports whether the checkout at dir is nexus-
  * onboarded: it carries a .nexus/config.yaml or a .nexus/Containerfile.
  */
-func herdrRepoHasNexus3Config(dir string) bool {
+func herdrRepoHasNexusConfig(dir string) bool {
 	if dir == "" {
 		return false
 	}
@@ -3460,8 +3460,8 @@ func herdrRepoHasNexus3Config(dir string) bool {
 /**
  * herdrWorktreeAutoBindDecision is the --auto predicate for worktree-sandbox.
  *
- * It binds when the repo already has a nexus3-bound sibling workspace
- * (repoBound) OR when the checkout itself is nexus3-onboarded (hasConfig:
+ * It binds when the repo already has a nexus-bound sibling workspace
+ * (repoBound) OR when the checkout itself is nexus-onboarded (hasConfig:
  * .nexus/config.yaml / .nexus/Containerfile). The second arm is what makes the FIRST
  * worktree of a repo auto-provision; before it, a new user's worktree.created
  * hook silently did nothing because no sibling could ever be bound yet.
@@ -3471,11 +3471,11 @@ func herdrRepoHasNexus3Config(dir string) bool {
 func herdrWorktreeAutoBindDecision(repoBound, hasConfig bool) (bind bool, reason string) {
 	switch {
 	case repoBound:
-		return true, "repo already has a nexus3-bound workspace"
+		return true, "repo already has a nexus-bound workspace"
 	case hasConfig:
 		return true, "repo has .nexus/config.yaml or .nexus/Containerfile"
 	default:
-		return false, "no nexus3-bound workspace in repo and no .nexus/config.yaml or .nexus/Containerfile"
+		return false, "no nexus-bound workspace in repo and no .nexus/config.yaml or .nexus/Containerfile"
 	}
 }
 
@@ -3488,12 +3488,12 @@ const herdrWorktreeListTimeout = 2 * time.Second
 /**
  * herdrWorktreeCreateTimeout bounds the sandbox create call in step 7.
  *
- * TBD-2 (nexus3-nonnexus3-repo-sandbox-blockers): this was 90s, documented as
+ * TBD-2 (nexus-nonnexus-repo-sandbox-blockers): this was 90s, documented as
  * "generous for typical fast hardware with a warm image cache". That premise
  * does not hold: a cold BUILDKIT LAYER CACHE (not merely a cold fingerprint —
  * layers are shared across fingerprints, so a fingerprint miss over a warm
- * layer cache is fast) measured 120s (a mid-size Next.js monorepo) and 152s (nexus3) through
- * the unbounded `nexus3 create --file` path on 2026-08-31, both well over the
+ * layer cache is fast) measured 120s (a mid-size Next.js monorepo) and 152s (nexus) through
+ * the unbounded `nexus create --file` path on 2026-08-31, both well over the
  * old 90s bound. 240s carries ~60% headroom over the worst measured cold
  * build and was chosen over two rejected alternatives:
  *
@@ -3613,7 +3613,7 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
 
 /**
  * herdrWorktreeSandboxCreateArgs returns the argument list for
- * `nexus3 sandbox create` that creates a worktree sandbox.
+ * `nexus sandbox create` that creates a worktree sandbox.
  *
  * imageFlag and imageVal must be exactly one of:
  *   - "--image", "<ref>"   — use a pre-built cached image
@@ -3688,7 +3688,7 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	 * usermount.go) — so this does not disturb agent config sync.
 	 *
 	 * Claude agentcfg overlay disk. The overlayfs upper and work dirs for
-	 * /root/.claude live at /var/lib/nexus3/agentcfg/{upper,work} — both on
+	 * /root/.claude live at /var/lib/nexus/agentcfg/{upper,work} — both on
 	 * this volume. Moving them off root makes the governor-visible: the root
 	 * disk (/dev/vda) is never enrolled in ResizableDiskIndices, so it could
 	 * never be grown no matter how full /root/.claude grew. This volume can.
@@ -3702,7 +3702,7 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	 * error — it was the merged overlay view, not the writable upper). The
 	 * operator ratified 2 GiB to give headroom for growth (D-RAM-13).
 	 */
-	args = append(args, "--mount-named", herdrAgentCfgDiskVolumeName(handle)+":/var/lib/nexus3/agentcfg:size=2g")
+	args = append(args, "--mount-named", herdrAgentCfgDiskVolumeName(handle)+":/var/lib/nexus/agentcfg:size=2g")
 	/**
 	 * What still cannot grow after this: everything else on root (installed
 	 * packages, /tmp, /var/lib outside agentcfg, anything outside $HOME/go,
@@ -3790,7 +3790,7 @@ func herdrGoPathDiskVolumeName(handle string) string {
 
 /**
  * herdrAgentCfgDiskVolumeName derives the per-sandbox volume name for the
- * /var/lib/nexus3/agentcfg disk. The overlayfs upper and work dirs for
+ * /var/lib/nexus/agentcfg disk. The overlayfs upper and work dirs for
  * /root/.claude live on this volume so the governor can grow the disk when
  * Claude session state grows (root /dev/vda is not governor-visible).
  * Follows the same D-PD-84 slug rule as herdrDockerDiskVolumeName.
@@ -3937,7 +3937,7 @@ func herdrWorktreeGroundworkMount(worktreePath string) string {
 
 /**
  * herdrWorktreePluginMounts returns read-only mount specs for ~/.claude/plugins
- * symlinks whose targets live outside ~/.claude (e.g. plugins/nexus3 -> a repo
+ * symlinks whose targets live outside ~/.claude (e.g. plugins/nexus -> a repo
  * checkout). ~/.claude itself is live-mounted into the guest (D-1), so those
  * links dangle unless their targets are mounted at the same host path. Warnings
  * (dangling links) are passed to warn; hostHome=="" → os.UserHomeDir().
@@ -4137,7 +4137,7 @@ func nexusContainerfileDir(startDir string) string {
  * herdrWorktreeSandboxHandle derives a deterministic, collision-free sandbox
  * handle from a repository name and git branch name.
  *
- * The handle format is "<repoName>/<branchSlug>", which is a valid nexus3
+ * The handle format is "<repoName>/<branchSlug>", which is a valid nexus
  * handle (exactly one "/", both sides non-empty).  Case is PRESERVED so that
  * handles like "example-app/EX-871" remain human-readable.
  *
@@ -4197,7 +4197,7 @@ func isHerdrWorktreeHandle(handle string) bool {
  *
  * --auto    activates the repo-level predicate (predicate c): at least one
  *
- * 	sibling workspace in the same repo must be nexus3-bound. This is
+ * 	sibling workspace in the same repo must be nexus-bound. This is
  * 	the mode used by the guest-shell dispatcher (herdrDefaultShellCore).
  *
  * --conditional activates the legacy SourceWorkspaceID predicate. Kept for
@@ -4251,8 +4251,8 @@ func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bo
  *
  *  5. Conditional source check (only when conditional=true):
  *     a. If SourceWorkspaceID is empty, return nil (ambiguous source).
- *     b. If the source workspace has no nexus3 binding, return nil (source
- *     is not nexus3-managed; worktree workspace stays a host shell).
+ *     b. If the source workspace has no nexus binding, return nil (source
+ *     is not nexus-managed; worktree workspace stays a host shell).
  *
  *  6. Derive sandbox handle from branch name via herdrWorktreeSandboxHandle.
  *
@@ -4326,7 +4326,7 @@ func herdrWorktreeSandbox(
 	 *
 	 *  conditional mode (--conditional): legacy SourceWorkspaceID predicate.
 	 *  The source workspace (the main checkout that owns this worktree) must
-	 *  have a nexus3 binding. Kept for backward compatibility.
+	 *  have a nexus binding. Kept for backward compatibility.
 	 *
 	 *  explicit mode (neither flag): no source check — always bind.
 	 */
@@ -4334,10 +4334,10 @@ func herdrWorktreeSandbox(
 	case auto:
 		bind, reason := herdrWorktreeAutoBindDecision(
 			herdrWorktreeSandboxRepoCheck(ctx, storeRoot, info),
-			herdrRepoHasNexus3Config(info.Path),
+			herdrRepoHasNexusConfig(info.Path),
 		)
 		if !bind {
-			fmt.Fprintf(w, "worktree-sandbox: %s at %s; skipping (bind by hand via \"nexus3: sandbox this worktree\", or add .nexus/config.yaml)\n", reason, info.Path)
+			fmt.Fprintf(w, "worktree-sandbox: %s at %s; skipping (bind by hand via \"nexus: sandbox this worktree\", or add .nexus/config.yaml)\n", reason, info.Path)
 			return nil
 		}
 		fmt.Fprintf(w, "worktree-sandbox: auto-binding (%s)\n", reason)
@@ -4348,7 +4348,7 @@ func herdrWorktreeSandbox(
 			return nil
 		}
 		if _, err := herdrSpaceResolve(ctx, storeRoot, srcID); err != nil {
-			fmt.Fprintf(w, "worktree-sandbox: source workspace %s not nexus3-bound, skipping\n", srcID)
+			fmt.Fprintf(w, "worktree-sandbox: source workspace %s not nexus-bound, skipping\n", srcID)
 			return nil
 		}
 	}
@@ -4592,7 +4592,7 @@ func herdrWorktreeSandbox(
 			return nil
 		}
 	}
-	label := "nexus3:" + handle
+	label := "nexus:" + handle
 	/**
 	 * Derive the main repo root from info.RepoKey (e.g. "/repo/.git" → "/repo").
 	 * Empty RepoKey → empty RepoRoot → NO MATCH in the predicate (fail-open).
@@ -4664,7 +4664,7 @@ func herdrWorktreeSandbox(
 			 */
 			fmt.Fprintf(w, "worktree-sandbox: open guest pane: %v\n", paneErr)
 			fmt.Fprintf(w, "worktree-sandbox: the sandbox %s and its binding are committed and reusable; "+
-				"only the pane failed. Retry with: nexus3 herdr space-open-pane %s\n", handle, workspaceID)
+				"only the pane failed. Retry with: nexus herdr space-open-pane %s\n", handle, workspaceID)
 			return fmt.Errorf("worktree-sandbox: open guest pane: %w", paneErr)
 		}
 	}
@@ -4680,8 +4680,8 @@ func herdrWorktreeSandbox(
 /**
  * herdrPluginLocalAgentStartup is the startup hook that herdr >=0.9 runs on
  * the laptop when herdr starts. The body lives in internal/clientagent so it
- * also builds into cmd/nexus3-client for macOS, where this package (and the
- * full nexus3 CLI) does not compile.
+ * also builds into cmd/nexus-client for macOS, where this package (and the
+ * full nexus CLI) does not compile.
  */
 func herdrPluginLocalAgentStartup(ctx context.Context) error {
 	if socketPath := os.Getenv("HERDR_SOCKET_PATH"); socketPath != "" {

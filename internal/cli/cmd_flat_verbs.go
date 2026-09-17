@@ -4,13 +4,13 @@ import (
 	"context"
 )
 
-// Flat lifecycle verbs: `nexus3 create`, `nexus3 ps`, `nexus3 rm`, and so on.
+// Flat lifecycle verbs: `nexus create`, `nexus ps`, `nexus rm`, and so on.
 //
 // # Why these exist
 //
 // The manual has documented the flat spelling as the target surface since
 // D-PD-57, and 53 fenced invocations across the docs use it. None of them
-// worked: the binary only ever had `nexus3 sandbox create`, so an operator
+// worked: the binary only ever had `nexus sandbox create`, so an operator
 // following the manual hit "unknown command: create" on the first line of the
 // quickstart. The docs were not wrong about the destination — the CLI had
 // simply never caught up, and the validator could not see the gap because it

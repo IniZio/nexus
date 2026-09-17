@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -234,7 +234,7 @@ func TestList_Multiple(t *testing.T) {
 // hidden from List() output (UNI-TEARDOWN §listing-filter).
 //
 // Without this filter, a stale __builder record (e.g. left by a SIGKILL'd CLI
-// before the supervisor's svc.Remove ran) would appear in `nexus3 sandbox list`
+// before the supervisor's svc.Remove ran) would appear in `nexus sandbox list`
 // alongside user-visible sandboxes.
 func TestList_FilterBuilderRecords(t *testing.T) {
 	// Insert one normal sandbox and one __builder record directly into the store

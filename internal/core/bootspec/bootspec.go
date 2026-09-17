@@ -1,8 +1,8 @@
 package bootspec
 
-// Path is the in-guest location of the generic boot manifest the nexus3 agent
-// reads at boot. Writers place it in a built rootfs at <rootfs>/etc/nexus3/boot.json.
-const Path = "/etc/nexus3/boot.json"
+// Path is the in-guest location of the generic boot manifest the nexus agent
+// reads at boot. Writers place it in a built rootfs at <rootfs>/etc/nexus/boot.json.
+const Path = "/etc/nexus/boot.json"
 
 // Task is one declared boot command run by the agent as a supervised child.
 type Task struct {
@@ -41,7 +41,7 @@ type OCIImageConfig struct {
 // FromOCIImageConfig translates an OCI image config into a Spec with a single
 // background Task representing the image's declared process. The command is
 // Entrypoint followed by Cmd (OCI semantics). WorkingDir maps to Task.Cwd and
-// Env to Task.Env. It is marked Background=true because the nexus3 agent is
+// Env to Task.Env. It is marked Background=true because the nexus agent is
 // PID 1: a boot command that blocks would prevent the agent from binding its
 // control plane, and a PID-1 child that exits must never take the VM down.
 //

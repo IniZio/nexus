@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/portfwd"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // portForwardDialer is satisfied by service.Service (avoids importing cli).
@@ -355,7 +355,7 @@ func supervisorSendReportMetadata(ctx context.Context, socketPath, workspaceID s
 		"method": "workspace.report_metadata",
 		"params": map[string]any{
 			"workspace_id": workspaceID,
-			"source":       "plugin:nexus3",
+			"source":       "plugin:nexus",
 			"tokens":       map[string]any{"port_forward_status": portVal},
 		},
 	}

@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -106,7 +106,7 @@ type execResult struct {
 // NewServer creates an MCP server with all sandbox lifecycle and delegate tools registered.
 func NewServer(svc SandboxService) *gosdk.Server {
 	srv := gosdk.NewServer(&gosdk.Implementation{
-		Name:    "nexus3",
+		Name:    "nexus",
 		Version: "v0.1.0",
 	}, nil)
 	registerTools(srv, svc)

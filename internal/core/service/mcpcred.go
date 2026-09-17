@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // claudeMCPConfigPath returns the path to the Claude Code MCP config file.

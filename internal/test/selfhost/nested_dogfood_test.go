@@ -2,14 +2,14 @@
 
 // Package selfhost — S0N nested-dogfood integration proof.
 //
-// Proves end-to-end that an outer nexus3 microVM (booted with NestedVirt=true)
+// Proves end-to-end that an outer nexus microVM (booted with NestedVirt=true)
 // can:
 //  1. Run buildkitd in-guest (rootful, --oci-worker-snapshotter=native).
-//  2. Use buildctl to build a minimal inner nexus3 image from a Containerfile.
+//  2. Use buildctl to build a minimal inner nexus image from a Containerfile.
 //  3. Convert the rootfs to a raw ext4 image via mke2fs.
-//  4. Boot a REAL inner nexus3 microVM from the ext4 using cloud-hypervisor
-//     and assert the inner nexus3-agent reports via its serial console
-//     (not just a bare kernel — the inner agent boots to "nexus3-agent:").
+//  4. Boot a REAL inner nexus microVM from the ext4 using cloud-hypervisor
+//     and assert the inner nexus-agent reports via its serial console
+//     (not just a bare kernel — the inner agent boots to "nexus-agent:").
 //
 // This is S0N (self-contained nested dogfood) — it uses the idiomatic
 // Containerfile/image → build → boot model, not a custom --rootfs approach
@@ -48,26 +48,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // innerBuildAndBootScript is the shell program run INSIDE the outer guest.
 //
 // It drives the complete in-guest build + inner VM boot sequence:
-//  1. Mount kernel pseudo-FSes (proc, sys, dev, cgroup) — idempotent; nexus3-
+//  1. Mount kernel pseudo-FSes (proc, sys, dev, cgroup) — idempotent; nexus-
 //     agent may already have mounted some of these, non-fatal either way.
 //  2. Mount a tmpfs for buildkitd state to avoid virtiofs xattr failures.
 //  3. Write the runc --no-new-keyring wrapper.
@@ -75,11 +75,11 @@ import (
 //  5. Wait for the buildkitd socket (90 s timeout).
 //  6. Write the inner Containerfile to /tmp.
 //  7. Run buildctl solve → local rootfs dir export.
-//  8. Append nexus3-agent as the final layer (copy it into the rootfs).
+//  8. Append nexus-agent as the final layer (copy it into the rootfs).
 //  9. mke2fs -d → raw ext4 inner disk image.
 //
 // 10. Launch inner cloud-hypervisor VM using the ext4, capture serial log.
-// 11. Print serial log; assert "nexus3-agent" appears (inner agent booted).
+// 11. Print serial log; assert "nexus-agent" appears (inner agent booted).
 //
 // Gotchas mirrored from the old nexus buildkit_task.go:
 //   - buildkitd state MUST be on tmpfs (not virtiofs) — xattr issues.
@@ -160,8 +160,8 @@ mkdir -p /tmp/inner-ctx
 cat > /tmp/inner-ctx/Containerfile << 'CF'
 FROM ubuntu:24.04
 CF
-# Stage nexus3-agent binary into build context (appended as final layer below).
-cp /sbin/nexus3-agent /tmp/inner-ctx/nexus3-agent
+# Stage nexus-agent binary into build context (appended as final layer below).
+cp /sbin/nexus-agent /tmp/inner-ctx/nexus-agent
 
 echo "==> [S0N] step 7: buildctl solve → inner rootfs"
 mkdir -p /tmp/inner-rootfs
@@ -175,14 +175,14 @@ mkdir -p /tmp/inner-rootfs
     --progress plain \
     --output type=local,dest=/tmp/inner-rootfs
 
-echo "==> [S0N] step 8: baking nexus3-agent into rootfs"
-install -m 755 /sbin/nexus3-agent /tmp/inner-rootfs/sbin/nexus3-agent
+echo "==> [S0N] step 8: baking nexus-agent into rootfs"
+install -m 755 /sbin/nexus-agent /tmp/inner-rootfs/sbin/nexus-agent
 
 echo "==> [S0N] step 9: mke2fs → inner ext4"
 INNER_EXT4=/tmp/inner.ext4
 truncate -s 2G "$INNER_EXT4"
 mke2fs -t ext4 -d /tmp/inner-rootfs \
-  -L nexus3-inner \
+  -L nexus-inner \
   -U 00000000-0000-0000-0000-000000000001 \
   "$INNER_EXT4"
 
@@ -205,13 +205,13 @@ else
   echo "LOOP-WRITE-SKIP: mount not available"
 fi
 
-echo "==> [S0N] step 10: booting inner nexus3 microVM"
+echo "==> [S0N] step 10: booting inner nexus microVM"
 mkdir -p /tmp/inner-vm
 # inner rootfs mounted ro — CH virtio-blk writes fail under nested KVM (outer kernel async-I/O);
 # the agent boot smoke-test needs no rootfs writes (writable dirs are tmpfs/devtmpfs).
 timeout 60 "$CLOUD_HYPERVISOR" \
   --kernel "$KERNEL" \
-  --cmdline 'root=/dev/vda ro init=/sbin/nexus3-agent console=ttyS0 panic=0' \
+  --cmdline 'root=/dev/vda ro init=/sbin/nexus-agent console=ttyS0 panic=0' \
   --disk path="$INNER_EXT4",readonly=off,direct=off \
   --cpus boot=1 \
   --memory size=256M \
@@ -229,16 +229,16 @@ else
 fi
 `
 
-// TestNestedDogfood proves end-to-end that an outer nexus3 microVM can build
-// and boot an inner nexus3 microVM using the Containerfile/image→build→boot
+// TestNestedDogfood proves end-to-end that an outer nexus microVM can build
+// and boot an inner nexus microVM using the Containerfile/image→build→boot
 // model (D-ORCH-09 Option B).
 //
 // Acceptance criteria:
 //   - (S0N-AC1) Outer guest has /dev/kvm (NestedVirt=true).
 //   - (S0N-AC2) In-guest buildkitd starts and the buildctl solve succeeds.
 //   - (S0N-AC3) The inner ext4 is produced by mke2fs.
-//   - (S0N-AC4) The inner cloud-hypervisor boots the inner nexus3-agent;
-//     the serial log contains "nexus3-agent" (the agent has booted).
+//   - (S0N-AC4) The inner cloud-hypervisor boots the inner nexus-agent;
+//     the serial log contains "nexus-agent" (the agent has booted).
 func TestNestedDogfood(t *testing.T) {
 	// ── 1. Skip guards ────────────────────────────────────────────────────────
 	skipUnlessNestedKVM(t)
@@ -451,7 +451,7 @@ func TestNestedDogfood(t *testing.T) {
 			Argv: []string{
 				"/bin/sh", "-c",
 				"mkdir -p /usr/local/share/ca-certificates && " +
-					"cat > /usr/local/share/ca-certificates/nexus3-mitm.crt && " +
+					"cat > /usr/local/share/ca-certificates/nexus-mitm.crt && " +
 					"update-ca-certificates",
 			},
 			Env:    map[string]string{"PATH": "/usr/local/sbin:/usr/local/bin:/sbin:/usr/sbin:/usr/bin:/bin"},
@@ -508,17 +508,17 @@ func TestNestedDogfood(t *testing.T) {
 	}
 	t.Log("S0N-AC3 PASS: inner ext4 image produced by mke2fs")
 
-	// S0N-AC4: inner nexus3-agent booted — require the agent's OWN startup banner
-	// ("nexus3-agent: starting") which only appears when the process actually runs,
-	// NOT the kernel cmdline echo of "nexus3-agent" which is a tautology.
+	// S0N-AC4: inner nexus-agent booted — require the agent's OWN startup banner
+	// ("nexus-agent: starting") which only appears when the process actually runs,
+	// NOT the kernel cmdline echo of "nexus-agent" which is a tautology.
 	// Also guard against a kernel panic masking a false pass.
 	for _, line := range strings.Split(output, "\n") {
 		if strings.Contains(line, "Kernel panic") || strings.Contains(line, "Unable to mount root fs") {
 			t.Fatalf("S0N-AC4 FAIL: inner VM kernel panic detected — agent never ran\noffending line: %s\nfull output:\n%s", line, output)
 		}
 	}
-	if !strings.Contains(output, "nexus3-agent: starting") {
-		t.Fatalf("S0N-AC4 FAIL: inner nexus3-agent startup banner not found in serial log (agent did not run)\noutput:\n%s", output)
+	if !strings.Contains(output, "nexus-agent: starting") {
+		t.Fatalf("S0N-AC4 FAIL: inner nexus-agent startup banner not found in serial log (agent did not run)\noutput:\n%s", output)
 	}
-	t.Log("S0N-AC4 PASS: inner nexus3-agent booted — startup banner confirmed, no kernel panic")
+	t.Log("S0N-AC4 PASS: inner nexus-agent booted — startup banner confirmed, no kernel panic")
 }

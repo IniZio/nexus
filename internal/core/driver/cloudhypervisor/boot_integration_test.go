@@ -43,8 +43,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // defaultCHBin is the expected cloud-hypervisor binary location.
@@ -290,7 +290,7 @@ func skipUnlessArtifact(t *testing.T, name string) string {
 // it successfully locates and executes /init from the initramfs. This message
 // appears before /init itself runs any commands, so it is a reliable kernel-
 // provided signal that the initramfs was loaded and userspace was entered.
-// Our /init also echoes "nexus3-test-vm: init reached" after mounting /dev and
+// Our /init also echoes "nexus-test-vm: init reached" after mounting /dev and
 // /proc; we look for both strings.
 //
 // Serial console capture is via the CH API (vm.create serial: {mode: "File"}),
@@ -381,14 +381,14 @@ func TestBootToUserspace(t *testing.T) {
 	//
 	// We look for two markers:
 	//   "Run /init as init process"  — kernel message, appears before /init runs
-	//   "nexus3-test-vm: init reached" — /init echo, appears after devtmpfs mount
+	//   "nexus-test-vm: init reached" — /init echo, appears after devtmpfs mount
 	//
 	// The kernel message is the primary signal; the /init echo confirms that
 	// PID 1 ran its first commands. We wait up to 5 seconds for either to
 	// appear, polling the serial file.
 	const (
 		kernelMarker    = "Run /init as init process"
-		userspaceMarker = "nexus3-test-vm: init reached"
+		userspaceMarker = "nexus-test-vm: init reached"
 	)
 	userspaceStart := time.Now()
 	var foundKernelMarker, foundUserspaceMarker bool

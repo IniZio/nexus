@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 func init() {
@@ -34,7 +34,7 @@ var doSpawnForkChildSupervisor func(ctx context.Context, svc *service.Service, i
 // state dir can replace the whole supervisor-spawn block with a no-op.
 var doSpawnForkSupervisors = spawnForkChildSupervisors
 
-// doStoreDefaultRoot resolves the nexus3 store root directory. A package-level
+// doStoreDefaultRoot resolves the nexus store root directory. A package-level
 // variable so tests can redirect it to a temp dir without touching the real
 // state directory.
 var doStoreDefaultRoot = store.DefaultRoot

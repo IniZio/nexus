@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // checkRWAttach implements the §4.1 concurrency guard from shadow-disk-v2.md

@@ -14,12 +14,12 @@ import (
 // # The defect
 //
 // buildkitd caches the result snapshot of the final
-// `COPY --from=nexus3agent` under a key derived from the copied file's
+// `COPY --from=nexusagent` under a key derived from the copied file's
 // contenthash. With a fixed source filename that key is identical on every
 // build of the same agent binary, so once a build wrote a CORRUPT (zero-byte)
 // agent into that snapshot, every later build cache-hit the poisoned snapshot,
 // exported it, and failed the verifyAgentIntegrity canary with
-// "/sbin/nexus3-agent is 0 bytes, expected 36329665". Observed live on
+// "/sbin/nexus-agent is 0 bytes, expected 36329665". Observed live on
 // 2026-08-29: cache-disk slot 0 snapshot 61, zero-byte agent written 15:05,
 // reproduced on demand in ~7 s with no layer re-executed. The build could not
 // recover without deleting the operator's warm cache disk.
@@ -35,7 +35,7 @@ import (
 // "identical across builds" assertion.
 func TestAgentLayerCacheKeyIsUniquePerSolve(t *testing.T) {
 	containerfile := []byte("FROM ubuntu:24.04\nRUN echo hi\n")
-	const installPath = "/sbin/nexus3-agent"
+	const installPath = "/sbin/nexus-agent"
 
 	const builds = 64
 	seenNames := make(map[string]int, builds)
@@ -67,7 +67,7 @@ func TestAgentLayerCacheKeyIsUniquePerSolve(t *testing.T) {
 		if !strings.HasPrefix(df, string(containerfile)) {
 			t.Fatalf("build %d: synthesized Dockerfile does not start with the user's Containerfile:\n%s", i, df)
 		}
-		copyLine := "COPY --chmod=0755 --from=nexus3agent " + name + " " + installPath
+		copyLine := "COPY --chmod=0755 --from=nexusagent " + name + " " + installPath
 		if !strings.Contains(df, copyLine) {
 			t.Fatalf("build %d: synthesized Dockerfile does not COPY the per-build agent file.\nwant line: %s\ngot:\n%s",
 				i, copyLine, df)
@@ -82,7 +82,7 @@ func TestAgentLayerCacheKeyIsUniquePerSolve(t *testing.T) {
 }
 
 // TestStagedAgentFileIsTheCopySource pins the coupling between the name the
-// agent binary is actually WRITTEN under in the nexus3agent context dir and
+// agent binary is actually WRITTEN under in the nexusagent context dir and
 // the name the COPY instruction reads. If these diverge, every build fails
 // with "file not found" and the failure is mistaken for a buildkit fault.
 //
@@ -104,8 +104,8 @@ func TestStagedAgentFileIsTheCopySource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stageAgentContext: %v", err)
 	}
-	df := string(synthesizeDockerfile([]byte("FROM scratch\n"), nil, agentFile, "/sbin/nexus3-agent", runcShimContextFilename))
-	copyLine := "COPY --chmod=0755 --from=nexus3agent " + agentFile + " /sbin/nexus3-agent"
+	df := string(synthesizeDockerfile([]byte("FROM scratch\n"), nil, agentFile, "/sbin/nexus-agent", runcShimContextFilename))
+	copyLine := "COPY --chmod=0755 --from=nexusagent " + agentFile + " /sbin/nexus-agent"
 	if !strings.Contains(df, copyLine) {
 		t.Fatalf("COPY line does not reference the staged file.\nwant: %s\ngot:\n%s", copyLine, df)
 	}

@@ -1,6 +1,6 @@
 # cli-surface.toml
 # ─────────────────────────────────────────────────────────────────────────────
-# Machine-readable CLI surface manifest for nexus3.
+# Machine-readable CLI surface manifest for nexus.
 #
 # Consumed by scripts/docs/validate-cli-examples.py.
 # Format: TOML 1.0 (stdlib tomllib, Python >= 3.11 — no third-party deps).
@@ -60,7 +60,7 @@ page = "cli/index.md"   # verb index table: `secret` <Badge type="danger" text="
 
 [[target_only_flags]]
 key   = "create"
-page  = "cli/sandbox-commands.md"   # nexus3 create flag table
+page  = "cli/sandbox-commands.md"   # nexus create flag table
 flags = ["--service"]
 # | `--service ...`    | … | <Badge type="danger" text="not built" />
 # --volume/-v/--shadow removed from target; superseded by --mount-named (named volumes)

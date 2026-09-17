@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/mcp"
+	"github.com/IniZio/nexus/internal/mcp"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// TestMCPIntegration_stdio builds the nexus3 binary and runs it as an MCP
+// TestMCPIntegration_stdio builds the nexus binary and runs it as an MCP
 // subprocess over stdio. It performs:
 //   - MCP initialize handshake (implicit in client.Connect)
 //   - tools/list — asserts the sandbox lifecycle tools are present
@@ -28,8 +28,8 @@ func TestMCPIntegration_stdio(t *testing.T) {
 
 	// ── Build the binary ──────────────────────────────────────────────────────
 	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "nexus3")
-	build := exec.Command("go", "build", "-o", binPath, "github.com/IniZio/nexus3/cmd/nexus3")
+	binPath := filepath.Join(binDir, "nexus")
+	build := exec.Command("go", "build", "-o", binPath, "github.com/IniZio/nexus/cmd/nexus")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
@@ -44,7 +44,7 @@ func TestMCPIntegration_stdio(t *testing.T) {
 	cmd.Env = append(os.Environ(), "XDG_STATE_HOME="+stateDir)
 	transport := &gosdk.CommandTransport{Command: cmd}
 
-	client := gosdk.NewClient(&gosdk.Implementation{Name: "nexus3-test", Version: "v0"}, nil)
+	client := gosdk.NewClient(&gosdk.Implementation{Name: "nexus-test", Version: "v0"}, nil)
 	ctx := context.Background()
 	cs, err := client.Connect(ctx, transport, nil)
 	if err != nil {
@@ -54,8 +54,8 @@ func TestMCPIntegration_stdio(t *testing.T) {
 
 	// ── Verify initialization ─────────────────────────────────────────────────
 	init := cs.InitializeResult()
-	if init.ServerInfo.Name != "nexus3" {
-		t.Errorf("server name: want %q, got %q", "nexus3", init.ServerInfo.Name)
+	if init.ServerInfo.Name != "nexus" {
+		t.Errorf("server name: want %q, got %q", "nexus", init.ServerInfo.Name)
 	}
 
 	// ── tools/list ────────────────────────────────────────────────────────────

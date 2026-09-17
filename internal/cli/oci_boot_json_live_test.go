@@ -2,7 +2,7 @@
 
 // Package cli — live end-to-end proof that OCI ENTRYPOINT/Cmd/WorkingDir/Env
 // written to boot.json by the buildkit Solve seam survive ext4 packaging and
-// are actually executed as a supervised child by the nexus3-agent at PID-1
+// are actually executed as a supervised child by the nexus-agent at PID-1
 // boot.
 //
 // # What this test proves
@@ -11,7 +11,7 @@
 // the packaged ext4 image, nor the agent actually running the declared task at
 // PID-1 boot, had been exercised on a real boot until this test.
 //
-//  1. boot.json content — cat /etc/nexus3/boot.json inside the booted sandbox
+//  1. boot.json content — cat /etc/nexus/boot.json inside the booted sandbox
 //     parses to a Spec with Tasks[0].Argv matching the Containerfile ENTRYPOINT,
 //     Cwd matching WORKDIR, and Env containing the declared ENV.
 //
@@ -21,24 +21,24 @@
 //
 // # Build seam under test
 //
-// `nexus3 create --file <workspace>` → builder VM → BuildInGuestImage →
+// `nexus create --file <workspace>` → builder VM → BuildInGuestImage →
 // CaptureBootSpecFromContainerfile (Dockerfile-parse of ContainerfileBytes,
-// no buildkitd metadata) writes <rootfsOutDir>/etc/nexus3/boot.json →
+// no buildkitd metadata) writes <rootfsOutDir>/etc/nexus/boot.json →
 // ext4 packaging → sandbox boot →
-// nexus3-agent runBootTasks reads /etc/nexus3/boot.json → runBootTask.
+// nexus-agent runBootTasks reads /etc/nexus/boot.json → runBootTask.
 //
 // # Run
 //
-//	TMPDIR=/tmp NEXUS3_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
-//	  NEXUS3_LIVE_REQUIRED=1 \
+//	TMPDIR=/tmp NEXUS_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
+//	  NEXUS_LIVE_REQUIRED=1 \
 //	  go test -tags herdr_live ./internal/cli/ \
 //	  -run TestOCIBootJSON_Live_BootspecSurvivesAndExecutes -v -count=1 \
 //	  -timeout 30m
 //
 // Prerequisites:
 //   - /dev/kvm available
-//   - NEXUS3_KERNEL_PATH set to a vmlinux image
-//   - nexus3-agent-base cached (used to build the builder VM)
+//   - NEXUS_KERNEL_PATH set to a vmlinux image
+//   - nexus-agent-base cached (used to build the builder VM)
 //   - docker.io/library/alpine:3.19 reachable (or already in buildkit cache)
 package cli
 
@@ -53,7 +53,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/bootspec"
+	"github.com/IniZio/nexus/internal/core/bootspec"
 )
 
 // ociBootCmd is worktreeLiveCmd's analogue for the OCI-boot live tests:
@@ -105,30 +105,30 @@ ENTRYPOINT ["/bin/sh","-c","echo booted > /tmp/nexus-boot-marker && exec sleep i
 
 func TestOCIBootJSON_Live_BootspecSurvivesAndExecutes(t *testing.T) {
 	// ── 0. Skip guards ────────────────────────────────────────────────────────
-	if os.Getenv("NEXUS3_LIVE_REQUIRED") == "" {
-		t.Skip("set NEXUS3_LIVE_REQUIRED=1 to run live tests (requires KVM + built images + alpine pull)")
+	if os.Getenv("NEXUS_LIVE_REQUIRED") == "" {
+		t.Skip("set NEXUS_LIVE_REQUIRED=1 to run live tests (requires KVM + built images + alpine pull)")
 	}
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		liveSkip(t, "oci-boot-json-live: /dev/kvm not available: %v", err)
 	}
-	if os.Getenv("NEXUS3_KERNEL_PATH") == "" {
-		liveSkip(t, "oci-boot-json-live: NEXUS3_KERNEL_PATH not set; set it to a vmlinux image")
+	if os.Getenv("NEXUS_KERNEL_PATH") == "" {
+		liveSkip(t, "oci-boot-json-live: NEXUS_KERNEL_PATH not set; set it to a vmlinux image")
 	}
-	// The --file path needs a builder rootfs; that is derived from nexus3-agent-base.
+	// The --file path needs a builder rootfs; that is derived from nexus-agent-base.
 	// Skip cleanly rather than failing when the operator hasn't yet built it.
 	if !baseImageCached(t, herdrDefaultImage) {
 		liveSkip(t, "oci-boot-json-live: %q not cached — run `go run ./cmd/rebuild-agent-base`", herdrDefaultImage)
 	}
 
-	// ── 1. Build nexus3 binary from this branch ───────────────────────────────
+	// ── 1. Build nexus binary from this branch ───────────────────────────────
 	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "nexus3-oci-boot-live")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
+	binary := filepath.Join(binDir, "nexus-oci-boot-live")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus")
 	build.Dir = filepath.Join("..", "..")
 	if out, err := build.CombinedOutput(); err != nil {
-		liveSkip(t, "oci-boot-json-live: nexus3 binary cannot be built: %v\n%s", err, out)
+		liveSkip(t, "oci-boot-json-live: nexus binary cannot be built: %v\n%s", err, out)
 	}
-	t.Logf("built nexus3 binary: %s", binary)
+	t.Logf("built nexus binary: %s", binary)
 
 	// ── 2. Fixture workspace ──────────────────────────────────────────────────
 	workspace := createOCIBootWorkspace(t)
@@ -139,9 +139,9 @@ func TestOCIBootJSON_Live_BootspecSurvivesAndExecutes(t *testing.T) {
 	t.Cleanup(func() {
 		rmOut, rmErr := ociBootCmd(binary, "rm", handle).CombinedOutput()
 		if rmErr != nil {
-			t.Logf("cleanup: nexus3 rm %s: %v\n%s", handle, rmErr, rmOut)
+			t.Logf("cleanup: nexus rm %s: %v\n%s", handle, rmErr, rmOut)
 		} else {
-			t.Logf("cleanup: nexus3 rm %s: %s", handle, rmOut)
+			t.Logf("cleanup: nexus rm %s: %s", handle, rmOut)
 		}
 	})
 
@@ -151,9 +151,9 @@ func TestOCIBootJSON_Live_BootspecSurvivesAndExecutes(t *testing.T) {
 		"create", handle,
 		"--file", workspace,
 	).CombinedOutput()
-	t.Logf("nexus3 create --file:\n%s", createOut)
+	t.Logf("nexus create --file:\n%s", createOut)
 	if createErr != nil {
-		t.Fatalf("nexus3 create --file: %v\n%s\n(check NEXUS3_KERNEL_PATH, %q cached, and network for alpine pull)",
+		t.Fatalf("nexus create --file: %v\n%s\n(check NEXUS_KERNEL_PATH, %q cached, and network for alpine pull)",
 			createErr, createOut, herdrDefaultImage)
 	}
 
@@ -161,16 +161,16 @@ func TestOCIBootJSON_Live_BootspecSurvivesAndExecutes(t *testing.T) {
 	//
 	// PROOF 1: boot.json survived ext4 packaging.
 	bootJSONOut, bootJSONErr := ociBootCmd(binary, "exec", handle, "--",
-		"/bin/sh", "-c", "cat /etc/nexus3/boot.json",
+		"/bin/sh", "-c", "cat /etc/nexus/boot.json",
 	).CombinedOutput()
-	t.Logf("nexus3 exec cat /etc/nexus3/boot.json:\n%s", bootJSONOut)
+	t.Logf("nexus exec cat /etc/nexus/boot.json:\n%s", bootJSONOut)
 	if bootJSONErr != nil {
 		// Also try to list the directory so we can diagnose the gap.
 		lsOut, _ := ociBootCmd(binary, "exec", handle, "--",
-			"/bin/sh", "-c", "ls -la /etc/nexus3/ 2>&1 || echo 'dir missing'",
+			"/bin/sh", "-c", "ls -la /etc/nexus/ 2>&1 || echo 'dir missing'",
 		).CombinedOutput()
-		t.Logf("/etc/nexus3/ listing:\n%s", lsOut)
-		t.Fatalf("exec cat /etc/nexus3/boot.json: %v — boot.json absent in-guest (REAL FINDING: file lost in ext4 packaging or Solve seam)", bootJSONErr)
+		t.Logf("/etc/nexus/ listing:\n%s", lsOut)
+		t.Fatalf("exec cat /etc/nexus/boot.json: %v — boot.json absent in-guest (REAL FINDING: file lost in ext4 packaging or Solve seam)", bootJSONErr)
 	}
 
 	var spec bootspec.Spec
@@ -237,7 +237,7 @@ exit 1
 	markerOut, markerErr := ociBootCmd(binary, "exec", handle, "--",
 		"/bin/sh", "-c", markerPollScript,
 	).CombinedOutput()
-	t.Logf("nexus3 exec marker poll:\n%s", markerOut)
+	t.Logf("nexus exec marker poll:\n%s", markerOut)
 	if markerErr != nil {
 		// Extra diagnostics: check if the boot task left any console output
 		// (agent logs to /dev/console; we can't read that in-guest but can

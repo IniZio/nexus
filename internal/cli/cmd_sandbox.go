@@ -18,22 +18,22 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
-	"github.com/IniZio/nexus3/internal/core/config"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vmcfg"
+	"github.com/IniZio/nexus/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 func init() {
@@ -170,7 +170,7 @@ func sandboxCreateDiskGuard(ctx context.Context, out *Output, stateDir string, c
 	if rep.BelowFloor {
 		fmt.Fprint(out.Stderr(), renderDiskUsage(rep))
 		return errSandbox("sandbox create", fmt.Errorf(
-			"free space %s on %s is below the %s floor; reclaim space first (see disk usage above, or run: nexus3 disk usage)",
+			"free space %s on %s is below the %s floor; reclaim space first (see disk usage above, or run: nexus disk usage)",
 			humanBytes(int64(rep.FreeBytes)), rep.StateDir, humanBytes(int64(rep.FloorBytes))))
 	}
 	if rep.FreeBytes < 2*rep.FloorBytes {
@@ -181,7 +181,7 @@ func sandboxCreateDiskGuard(ctx context.Context, out *Output, stateDir string, c
 				largest, largestBytes = fmt.Sprintf("%s (%s)", cat.Name, humanBytes(cat.Bytes)), cat.Bytes
 			}
 		}
-		fmt.Fprintf(out.Stderr(), "warning: sandbox create: free space %s is under twice the %s floor; largest category: %s; run `nexus3 disk usage` for reclaim hints\n",
+		fmt.Fprintf(out.Stderr(), "warning: sandbox create: free space %s is under twice the %s floor; largest category: %s; run `nexus disk usage` for reclaim hints\n",
 			humanBytes(int64(rep.FreeBytes)), humanBytes(int64(rep.FloorBytes)), largest)
 	}
 	return nil
@@ -680,7 +680,7 @@ func buildCHConfig(kernelPath, ext4Path string, memMiB, vcpus uint32) cloudhyper
 	return cfg
 }
 
-const diskBootCmdlineBase = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0"
+const diskBootCmdlineBase = "root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0"
 
 func sandboxHandleHostname(handle string) string {
 	b := make([]byte, 0, len(handle))
@@ -890,13 +890,13 @@ func parseHumanBytes(s string) (int64, error) {
 
 func buildTaskTimeout() time.Duration {
 	const defaultTimeout = 20 * time.Minute
-	s := os.Getenv("NEXUS3_BUILD_TASK_TIMEOUT")
+	s := os.Getenv("NEXUS_BUILD_TASK_TIMEOUT")
 	if s == "" {
 		return defaultTimeout
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil || d <= 0 {
-		slog.Warn("NEXUS3_BUILD_TASK_TIMEOUT: invalid duration, using default",
+		slog.Warn("NEXUS_BUILD_TASK_TIMEOUT: invalid duration, using default",
 			"value", s, "default", defaultTimeout)
 		return defaultTimeout
 	}
@@ -996,9 +996,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	var agentBytes []byte
 	var agentBytesLoadErr error
 	{
-		ab, lookErr := exec.LookPath("nexus3-agent")
+		ab, lookErr := exec.LookPath("nexus-agent")
 		if lookErr != nil {
-			ab = filepath.Join(filepath.Dir(kernelPath), "nexus3-agent")
+			ab = filepath.Join(filepath.Dir(kernelPath), "nexus-agent")
 		}
 		agentBytes, agentBytesLoadErr = os.ReadFile(ab)
 		if agentBytesLoadErr != nil {
@@ -1032,14 +1032,14 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	if f.agentName != "" && !agentProfile.Capabilities.CredDirLiveMount {
 		hasAgentCfgDisk := false
 		for _, m := range namedMounts {
-			if m.GuestPath == "/var/lib/nexus3/agentcfg" {
+			if m.GuestPath == "/var/lib/nexus/agentcfg" {
 				hasAgentCfgDisk = true
 				break
 			}
 		}
 		if !hasAgentCfgDisk {
 			autoVolName := sandboxAgentCfgVolumeName(project, name)
-			autoMount, autoErr := parseMountNamed(autoVolName + ":/var/lib/nexus3/agentcfg:size=2g")
+			autoMount, autoErr := parseMountNamed(autoVolName + ":/var/lib/nexus/agentcfg:size=2g")
 			if autoErr != nil {
 				return errSandbox("sandbox create", fmt.Errorf("auto-provision agentcfg volume: %w", autoErr))
 			}
@@ -1151,7 +1151,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				return errSandbox("sandbox create", fmt.Errorf("--file: builder image: %w", err))
 			}
 
-			buildWorkDir, err := os.MkdirTemp("", "nexus3-build-*")
+			buildWorkDir, err := os.MkdirTemp("", "nexus-build-*")
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: build workdir: %w", err))
 			}
@@ -1252,7 +1252,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			if err != nil {
 				if buildCtx.Err() != nil {
 					return errSandbox("sandbox create", fmt.Errorf(
-						"builder task exceeded %v (set NEXUS3_BUILD_TASK_TIMEOUT to change) — aborted",
+						"builder task exceeded %v (set NEXUS_BUILD_TASK_TIMEOUT to change) — aborted",
 						taskTimeout))
 				}
 				return errSandbox("sandbox create", fmt.Errorf("--file: build: %w", err))
@@ -1438,7 +1438,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			agentCfgStageDir = stageDir
 			bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
 				HostPath:  stageDir,
-				GuestPath: "/run/nexus3/agentcfg-lower",
+				GuestPath: "/run/nexus/agentcfg-lower",
 				ReadOnly:  true,
 			})
 			// Add the live rw ~/.claude mount.
@@ -1513,7 +1513,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			agentCfgStageDir = stageDir
 			bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
 				HostPath:  stageDir,
-				GuestPath: "/run/nexus3/agentcfg-lower",
+				GuestPath: "/run/nexus/agentcfg-lower",
 				ReadOnly:  true,
 			})
 			slog.Info("sandbox create: agent config staged for overlay", "staging", stageDir)
@@ -2131,7 +2131,7 @@ func runSandboxRmFull(ctx context.Context, args []string, out *Output, svc *serv
 			if rmErr := vs.Rm(ctx, autoVolName); rmErr != nil && !strings.HasSuffix(rmErr.Error(), ": not found") {
 				slog.Warn("sandbox.rm.agentcfg_volume_leak",
 					"sandbox", target.ID.String(), "volume", autoVolName, "err", rmErr,
-					"action", "auto-provisioned agentcfg volume not deleted; run: nexus3 volume rm "+autoVolName)
+					"action", "auto-provisioned agentcfg volume not deleted; run: nexus volume rm "+autoVolName)
 			}
 		}
 	}
@@ -2192,7 +2192,7 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 			return &CodedError{
 				Code: ErrCodeInternalError,
 				Msg: fmt.Sprintf(
-					"sandbox stop: supervisor for %s did not finish within %s; sandbox is still %s — re-run `nexus3 ps` in a moment, or `nexus3 reap` if it stays this way",
+					"sandbox stop: supervisor for %s did not finish within %s; sandbox is still %s — re-run `nexus ps` in a moment, or `nexus reap` if it stays this way",
 					sb.Handle(), supervisorExitTimeout, sb.State),
 			}
 		}

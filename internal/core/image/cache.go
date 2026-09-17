@@ -45,11 +45,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // currentMetaVersion is the schema version written into meta.json.
-// A meta.json with a higher version was written by a newer nexus3 binary and
+// A meta.json with a higher version was written by a newer nexus binary and
 // must not be decoded — partially understanding a record is worse than refusing it.
 const currentMetaVersion = 1
 
@@ -185,7 +185,7 @@ func (l *entryLease) release() {
 // computes its keep-set from sandbox records plus explicitly pinned extras, so
 // a freshly written image belonging to a DIFFERENT process is, correctly by
 // that computation, garbage — and was collected. Two windows were observed on
-// three concurrent `nexus3 create --file` builds:
+// three concurrent `nexus create --file` builds:
 //
 //	put:   rename artifact-<n>.tmp → artifact: no such file or directory
 //	       (the entry dir was removed mid-stream)
@@ -574,7 +574,7 @@ func (c *Cache) List(_ context.Context) ([]domain.Image, error) {
 //
 // Prune holds an internal mutex for its duration so that concurrent Prune
 // calls in THIS process do not race on directory enumeration and removal.
-// That mutex says nothing about other processes, and concurrent `nexus3
+// That mutex says nothing about other processes, and concurrent `nexus
 // create --file` builds are separate processes: cross-process exclusion is
 // the per-digest lease, probed below.
 //
@@ -698,12 +698,12 @@ func (c *Cache) PruneCandidates(ctx context.Context, referenced []domain.Digest)
 //
 // The builder writes its VM template directly into the cache root as
 // nexus-builder-<digestSafe>-agent<tag>.ext4, where tag is the first 8 bytes of
-// the sha256 of the embedded nexus3-agent binary. Every new nexus3 binary with
+// the sha256 of the embedded nexus-agent binary. Every new nexus binary with
 // a different agent therefore leaves the previous template behind, and Prune
 // only walks sha256/, so these accumulate until swept here.
 //
 // There is no lease on a template: a build mkfs's the file in place and removes
-// a partial on failure, and a DIFFERENT nexus3 binary on the same host may be
+// a partial on failure, and a DIFFERENT nexus binary on the same host may be
 // writing one concurrently. The sweep therefore has two fail-safe guards in
 // place of a lease: an flock probe (a VMM with the image open, or any other
 // holder, resolves to KEEP) and a modification-time grace window (a build
@@ -932,7 +932,7 @@ func readMeta(path string) (imageRecord, error) {
 	}
 	if rec.SchemaVersion > currentMetaVersion {
 		return imageRecord{}, fmt.Errorf(
-			"image cache: meta version %d > supported %d at %s; upgrade nexus3",
+			"image cache: meta version %d > supported %d at %s; upgrade nexus",
 			rec.SchemaVersion, currentMetaVersion, path)
 	}
 	return rec, nil

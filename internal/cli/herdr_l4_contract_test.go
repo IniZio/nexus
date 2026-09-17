@@ -94,7 +94,7 @@ func testHerdrContract_WorktreeList(t *testing.T) {
 
 	_, prodErr := herdrListWorktreeForWorkspace(context.Background(), herdrBin, wsID)
 	if prodErr != nil {
-		t.Errorf("herdrListWorktreeForWorkspace (production argv) returned error: %v — the argv nexus3 sends to herdr is likely wrong", prodErr)
+		t.Errorf("herdrListWorktreeForWorkspace (production argv) returned error: %v — the argv nexus sends to herdr is likely wrong", prodErr)
 	}
 
 	out, err := herdrExec("worktree", "list", "--workspace", wsID).CombinedOutput()
@@ -180,7 +180,7 @@ func firstWorktreeWorkspaceID(t *testing.T) string {
 func testHerdrContract_WorkspaceRename(t *testing.T) {
 	t.Helper()
 
-	originalLabel := fmt.Sprintf("nexus3-l4-contract-rename-%d", time.Now().UnixMilli())
+	originalLabel := fmt.Sprintf("nexus-l4-contract-rename-%d", time.Now().UnixMilli())
 	renamedLabel := originalLabel + "-r"
 
 	wsID, _ := createL4ScratchWorkspace(t, originalLabel)
@@ -207,7 +207,7 @@ func testHerdrContract_WorkspaceRename(t *testing.T) {
 func testHerdrContract_TabCreate(t *testing.T) {
 	t.Helper()
 
-	label := fmt.Sprintf("nexus3-l4-contract-tab-%d", time.Now().UnixMilli())
+	label := fmt.Sprintf("nexus-l4-contract-tab-%d", time.Now().UnixMilli())
 	wsID, _ := createL4ScratchWorkspace(t, label)
 	t.Cleanup(func() {
 		id := findL4WorkspaceIDByLabel(t, label)
@@ -229,7 +229,7 @@ func testHerdrContract_TabCreate(t *testing.T) {
 //
 // For each mutating command, assertHerdrHelp runs `herdr <args> --help` and
 // checks that every required token (subcommand name or flag) appears in the
-// output. A flag that nexus3 passes but herdr does not recognise would be
+// output. A flag that nexus passes but herdr does not recognise would be
 // caught here even though the command is never invoked for real.
 
 func assertHerdrHelp(t *testing.T, wantTokens []string, args ...string) {

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
 )
 
 // ── buildShadowDiskSpecs ──────────────────────────────────────────────────────

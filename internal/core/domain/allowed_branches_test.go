@@ -4,18 +4,18 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // TestResolvedAllowedBranches_Default verifies that an Envelope with no
-// AllowedBranches set returns the project default ["refs/heads/nexus3/**"].
+// AllowedBranches set returns the project default ["refs/heads/nexus/**"].
 // The "/**" suffix enables namespace-prefix matching at any depth, which is
-// required by the D-PD-03 branch convention nexus3/<motive-slug>/<sandbox-id>.
+// required by the D-PD-03 branch convention nexus/<motive-slug>/<sandbox-id>.
 // This covers assertion (a) of the S0 spec.
 func TestResolvedAllowedBranches_Default(t *testing.T) {
 	e := domain.Envelope{}
 	got := e.ResolvedAllowedBranches()
-	want := []string{"refs/heads/nexus3/**"}
+	want := []string{"refs/heads/nexus/**"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ResolvedAllowedBranches() on empty Envelope = %v; want %v", got, want)
 	}
@@ -26,7 +26,7 @@ func TestResolvedAllowedBranches_Default(t *testing.T) {
 func TestResolvedAllowedBranches_NilField(t *testing.T) {
 	e := domain.Envelope{AllowedBranches: nil}
 	got := e.ResolvedAllowedBranches()
-	want := []string{"refs/heads/nexus3/**"}
+	want := []string{"refs/heads/nexus/**"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ResolvedAllowedBranches() on nil AllowedBranches = %v; want %v", got, want)
 	}
@@ -35,7 +35,7 @@ func TestResolvedAllowedBranches_NilField(t *testing.T) {
 // TestResolvedAllowedBranches_DefaultIsDoubleStarNamespace verifies that the
 // default pattern uses "/**" (namespace-prefix depth-unlimited semantics) and
 // NOT the old single-level "*".  Full behavioral assertions — that the pattern
-// matches refs/heads/nexus3/<slug>/<id> (2 levels), refs/heads/nexus3/x
+// matches refs/heads/nexus/<slug>/<id> (2 levels), refs/heads/nexus/x
 // (1 level), and denies refs/heads/main and refs/heads/rogue — are in the
 // mitm package (TestRefMatchesGlob_*), where refMatchesGlob is defined.
 func TestResolvedAllowedBranches_DefaultIsDoubleStarNamespace(t *testing.T) {
@@ -44,9 +44,9 @@ func TestResolvedAllowedBranches_DefaultIsDoubleStarNamespace(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("ResolvedAllowedBranches() returned empty slice")
 	}
-	const want = "refs/heads/nexus3/**"
+	const want = "refs/heads/nexus/**"
 	if got[0] != want {
-		t.Errorf("default pattern = %q; want %q (D-PD-03: any depth under nexus3/)", got[0], want)
+		t.Errorf("default pattern = %q; want %q (D-PD-03: any depth under nexus/)", got[0], want)
 	}
 }
 
@@ -64,7 +64,7 @@ func TestResolvedAllowedBranches_Custom(t *testing.T) {
 // TestResolvedAllowedBranches_ReturnsCopy verifies that mutating the returned
 // slice does not affect the Envelope (no aliasing).
 func TestResolvedAllowedBranches_ReturnsCopy(t *testing.T) {
-	e := domain.Envelope{AllowedBranches: []string{"refs/heads/nexus3/*"}}
+	e := domain.Envelope{AllowedBranches: []string{"refs/heads/nexus/*"}}
 	got := e.ResolvedAllowedBranches()
 	got[0] = "mutated"
 	if e.AllowedBranches[0] == "mutated" {
@@ -76,28 +76,28 @@ func TestResolvedAllowedBranches_ReturnsCopy(t *testing.T) {
 // Envelope{AllowedBranches: [UnresolvedBranchSentinel]} is returned as-is
 // (len==1, non-empty) rather than being swallowed by the len==0 default
 // branch — the fail-closed create-path value must never silently widen back
-// to the nexus3 default.
+// to the nexus default.
 //
 // Mutation evidence: change the len(e.AllowedBranches) == 0 check to
 // len(e.AllowedBranches) <= 1 → the test fails because a one-element
-// sentinel slice would incorrectly return the nexus3/** default instead of
+// sentinel slice would incorrectly return the nexus/** default instead of
 // the sentinel.
 func TestResolvedAllowedBranches_SentinelIsNotTreatedAsUnset(t *testing.T) {
 	e := domain.Envelope{AllowedBranches: []string{domain.UnresolvedBranchSentinel}}
 	got := e.ResolvedAllowedBranches()
 	want := []string{domain.UnresolvedBranchSentinel}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ResolvedAllowedBranches() with sentinel = %v; want %v (unchanged, not the nexus3 default)", got, want)
+		t.Errorf("ResolvedAllowedBranches() with sentinel = %v; want %v (unchanged, not the nexus default)", got, want)
 	}
 }
 
 // TestResolvedAllowedBranches_DefaultUnchanged verifies that an empty Envelope
-// (no AllowedBranches set) returns the hardcoded default ["refs/heads/nexus3/**"].
+// (no AllowedBranches set) returns the hardcoded default ["refs/heads/nexus/**"].
 // Regression guard: the default must remain stable.
 func TestResolvedAllowedBranches_DefaultUnchanged(t *testing.T) {
 	e := domain.Envelope{}
 	got := e.ResolvedAllowedBranches()
-	want := []string{"refs/heads/nexus3/**"}
+	want := []string{"refs/heads/nexus/**"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ResolvedAllowedBranches() on empty Envelope = %v; want %v (default unchanged)", got, want)
 	}

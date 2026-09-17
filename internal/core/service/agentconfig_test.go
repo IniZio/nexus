@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // buildFakeHome creates a test home directory tree with secret and portable files.

@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// errSpawnUnsupportedPlatform: the detached supervisor re-execs the nexus3
-// binary to own a local microVM, which only runs on Linux. The nexus3 client on
-// other platforms drives a Linux host via `nexus3 orca ... --remote` and never
+// errSpawnUnsupportedPlatform: the detached supervisor re-execs the nexus
+// binary to own a local microVM, which only runs on Linux. The nexus client on
+// other platforms drives a Linux host via `nexus orca ... --remote` and never
 // spawns a local supervisor.
 var errSpawnUnsupportedPlatform = errors.New("supervisor: detached spawn is only supported on Linux (host-only); use --remote")
 

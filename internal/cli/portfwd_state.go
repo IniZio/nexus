@@ -77,7 +77,7 @@ func RenderPortsPane(state *ForwardsState, cursor int, now time.Time) string {
 			paneSep + "\n" +
 			"  laptop agent not connected\n" +
 			"  forwards.state not found\n\n" +
-			"  Run: nexus3 herdr agent attach <target>\n" +
+			"  Run: nexus herdr agent attach <target>\n" +
 			"  Setup: doc/portfwd-ssh-mechanism.md §1\n\n" +
 			"  q  close pane\n"
 	}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // writeMCPJSON writes a {"mcpServers": servers} JSON file at path.
@@ -70,7 +70,7 @@ func TestBuildSharedMCPServers_HTTPLiteralRedacted(t *testing.T) {
 	}
 
 	// Header value must be replaced with the synthetic var ref.
-	const synVar = "NEXUS3_MCP_LINEAR_AUTHORIZATION"
+	const synVar = "NEXUS_MCP_LINEAR_AUTHORIZATION"
 	if !strings.Contains(rawStr, "${"+synVar+"}") {
 		t.Errorf("want synthetic var ref ${%s} in Servers JSON, got: %s", synVar, rawStr)
 	}
@@ -306,7 +306,7 @@ func linearOAuthBind() MCPOAuthBind {
 		ServerName: "linear-server",
 		ServerURL:  "https://mcp.linear.app/mcp",
 		Bind: SecretBind{
-			Env:   "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION",
+			Env:   "NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION",
 			Hosts: []string{"mcp.linear.app"},
 			Token: "Bearer real-linear-access-token",
 		},
@@ -319,7 +319,7 @@ func linearOAuthBind() MCPOAuthBind {
 //
 // A Linear-like http MCP with NO headers in the host config + an injected OAuth
 // bind must produce:
-//   - Servers["linear-server"].headers.Authorization == "${NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION}"
+//   - Servers["linear-server"].headers.Authorization == "${NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION}"
 //   - HTTPBinds contains the matching SecretBind (host mcp.linear.app, Bearer token)
 //   - The real token string NEVER appears in the marshaled Servers map.
 func TestBuildSharedMCPServers_OAuthInjectsPlaceholderAndBind(t *testing.T) {
@@ -350,7 +350,7 @@ func TestBuildSharedMCPServers_OAuthInjectsPlaceholderAndBind(t *testing.T) {
 	}
 	rawStr := string(raw)
 
-	const synVar = "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION"
+	const synVar = "NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION"
 	const realToken = "real-linear-access-token"
 
 	// SECURITY: real token must NEVER appear in guest-visible Servers JSON.
@@ -411,7 +411,7 @@ func TestBuildSharedMCPServers_OAuthSynthesizesAbsentServer(t *testing.T) {
 	}
 	rawStr := string(raw)
 
-	const synVar = "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION"
+	const synVar = "NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION"
 	if !strings.Contains(rawStr, "${"+synVar+"}") {
 		t.Errorf("want ${%s} in synthesized entry, got: %s", synVar, rawStr)
 	}
@@ -500,7 +500,7 @@ func TestBuildSharedMCPServers_OAuthDeduplicatesBind(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
 
-	const synVar = "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION"
+	const synVar = "NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION"
 
 	// Server already has the Authorization header as a literal — sanitizeHTTPEntry
 	// will produce a bind for synVar. The OAuth bind has the same Env name.
@@ -576,7 +576,7 @@ func TestBuildSharedMCPServers_ProjectScopedLiteralHTTP(t *testing.T) {
 	const projServerName = "proj-mcp"
 	const projURL = "https://example.test/mcp"
 	const projToken = "Bearer LITERAL-PROJECT-TOKEN"
-	const projSynVar = "NEXUS3_MCP_PROJ_MCP_AUTHORIZATION"
+	const projSynVar = "NEXUS_MCP_PROJ_MCP_AUTHORIZATION"
 
 	writeClaudeDotJSON(t, filepath.Join(dir, ".claude.json"),
 		// top-level mcpServers
@@ -720,7 +720,7 @@ func TestBuildSharedMCPServers_ProjectScopedOAuthInjected(t *testing.T) {
 		t.Errorf("URL = %q, want %q (project URL must be preserved, not synthesized from OAuth host)", e.URL, projURL)
 	}
 
-	const synVar = "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION"
+	const synVar = "NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION"
 	// Placeholder must be injected (existing branch, not synthesis).
 	if e.Headers["Authorization"] != "${"+synVar+"}" {
 		t.Errorf("Authorization header = %q, want ${%s}", e.Headers["Authorization"], synVar)
@@ -745,9 +745,9 @@ func TestBuildSharedMCPServers_StdioHostOnlyAbsoluteDropped(t *testing.T) {
 	logs := captureSlog(t)
 
 	writeMCPJSON(t, filepath.Join(dir, ".claude.json"), map[string]any{
-		"nexus3": map[string]any{
+		"nexus": map[string]any{
 			"type":    "stdio",
-			"command": "/home/host/magic/nexus3/nexus3",
+			"command": "/home/host/magic/nexus/nexus",
 			"args":    []string{"mcp"},
 		},
 		"opencode": map[string]any{
@@ -763,7 +763,7 @@ func TestBuildSharedMCPServers_StdioHostOnlyAbsoluteDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, ok := got.Servers["nexus3"]; ok {
+	if _, ok := got.Servers["nexus"]; ok {
 		t.Fatal("host-only absolute stdio command must be dropped")
 	}
 	if _, ok := got.Servers["opencode"]; ok {
@@ -773,7 +773,7 @@ func TestBuildSharedMCPServers_StdioHostOnlyAbsoluteDropped(t *testing.T) {
 		t.Fatal("PATH-relative stdio command must be kept")
 	}
 	logStr := logs.String()
-	for _, want := range []string{"server=nexus3", "/home/host/magic/nexus3/nexus3", "server=opencode", filepath.Join(dir, ".config/opencode/bin/opencode")} {
+	for _, want := range []string{"server=nexus", "/home/host/magic/nexus/nexus", "server=opencode", filepath.Join(dir, ".config/opencode/bin/opencode")} {
 		if !strings.Contains(logStr, want) {
 			t.Errorf("drop log missing %q; got:\n%s", want, logStr)
 		}

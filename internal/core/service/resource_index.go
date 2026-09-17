@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/diskname"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/statedir"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/diskname"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/statedir"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ResourceKind identifies the type of a host resource.
@@ -39,9 +39,9 @@ const (
 	// persistence slice — the MITM CA private key.
 	//
 	// Nothing removed these before Service.Remove learned to (D-HSH-18), so
-	// every host that has ever run nexus3 carries one per sandbox it has ever
+	// every host that has ever run nexus carries one per sandbox it has ever
 	// created; the reference host had 641 against 1 live sandbox. They are
-	// enumerated here so `nexus3 reap` can collect the pre-existing backlog
+	// enumerated here so `nexus reap` can collect the pre-existing backlog
 	// through exactly the same classify-then-apply rail as every other kind.
 	KindSupervisorState ResourceKind = "supervisor_state"
 
@@ -74,7 +74,7 @@ type HostResource struct {
 // them in tests without touching environment variables.
 type IndexConfig struct {
 	StateRoot string // empty → store.DefaultRoot()
-	SocketDir string // empty → $XDG_RUNTIME_DIR/nexus3 (or $TMPDIR/nexus3-<uid>)
+	SocketDir string // empty → $XDG_RUNTIME_DIR/nexus (or $TMPDIR/nexus-<uid>)
 }
 
 // ResourceIndex enumerates host resources directly from the filesystem.
@@ -105,9 +105,9 @@ func (x *ResourceIndex) socketDir() (string, error) {
 		return x.cfg.SocketDir, nil
 	}
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
-		return filepath.Join(xdg, "nexus3"), nil
+		return filepath.Join(xdg, "nexus"), nil
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("nexus3-%d", os.Getuid())), nil
+	return filepath.Join(os.TempDir(), fmt.Sprintf("nexus-%d", os.Getuid())), nil
 }
 
 // List enumerates all known host resources by scanning the filesystem

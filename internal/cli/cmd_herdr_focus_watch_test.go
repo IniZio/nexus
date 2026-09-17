@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/portfwd"
 )
 
 type fakeHerdrServer struct {
@@ -504,8 +504,8 @@ func TestFocusWatch_PidAlive(t *testing.T) {
 		err     error
 		want    bool
 	}{
-		{"nexus3 focus-watch", []byte("nexus3\x00herdr\x00focus-watch"), nil, true},
-		{"full path local-agent-startup", []byte("/home/x/.local/bin/nexus3\x00herdr\x00local-agent-startup"), nil, true},
+		{"nexus focus-watch", []byte("nexus\x00herdr\x00focus-watch"), nil, true},
+		{"full path local-agent-startup", []byte("/home/x/.local/bin/nexus\x00herdr\x00local-agent-startup"), nil, true},
 		{"unrelated bash", []byte("bash\x00-c\x00sleep"), nil, false},
 		{"read error", nil, errors.New("no such process"), false},
 	}

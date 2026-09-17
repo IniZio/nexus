@@ -7,21 +7,21 @@ description: "Build custom guest images from a Containerfile and boot a sandbox 
 
 > Produce a custom ext4 guest image from a Containerfile and boot a sandbox against it — using the in-VM buildkitd, no external Docker daemon required.
 
-nexus3 sandboxes boot from ext4 guest images. You have two paths: run a stock OCI image directly (no build step), or build a custom image from a Containerfile.
+nexus sandboxes boot from ext4 guest images. You have two paths: run a stock OCI image directly (no build step), or build a custom image from a Containerfile.
 
 ---
 
 ## Run a stock OCI image directly <Badge type="tip" text="built" />
 
-For unmodified Docker Hub / OCI images, no build step is needed. Pass the registry ref directly to `nexus3 run` or `nexus3 create --image`:
+For unmodified Docker Hub / OCI images, no build step is needed. Pass the registry ref directly to `nexus run` or `nexus create --image`:
 
 ```sh
-nexus3 run alpine:3.20 -- sh -c 'echo hello; cat /etc/os-release | head -1'
-nexus3 run debian:bookworm-slim -- cat /etc/debian_version
-nexus3 run python:3.12 -- python3 -c 'import sys; print(sys.version)'
+nexus run alpine:3.20 -- sh -c 'echo hello; cat /etc/os-release | head -1'
+nexus run debian:bookworm-slim -- cat /etc/debian_version
+nexus run python:3.12 -- python3 -c 'import sys; print(sys.version)'
 ```
 
-nexus3 checks its local image store first. On a cache miss the image is pulled from the registry, converted to a bootable ext4 rootfs, and cached by ref. Subsequent runs of the same ref skip the pull.
+nexus checks its local image store first. On a cache miss the image is pulled from the registry, converted to a bootable ext4 rootfs, and cached by ref. Subsequent runs of the same ref skip the pull.
 
 > **Egress requirement:** the initial pull needs outbound HTTPS to the registry (e.g. `registry-1.docker.io`). Ensure the host's egress policy allows the registry host, or add it to `egress.policy` in `.nexus/config.yaml`.
 
@@ -54,21 +54,21 @@ WORKDIR /app
 Use `--dockerfile` / `-f` to override the path when keeping multiple configurations:
 
 ```sh
-nexus3 create myproject/worker-1 \
+nexus create myproject/worker-1 \
   --context /path/to/project \
   --dockerfile /path/to/project/.nexus/Containerfile.dev
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 <Badge type="warning" text="partial" /> — current implementation uses `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 **2. Build and boot in one step**
 
-`nexus3 create --context <dir>` builds the image and boots the sandbox in a single command:
+`nexus create --context <dir>` builds the image and boots the sandbox in a single command:
 
 ```sh
-nexus3 create myproject/builder-1 \
+nexus create myproject/builder-1 \
   --context /path/to/project \
   --mount /path/to/project:/workspace/project \
   --memory 8192 \
@@ -88,7 +88,7 @@ and image pulls all work without extra configuration.
 **3. Or build the image separately, then boot**
 
 ```sh
-nexus3 image build --workspace /path/to/project --ref my-image:latest
+nexus image build --workspace /path/to/project --ref my-image:latest
 ```
 
 | Flag | Description |
@@ -100,14 +100,14 @@ nexus3 image build --workspace /path/to/project --ref my-image:latest
 Boot from the cached image without rebuilding:
 
 ```sh
-nexus3 create myproject/worker-1 --image my-image:latest
+nexus create myproject/worker-1 --image my-image:latest
 ```
 
 List and prune built images:
 
 ```sh
-nexus3 image ls
-nexus3 image prune
+nexus image ls
+nexus image prune
 ```
 
 ---
@@ -117,12 +117,12 @@ nexus3 image prune
 For large build workloads that need hardware-accelerated VMs inside the sandbox, pass `--nested`:
 
 ```sh
-nexus3 create myproject/heavy-builder \
+nexus create myproject/heavy-builder \
   --context /path/to/project \
   --nested
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 `--nested` is off by default to minimise the security surface. Enable it only when the workload
 specifically needs nested virtualisation.
@@ -136,7 +136,7 @@ cache is stored per builder sandbox and is not shared between independent sandbo
 
 For iterative development:
 
-1. Build once with `nexus3 create --context` or `image build`.
+1. Build once with `nexus create --context` or `image build`.
 2. For subsequent runs, use `--image <ref>` to boot directly from the cached image without
    re-running the full build.
 
@@ -144,14 +144,14 @@ For iterative development:
 
 ## Declaring startup services <Badge type="danger" text="not built" />
 
-Services baked into the image start automatically and are readiness-gated: `nexus3 create`
+Services baked into the image start automatically and are readiness-gated: `nexus create`
 returns only once every declared ready probe passes (30-second cap; `create` fails if the cap
 is exceeded).
 
 Declare services by placing a `services.yaml` file in `.nexus/` and copying it into the image:
 
 ```yaml
-# .nexus/services.yaml → baked to /etc/nexus3/services.yaml
+# .nexus/services.yaml → baked to /etc/nexus/services.yaml
 services:
   - name: dockerd
     command: [dockerd, --storage-driver=overlay2]
@@ -165,10 +165,10 @@ FROM debian:bookworm-slim
 
 # ... install packages ...
 
-COPY .nexus/services.yaml /etc/nexus3/services.yaml
+COPY .nexus/services.yaml /etc/nexus/services.yaml
 ```
 
-With this in place, `nexus3 create --context .` blocks until `docker info` exits zero. The next
+With this in place, `nexus create --context .` blocks until `docker info` exits zero. The next
 command can use `docker` with no poll loop. See [Docker in a sandbox](docker-in-sandbox.md) for a
 full worked example.
 
@@ -181,7 +181,7 @@ Each entry supports:
 | `ready` | Readiness probe command; polled until it exits 0 |
 | `restart` | `never` (default) — the agent does not restart crashed services |
 
-A `--service 'name:cmd[:readyprobe]'` flag on `nexus3 create` can add or override a same-named
+A `--service 'name:cmd[:readyprobe]'` flag on `nexus create` can add or override a same-named
 entry at create time, without rebuilding the image.
 
 ---
@@ -192,7 +192,7 @@ Large builds can consume significant disk during the build phase. Before startin
 verify available space:
 
 ```sh
-df -h ~/.local/state/nexus3/
+df -h ~/.local/state/nexus/
 ```
 
 Measured on a 14-service compose monorepo:
@@ -211,6 +211,6 @@ For running Docker Compose inside the sandbox, see [Docker in a sandbox](docker-
 ## See also
 
 - [Surface reference — `image`](/cli/#commands)
-- [Surface reference — `nexus3 create`](/cli/#commands)
+- [Surface reference — `nexus create`](/cli/#commands)
 - [Mounts and worktrees](mounts-and-worktrees.md)
 - [Docker in a sandbox](docker-in-sandbox.md)

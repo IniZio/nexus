@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/portfwd"
 )
 
 func TestFocusStateRoundTrip(t *testing.T) {

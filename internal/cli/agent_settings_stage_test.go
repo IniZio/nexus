@@ -6,7 +6,7 @@ package cli
 // and never filepath.Dir(profile.SettingsPath), which ignores ConfigDirEnvVar.
 //
 // Design: CURSOR_CONFIG_DIR is set to a temp dir containing a cli-config.json
-// with a distinctive sentinel model value ("nexus3-ConfigDirEnvVar-sentinel").
+// with a distinctive sentinel model value ("nexus-ConfigDirEnvVar-sentinel").
 // This value cannot appear in the operator's real ~/.cursor/cli-config.json.
 // The test asserts the staged model value equals the sentinel; if the call
 // site reverts to filepath.Dir(profile.SettingsPath) it reads from ~/.cursor
@@ -18,7 +18,7 @@ package cli
 //	go vet: clean (compiles).
 //	--- FAIL: TestStageAgentCuratedConfig_UsesConfigDirEnvVar (0.00s)
 //	    agent_settings_stage_test.go:XX: staged "model" = <actual_value>, want
-//	        sentinel "nexus3-ConfigDirEnvVar-sentinel" — stageAgentCuratedConfig
+//	        sentinel "nexus-ConfigDirEnvVar-sentinel" — stageAgentCuratedConfig
 //	        read from ~/.cursor instead of CURSOR_CONFIG_DIR
 //	FAIL
 import (
@@ -28,14 +28,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // configDirEnvVarSentinel is written into the fake cli-config.json as the
 // "model" value. It cannot appear in any real cursor install because cursor
 // rejects it as an invalid model name. Its presence in the staged file proves
 // stageAgentCuratedConfig read from CURSOR_CONFIG_DIR, not from ~/.cursor.
-const configDirEnvVarSentinel = "nexus3-ConfigDirEnvVar-sentinel"
+const configDirEnvVarSentinel = "nexus-ConfigDirEnvVar-sentinel"
 
 func TestStageAgentCuratedConfig_UsesConfigDirEnvVar(t *testing.T) {
 	fakeSettingsDir := t.TempDir()

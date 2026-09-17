@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // knownOptionalSupervisorConfigFields lists supervisor.Config fields that may
@@ -59,7 +59,7 @@ var knownOptionalSupervisorConfigFields = map[string]string{
 // false alarm.
 func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 	// Pin the creds path so the test is deterministic and doesn't depend on $HOME.
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "/fake/creds.json")
 
 	// Representative "agent + workspace + mount" configuration.
 	// Every argument is intentionally non-zero:
@@ -81,15 +81,15 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 		},
 		2048, 2, // memoryMiB, bootVCPUs
 		"/disks/sb.raw", // diskPath
-		[]string{"/disks/shd.raw", "/disks/ws.raw"},              // extraDisks (non-nil)
-		"root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0", // cmdline
-		"/usr/bin/cloud-hypervisor",                              // chBin
-		"/tmp/sockets",                                           // socketDir
-		true,                                                     // hasWorkspace
-		1,                                                        // workspaceDiskIndex (non-zero, = 1 shadow disk)
-		1,                                                        // numNamedDisks (non-zero, = 1 docker named volume)
-		"/workspace/proj",                                        // workspaceGuestPath
-		true, 3,                                                  // hasScratchDisk, scratchDiskIndex (numNamedDisks+workspaceDiskIndex+1 = 1+1+1)
+		[]string{"/disks/shd.raw", "/disks/ws.raw"},             // extraDisks (non-nil)
+		"root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0", // cmdline
+		"/usr/bin/cloud-hypervisor",                             // chBin
+		"/tmp/sockets",                                          // socketDir
+		true,                                                    // hasWorkspace
+		1,                                                       // workspaceDiskIndex (non-zero, = 1 shadow disk)
+		1,                                                       // numNamedDisks (non-zero, = 1 docker named volume)
+		"/workspace/proj",                                       // workspaceGuestPath
+		true, 3,                                                 // hasScratchDisk, scratchDiskIndex (numNamedDisks+workspaceDiskIndex+1 = 1+1+1)
 		[]domain.LiveMount{{HostPath: "/src", GuestPath: "/work"}}, // liveMounts
 		"/usr/bin/virtiofsd", // virtiofsdPath
 		true,                 // nestedVirt — non-zero for AllFieldsPopulated
@@ -124,7 +124,7 @@ func TestBuildHumanSupervisorConfig_AllFieldsPopulated(t *testing.T) {
 // time. A long-running agent sandbox then dies at expiry with an opaque 401
 // inside the guest and nothing in supervisor.log to explain it.
 func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "/fake/creds.json")
 
 	// Minimal config — only the fields needed for a no-mount, no-workspace
 	// sandbox. CredsFile must be set regardless of mounts or workspace.
@@ -160,7 +160,7 @@ func TestBuildHumanSupervisorConfig_CredsFilePopulated(t *testing.T) {
 // ResizableDiskIndices. This test fails if the named-disk loop in
 // buildHumanSupervisorConfig is removed or the index formula is wrong.
 func TestBuildHumanSupervisorConfig_NamedDiskResizableIndices(t *testing.T) {
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "/fake/creds.json")
 
 	cases := []struct {
 		name           string

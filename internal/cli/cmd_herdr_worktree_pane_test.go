@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // Pane-first provisioning: ORDERING (pane opens first, build inside) +
@@ -48,7 +48,7 @@ func newWorktreePaneEnv(t *testing.T, shimExit int) *worktreePaneEnv {
 
 	shim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + e.shimLog + "\nexit " +
 		itoa(shimExit) + "\n"
-	if err := os.WriteFile(filepath.Join(root, "nexus3-shim.sh"), []byte(shim), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "nexus-shim.sh"), []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	herdr := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + e.herdrLog + "\nexit 0\n"
@@ -127,8 +127,8 @@ func TestOpenPaneScript_WorktreeSandboxOpensPaneFirst(t *testing.T) {
 	}
 }
 
-// Routing: pane invokes `nexus3 herdr worktree-sandbox` verb.
-func TestPaneScript_WorktreeSandboxRoutesToNexus3Verb(t *testing.T) {
+// Routing: pane invokes `nexus herdr worktree-sandbox` verb.
+func TestPaneScript_WorktreeSandboxRoutesToNexusVerb(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
 	_, code := e.runScript(t, "pane.sh", []string{"worktree-sandbox"},
 		[]string{"HERDR_WORKSPACE_ID=w42"})
@@ -149,7 +149,7 @@ func TestPaneScript_WorktreeSandboxRoutesToNexus3Verb(t *testing.T) {
 func TestPaneScript_WorktreeSandboxAutoFlag(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
 	_, _ = e.runScript(t, "pane.sh", []string{"worktree-sandbox"},
-		[]string{"HERDR_WORKSPACE_ID=w42", "NEXUS3_WORKTREE_AUTO=1"})
+		[]string{"HERDR_WORKSPACE_ID=w42", "NEXUS_WORKTREE_AUTO=1"})
 	shim := strings.TrimSpace(e.shimArgv(t))
 	if shim != "herdr worktree-sandbox --auto w42" {
 		t.Errorf("pane.sh invoked %q; want %q", shim, "herdr worktree-sandbox --auto w42")
@@ -215,7 +215,7 @@ func TestOnWorktreeCreated_OpensProvisioningPane(t *testing.T) {
 	if !strings.Contains(herdr, "--entrypoint worktree-sandbox") {
 		t.Errorf("hook did not open the provisioning pane; herdr argv:\n%s", herdr)
 	}
-	if !strings.Contains(herdr, "NEXUS3_WORKTREE_AUTO=1") {
+	if !strings.Contains(herdr, "NEXUS_WORKTREE_AUTO=1") {
 		t.Errorf("hook did not carry the --auto predicate into the pane — it would bind "+
 			"a sandbox for every new worktree in every repo. herdr argv:\n%s", herdr)
 	}

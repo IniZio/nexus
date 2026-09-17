@@ -11,23 +11,23 @@ Snapshots are content-addressed artifacts. Fork children are ordinary `Sandbox` 
 
 ```sh
 # Snapshot a running sandbox (ULID assigned automatically)
-nexus3 snapshot create my-app
+nexus snapshot create my-app
 
 # Snapshot with a human-chosen name (target; name addressing: not built)
-# nexus3 snapshot create my-app baseline
+# nexus snapshot create my-app baseline
 ```
 
 <Badge type="danger" text="not built" /> The optional `<name>` argument and name-based addressing (`snapshot rm baseline`, `restore baseline`) are a target feature. Today every snapshot is identified by its auto-assigned ULID only.
 
 ```sh
 # Fork into a new child
-nexus3 fork my-app
+nexus fork my-app
 
 # List snapshots
-nexus3 snapshot list
+nexus snapshot list
 
 # Remove a snapshot by ID (refused while children reference it)
-nexus3 snapshot rm <snapshot-id>
+nexus snapshot rm <snapshot-id>
 ```
 
 ## The `Snapshot` artifact
@@ -36,7 +36,7 @@ A `Snapshot` records the full memory and disk state of a sandbox at a point in t
 
 - Snapshots are **content-addressed** by the artifact store (like images).
 - Snapshots are **not portable** across machines or platforms. On macOS, VZ save files are hardware-encrypted and host+account-bound. On Linux, CH snapshot files are specific to the host's CH version.
-- A snapshot has a **commit marker**: nexus3 writes the marker only after the full snapshot is on disk, then length-checks before restore. This guards against silent corruption — see [Snapshot integrity](#snapshot-integrity).
+- A snapshot has a **commit marker**: nexus writes the marker only after the full snapshot is on disk, then length-checks before restore. This guards against silent corruption — see [Snapshot integrity](#snapshot-integrity).
 
 ### When snapshot is legal
 
@@ -50,11 +50,11 @@ A `Snapshot` records the full memory and disk state of a sandbox at a point in t
 
 The operation runs under a lease alongside the record; the sandbox never enters a transient state.
 
-**Live-mounted sandbox — snapshot refused**: when a sandbox holds a live virtiofs mount, `nexus3 snapshot` is refused with an explicit error naming the offending host→guest pairs. The mounted tree lives on the host and is not captured in the snapshot; a restore would resume memory state referencing files that may have changed underneath it.
+**Live-mounted sandbox — snapshot refused**: when a sandbox holds a live virtiofs mount, `nexus snapshot` is refused with an explicit error naming the offending host→guest pairs. The mounted tree lives on the host and is not captured in the snapshot; a restore would resume memory state referencing files that may have changed underneath it.
 
 ## Fork
 
-`nexus3 fork <id>` creates a new sandbox from a snapshot of the given sandbox.
+`nexus fork <id>` creates a new sandbox from a snapshot of the given sandbox.
 
 ### Semantics
 
@@ -62,7 +62,7 @@ The operation runs under a lease alongside the record; the sandbox never enters 
 - **Children are ordinary Sandboxes**, created directly in `running` state. Their `Provenance` field records the parent ID and source snapshot ID.
 - Children get **identity fixup** on wake: new MAC address, new IP, new hostname, new `machine-id`. The kernel, disk state, and memory image are otherwise identical to the snapshot.
 - **All disks are isolated per child**: every sandbox disk receives an independent CoW sparse copy via reflink (or fallback copy-on-write) — the root disk, and every extra disk the parent carries, which includes its shadow disks. No disk is shared between siblings after fork.
-- **Live-mounted sandbox — fork refused**: `nexus3 fork` is refused on a sandbox holding a live virtiofs mount, with an explicit error naming the offending mount pairs. Two child VMs sharing one host worktree would collide on `.git/index.lock`. The N-way parallel pattern uses independent `create` calls, each with its own worktree.
+- **Live-mounted sandbox — fork refused**: `nexus fork` is refused on a sandbox holding a live virtiofs mount, with an explicit error naming the offending mount pairs. Two child VMs sharing one host worktree would collide on `.git/index.lock`. The N-way parallel pattern uses independent `create` calls, each with its own worktree.
 
 ### Cost model (Linux)
 
@@ -80,7 +80,7 @@ Fork requires the parent to have a snapshot. The parent sandbox itself can be in
 
 ## Snapshot integrity
 
-nexus3 owns integrity; CH provides none.
+nexus owns integrity; CH provides none.
 
 The snapshot protocol:
 1. Pause the VM.
@@ -92,7 +92,7 @@ If the length check fails, the snapshot is corrupt and the restore is refused. W
 
 ## `snapshot rm` and child references
 
-`nexus3 snapshot rm` refuses while any child sandbox is still paging from the snapshot directory. The artifact store tracks reference counts; `rm` fails if any reference is live.
+`nexus snapshot rm` refuses while any child sandbox is still paging from the snapshot directory. The artifact store tracks reference counts; `rm` fails if any reference is live.
 
 ## Restore-in-place (edge 4)
 

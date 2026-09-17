@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // newStore returns a VolumeStore backed by a temp directory.

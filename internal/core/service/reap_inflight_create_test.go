@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // TestReap_InFlightCreate_DiskSurvivesConcurrentReap drives a real
@@ -59,7 +59,7 @@ func TestReap_InFlightCreate_DiskSurvivesConcurrentReap(t *testing.T) {
 	idx := NewResourceIndex(IndexConfig{StateRoot: stateRoot, SocketDir: t.TempDir()})
 	// Empty ProcDir: no process anywhere carries the ULID during the window —
 	// which is exactly the production situation, since the creator is the
-	// nexus3 CLI (its cmdline has no ULID) and cloud-hypervisor is not launched
+	// nexus CLI (its cmdline has no ULID) and cloud-hypervisor is not launched
 	// until after store.Create.
 	emptyProcDir := t.TempDir()
 
@@ -76,7 +76,7 @@ func TestReap_InFlightCreate_DiskSurvivesConcurrentReap(t *testing.T) {
 			t.Errorf("setup: in-flight .raw missing at capture time: %v", statErr)
 		}
 
-		// A concurrent `nexus3 reap --apply` fires mid-create.
+		// A concurrent `nexus reap --apply` fires mid-create.
 		rep, reapErr := Reap(ctx, st, idx, true /*apply*/, ReapOptions{ProcDir: emptyProcDir})
 		if reapErr != nil {
 			t.Errorf("Reap: %v", reapErr)
@@ -272,7 +272,7 @@ func TestReap_LeaseIsALeaseNotABlock(t *testing.T) {
 // It exits on its own after a bounded wait so a failed parent cannot leave a
 // process behind.
 func TestHelperHoldIntentLease(t *testing.T) {
-	path := os.Getenv("NEXUS3_TEST_HOLD_INTENT_LEASE")
+	path := os.Getenv("NEXUS_TEST_HOLD_INTENT_LEASE")
 	if path == "" {
 		t.Skip("helper process body; not a standalone test")
 	}
@@ -299,8 +299,8 @@ func TestHelperHoldIntentLease(t *testing.T) {
 // This is what rules out the failure mode that would make the fix worse than
 // the bug: a crashed creator leaving a keep-condition that never expires. It is
 // also the only test here that exercises the lease across process boundaries,
-// which is the configuration production actually runs in (`nexus3 reap` is a
-// different process from `nexus3 sandbox create`).
+// which is the configuration production actually runs in (`nexus reap` is a
+// different process from `nexus sandbox create`).
 func TestReap_KilledCreatorDoesNotBlockReclamation(t *testing.T) {
 	ctx := context.Background()
 	stateRoot := t.TempDir()
@@ -319,7 +319,7 @@ func TestReap_KilledCreatorDoesNotBlockReclamation(t *testing.T) {
 
 	// ── Start the stand-in creator and wait until it holds the lease ────────
 	cmd := exec.Command(os.Args[0], "-test.run=TestHelperHoldIntentLease", "-test.v")
-	cmd.Env = append(os.Environ(), "NEXUS3_TEST_HOLD_INTENT_LEASE="+intentPath)
+	cmd.Env = append(os.Environ(), "NEXUS_TEST_HOLD_INTENT_LEASE="+intentPath)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("StdoutPipe: %v", err)

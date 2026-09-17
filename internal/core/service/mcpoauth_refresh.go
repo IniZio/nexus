@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // safeNameRe matches characters that are safe for filesystem paths in a
@@ -104,8 +104,8 @@ func buildMCPOAuthRefresher(cfg MCPOAuthRefreshConfig, broker *cred.Broker, stor
 
 // DefaultMCPOAuthStoreRoot returns the default host-side directory where
 // per-server MCP OAuth credential stores are persisted.
-// Typically ~/.config/nexus3/mcp-creds/.
+// Typically ~/.config/nexus/mcp-creds/.
 func DefaultMCPOAuthStoreRoot() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "nexus3", "mcp-creds")
+	return filepath.Join(home, ".config", "nexus", "mcp-creds")
 }

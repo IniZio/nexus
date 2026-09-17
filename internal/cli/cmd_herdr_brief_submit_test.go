@@ -11,7 +11,7 @@ import (
 )
 
 // Transcripts below are the two states observed live on 2026-09-02 while
-// dispatching a three-slice wave through `nexus3 herdr agent --autonomous
+// dispatching a three-slice wave through `nexus herdr agent --autonomous
 // --no-focus`. Two briefs submitted; the third stranded. The CLI reported
 // success on all three.
 //

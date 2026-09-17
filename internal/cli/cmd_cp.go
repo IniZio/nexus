@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
 )
 
 const guestPrefix = "guest:"

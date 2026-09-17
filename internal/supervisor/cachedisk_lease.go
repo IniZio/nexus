@@ -12,7 +12,7 @@
 // terminateSupervisor escalates to SIGKILL, orphaning the VM — left the slot
 // reading FREE while the image was still locked, and the next build failed to
 // boot with an opaque "Error locking disk images" from CH. (Recorded as the
-// residual of motive nexus3-builder-supervisor-spawn-race: "the lease was
+// residual of motive nexus-builder-supervisor-spawn-race: "the lease was
 // CLI-scoped while the image lock is VM-scoped".)
 //
 // # Who holds it now
@@ -40,7 +40,7 @@
 //
 //   - A supervisor SIGKILL closes these descriptors and the slot reads FREE,
 //     even though the netns child — and therefore cloud-hypervisor's write
-//     lock on the IMAGE — survives. `nexus3 recover` spawns a replacement
+//     lock on the IMAGE — survives. `nexus recover` spawns a replacement
 //     supervisor which re-acquires the slot by path here, and it succeeds.
 //   - On a planned supervisor-upgrade the outgoing supervisor's
 //     `defer ReleaseCacheDiskLeases` frees the slot while the VM is
@@ -58,7 +58,7 @@
 //     the same operation that ends the outgoing supervisor starts the incoming
 //     one.
 //   - Crash (SIGKILL): the window stays open until an operator runs
-//     `nexus3 recover`. NOTHING triggers that automatically — recovery.New has
+//     `nexus recover`. NOTHING triggers that automatically — recovery.New has
 //     exactly one non-test call site, internal/cli/cmd_recover.go, reached only
 //     from the operator-run verb. So on an unattended host this window can span
 //     the VM's whole remaining life.
@@ -75,7 +75,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder"
 )
 
 // cacheDiskAdoptLeaseTimeout bounds how long an adopting supervisor waits for

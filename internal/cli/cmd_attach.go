@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 func init() {

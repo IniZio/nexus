@@ -19,7 +19,7 @@ package builder_test
 //	Part C mutation: raw failOpenFS without the wrapper — Solve may succeed and
 //	               write a zero-byte file, proving the guard is necessary.
 //
-//	Part D:        sizeVerifiedSet wrapping the nexus3agent mount fails fast when
+//	Part D:        sizeVerifiedSet wrapping the nexusagent mount fails fast when
 //	               the agent read is truncated.
 //
 //	Mutation (A):  the same cutFS used in Part A, but WITHOUT the sizeVerifiedFS
@@ -44,8 +44,8 @@ import (
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/tonistiigi/fsutil"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // w34LiveEndpoint returns the buildkitd address and true if buildkitd is
@@ -76,14 +76,14 @@ func w34RepoRoot(t *testing.T) string {
 	return filepath.Dir(mod)
 }
 
-// w34BuildNexus3Agent compiles cmd/nexus3-agent as a static Linux/amd64 binary
+// w34BuildNexusAgent compiles cmd/nexus-agent as a static Linux/amd64 binary
 // and returns its path in a temp dir cleaned up when t ends.
-func w34BuildNexus3Agent(t *testing.T) string {
+func w34BuildNexusAgent(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "nexus3-agent")
+	bin := filepath.Join(dir, "nexus-agent")
 	cmd := exec.Command("go", "build", "-o", bin,
-		"github.com/IniZio/nexus3/cmd/nexus3-agent")
+		"github.com/IniZio/nexus/cmd/nexus-agent")
 	cmd.Dir = w34RepoRoot(t)
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
@@ -91,7 +91,7 @@ func w34BuildNexus3Agent(t *testing.T) string {
 		"GOARCH=amd64",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build nexus3-agent: %s\n%v", out, err)
+		t.Fatalf("go build nexus-agent: %s\n%v", out, err)
 	}
 	return bin
 }
@@ -239,7 +239,7 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 	writeDFDir := func(probe string) string {
 		dir := t.TempDir()
 		df := "FROM alpine:latest\n" +
-			fmt.Sprintf("RUN echo %d > /.nexus3-w34-%s\n", time.Now().UnixNano(), probe) +
+			fmt.Sprintf("RUN echo %d > /.nexus-w34-%s\n", time.Now().UnixNano(), probe) +
 			"COPY bigfile.dat /bigfile.dat\n"
 		t.Logf("Dockerfile (%s):\n%s", probe, df)
 		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(df), 0o644); err != nil {
@@ -300,7 +300,7 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 	// ── Part B: builder.Build (real FS) → ext4 with full 64 MiB file ─────────
 	t.Log("Part B: normal builder.Build — must succeed and produce 64 MiB file in ext4")
 	{
-		agentBin := w34BuildNexus3Agent(t)
+		agentBin := w34BuildNexusAgent(t)
 
 		// Fresh bigfile with a different timestamp prefix so Part B's COPY layer
 		// hash is independent of Part A/mutation and immune to their cache entries.
@@ -315,7 +315,7 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 			t.Fatalf("Part B: mkdir .nexus: %v", err)
 		}
 		cfB := "FROM alpine:latest\n" +
-			fmt.Sprintf("RUN echo %d > /.nexus3-w34-probe-B\n", time.Now().UnixNano()) +
+			fmt.Sprintf("RUN echo %d > /.nexus-w34-probe-B\n", time.Now().UnixNano()) +
 			"COPY bigfile.dat /bigfile.dat\n"
 		t.Logf("Part B Containerfile:\n%s", cfB)
 		if err := os.WriteFile(filepath.Join(workspaceB, ".nexus", "Containerfile"), []byte(cfB), 0o644); err != nil {
@@ -324,7 +324,7 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 
 		// Fixed (persistent) cache dir so the ext4 artifact survives test teardown
 		// and can be inspected with debugfs externally.
-		cacheDirB := "/tmp/nexus3-w34-sizedfs-live-cache"
+		cacheDirB := "/tmp/nexus-w34-sizedfs-live-cache"
 		if err := os.MkdirAll(cacheDirB, 0o755); err != nil {
 			t.Fatalf("Part B: mkdir cache: %v", err)
 		}
@@ -508,23 +508,23 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 		}
 	}
 
-	// ── Part D: sfsSet wrapping nexus3agent → Solve MUST fail fast ───────────
-	// Proves that the nexus3agent mount (which carries the ~36 MiB agent binary,
+	// ── Part D: sfsSet wrapping nexusagent → Solve MUST fail fast ───────────
+	// Proves that the nexusagent mount (which carries the ~36 MiB agent binary,
 	// the exact artifact class that triggered the production 32 MiB truncation)
 	// is now guarded: a 4 MiB cut triggers the same fail-fast as Part A.
-	t.Log("Part D: sizeVerifiedSet wrapping nexus3agent — Solve must fail fast, error names agent path")
+	t.Log("Part D: sizeVerifiedSet wrapping nexusagent — Solve must fail fast, error names agent path")
 	{
-		agentBinD := w34BuildNexus3Agent(t)
+		agentBinD := w34BuildNexusAgent(t)
 		agentBytesD, agentReadErr := os.ReadFile(agentBinD)
 		if agentReadErr != nil {
 			t.Fatalf("Part D: read agent binary: %v", agentReadErr)
 		}
 		t.Logf("Part D: agent binary size: %d bytes (%.1f MiB)", len(agentBytesD), float64(len(agentBytesD))/(1<<20))
 
-		// Agent dir contains only _nexus3-agent (the binary), matching the
-		// production layout that Solve uses for the nexus3agent named context.
+		// Agent dir contains only _nexus-agent (the binary), matching the
+		// production layout that Solve uses for the nexusagent named context.
 		agentDirD := t.TempDir()
-		if err := os.WriteFile(filepath.Join(agentDirD, "_nexus3-agent"), agentBytesD, 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(agentDirD, "_nexus-agent"), agentBytesD, 0o755); err != nil {
 			t.Fatalf("Part D: write agent: %v", err)
 		}
 		agentFSD_real, agentFSErrD := fsutil.NewFS(agentDirD)
@@ -533,18 +533,18 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 		}
 		agentCutD := &cutFS{inner: agentFSD_real, cutAt: 4 << 20}
 
-		// Minimal build context (no workspace files — agent is in nexus3agent context).
+		// Minimal build context (no workspace files — agent is in nexusagent context).
 		ctxDirD := t.TempDir()
 		ctxFSD, ctxFSErrD := fsutil.NewFS(ctxDirD)
 		if ctxFSErrD != nil {
 			t.Fatalf("Part D: fsutil.NewFS(ctxDir): %v", ctxFSErrD)
 		}
 
-		// Dockerfile COPYs the agent from the nexus3agent named context.
+		// Dockerfile COPYs the agent from the nexusagent named context.
 		dfDirD := t.TempDir()
 		dfD := "FROM alpine:latest\n" +
-			fmt.Sprintf("RUN echo %d > /.nexus3-w39-probe-D\n", time.Now().UnixNano()) +
-			"COPY --chmod=0755 --from=nexus3agent _nexus3-agent /sbin/nexus3-agent\n"
+			fmt.Sprintf("RUN echo %d > /.nexus-w39-probe-D\n", time.Now().UnixNano()) +
+			"COPY --chmod=0755 --from=nexusagent _nexus-agent /sbin/nexus-agent\n"
 		t.Logf("Part D Dockerfile:\n%s", dfD)
 		if err := os.WriteFile(filepath.Join(dfDirD, "Dockerfile"), []byte(dfD), 0o644); err != nil {
 			t.Fatalf("Part D: write Dockerfile: %v", err)
@@ -571,14 +571,14 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 			defer bk.Close()
 			_, solveErr := bk.Solve(solveCtxD, nil, bkclient.SolveOpt{
 				LocalMounts: map[string]fsutil.FS{
-					"context":     sfsSetD.Wrap(ctxFSD),
-					"dockerfile":  sfsSetD.Wrap(dfFSD),
-					"nexus3agent": sfsSetD.Wrap(agentCutD),
+					"context":    sfsSetD.Wrap(ctxFSD),
+					"dockerfile": sfsSetD.Wrap(dfFSD),
+					"nexusagent": sfsSetD.Wrap(agentCutD),
 				},
 				Frontend: "dockerfile.v0",
 				FrontendAttrs: map[string]string{
-					"filename":            "Dockerfile",
-					"context:nexus3agent": "local:nexus3agent",
+					"filename":           "Dockerfile",
+					"context:nexusagent": "local:nexusagent",
 				},
 				Exports: []bkclient.ExportEntry{{
 					Type: bkclient.ExporterTar,
@@ -595,11 +595,11 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 		}
 
 		if errD == nil {
-			t.Fatal("Part D: expected non-nil error from nexus3agent truncation guard, got nil")
+			t.Fatal("Part D: expected non-nil error from nexusagent truncation guard, got nil")
 		}
 		t.Logf("Part D: elapsed=%s error: %v", elapsedD.Round(time.Second), errD)
 
-		if !strings.Contains(errD.Error(), "_nexus3-agent") {
+		if !strings.Contains(errD.Error(), "_nexus-agent") {
 			t.Errorf("Part D: error does not mention agent path: %s", errD)
 		}
 		if !strings.Contains(errD.Error(), "4194304") {
@@ -609,8 +609,8 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 			t.Errorf("Part D: Solve took %s — cancel-cause not propagating fast enough", elapsedD.Round(time.Second))
 		}
 		// No agent binary should appear in the output since the build failed.
-		if fi, statErr := os.Stat(filepath.Join(outDirD, "sbin", "nexus3-agent")); statErr == nil {
-			t.Errorf("Part D: /sbin/nexus3-agent unexpectedly in outDir (size=%d) — guard did not stop the build", fi.Size())
+		if fi, statErr := os.Stat(filepath.Join(outDirD, "sbin", "nexus-agent")); statErr == nil {
+			t.Errorf("Part D: /sbin/nexus-agent unexpectedly in outDir (size=%d) — guard did not stop the build", fi.Size())
 		}
 	}
 
@@ -619,11 +619,11 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 	// succeeds and the agent binary inside the image is exactly 4194304 bytes.
 	t.Log("Part D mutation: raw agentFS without sfsSet — Solve must succeed with 4 MiB truncated agent")
 	{
-		agentBinDM := w34BuildNexus3Agent(t)
+		agentBinDM := w34BuildNexusAgent(t)
 		agentBytesDM, _ := os.ReadFile(agentBinDM)
 
 		agentDirDM := t.TempDir()
-		if err := os.WriteFile(filepath.Join(agentDirDM, "_nexus3-agent"), agentBytesDM, 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(agentDirDM, "_nexus-agent"), agentBytesDM, 0o755); err != nil {
 			t.Fatalf("Part D mut: write agent: %v", err)
 		}
 		agentFSDM_real, _ := fsutil.NewFS(agentDirDM)
@@ -634,8 +634,8 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 
 		dfDirDM := t.TempDir()
 		dfDM := "FROM alpine:latest\n" +
-			fmt.Sprintf("RUN echo %d > /.nexus3-w39-probe-DM\n", time.Now().UnixNano()) +
-			"COPY --chmod=0755 --from=nexus3agent _nexus3-agent /sbin/nexus3-agent\n"
+			fmt.Sprintf("RUN echo %d > /.nexus-w39-probe-DM\n", time.Now().UnixNano()) +
+			"COPY --chmod=0755 --from=nexusagent _nexus-agent /sbin/nexus-agent\n"
 		if err := os.WriteFile(filepath.Join(dfDirDM, "Dockerfile"), []byte(dfDM), 0o644); err != nil {
 			t.Fatalf("Part D mut: write Dockerfile: %v", err)
 		}
@@ -654,14 +654,14 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 			defer bk.Close()
 			_, solveErr := bk.Solve(ctxDM, nil, bkclient.SolveOpt{
 				LocalMounts: map[string]fsutil.FS{
-					"context":     ctxFSDM,
-					"dockerfile":  dfFSDM,
-					"nexus3agent": agentCutDM, // RAW — no sfsSet wrapping
+					"context":    ctxFSDM,
+					"dockerfile": dfFSDM,
+					"nexusagent": agentCutDM, // RAW — no sfsSet wrapping
 				},
 				Frontend: "dockerfile.v0",
 				FrontendAttrs: map[string]string{
-					"filename":            "Dockerfile",
-					"context:nexus3agent": "local:nexus3agent",
+					"filename":           "Dockerfile",
+					"context:nexusagent": "local:nexusagent",
 				},
 				Exports: []bkclient.ExportEntry{{
 					Type: bkclient.ExporterTar,
@@ -681,13 +681,13 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 		}
 		t.Logf("MUTATION Part D: raw agentFS — Solve succeeded in %s (expected)", elapsedDM.Round(time.Second))
 
-		// The unpacked /sbin/nexus3-agent must be exactly 4 MiB (truncated).
-		agentOutPath := filepath.Join(outDirDM, "sbin", "nexus3-agent")
+		// The unpacked /sbin/nexus-agent must be exactly 4 MiB (truncated).
+		agentOutPath := filepath.Join(outDirDM, "sbin", "nexus-agent")
 		fi, statErr := os.Stat(agentOutPath)
 		if statErr != nil {
-			t.Logf("MUTATION Part D: /sbin/nexus3-agent not in unpacked outDir: %v", statErr)
+			t.Logf("MUTATION Part D: /sbin/nexus-agent not in unpacked outDir: %v", statErr)
 		} else {
-			t.Logf("MUTATION Part D: /sbin/nexus3-agent size=%d bytes (%.1f MiB)", fi.Size(), float64(fi.Size())/(1<<20))
+			t.Logf("MUTATION Part D: /sbin/nexus-agent size=%d bytes (%.1f MiB)", fi.Size(), float64(fi.Size())/(1<<20))
 			if fi.Size() != 4<<20 {
 				t.Errorf("MUTATION Part D: expected truncated size 4194304, got %d", fi.Size())
 			}
@@ -699,11 +699,11 @@ func TestSizeVerifiedFSLive(t *testing.T) {
 		if err := builder.RunMke2fs(ctxDM, outDirDM, ext4DM, ext4SizeMiB<<20); err != nil {
 			t.Logf("MUTATION Part D: mke2fs failed: %v (skipping debugfs check)", err)
 		} else {
-			dbOut, dbErr := exec.Command("debugfs", "-R", "stat /sbin/nexus3-agent", ext4DM).CombinedOutput()
+			dbOut, dbErr := exec.Command("debugfs", "-R", "stat /sbin/nexus-agent", ext4DM).CombinedOutput()
 			if dbErr != nil {
 				t.Logf("MUTATION Part D: debugfs unavailable: %v\n%s", dbErr, dbOut)
 			} else {
-				t.Logf("MUTATION Part D: debugfs stat /sbin/nexus3-agent:\n%s", dbOut)
+				t.Logf("MUTATION Part D: debugfs stat /sbin/nexus-agent:\n%s", dbOut)
 				if !strings.Contains(string(dbOut), "4194304") {
 					t.Errorf("MUTATION Part D: debugfs output does not show truncated size 4194304:\n%s", dbOut)
 				}

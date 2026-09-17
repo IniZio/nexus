@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	mcp "github.com/IniZio/nexus3/internal/mcp"
+	mcp "github.com/IniZio/nexus/internal/mcp"
 )
 
 // surfaceEntry documents one CLI verb's canonical API backing and MCP tools.

@@ -191,7 +191,7 @@ func TestHerdrInstallDefaultShell_WriteConfig_ForeignShellChains(t *testing.T) {
 		t.Fatalf("install-default-shell: %v", err)
 	}
 
-	installPath := filepath.Join(home, ".local", "bin", "nexus3-guest-shell")
+	installPath := filepath.Join(home, ".local", "bin", "nexus-guest-shell")
 	sidecarData, err := os.ReadFile(installPath + herdrSidecarSuffix)
 	if err != nil {
 		t.Fatalf("sidecar: %v", err)

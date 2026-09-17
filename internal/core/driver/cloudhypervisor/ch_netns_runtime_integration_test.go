@@ -13,7 +13,7 @@ package cloudhypervisor
 // depended on invisible local state. They now sit behind the repo's standard
 // `//go:build integration` tag and run via `make test-integration`.
 //
-// TestMain (the NEXUS3_NETNS_RUN re-exec dispatcher) deliberately stays in the
+// TestMain (the NEXUS_NETNS_RUN re-exec dispatcher) deliberately stays in the
 // untagged ch_netns_test.go: untagged files compile into the integration build
 // too, so the test binary is still its own re-exec image here.
 
@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // ── integration test (runtime-skipped when KVM / CH binary / artifacts absent) ─

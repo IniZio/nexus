@@ -3,14 +3,14 @@
 // call Resolve so that ceiling defaults, floor enforcement, and PID-1 cmdline
 // assembly have a single source of truth (UNI-CFG slice).
 //
-// Auto-resize is unconditional in nexus3 (D-DC-30 revised 2026-08-14): every
+// Auto-resize is unconditional in nexus (D-DC-30 revised 2026-08-14): every
 // VM receives a hotplug region at boot. There is no on/off flag.
 package vmcfg
 
 import (
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // Config holds the inputs for resolving VM auto-resize boot configuration.

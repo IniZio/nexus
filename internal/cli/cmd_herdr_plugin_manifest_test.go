@@ -121,7 +121,7 @@ func herdrEntrypointVerbViaScript(t *testing.T, env *scriptEnv, ep string) (verb
 			// means HERDR_BIN_PATH was absent and the script exec'd nothing.
 			herdrData, _ := os.ReadFile(env.herdrLog)
 			if len(strings.TrimSpace(string(herdrData))) == 0 {
-				t.Errorf("entrypoint %q: neither nexus3-shim.sh nor herdr stub was invoked — HERDR_BIN_PATH pin missing or script failed entirely", ep)
+				t.Errorf("entrypoint %q: neither nexus-shim.sh nor herdr stub was invoked — HERDR_BIN_PATH pin missing or script failed entirely", ep)
 			}
 			return "", false
 		}
@@ -161,12 +161,12 @@ func TestHerdrManifestDispatch(t *testing.T) {
 	// That verb disappears from seen → the set check fires → RED.
 	//
 	// "worktree-sandbox" is deliberately ABSENT. It used to be a direct arm:
-	// open-pane.sh called `nexus3 herdr worktree-sandbox` inline, in the action
+	// open-pane.sh called `nexus herdr worktree-sandbox` inline, in the action
 	// process, with no pane. That is the pane-first defect — a minutes-long VM
 	// build with no visible surface, and a failure that reached only the plugin
-	// log. The action now opens the worktree-sandbox PANE, and the direct nexus3
+	// log. The action now opens the worktree-sandbox PANE, and the direct nexus
 	// call lives in pane.sh instead. The routing invariant this set protects did
-	// not go away; it moved, and TestPaneScript_WorktreeSandboxRoutesToNexus3Verb
+	// not go away; it moved, and TestPaneScript_WorktreeSandboxRoutesToNexusVerb
 	// (cmd_herdr_worktree_pane_test.go) enforces it at its new home.
 	expectedDirectVerbs := map[string]bool{
 		"space-open-pane": true,
@@ -288,7 +288,7 @@ func TestHerdrGroupUsageString_containsAllPluginVerbs(t *testing.T) {
 }
 
 // TestOpenPaneScript_genericArm_nexusWorkspaceEnv exercises the two branches of
-// the generic arm in open-pane.sh: with NEXUS3_WORKSPACE unset and set.
+// the generic arm in open-pane.sh: with NEXUS_WORKSPACE unset and set.
 // Without this test, the --env flag path in the generic arm is never executed.
 func TestOpenPaneScript_genericArm_nexusWorkspaceEnv(t *testing.T) {
 	_, err := os.Stat(filepath.Join("..", "..", "plugins", "herdr", "bin", "open-pane.sh"))
@@ -311,25 +311,25 @@ func TestOpenPaneScript_genericArm_nexusWorkspaceEnv(t *testing.T) {
 			"HERDR_BIN_PATH=" + env.herdrBin,
 		}
 		if nexusWorkspace != "" {
-			cmd.Env = append(cmd.Env, "NEXUS3_WORKSPACE="+nexusWorkspace)
+			cmd.Env = append(cmd.Env, "NEXUS_WORKSPACE="+nexusWorkspace)
 		}
 		_ = cmd.Run()
 		data, _ := os.ReadFile(env.herdrLog)
 		return strings.TrimSpace(string(data))
 	}
 
-	// Without NEXUS3_WORKSPACE: herdr must NOT receive --env.
+	// Without NEXUS_WORKSPACE: herdr must NOT receive --env.
 	withoutWS := runScript("")
 	if strings.Contains(withoutWS, "--env") {
-		t.Errorf("generic arm without NEXUS3_WORKSPACE: unexpected --env in herdr argv: %q", withoutWS)
+		t.Errorf("generic arm without NEXUS_WORKSPACE: unexpected --env in herdr argv: %q", withoutWS)
 	}
 	if withoutWS == "" {
-		t.Error("generic arm without NEXUS3_WORKSPACE: herdr stub not called (herdrLog empty)")
+		t.Error("generic arm without NEXUS_WORKSPACE: herdr stub not called (herdrLog empty)")
 	}
 
-	// With NEXUS3_WORKSPACE: herdr must receive --env NEXUS3_WORKSPACE=<value>.
+	// With NEXUS_WORKSPACE: herdr must receive --env NEXUS_WORKSPACE=<value>.
 	withWS := runScript("my-workspace")
-	if !strings.Contains(withWS, "--env") || !strings.Contains(withWS, "NEXUS3_WORKSPACE=my-workspace") {
-		t.Errorf("generic arm with NEXUS3_WORKSPACE: want --env NEXUS3_WORKSPACE=my-workspace in herdr argv; got %q", withWS)
+	if !strings.Contains(withWS, "--env") || !strings.Contains(withWS, "NEXUS_WORKSPACE=my-workspace") {
+		t.Errorf("generic arm with NEXUS_WORKSPACE: want --env NEXUS_WORKSPACE=my-workspace in herdr argv; got %q", withWS)
 	}
 }

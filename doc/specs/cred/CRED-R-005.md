@@ -19,5 +19,5 @@ The git SSH relay path **shall** not affect `gh`/HTTPS GitHub API traffic. HTTPS
 
 - **Why** — `gh` and GitHub API calls depend on the MITM broker path; the SSH relay is additive and must not regress it. This is a regression guard.
 - **Fit criterion** — In guest: `echo $GH_TOKEN` shows the 64-hex placeholder (not the real token); `gh pr create` exits non-zero with 403; `gh api -X POST /repos/<owner>/<repo>/pulls` exits 0 (201); `gh api repos/<out-of-policy>` exits non-zero with a 403. Live only.
-- **Verification** live · **Criticality** must · **Source** nexus3-mount-creds-ssh-relay#AC-5
+- **Verification** live · **Criticality** must · **Source** nexus-mount-creds-ssh-relay#AC-5
 - **Tests** live-only; see `internal/test/selfhost/mount_creds_ssh_relay_dod_test.go` (gate rerun @7c803c6: REST 201, cross-repo 403, 64-hex placeholder in guest). Placeholder-never-real-token invariant (host-agnostic, covers the GH_TOKEN broker path): `TestBrokerPlaceholder_ReturnsPlaceholderNeverRealToken` (`internal/core/perimeter/cred/placeholder_accessor_test.go:14`); `TestPlaceholderRecordHasNoRealToken` (`internal/core/perimeter/cred/cred_test.go:60`)

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 func TestSeedGuestAgentOnboarding_MCPServersIncluded(t *testing.T) {
@@ -16,7 +16,7 @@ func TestSeedGuestAgentOnboarding_MCPServersIncluded(t *testing.T) {
 	spy, rec := newSpyExecer(t, dir)
 
 	servers := map[string]json.RawMessage{
-		"linear-server": json.RawMessage(`{"type":"http","url":"https://mcp.linear.app/sse","headers":{"Authorization":"${NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION}"}}`),
+		"linear-server": json.RawMessage(`{"type":"http","url":"https://mcp.linear.app/sse","headers":{"Authorization":"${NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION}"}}`),
 	}
 
 	var id domain.SandboxID
@@ -53,7 +53,7 @@ func TestSeedGuestAgentOnboarding_MCPServersIncluded(t *testing.T) {
 
 	// Authorization placeholder preserved: MITM refresher swaps it at request time.
 	raw, _ := json.Marshal(mcp["linear-server"])
-	if !strings.Contains(string(raw), "${NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION}") {
+	if !strings.Contains(string(raw), "${NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION}") {
 		t.Errorf("Authorization placeholder not preserved verbatim in merged output: %s", raw)
 	}
 }

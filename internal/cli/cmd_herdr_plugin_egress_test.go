@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/config"
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // TestHerdrWorktreeSandboxCreateArgs verifies the args produced by herdrWorktreeSandboxCreateArgs.
@@ -404,7 +404,7 @@ func TestHerdrWorktreeSandboxCreateArgs_PathPolicies(t *testing.T) {
 func TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk(t *testing.T) {
 	const handle = "myrepo/mybranch"
 	wantVolName := herdrAgentCfgDiskVolumeName(handle)
-	wantMount := "/var/lib/nexus3/agentcfg"
+	wantMount := "/var/lib/nexus/agentcfg"
 
 	for _, imageFlag := range []string{"--image", "--file"} {
 		imageFlag := imageFlag

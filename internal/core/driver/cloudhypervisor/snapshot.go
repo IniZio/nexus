@@ -13,8 +13,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // vmSnapshotRequest is the JSON body for PUT /api/v1/vm.snapshot.

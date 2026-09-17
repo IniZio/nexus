@@ -3,7 +3,7 @@
 package acceptance
 
 // workspace_e2e_test.go proves the Run-4 stack end-to-end on real KVM:
-//   - nexus3 create boots a real workspace from a pipeline-built image
+//   - nexus create boots a real workspace from a pipeline-built image
 //   - the agent is reachable and exec works
 //   - pause/resume lifecycle transitions are observable
 //   - a simulated VMM crash (SIGKILL) recovers to stopped(memory_lost)
@@ -38,15 +38,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	cloudhypervisor "github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/recovery"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	cloudhypervisor "github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/recovery"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // e2eSunPathMax is the usable sun_path limit for AF_UNIX sockets on Linux.
@@ -94,13 +94,13 @@ func skipUnlessMke2fsE2E(t *testing.T) {
 
 // e2eKernelPath returns the absolute path to the vmlinux kernel, skipping if absent.
 // It searches:
-//  1. $NEXUS3_KERNEL_PATH env var
+//  1. $NEXUS_KERNEL_PATH env var
 //  2. images/kernel/vmlinux-x86_64 under the repository root
 //  3. testdata/vmlinux-x86_64 in the driver's testdata (symlink fallback)
 func e2eKernelPath(t *testing.T) string {
 	t.Helper()
 
-	if p := os.Getenv("NEXUS3_KERNEL_PATH"); p != "" {
+	if p := os.Getenv("NEXUS_KERNEL_PATH"); p != "" {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
@@ -131,14 +131,14 @@ func e2eKernelPath(t *testing.T) string {
 	}
 
 	t.Skipf("skipping: vmlinux-x86_64 kernel not found — tried:\n  %s\n  %s\n"+
-		"  Set NEXUS3_KERNEL_PATH or run scripts/fetch-boot-artifacts.sh",
+		"  Set NEXUS_KERNEL_PATH or run scripts/fetch-boot-artifacts.sh",
 		primary, fallback)
 	panic("unreachable")
 }
 
 // ── binary builders ───────────────────────────────────────────────────────────
 
-// e2eBuildAgent compiles cmd/nexus3-agent as a static Linux/amd64 binary.
+// e2eBuildAgent compiles cmd/nexus-agent as a static Linux/amd64 binary.
 func e2eBuildAgent(t *testing.T) string {
 	t.Helper()
 
@@ -153,10 +153,10 @@ func e2eBuildAgent(t *testing.T) string {
 	repoRoot := filepath.Dir(goMod)
 
 	dir := t.TempDir()
-	agentBin := filepath.Join(dir, "nexus3-agent")
+	agentBin := filepath.Join(dir, "nexus-agent")
 
 	cmd := exec.Command("go", "build", "-o", agentBin,
-		"github.com/IniZio/nexus3/cmd/nexus3-agent")
+		"github.com/IniZio/nexus/cmd/nexus-agent")
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
@@ -164,7 +164,7 @@ func e2eBuildAgent(t *testing.T) string {
 		"GOARCH=amd64",
 	)
 	if buildOut, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build nexus3-agent:\n%s\n%v", buildOut, err)
+		t.Fatalf("go build nexus-agent:\n%s\n%v", buildOut, err)
 	}
 	return agentBin
 }
@@ -203,7 +203,7 @@ func main() {
 
 // e2eBuildRootfs creates a minimal rootfs directory:
 //
-//	/sbin/nexus3-agent  — the agent binary (PID-1 init)
+//	/sbin/nexus-agent  — the agent binary (PID-1 init)
 //	/bin/hello          — tiny "hello-from-disk" exec target
 //	/dev/ /proc/ /sys/ /tmp/ — empty mount points
 func e2eBuildRootfs(t *testing.T, agentBin, helloBin string) string {
@@ -216,7 +216,7 @@ func e2eBuildRootfs(t *testing.T, agentBin, helloBin string) string {
 		}
 	}
 	for _, pair := range [][2]string{
-		{agentBin, filepath.Join(rootfs, "sbin", "nexus3-agent")},
+		{agentBin, filepath.Join(rootfs, "sbin", "nexus-agent")},
 		{helloBin, filepath.Join(rootfs, "bin", "hello")},
 	} {
 		data, err := os.ReadFile(pair[0])
@@ -398,7 +398,7 @@ func TestWorkspaceE2E(t *testing.T) {
 	kernelPath := e2eKernelPath(t)
 
 	// ── build binaries ────────────────────────────────────────────────────────
-	t.Log("building nexus3-agent …")
+	t.Log("building nexus-agent …")
 	agentBin := e2eBuildAgent(t)
 	t.Log("building hello binary …")
 	helloBin := e2eBuildHello(t)

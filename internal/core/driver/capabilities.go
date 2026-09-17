@@ -5,8 +5,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 const AgentControlPort uint32 = 1024 // guest agent gRPC control plane

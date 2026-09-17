@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 )
 
 // TestWireLiveMountsToConfig_SetsVirtiofsdPath verifies that the production
@@ -24,13 +24,13 @@ import (
 // even without the cfg assignment. The build stays clean and only the
 // behavioural assertion below detects the drop.
 func TestWireLiveMountsToConfig_SetsVirtiofsdPath(t *testing.T) {
-	// Point NEXUS3_VIRTIOFSD_PATH at a real executable so resolveVirtiofsdPath
+	// Point NEXUS_VIRTIOFSD_PATH at a real executable so resolveVirtiofsdPath
 	// succeeds without requiring virtiofsd to be installed on the test host.
 	fake := filepath.Join(t.TempDir(), "virtiofsd")
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_VIRTIOFSD_PATH", fake)
+	t.Setenv("NEXUS_VIRTIOFSD_PATH", fake)
 
 	cfg := cloudhypervisor.Config{}
 	mounts := []domain.LiveMount{{HostPath: "/tmp/host", GuestPath: "/work"}}
@@ -58,7 +58,7 @@ func TestWireLiveMountsToConfig_SetsVirtiofsdPath(t *testing.T) {
 // requested — a host without virtiofsd must not be affected.
 func TestWireLiveMountsToConfig_NoMounts_LeavesVirtiofsdPathEmpty(t *testing.T) {
 	// Even if the env var is set, no mounts means no VirtiofsdPath resolution.
-	t.Setenv("NEXUS3_VIRTIOFSD_PATH", "/this/should/not/be/read")
+	t.Setenv("NEXUS_VIRTIOFSD_PATH", "/this/should/not/be/read")
 
 	cfg := cloudhypervisor.Config{}
 	vp, err := wireLiveMountsToConfig(&cfg, nil)
@@ -75,10 +75,10 @@ func TestWireLiveMountsToConfig_NoMounts_LeavesVirtiofsdPathEmpty(t *testing.T) 
 
 // TestWireLiveMountsToConfig_MountsWithAbsentVirtiofsd_ReturnsActionableError
 // verifies that when mounts are requested but virtiofsd cannot be resolved,
-// the error names NEXUS3_VIRTIOFSD_PATH so the operator can act without
+// the error names NEXUS_VIRTIOFSD_PATH so the operator can act without
 // reading source.
 func TestWireLiveMountsToConfig_MountsWithAbsentVirtiofsd_ReturnsActionableError(t *testing.T) {
-	t.Setenv("NEXUS3_VIRTIOFSD_PATH", "/nonexistent/virtiofsd")
+	t.Setenv("NEXUS_VIRTIOFSD_PATH", "/nonexistent/virtiofsd")
 
 	cfg := cloudhypervisor.Config{}
 	mounts := []domain.LiveMount{{HostPath: "/tmp/host", GuestPath: "/work"}}
@@ -86,7 +86,7 @@ func TestWireLiveMountsToConfig_MountsWithAbsentVirtiofsd_ReturnsActionableError
 	if err == nil {
 		t.Fatal("expected error when virtiofsd is absent, got nil")
 	}
-	if !strings.Contains(err.Error(), "NEXUS3_VIRTIOFSD_PATH") {
-		t.Errorf("error should mention NEXUS3_VIRTIOFSD_PATH: %v", err)
+	if !strings.Contains(err.Error(), "NEXUS_VIRTIOFSD_PATH") {
+		t.Errorf("error should mention NEXUS_VIRTIOFSD_PATH: %v", err)
 	}
 }

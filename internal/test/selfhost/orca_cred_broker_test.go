@@ -22,11 +22,11 @@
 //
 // # Live 200 from api.anthropic.com (deferred)
 //
-// This test uses a fake token and expects no NEXUS3_OK response. To prove a
+// This test uses a fake token and expects no NEXUS_OK response. To prove a
 // real 200, bootstrap live credentials and run TestOAuthRotationDogfood:
 //  1. Start a dedicated Claude Code session: claude auth login (in a fresh shell)
-//  2. Import to nexus3: nexus3 auth login --force
-//  3. Verify token validity: cat ~/.config/nexus3/creds.json | jq .expires_at
+//  2. Import to nexus: nexus auth login --force
+//  3. Verify token validity: cat ~/.config/nexus/creds.json | jq .expires_at
 //  4. Run: TMPDIR=/tmp go test -tags integration -run TestOAuthRotationDogfood
 //     ./internal/test/selfhost/ -v -timeout 20m
 //
@@ -56,20 +56,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // TestOrcaCredBrokerWiring is the acceptance test for orcaCreate's credential
@@ -352,7 +352,7 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 	// ── 11. In-guest HTTPS call to api.anthropic.com ──────────────────────────
 	//
 	// Run claude with placeholder in env. T_static is a fake token so the
-	// request will be rejected by Anthropic (no NEXUS3_OK), but the MITM swap
+	// request will be rejected by Anthropic (no NEXUS_OK), but the MITM swap
 	// fires regardless of the upstream response — swapCount > 0 proves
 	// host-side bearer injection.
 	guestEnv := map[string]string{
@@ -373,7 +373,7 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 	defer execCancel()
 	_, execErr := agentClient.Exec(execCtx, agent.ExecOptions{
 		Cwd:    "/root",
-		Argv:   []string{"/usr/local/bin/claude", "-p", "reply with exactly: NEXUS3_OK", "--model", dogfoodHaikuModel},
+		Argv:   []string{"/usr/local/bin/claude", "-p", "reply with exactly: NEXUS_OK", "--model", dogfoodHaikuModel},
 		Env:    guestEnv,
 		Stdout: &stdoutBuf,
 		Stderr: &stderrBuf,

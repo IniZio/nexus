@@ -23,14 +23,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/bootspec"
-	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/bootspec"
+	"github.com/IniZio/nexus/internal/core/builder"
 )
 
 // readBootJSON reads and unmarshals the boot.json written under outDir.
 func readBootJSON(t *testing.T, outDir string) bootspec.Spec {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(outDir, "etc", "nexus3", "boot.json"))
+	data, err := os.ReadFile(filepath.Join(outDir, "etc", "nexus", "boot.json"))
 	if err != nil {
 		t.Fatalf("read boot.json: %v", err)
 	}
@@ -144,7 +144,7 @@ WORKDIR /workspace
 `)
 	builder.CaptureBootSpecFromContainerfile(cf, outDir)
 
-	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus3", "boot.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus", "boot.json")); !os.IsNotExist(err) {
 		t.Errorf("expected no boot.json for Containerfile with no entrypoint/cmd, got err=%v", err)
 	}
 }
@@ -237,7 +237,7 @@ func TestCaptureBootSpec_NilBytes(t *testing.T) {
 	outDir := t.TempDir()
 	builder.CaptureBootSpecFromContainerfile(nil, outDir) // must not panic
 
-	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus3", "boot.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus", "boot.json")); !os.IsNotExist(err) {
 		t.Errorf("expected no boot.json for nil bytes, got err=%v", err)
 	}
 }
@@ -247,7 +247,7 @@ func TestCaptureBootSpec_EmptyBytes(t *testing.T) {
 	outDir := t.TempDir()
 	builder.CaptureBootSpecFromContainerfile([]byte{}, outDir) // must not panic
 
-	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus3", "boot.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus", "boot.json")); !os.IsNotExist(err) {
 		t.Errorf("expected no boot.json for empty bytes, got err=%v", err)
 	}
 }
@@ -256,11 +256,11 @@ func TestCaptureBootSpec_EmptyBytes(t *testing.T) {
 // build against a live buildkitd and verifies that boot.json is written from
 // Containerfile parsing (the new mechanism — no gateway metadata required).
 //
-// Skip condition: the daemon socket /tmp/nexus3-spike-bk.sock is absent or
+// Skip condition: the daemon socket /tmp/nexus-spike-bk.sock is absent or
 // unreachable (CI / offline envs). Run manually with buildkitd alive.
 func TestBuildkitClient_LiveContainerfileCapture(t *testing.T) {
-	const sock = "unix:///tmp/nexus3-spike-bk.sock"
-	if _, err := os.Stat("/tmp/nexus3-spike-bk.sock"); os.IsNotExist(err) {
+	const sock = "unix:///tmp/nexus-spike-bk.sock"
+	if _, err := os.Stat("/tmp/nexus-spike-bk.sock"); os.IsNotExist(err) {
 		t.Skip("buildkitd socket not present — skipping live integration test")
 	}
 
@@ -289,7 +289,7 @@ CMD ["hello","world"]
 		BaseRef:            "docker.io/library/alpine:3.19",
 		ContainerfileBytes: []byte(containerfile),
 		AgentPath:          agentSrc,
-		AgentInstallPath:   "/sbin/nexus3-agent",
+		AgentInstallPath:   "/sbin/nexus-agent",
 		WorkspaceDir:       wsDir,
 	}
 
@@ -298,7 +298,7 @@ CMD ["hello","world"]
 		t.Fatalf("Solve: %v", err)
 	}
 
-	bootJSONPath := filepath.Join(outDir, "etc", "nexus3", "boot.json")
+	bootJSONPath := filepath.Join(outDir, "etc", "nexus", "boot.json")
 	data, err := os.ReadFile(bootJSONPath)
 	if err != nil {
 		t.Fatalf("boot.json not written — Containerfile parse produced no config: %v", err)
@@ -536,7 +536,7 @@ func TestCaptureBootSpec_OCIEmptyConfigWritesNothing(t *testing.T) {
 
 	builder.CaptureBootSpec([]byte("FROM scratch\n"), &bootspec.OCIImageConfig{WorkingDir: "/w"}, outDir)
 
-	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus3", "boot.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus", "boot.json")); !os.IsNotExist(err) {
 		t.Errorf("expected no boot.json for empty OCI config, got err=%v", err)
 	}
 }
@@ -585,7 +585,7 @@ RUN apt-get update
 
 	builder.CaptureBootSpec(cf, ociCfg, outDir)
 
-	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus3", "boot.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(outDir, "etc", "nexus", "boot.json")); !os.IsNotExist(err) {
 		t.Errorf("expected no boot.json when OCI config has no entrypoint/cmd, got err=%v", err)
 	}
 }

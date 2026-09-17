@@ -8,9 +8,9 @@ plugins:
       # path; module= strips the module prefix so the file lands at
       # internal/core/agent/agentpb/ rather than a nested github.com/ tree.
       - paths=import
-      - module=github.com/IniZio/nexus3
+      - module=github.com/IniZio/nexus
   - local: protoc-gen-go-grpc
     out: .
     opt:
       - paths=import
-      - module=github.com/IniZio/nexus3
+      - module=github.com/IniZio/nexus

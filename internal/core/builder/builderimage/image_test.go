@@ -19,11 +19,11 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
-	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/builder/builderimage"
 )
 
-// fakeAgentBytes is a minimal placeholder for the nexus3-agent binary in tests.
-var fakeAgentBytes = []byte("#!/bin/sh\necho nexus3-agent-fake\n")
+// fakeAgentBytes is a minimal placeholder for the nexus-agent binary in tests.
+var fakeAgentBytes = []byte("#!/bin/sh\necho nexus-agent-fake\n")
 
 // buildMinimalOCIImage creates a v1.Image with a single layer containing
 // /usr/bin/buildkitd and /usr/bin/buildctl stub binaries. No network required.

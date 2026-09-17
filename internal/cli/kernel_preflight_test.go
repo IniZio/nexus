@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // ── resolveKernelPath unit tests ─────────────────────────────────────────────
@@ -18,7 +18,7 @@ func TestResolveKernelPath_EnvSet_FileExists(t *testing.T) {
 	if err := os.WriteFile(f, []byte("fake"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", f)
+	t.Setenv("NEXUS_KERNEL_PATH", f)
 
 	got, err := resolveKernelPath()
 	if err != nil {
@@ -30,14 +30,14 @@ func TestResolveKernelPath_EnvSet_FileExists(t *testing.T) {
 }
 
 func TestResolveKernelPath_EnvSet_FileMissing(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent/vmlinux")
+	t.Setenv("NEXUS_KERNEL_PATH", "/nonexistent/vmlinux")
 
 	_, err := resolveKernelPath()
 	if err == nil {
 		t.Fatal("expected error for missing kernel, got nil")
 	}
-	if !strings.Contains(err.Error(), "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error should mention NEXUS3_KERNEL_PATH: %v", err)
+	if !strings.Contains(err.Error(), "NEXUS_KERNEL_PATH") {
+		t.Errorf("error should mention NEXUS_KERNEL_PATH: %v", err)
 	}
 }
 
@@ -45,10 +45,10 @@ func TestResolveKernelPath_EnvSet_FileMissing(t *testing.T) {
 // candidate: herdr plugin panes run from the plugin directory, where neither the
 // binary-relative nor the cwd-relative candidate exists.
 func TestResolveKernelPath_XDGDataHome_FoundFromForeignCwd(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "")
+	t.Setenv("NEXUS_KERNEL_PATH", "")
 	data := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", data)
-	want := filepath.Join(data, "nexus3", "images", "kernel", "vmlinux-x86_64")
+	want := filepath.Join(data, "nexus", "images", "kernel", "vmlinux-x86_64")
 	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -67,9 +67,9 @@ func TestResolveKernelPath_XDGDataHome_FoundFromForeignCwd(t *testing.T) {
 }
 
 func TestResolveKernelPath_EnvUnset_NoCandidates(t *testing.T) {
-	// Clear NEXUS3_KERNEL_PATH and ensure neither binary-relative nor CWD
-	// candidates exist. The function must return an error naming NEXUS3_KERNEL_PATH.
-	t.Setenv("NEXUS3_KERNEL_PATH", "")
+	// Clear NEXUS_KERNEL_PATH and ensure neither binary-relative nor CWD
+	// candidates exist. The function must return an error naming NEXUS_KERNEL_PATH.
+	t.Setenv("NEXUS_KERNEL_PATH", "")
 
 	_, err := resolveKernelPath()
 	if err == nil {
@@ -77,8 +77,8 @@ func TestResolveKernelPath_EnvUnset_NoCandidates(t *testing.T) {
 		// skip rather than fail — the path legitimately exists in a dev checkout.
 		t.Skip("kernel found at default path; skipping missing-kernel test")
 	}
-	if !strings.Contains(err.Error(), "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error should mention NEXUS3_KERNEL_PATH: %v", err)
+	if !strings.Contains(err.Error(), "NEXUS_KERNEL_PATH") {
+		t.Errorf("error should mention NEXUS_KERNEL_PATH: %v", err)
 	}
 }
 
@@ -86,10 +86,10 @@ func TestResolveKernelPath_EnvUnset_NoCandidates(t *testing.T) {
 
 // TestMCPCreateAndBoot_KernelPreflight_RejectsBeforeExpensiveWork verifies
 // that mcpService.CreateAndBoot returns a kernel-path error immediately when
-// NEXUS3_KERNEL_PATH points at a non-existent file, not an image-cache or
+// NEXUS_KERNEL_PATH points at a non-existent file, not an image-cache or
 // CreateAndBoot error.
 func TestMCPCreateAndBoot_KernelPreflight_RejectsBeforeExpensiveWork(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent-for-test/vmlinux")
+	t.Setenv("NEXUS_KERNEL_PATH", "/nonexistent-for-test/vmlinux")
 
 	svc := newTestService(t)
 	msvc := &mcpService{Service: svc, cacheRoot: t.TempDir()}
@@ -99,8 +99,8 @@ func TestMCPCreateAndBoot_KernelPreflight_RejectsBeforeExpensiveWork(t *testing.
 	if err == nil {
 		t.Fatal("expected kernel-preflight error, got nil")
 	}
-	if !strings.Contains(err.Error(), "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error should mention NEXUS3_KERNEL_PATH; got: %v", err)
+	if !strings.Contains(err.Error(), "NEXUS_KERNEL_PATH") {
+		t.Errorf("error should mention NEXUS_KERNEL_PATH; got: %v", err)
 	}
 	// Must NOT mention "image cache" — that would mean the preflight came after
 	// the cache open.
@@ -115,7 +115,7 @@ func TestMCPCreateAndBoot_KernelPreflight_RejectsBeforeExpensiveWork(t *testing.
 // herdrPluginCreate returns a kernel-path error before reading from the reader
 // (i.e. before any interactive prompting).
 func TestHerdrPluginCreate_KernelPreflight_RejectsBeforePrompt(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent-for-test/vmlinux")
+	t.Setenv("NEXUS_KERNEL_PATH", "/nonexistent-for-test/vmlinux")
 
 	svc := newTestService(t)
 	// Use a pipe: if the function reads from r before the preflight fires it
@@ -133,8 +133,8 @@ func TestHerdrPluginCreate_KernelPreflight_RejectsBeforePrompt(t *testing.T) {
 	if ferr == nil {
 		t.Fatal("expected kernel-preflight error, got nil")
 	}
-	if !strings.Contains(ferr.Error(), "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error should mention NEXUS3_KERNEL_PATH; got: %v", ferr)
+	if !strings.Contains(ferr.Error(), "NEXUS_KERNEL_PATH") {
+		t.Errorf("error should mention NEXUS_KERNEL_PATH; got: %v", ferr)
 	}
 }
 
@@ -144,16 +144,16 @@ func TestHerdrPluginCreate_KernelPreflight_RejectsBeforePrompt(t *testing.T) {
 // herdrPluginLaunch returns a kernel-path error before it tries to open the
 // store or image cache.
 func TestHerdrPluginLaunch_KernelPreflight_RejectsBeforeStoreSetup(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent-for-test/vmlinux")
+	t.Setenv("NEXUS_KERNEL_PATH", "/nonexistent-for-test/vmlinux")
 
 	ctx := context.Background()
 	out, _, _ := capture(false)
-	err := herdrPluginLaunch(ctx, "nexus3-base:latest", []string{"echo", "hi"}, false, out)
+	err := herdrPluginLaunch(ctx, "nexus-base:latest", []string{"echo", "hi"}, false, out)
 	if err == nil {
 		t.Fatal("expected kernel-preflight error, got nil")
 	}
-	if !strings.Contains(err.Error(), "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error should mention NEXUS3_KERNEL_PATH; got: %v", err)
+	if !strings.Contains(err.Error(), "NEXUS_KERNEL_PATH") {
+		t.Errorf("error should mention NEXUS_KERNEL_PATH; got: %v", err)
 	}
 	// Must NOT mention "store" or "image cache" — that would mean the preflight
 	// fired after the store/cache setup.
@@ -169,7 +169,7 @@ func TestHerdrPluginLaunch_KernelPreflight_RejectsBeforeStoreSetup(t *testing.T)
 // image cache. ORCA_VM_INSTANCE_ID must be set to reach the preflight block
 // (the InstanceID guard fires first).
 func TestOrcaCreate_KernelPreflight_RejectsBeforeStoreSetup(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent-for-test/vmlinux")
+	t.Setenv("NEXUS_KERNEL_PATH", "/nonexistent-for-test/vmlinux")
 	t.Setenv("ORCA_VM_INSTANCE_ID", "test-instance-b6")
 
 	ctx := context.Background()
@@ -177,8 +177,8 @@ func TestOrcaCreate_KernelPreflight_RejectsBeforeStoreSetup(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected kernel-preflight error, got nil")
 	}
-	if !strings.Contains(err.Error(), "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error should mention NEXUS3_KERNEL_PATH; got: %v", err)
+	if !strings.Contains(err.Error(), "NEXUS_KERNEL_PATH") {
+		t.Errorf("error should mention NEXUS_KERNEL_PATH; got: %v", err)
 	}
 	// Must NOT mention "store root" or "image cache" — that would mean the
 	// preflight fired after the store/cache setup.
@@ -194,7 +194,7 @@ func TestResolveVirtiofsdPath_EnvSet_FileExists(t *testing.T) {
 	if err := os.WriteFile(f, []byte("fake"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_VIRTIOFSD_PATH", f)
+	t.Setenv("NEXUS_VIRTIOFSD_PATH", f)
 
 	got, err := resolveVirtiofsdPath()
 	if err != nil {
@@ -206,13 +206,13 @@ func TestResolveVirtiofsdPath_EnvSet_FileExists(t *testing.T) {
 }
 
 func TestResolveVirtiofsdPath_EnvSet_FileMissing(t *testing.T) {
-	t.Setenv("NEXUS3_VIRTIOFSD_PATH", "/nonexistent/virtiofsd")
+	t.Setenv("NEXUS_VIRTIOFSD_PATH", "/nonexistent/virtiofsd")
 
 	_, err := resolveVirtiofsdPath()
 	if err == nil {
 		t.Fatal("expected error for missing virtiofsd, got nil")
 	}
-	if !strings.Contains(err.Error(), "NEXUS3_VIRTIOFSD_PATH") {
-		t.Errorf("error should mention NEXUS3_VIRTIOFSD_PATH: %v", err)
+	if !strings.Contains(err.Error(), "NEXUS_VIRTIOFSD_PATH") {
+		t.Errorf("error should mention NEXUS_VIRTIOFSD_PATH: %v", err)
 	}
 }

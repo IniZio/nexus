@@ -103,7 +103,7 @@ func (d *Digest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ImageKind distinguishes the two images nexus3 ships (ticket 14):
+// ImageKind distinguishes the two images nexus ships (ticket 14):
 // a default glibc base and a stock buildkitd builder.
 type ImageKind int
 
@@ -180,7 +180,7 @@ type Image struct {
 	// identity key; all other fields are metadata that annotate the same content.
 	Digest Digest
 
-	// Ref is the optional human-readable tag, e.g. "nexus3-base:20260807".
+	// Ref is the optional human-readable tag, e.g. "nexus-base:20260807".
 	// It is not part of image identity — equality and digest lookup ignore it
 	// entirely — but it IS a lookup key: `--image <ref>` resolves through it.
 	//

@@ -90,14 +90,14 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 
 	cmd, err := ParseCommand(req.Argv)
 	if err != nil {
-		writePktErrFrame(conn, "nexus3: "+err.Error()+"\n")
+		writePktErrFrame(conn, "nexus: "+err.Error()+"\n")
 		slog.Warn("gitssh.relay.parse_command_failed", "sandboxID", cfg.SandboxID, "err", err)
 		return
 	}
 
 	// Allowlist check: only github.com via git@ SSH is supported in v1.
 	if !repoAllowed(cfg.Allowlist, cmd.GitHost, cmd.OwnerRepo) {
-		writePktErrFrame(conn, "nexus3: refused by egress policy: "+cmd.GitHost+" "+cmd.OwnerRepo+" not in .nexus/config.yaml egress.policy\n")
+		writePktErrFrame(conn, "nexus: refused by egress policy: "+cmd.GitHost+" "+cmd.OwnerRepo+" not in .nexus/config.yaml egress.policy\n")
 		if cfg.OnEgress != nil {
 			cfg.OnEgress(cmd.BareHost, "deny", "git SSH: "+cmd.OwnerRepo+" not in policy", time.Now())
 		}
@@ -111,7 +111,7 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 
 	authSock, ok := resolveSSHAuthSock(cfg.SSHAuthSock, cfg.UID)
 	if !ok {
-		writePktErrFrame(conn, "nexus3: SSH agent not reachable; reconnect with ssh -A or start ssh-agent\n")
+		writePktErrFrame(conn, "nexus: SSH agent not reachable; reconnect with ssh -A or start ssh-agent\n")
 		if cfg.OnEgress != nil {
 			cfg.OnEgress(cmd.BareHost, "deny", "git SSH: SSH agent not reachable", time.Now())
 		}
@@ -149,7 +149,7 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 	}
 
 	if err := sshCmd.Start(); err != nil {
-		writePktErrFrame(conn, "nexus3: failed to start ssh: "+err.Error()+"\n")
+		writePktErrFrame(conn, "nexus: failed to start ssh: "+err.Error()+"\n")
 		slog.Error("gitssh.relay.ssh_start_failed", "sandboxID", cfg.SandboxID, "err", err)
 		return
 	}
@@ -212,7 +212,7 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 				if cfg.OnEgress != nil {
 					cfg.OnEgress(cmd.BareHost, "deny", "git SSH receive-pack: malformed pkt-line", time.Now())
 				}
-				writePktErrFrameAfterCommands(conn, refBuf.Bytes(), "nexus3: refused: push pkt-line header malformed or too large\n")
+				writePktErrFrameAfterCommands(conn, refBuf.Bytes(), "nexus: refused: push pkt-line header malformed or too large\n")
 				return
 			}
 			if cfg.OnEgress != nil {
@@ -222,7 +222,7 @@ func serveSession(conn net.Conn, cfg RelayConfig, sshExec string) {
 				"sandboxID", cfg.SandboxID,
 				"ref", deniedRef,
 			)
-			writePktErrFrameAfterCommands(conn, refBuf.Bytes(), "nexus3: refused: ref "+deniedRef+" not in allowed branches\n")
+			writePktErrFrameAfterCommands(conn, refBuf.Bytes(), "nexus: refused: ref "+deniedRef+" not in allowed branches\n")
 			return
 		}
 		go func() { // allowed: replay buffered commands then stream packfile

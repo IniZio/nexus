@@ -2,11 +2,11 @@
 
 package selfhost
 
-// selfhost_e2e_test.go is the acceptance bar for the whole nexus3 project:
-// "develop nexus3 inside a nexus3 workspace".
+// selfhost_e2e_test.go is the acceptance bar for the whole nexus project:
+// "develop nexus inside a nexus workspace".
 //
-// It creates a real nexus3 workspace from the self-hosting base image (S1),
-// seeds nexus3's own source into the guest, and proves that:
+// It creates a real nexus workspace from the self-hosting base image (S1),
+// seeds nexus's own source into the guest, and proves that:
 //
 //   - go build ./... succeeds INSIDE the workspace, offline (seeded mod cache)
 //   - a representative go test subset passes inside the workspace
@@ -50,15 +50,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -73,9 +73,9 @@ const (
 	// selfhostSockNameLen is "sb-<26chars>.sock".
 	selfhostSockNameLen = 35
 
-	// selfhostGuestSrcDir is the directory in the guest where nexus3 source
+	// selfhostGuestSrcDir is the directory in the guest where nexus source
 	// is seeded.
-	selfhostGuestSrcDir = "/root/nexus3"
+	selfhostGuestSrcDir = "/root/nexus"
 )
 
 // ── skip guards ───────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ func skipUnlessMke2fsSH(t *testing.T) {
 // Mirrors the logic from internal/test/acceptance/workspace_e2e_test.go.
 func kernelPathSH(t *testing.T, repoRoot string) string {
 	t.Helper()
-	if p := os.Getenv("NEXUS3_KERNEL_PATH"); p != "" {
+	if p := os.Getenv("NEXUS_KERNEL_PATH"); p != "" {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
@@ -132,7 +132,7 @@ func kernelPathSH(t *testing.T, repoRoot string) string {
 	if _, err := os.Stat(fallback); err == nil {
 		return fallback
 	}
-	t.Skipf("skipping: vmlinux-x86_64 not found — tried:\n  %s\n  %s\n  Set NEXUS3_KERNEL_PATH",
+	t.Skipf("skipping: vmlinux-x86_64 not found — tried:\n  %s\n  %s\n  Set NEXUS_KERNEL_PATH",
 		primary, fallback)
 	panic("unreachable")
 }
@@ -190,7 +190,7 @@ func skipDirSH(name string) bool {
 	return strings.HasPrefix(name, ".")
 }
 
-// makeSourceTar builds an in-memory tar archive of nexus3's Go source.
+// makeSourceTar builds an in-memory tar archive of nexus's Go source.
 //
 // Included tree (relative to repoRoot):
 //
@@ -294,12 +294,12 @@ func makeSourceTar(repoRoot string) (io.Reader, int64, error) {
 
 // ── the test ──────────────────────────────────────────────────────────────────
 
-// TestSelfHostE2E is the acceptance bar for the nexus3 project:
-// "develop nexus3 inside a nexus3 workspace".
+// TestSelfHostE2E is the acceptance bar for the nexus project:
+// "develop nexus inside a nexus workspace".
 //
 // It proves the self-hosting dev loop on Linux end-to-end:
 //   - workspace boots from the self-hosting base image (Debian+Go+seeded cache)
-//   - nexus3's source is seeded in via agent.Exec + tar stdin
+//   - nexus's source is seeded in via agent.Exec + tar stdin
 //   - go build ./... succeeds offline (GOPROXY=off)
 //   - a representative go test subset passes offline
 //   - the host repo is not mutated
@@ -460,7 +460,7 @@ func TestSelfHostE2E(t *testing.T) {
 
 	agentClient := agent.NewClient(bootDrv, sb.ID)
 
-	// ── Step 3: seed nexus3 source into the guest ─────────────────────────────
+	// ── Step 3: seed nexus source into the guest ─────────────────────────────
 	//
 	// Mechanism: agent.Exec + Stdin, using "head -c N > /tmp/src.tar" to read
 	// EXACTLY N bytes then exit — avoiding the stdin-EOF deadlock.
@@ -488,7 +488,7 @@ func TestSelfHostE2E(t *testing.T) {
 
 	// head -c N reads exactly N bytes from stdin then exits (no EOF needed).
 	// tar then extracts from the file (not stdin). rm cleans up.
-	const guestTarTmp = "/tmp/nexus3-src.tar"
+	const guestTarTmp = "/tmp/nexus-src.tar"
 	seedCmd := "mkdir -p " + selfhostGuestSrcDir +
 		" && head -c " + fmt.Sprintf("%d", tarSize) + " > " + guestTarTmp +
 		" && tar -xf " + guestTarTmp + " -C " + selfhostGuestSrcDir +

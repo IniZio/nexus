@@ -3,14 +3,14 @@ title: "Introduction"
 description: "MicroVM sandbox primitives: isolated Linux VMs with their own kernel, disk, and network"
 ---
 
-# nexus3
+# nexus
 
 > MicroVM sandboxes for agentic parallel development — each task gets its own isolated Linux kernel.
 
-nexus3 runs workloads in microVM sandboxes: real Linux VMs with their own kernel, disk image, network namespace, and an in-guest agent reachable over vsock. The CLI and the MCP server expose the same primitives, so an orchestrator drives nexus3 the same way you do.
+nexus runs workloads in microVM sandboxes: real Linux VMs with their own kernel, disk image, network namespace, and an in-guest agent reachable over vsock. The CLI and the MCP server expose the same primitives, so an orchestrator drives nexus the same way you do.
 
 ```
-nexus3 run --memory 2048 nexus3-base:20260807 -- go test ./...
+nexus run --memory 2048 nexus-base:20260807 -- go test ./...
 ```
 
 ## Capabilities
@@ -30,7 +30,7 @@ nexus3 run --memory 2048 nexus3-base:20260807 -- go test ./...
 | [Accepted risks](/security/accepted-risks) | Known gaps and threat model |
 | [CLI reference](/cli/) | All commands and flags |
 
-## Why nexus3
+## Why nexus
 
 - **Hardware isolation.** A sandbox is a VM, not a namespace on the host kernel.
   A compromised agent is inside a different machine.
@@ -48,7 +48,7 @@ nexus3 run --memory 2048 nexus3-base:20260807 -- go test ./...
 
 ## How to read this site
 
-**These pages describe the nexus3 we are building — the target — not a report of
+**These pages describe the nexus we are building — the target — not a report of
 what is currently working.** Where the implementation has not caught up, the text
 says so inline with a marker:
 

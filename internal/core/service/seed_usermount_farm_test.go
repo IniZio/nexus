@@ -39,7 +39,7 @@ func fixtureCuratedManifest(stagingDir, guestDir string) UserMountManifest {
 // GuestUserMountsProfilePath (to avoid writing to /etc/profile.d/).
 func runScript(t *testing.T, manifest UserMountManifest, nativePath, reportPath string) (string, error) {
 	t.Helper()
-	tmpProfile := filepath.Join(t.TempDir(), "nexus3-usermounts.sh")
+	tmpProfile := filepath.Join(t.TempDir(), "nexus-usermounts.sh")
 	script := buildUserMountScript(manifest)
 	script = strings.ReplaceAll(script, GuestNativePATH, nativePath)
 	script = strings.ReplaceAll(script, GuestUserMountsFarmReport, reportPath)
@@ -147,7 +147,7 @@ func TestSeedUserMountFarm_NoWriteOnceGuard(t *testing.T) {
 	canary := "# canary"
 	// Write the canary directly into a temp profile, then run the script with
 	// that profile path already present — the if-[ ! -f ] guard must skip it.
-	tmpProfile2 := filepath.Join(t.TempDir(), "nexus3-usermounts.sh")
+	tmpProfile2 := filepath.Join(t.TempDir(), "nexus-usermounts.sh")
 	if err := os.WriteFile(tmpProfile2, []byte(canary), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestSeedUserMountFarm_NoWriteOnceGuard(t *testing.T) {
 // compatibility symlinks.
 func TestSeedUserMountFarm_ContainmentSubPath(t *testing.T) {
 	dir := t.TempDir()
-	stagingDir := filepath.Join(dir, "staging") // = /run/nexus3/usermount/bin-mise
+	stagingDir := filepath.Join(dir, "staging") // = /run/nexus/usermount/bin-mise
 	guestDir := filepath.Join(dir, "mise")      // = /root/.local/share/mise
 	nativeDir := filepath.Join(dir, "native")
 	reportPath := filepath.Join(dir, "hostbin.report")
@@ -273,11 +273,11 @@ func TestSeedUserMountFarm_ExclusionRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// "nexus3" — real file in staging AND in native → should be shadowed.
-	if err := os.WriteFile(filepath.Join(stagingDir, "nexus3"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	// "nexus" — real file in staging AND in native → should be shadowed.
+	if err := os.WriteFile(filepath.Join(stagingDir, "nexus"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(nativeDir, "nexus3"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(nativeDir, "nexus"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -301,9 +301,9 @@ func TestSeedUserMountFarm_ExclusionRules(t *testing.T) {
 		t.Errorf("herdr target %q not under staging %q", target, stagingDir)
 	}
 
-	// nexus3 must NOT be in the farm (shadowed).
-	if _, err := os.Lstat(filepath.Join(guestDir, "nexus3")); err == nil {
-		t.Error("nexus3 should be shadowed (resolves on native PATH) but is present in farm")
+	// nexus must NOT be in the farm (shadowed).
+	if _, err := os.Lstat(filepath.Join(guestDir, "nexus")); err == nil {
+		t.Error("nexus should be shadowed (resolves on native PATH) but is present in farm")
 	}
 
 	// cursor-agent must NOT be in the farm (dangling).
@@ -320,8 +320,8 @@ func TestSeedUserMountFarm_ExclusionRules(t *testing.T) {
 	if !strings.Contains(report, "linked herdr") {
 		t.Errorf("report missing 'linked herdr'; got:\n%s", report)
 	}
-	if !strings.Contains(report, "shadowed nexus3") {
-		t.Errorf("report missing 'shadowed nexus3'; got:\n%s", report)
+	if !strings.Contains(report, "shadowed nexus") {
+		t.Errorf("report missing 'shadowed nexus'; got:\n%s", report)
 	}
 	if !strings.Contains(report, "dangling cursor-agent") {
 		t.Errorf("report missing 'dangling cursor-agent'; got:\n%s", report)

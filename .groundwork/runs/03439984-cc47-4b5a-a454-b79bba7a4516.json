@@ -1,0 +1,160 @@
+{
+  "active": true,
+  "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516",
+  "task": "Rename the product nexus3 -> nexus (module path, binaries, paths, env vars, plugins, docs); clean-break host state",
+  "slices": [
+    {
+      "id": "S1-go-rename",
+      "wave": 0,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Mechanical rename of Go tree + build config: go.mod module path, all imports, cmd/ dirs via git mv, nexus3->nexus / NEXUS3->NEXUS / nx3{g,h,b}->nx{g,h,b} in cmd/ internal/ Makefile Dockerfile .github .gitignore .releaserc; gofmt; make build + make vet green",
+      "blocked_by": [],
+      "acceptance": [
+        "rg -i nexus3 over cmd/ internal/ go.mod Makefile Dockerfile .github returns 0 lines",
+        "make build exit 0",
+        "make vet exit 0",
+        "cmd/nexus cmd/nexus-agent cmd/nexus-client exist and cmd/nexus3* do not",
+        "gofmt -l over cmd/ internal/ is empty"
+      ],
+      "completed_at": "2026-09-17T12:07:33.605Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S2-plugins-rename",
+      "wave": 0,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Rename plugins/: herdr-plugin.toml ids/titles, build.sh repo/asset names, nexus3-shim.sh->nexus-shim.sh, nexus3-version->nexus-version, claude plugin.json/.mcp.json/commands/nexus3-*.md->nexus-*.md, skills/nexus3->skills/nexus, orca recipe nexus3.json->nexus.json; evals/ untouched (historical)",
+      "blocked_by": [],
+      "acceptance": [
+        "rg -i nexus3 plugins/ --glob '!plugins/claude/evals/**' returns 0 lines",
+        "plugins/herdr/nexus-version exists with content v0.16.2",
+        "plugins/claude/skills/nexus/SKILL.md has name: nexus",
+        "plugins/claude/evals/ has no diff"
+      ],
+      "completed_at": "2026-09-17T12:07:33.605Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S3-docs-specs-rename",
+      "wave": 0,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Rename docs/site (vitepress title/base/nav), README, CONTRIBUTING, CLAUDE.md, doc/specs (C-NEXUS3->C-NEXUS incl. 6 parent: refs), examples/nexus3-in-docker->nexus-in-docker, scripts/, internal/test/spec/features; CHANGELOG.md and .groundwork/ untouched (historical)",
+      "blocked_by": [],
+      "acceptance": [
+        "rg -i nexus3 docs/ README.md CONTRIBUTING.md CLAUDE.md doc/specs examples/ scripts/ internal/test/spec --glob '!docs/site/node_modules/**' --glob '!doc/specs/_generated/**' returns 0 lines",
+        "CHANGELOG.md has no diff",
+        ".groundwork/ has no diff",
+        "doc/specs/README.md has id: C-NEXUS and all 6 sub-spec READMEs have parent: C-NEXUS"
+      ],
+      "completed_at": "2026-09-17T12:07:33.605Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S4-tests-cli",
+      "wave": 1,
+      "status": "pending",
+      "kind": "impl",
+      "desc": "make test GOTEST_PKGS=./internal/cli/... ./cmd/... green after rename; fix name-assertion tests and testdata (herdr-plugin-*.toml, herdr-list.txt)",
+      "blocked_by": [
+        "S1-go-rename",
+        "S2-plugins-rename",
+        "S3-docs-specs-rename"
+      ],
+      "acceptance": [
+        "make test GOTEST_PKGS='./internal/cli/... ./cmd/...' exit 0 with output captured",
+        "rg -i nexus3 internal/cli cmd returns 0 lines"
+      ]
+    },
+    {
+      "id": "S5-tests-core",
+      "wave": 1,
+      "status": "pending",
+      "kind": "impl",
+      "desc": "make test for every package outside internal/cli and cmd/ (internal/core/... internal/supervisor/... internal/clientagent/... internal/mcp/... internal/test/... etc) green after rename; fix name-assertion tests",
+      "blocked_by": [
+        "S1-go-rename",
+        "S2-plugins-rename",
+        "S3-docs-specs-rename"
+      ],
+      "acceptance": [
+        "make test GOTEST_PKGS=<all packages except ./internal/cli/... ./cmd/...> exit 0 with output captured",
+        "no edits under internal/cli or cmd/"
+      ]
+    },
+    {
+      "id": "S6-spec-regen",
+      "wave": 1,
+      "status": "pending",
+      "kind": "impl",
+      "desc": "Regenerate doc/specs/_generated via the groundwork:spec build so index.json carries C-NEXUS; godog spec feature suite passes with renamed steps",
+      "blocked_by": [
+        "S3-docs-specs-rename"
+      ],
+      "acceptance": [
+        "doc/specs/_generated/index.json contains C-NEXUS and not C-NEXUS3",
+        "spec build command exit 0",
+        "godog features under internal/test/spec pass (make test GOTEST_PKGS=./internal/test/spec/...)"
+      ]
+    },
+    {
+      "id": "S7-host-cutover",
+      "wave": 2,
+      "status": "pending",
+      "kind": "impl",
+      "desc": "Operator host cutover: stop live sandboxes via herdr verbs, stop nexus3 local-agent-startup daemon, delete ~/.local/state/nexus3 ~/.config/nexus3 ~/.cache/nexus3 ~/.local/share/nexus3 /var/lib/nexus3 /run/nexus3, back up ~/.local/bin/nexus -> nexus.old-product, build+install nexus / nexus-agent (static, make install-agent) / nexus-guest-shell, swap claude plugin nexus3@nexus3 -> nexus@nexus and herdr plugin, restart daemon",
+      "blocked_by": [
+        "S4-tests-cli",
+        "S5-tests-core"
+      ],
+      "acceptance": [
+        "pgrep -af nexus3 shows no supervisor/virtiofsd/daemon",
+        "none of the old state dirs exist",
+        "~/.local/bin/nexus.old-product exists and ~/.local/bin/nexus is the new build (nexus --version prints dev/new build)",
+        "~/.local/bin/nexus-agent is static (file reports statically linked)",
+        "claude plugin list shows nexus@nexus and not nexus3@nexus3",
+        "herdr plugin list shows nexus"
+      ]
+    },
+    {
+      "id": "S8-live-proof",
+      "wave": 3,
+      "status": "pending",
+      "kind": "impl",
+      "desc": "Live proof through herdr: create a worktree sandbox with the renamed plugin verb, exec inside, confirm guest agent is nexus-agent and host state lives under ~/.local/state/nexus, tear down",
+      "blocked_by": [
+        "S7-host-cutover"
+      ],
+      "acceptance": [
+        "herdr worktree-sandbox verb creates a sandbox and exec inside returns exit 0",
+        "guest /proc/1/exe or agent log identifies nexus-agent",
+        "~/.local/state/nexus contains the sandbox and ~/.local/state/nexus3 does not exist",
+        "sandbox torn down via herdr verb"
+      ]
+    },
+    {
+      "id": "S9-residual-sweep",
+      "wave": 1,
+      "status": "pending",
+      "kind": "impl",
+      "desc": "Sweep leftovers: images/README.md images/AGENT-REBUILD.md images/base/Containerfile images/builder/Containerfile nexus3->nexus; reword 'old nexus' contrast prose in docs/design/ch-resize-400-research.md, docs/design/auto-resize.md:267, doc/specs/per/PER-R-007.md to 'the predecessor (old-nexus)' so it no longer collides with the product name",
+      "blocked_by": [
+        "S1-go-rename",
+        "S3-docs-specs-rename"
+      ],
+      "acceptance": [
+        "repo-wide rg -i nexus3 excluding .git .claude .groundwork CHANGELOG.md plugins/claude/evals docs/site/node_modules doc/specs/_generated internal/test/repro/logs returns 0 files",
+        "the three prose files no longer say 'old nexus'/'Old Nexus' bare"
+      ]
+    }
+  ],
+  "write_token": "95fee6420d96bce6",
+  "schema_version": 1,
+  "base_commit": "1cab7cc7343ee57ebed49854fe44626310b98463",
+  "motive": "rename-nexus3-to-nexus",
+  "gate": {
+    "seal": "d61146b0a49ea6060c8e796f96681f67730bbffd41aa4760d2eacbf42505fa56"
+  }
+}

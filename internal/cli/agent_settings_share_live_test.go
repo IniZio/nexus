@@ -4,10 +4,10 @@
 //
 // # What is under test
 //
-// When `nexus3 create --agent claude-code` is called, cmd_sandbox.go assembles
+// When `nexus create --agent claude-code` is called, cmd_sandbox.go assembles
 // a curated, secret-free copy of the user's ~/.claude via
 // service.AssembleCuratedConfig and adds it as a RO live mount at
-// /run/nexus3/agentcfg-lower BEFORE service.CreateAndBoot. Inside the VM,
+// /run/nexus/agentcfg-lower BEFORE service.CreateAndBoot. Inside the VM,
 // probeAndSeedGuest mounts a writable overlayfs onto /root/.claude (lowerdir =
 // the virtiofs share; upperdir = tmpfs) before any onboarding seeds run.
 //
@@ -28,14 +28,14 @@
 //
 // Run:
 //
-//	TMPDIR=/tmp NEXUS3_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
-//	  NEXUS3_LIVE_REQUIRED=1 \
+//	TMPDIR=/tmp NEXUS_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
+//	  NEXUS_LIVE_REQUIRED=1 \
 //	  go test -tags herdr_live ./internal/cli/... -run TestAgentSettingsShareLive -v -count=1
 //
 // Prerequisites:
 //   - /dev/kvm must be available
-//   - NEXUS3_KERNEL_PATH must be set to a vmlinux image
-//   - nexus3-agent-base image must be locally cached (or set NEXUS3_SHARE_IMAGE)
+//   - NEXUS_KERNEL_PATH must be set to a vmlinux image
+//   - nexus-agent-base image must be locally cached (or set NEXUS_SHARE_IMAGE)
 package cli_test
 
 import (
@@ -49,9 +49,9 @@ import (
 	"time"
 )
 
-// realStateHome resolves the durable state dir the nexus3 image store lives
+// realStateHome resolves the durable state dir the nexus image store lives
 // under, so the live-test subprocesses can reach the operator's cached
-// nexus3-agent-base image. store.DefaultRoot() honours XDG_STATE_HOME when set,
+// nexus-agent-base image. store.DefaultRoot() honours XDG_STATE_HOME when set,
 // else falls back to $HOME/.local/state.
 //
 // Two traps make this non-trivial:
@@ -62,15 +62,15 @@ import (
 //     do NOT read XDG_STATE_HOME here.
 //  2. The subprocess overrides HOME to a fake dir (so AssembleCuratedConfig
 //     reads the fake ~/.claude); if the image store were left to follow that
-//     fake HOME it would land where nexus3-agent-base is not cached — the prior
+//     fake HOME it would land where nexus-agent-base is not cached — the prior
 //     bug that surfaced as "no cached image" on a clean run.
 //
 // So we PIN XDG_STATE_HOME on the subprocess to the operator's real state dir:
-// NEXUS3_SHARE_STATE_HOME when the operator sets it (escape hatch for a custom
+// NEXUS_SHARE_STATE_HOME when the operator sets it (escape hatch for a custom
 // XDG layout), else $HOME/.local/state resolved from the test process's real
 // HOME (which is NOT overridden at the process level — only per subprocess).
 func realStateHome() string {
-	if v := os.Getenv("NEXUS3_SHARE_STATE_HOME"); v != "" {
+	if v := os.Getenv("NEXUS_SHARE_STATE_HOME"); v != "" {
 		return v
 	}
 	if h := os.Getenv("HOME"); h != "" {
@@ -79,7 +79,7 @@ func realStateHome() string {
 	return ""
 }
 
-// shareCmdFakeHome builds a nexus3 subprocess with:
+// shareCmdFakeHome builds a nexus subprocess with:
 //   - XDG_STATE_HOME pinned to the real state dir (so the real image store is
 //     reachable even though HOME is faked)
 //   - HOME overridden to fakeHome (so AssembleCuratedConfig reads the fake .claude)
@@ -105,7 +105,7 @@ func shareCmdFakeHome(binary, fakeHome string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// shareCmd builds a nexus3 subprocess with XDG_STATE_HOME pinned to the real
+// shareCmd builds a nexus subprocess with XDG_STATE_HOME pinned to the real
 // state dir so lifecycle verbs (exec, rm) address the same image store and
 // sandbox records that shareCmdFakeHome created.
 func shareCmd(binary string, args ...string) *exec.Cmd {
@@ -126,28 +126,28 @@ func shareCmd(binary string, args ...string) *exec.Cmd {
 }
 
 func TestAgentSettingsShareLive(t *testing.T) {
-	if os.Getenv("NEXUS3_LIVE_REQUIRED") == "" {
-		t.Skip("set NEXUS3_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
+	if os.Getenv("NEXUS_LIVE_REQUIRED") == "" {
+		t.Skip("set NEXUS_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
 	}
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skipf("share: /dev/kvm not available: %v", err)
 	}
-	if os.Getenv("NEXUS3_KERNEL_PATH") == "" {
-		t.Skip("share: NEXUS3_KERNEL_PATH is not set; set it to a vmlinux image to run this test")
+	if os.Getenv("NEXUS_KERNEL_PATH") == "" {
+		t.Skip("share: NEXUS_KERNEL_PATH is not set; set it to a vmlinux image to run this test")
 	}
 
-	// Build the nexus3 binary.
+	// Build the nexus binary.
 	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "nexus3-share")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
+	binary := filepath.Join(binDir, "nexus-share")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus")
 	build.Dir = filepath.Join("..", "..")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("share: nexus3 binary cannot be built: %v\n%s", err, out)
+		t.Skipf("share: nexus binary cannot be built: %v\n%s", err, out)
 	}
 
-	image := os.Getenv("NEXUS3_SHARE_IMAGE")
+	image := os.Getenv("NEXUS_SHARE_IMAGE")
 	if image == "" {
-		image = "nexus3-agent-base"
+		image = "nexus-agent-base"
 	}
 
 	// --- Prepare fake HOME/.claude with marker files. ---
@@ -198,9 +198,9 @@ func TestAgentSettingsShareLive(t *testing.T) {
 	t.Cleanup(func() {
 		rmOut, rmErr := shareCmd(binary, "rm", handle).CombinedOutput()
 		if rmErr != nil {
-			t.Logf("cleanup: nexus3 rm %s: %v\n%s", handle, rmErr, rmOut)
+			t.Logf("cleanup: nexus rm %s: %v\n%s", handle, rmErr, rmOut)
 		} else {
-			t.Logf("cleanup: nexus3 rm %s: %s", handle, rmOut)
+			t.Logf("cleanup: nexus rm %s: %s", handle, rmOut)
 		}
 	})
 
@@ -210,9 +210,9 @@ func TestAgentSettingsShareLive(t *testing.T) {
 		"--image", image,
 	).CombinedOutput()
 	if createErr != nil {
-		t.Fatalf("nexus3 create: %v\n%s\n(check NEXUS3_KERNEL_PATH and that %q is cached)", createErr, createOut, image)
+		t.Fatalf("nexus create: %v\n%s\n(check NEXUS_KERNEL_PATH and that %q is cached)", createErr, createOut, image)
 	}
-	t.Logf("nexus3 create:\n%s", createOut)
+	t.Logf("nexus create:\n%s", createOut)
 
 	// --- In-guest verification script. ---
 	//
@@ -237,8 +237,8 @@ if [ ! -f /root/.claude/skills/demo/SKILL.md ]; then
 fi
 
 # AC-3: /root/.claude must be writable (writes land in tmpfs upper).
-touch /root/.claude/nexus3-write-test-$$
-rm -f /root/.claude/nexus3-write-test-$$
+touch /root/.claude/nexus-write-test-$$
+rm -f /root/.claude/nexus-write-test-$$
 
 # AC-4: .credentials.json MUST NOT be present (excluded by allowlist).
 if [ -f /root/.claude/.credentials.json ]; then
@@ -251,7 +251,7 @@ echo ` + tracerToken + `
 	execOut, execErr := shareCmd(binary, "exec", handle, "--", "/bin/bash", "-c", script).CombinedOutput()
 	t.Logf("exec output:\n%s", execOut)
 	if execErr != nil {
-		t.Fatalf("nexus3 exec: %v\n%s", execErr, execOut)
+		t.Fatalf("nexus exec: %v\n%s", execErr, execOut)
 	}
 
 	if !bytes.Contains(execOut, []byte(tracerToken)) {
@@ -272,9 +272,9 @@ echo ` + tracerToken + `
 	t.Cleanup(func() {
 		rmOut, rmErr := shareCmd(binary, "rm", noShareHandle).CombinedOutput()
 		if rmErr != nil {
-			t.Logf("cleanup: nexus3 rm %s: %v\n%s", noShareHandle, rmErr, rmOut)
+			t.Logf("cleanup: nexus rm %s: %v\n%s", noShareHandle, rmErr, rmOut)
 		} else {
-			t.Logf("cleanup: nexus3 rm %s: %s", noShareHandle, rmOut)
+			t.Logf("cleanup: nexus rm %s: %s", noShareHandle, rmOut)
 		}
 	})
 
@@ -285,9 +285,9 @@ echo ` + tracerToken + `
 		"--no-share-settings",
 	).CombinedOutput()
 	if noShareErr != nil {
-		t.Fatalf("nexus3 create (no-share): %v\n%s", noShareErr, noShareOut)
+		t.Fatalf("nexus create (no-share): %v\n%s", noShareErr, noShareOut)
 	}
-	t.Logf("nexus3 create (no-share):\n%s", noShareOut)
+	t.Logf("nexus create (no-share):\n%s", noShareOut)
 
 	checkNoShare := `set -euo pipefail
 if [ -f /root/.claude/CLAUDE.md ] && grep -q 'Shared CLAUDE.md marker' /root/.claude/CLAUDE.md; then
@@ -298,7 +298,7 @@ echo NO_SHARE_OK
 	nsOut, nsErr := shareCmd(binary, "exec", noShareHandle, "--", "/bin/bash", "-c", checkNoShare).CombinedOutput()
 	t.Logf("no-share exec: %s", nsOut)
 	if nsErr != nil {
-		t.Fatalf("nexus3 exec (no-share): %v\n%s", nsErr, nsOut)
+		t.Fatalf("nexus exec (no-share): %v\n%s", nsErr, nsOut)
 	}
 	if !bytes.Contains(nsOut, []byte("NO_SHARE_OK")) {
 		t.Errorf("--no-share-settings sandbox unexpectedly has shared marker\n%s", nsOut)

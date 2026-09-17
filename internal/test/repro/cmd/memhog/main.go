@@ -1,5 +1,5 @@
 // memhog allocates and holds a configurable amount of host RAM to apply
-// memory pressure during nexus3 repro builds.  It receives --target-free-mib
+// memory pressure during nexus repro builds.  It receives --target-free-mib
 // (the MemAvailable level to maintain), allocates the difference via mmap,
 // touches every page to force physical backing, then blocks until SIGTERM/SIGINT.
 package main

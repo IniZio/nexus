@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ func (r *recordingRemover) fn() func(context.Context, string) error {
 // every case vacuous.
 func liveWorkspaces() []herdrWorkspaceRef {
 	return []herdrWorkspaceRef{
-		{WorkspaceID: "wOTHER", Label: "nexus3:other/sandbox", CheckoutPath: "/some/other/checkout"},
+		{WorkspaceID: "wOTHER", Label: "nexus:other/sandbox", CheckoutPath: "/some/other/checkout"},
 	}
 }
 
@@ -185,7 +185,7 @@ func TestBindingless_KeepsSandboxWithBindingByHandle(t *testing.T) {
 	f.removeCheckout(t)
 
 	bindings := []HerdrSpaceBinding{{
-		SpaceLabel:       "nexus3:repo/feature",
+		SpaceLabel:       "nexus:repo/feature",
 		HerdrWorkspaceID: "wBOUND",
 		SandboxHandle:    "repo/feature",
 		SandboxID:        "sb-unrelated-id",
@@ -210,7 +210,7 @@ func TestBindingless_KeepsSandboxWithBindingByID(t *testing.T) {
 	f.removeCheckout(t)
 
 	bindings := []HerdrSpaceBinding{{
-		SpaceLabel:       "nexus3:repo/renamed",
+		SpaceLabel:       "nexus:repo/renamed",
 		HerdrWorkspaceID: "wBOUND",
 		SandboxHandle:    "repo/renamed", // handle does NOT match
 		SandboxID:        sb.ID.String(), // ID does
@@ -230,7 +230,7 @@ func TestBindingless_EmptyBindingSandboxIDIsNotAWildcard(t *testing.T) {
 	f.removeCheckout(t)
 
 	bindings := []HerdrSpaceBinding{{
-		SpaceLabel:    "nexus3:repo/unrelated",
+		SpaceLabel:    "nexus:repo/unrelated",
 		SandboxHandle: "repo/unrelated",
 		SandboxID:     "", // legacy row
 	}}
@@ -473,7 +473,7 @@ func TestBindingless_KeepsWhenLiveWorkspaceRefersByPath(t *testing.T) {
 	f.removeCheckout(t)
 
 	ws := []herdrWorkspaceRef{
-		{WorkspaceID: "wOTHER", Label: "nexus3:other/sandbox"},
+		{WorkspaceID: "wOTHER", Label: "nexus:other/sandbox"},
 		// Deliberately unclean so the comparison's filepath.Clean is exercised.
 		{WorkspaceID: "wLIVE", Label: "some-label", CheckoutPath: f.Checkout + "/."},
 	}
@@ -488,7 +488,7 @@ func TestBindingless_KeepsWhenLiveWorkspaceRefersByPath(t *testing.T) {
 
 // TestBindingless_KeepsWhenLiveWorkspaceRefersByLabel: herdr's worktree info is
 // nullable, so a live workspace may carry no checkout path at all. The
-// "nexus3:<handle>" label herdrWorktreeSandbox renames it to is the second way
+// "nexus:<handle>" label herdrWorktreeSandbox renames it to is the second way
 // a live workspace claims a sandbox.
 //
 // MUTATION TARGET: the label comparison in G4.
@@ -498,8 +498,8 @@ func TestBindingless_KeepsWhenLiveWorkspaceRefersByLabel(t *testing.T) {
 	f.removeCheckout(t)
 
 	ws := []herdrWorkspaceRef{
-		{WorkspaceID: "wOTHER", Label: "nexus3:other/sandbox"},
-		{WorkspaceID: "wLABEL", Label: "nexus3:repo/feature"}, // no CheckoutPath
+		{WorkspaceID: "wOTHER", Label: "nexus:other/sandbox"},
+		{WorkspaceID: "wLABEL", Label: "nexus:repo/feature"}, // no CheckoutPath
 	}
 	v := herdrClassifyBindinglessSandbox(sb, nil, ws)
 	if v.Collect {
@@ -712,7 +712,7 @@ func TestBindingless_ReapFailureIsNotCounted(t *testing.T) {
 // (Verified from `herdr api schema --json`, schemas.success_response.$defs.)
 func TestParseWorkspaceRefs(t *testing.T) {
 	payload := `{"result":{"workspaces":[
-	  {"workspace_id":"w1","label":"nexus3:repo/feature","worktree":{"repo_key":"/main/.git","repo_name":"main","repo_root":"/main","checkout_path":"/wt/feature","is_linked_worktree":true}},
+	  {"workspace_id":"w1","label":"nexus:repo/feature","worktree":{"repo_key":"/main/.git","repo_name":"main","repo_root":"/main","checkout_path":"/wt/feature","is_linked_worktree":true}},
 	  {"workspace_id":"w2","label":"plain","worktree":null}
 	]}}`
 	refs, err := herdrParseWorkspaceRefs([]byte(payload))
@@ -722,7 +722,7 @@ func TestParseWorkspaceRefs(t *testing.T) {
 	if len(refs) != 2 {
 		t.Fatalf("got %d refs, want 2", len(refs))
 	}
-	if refs[0].WorkspaceID != "w1" || refs[0].Label != "nexus3:repo/feature" || refs[0].CheckoutPath != "/wt/feature" {
+	if refs[0].WorkspaceID != "w1" || refs[0].Label != "nexus:repo/feature" || refs[0].CheckoutPath != "/wt/feature" {
 		t.Errorf("worktree workspace parsed wrong: %+v", refs[0])
 	}
 	if refs[1].WorkspaceID != "w2" || refs[1].CheckoutPath != "" {

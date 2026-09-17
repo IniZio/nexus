@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // SetTestHookAfterMetaWrite sets the hook that fires after meta.json is

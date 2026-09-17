@@ -18,13 +18,13 @@ func TestDoctor_ExitZero_WithSubstrate(t *testing.T) {
 }
 
 // TestDoctor_ExitZero_NoSubstrate verifies that doctor exits 0 even when the
-// substrate is explicitly disabled via NEXUS3_SUBSTRATE=none.
+// substrate is explicitly disabled via NEXUS_SUBSTRATE=none.
 func TestDoctor_ExitZero_NoSubstrate(t *testing.T) {
-	t.Setenv("NEXUS3_SUBSTRATE", "none")
+	t.Setenv("NEXUS_SUBSTRATE", "none")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	code := Run([]string{"doctor"})
 	if code != 0 {
-		t.Errorf("doctor with NEXUS3_SUBSTRATE=none: exit code = %d, want 0", code)
+		t.Errorf("doctor with NEXUS_SUBSTRATE=none: exit code = %d, want 0", code)
 	}
 }
 
@@ -63,10 +63,10 @@ func TestDoctor_JSON_Parseable(t *testing.T) {
 	}
 }
 
-// TestDoctor_JSON_NoSubstrate verifies the envelope when NEXUS3_SUBSTRATE=none:
+// TestDoctor_JSON_NoSubstrate verifies the envelope when NEXUS_SUBSTRATE=none:
 // selected must be false and checks must be an empty (not null) array.
 func TestDoctor_JSON_NoSubstrate(t *testing.T) {
-	t.Setenv("NEXUS3_SUBSTRATE", "none")
+	t.Setenv("NEXUS_SUBSTRATE", "none")
 
 	out, stdout, _ := capture(true)
 	if err := runDoctor(context.Background(), []string{}, out); err != nil {
@@ -84,7 +84,7 @@ func TestDoctor_JSON_NoSubstrate(t *testing.T) {
 		t.Fatalf("data is not a JSON object")
 	}
 	if data["selected"] != false {
-		t.Errorf("data.selected = %v, want false when NEXUS3_SUBSTRATE=none", data["selected"])
+		t.Errorf("data.selected = %v, want false when NEXUS_SUBSTRATE=none", data["selected"])
 	}
 	if data["substrate"] != "none" {
 		t.Errorf("data.substrate = %v, want \"none\"", data["substrate"])
@@ -152,10 +152,10 @@ func TestFormatDoctorHuman_FailedCheck(t *testing.T) {
 	}
 }
 
-// TestDoctor_JSON_InvalidOverride verifies that an unrecognised NEXUS3_SUBSTRATE
+// TestDoctor_JSON_InvalidOverride verifies that an unrecognised NEXUS_SUBSTRATE
 // value still exits 0 and produces a valid envelope.
 func TestDoctor_JSON_InvalidOverride(t *testing.T) {
-	t.Setenv("NEXUS3_SUBSTRATE", "fake")
+	t.Setenv("NEXUS_SUBSTRATE", "fake")
 
 	out, stdout, _ := capture(true)
 	if err := runDoctor(context.Background(), []string{}, out); err != nil {

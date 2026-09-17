@@ -1,6 +1,6 @@
 // netns_backfill_test.go — proves BackfillNetnsIdentity's identification
 // predicate (ticket 11): exactly one live child of the supervisor pid, with
-// NEXUS3_NETNS_RUN=1 and the expected API socket in its environ, wins;
+// NEXUS_NETNS_RUN=1 and the expected API socket in its environ, wins;
 // everything else refuses.
 //
 // These are hermetic: no CH binary, no /dev/kvm. A plain "sleep" process
@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 )
 
 // socketpairFile returns one end of an AF_UNIX SOCK_DGRAM socketpair as an
@@ -35,8 +35,8 @@ func socketpairFile(t *testing.T) *os.File {
 
 // spawnFakeNetnsChild starts a "sleep" process that is a real child of THIS
 // test process (so ppid == os.Getpid()), with an environ shaped like a real
-// netns child's: NEXUS3_NETNS_RUN=1, NEXUS3_NETNS_API_SOCKET=apiSocket,
-// NEXUS3_NETNS_GUEST_TAP=tap. Returns the pid; the process is killed and
+// netns child's: NEXUS_NETNS_RUN=1, NEXUS_NETNS_API_SOCKET=apiSocket,
+// NEXUS_NETNS_GUEST_TAP=tap. Returns the pid; the process is killed and
 // reaped on test cleanup.
 func spawnFakeNetnsChild(t *testing.T, apiSocket, tap string) int {
 	t.Helper()
@@ -83,7 +83,7 @@ func spawnPlainChild(t *testing.T) int {
 // candidate's own environ.
 func TestBackfillNetnsIdentity_HappyPath(t *testing.T) {
 	const wantSocket = "/tmp/nx3-backfill-test.sock"
-	const wantTap = "nx3g-backfill"
+	const wantTap = "nxg-backfill"
 	pid := spawnFakeNetnsChild(t, wantSocket, wantTap)
 
 	// Give the kernel a moment to fully populate /proc for the new pid.
@@ -147,8 +147,8 @@ func TestBackfillNetnsIdentity_ZeroCandidates_Refuses(t *testing.T) {
 // identification predicate must not silently resolve by picking one.
 func TestBackfillNetnsIdentity_MultiCandidate_Refuses(t *testing.T) {
 	const wantSocket = "/tmp/nx3-backfill-multi.sock"
-	spawnFakeNetnsChild(t, wantSocket, "nx3g-a")
-	spawnFakeNetnsChild(t, wantSocket, "nx3g-b")
+	spawnFakeNetnsChild(t, wantSocket, "nxg-a")
+	spawnFakeNetnsChild(t, wantSocket, "nxg-b")
 	time.Sleep(20 * time.Millisecond)
 
 	_, err := BackfillNetnsIdentity(os.Getpid(), wantSocket)
@@ -161,7 +161,7 @@ func TestBackfillNetnsIdentity_MultiCandidate_Refuses(t *testing.T) {
 // predicate: a real netns-shaped child of the right supervisor, but carrying
 // a DIFFERENT sandbox's API socket, must not be adopted for this sandbox.
 func TestBackfillNetnsIdentity_WrongAPISocket_Refuses(t *testing.T) {
-	spawnFakeNetnsChild(t, "/tmp/nx3-other-sandbox.sock", "nx3g-other")
+	spawnFakeNetnsChild(t, "/tmp/nx3-other-sandbox.sock", "nxg-other")
 	time.Sleep(20 * time.Millisecond)
 
 	_, err := BackfillNetnsIdentity(os.Getpid(), "/tmp/nx3-this-sandbox.sock")
@@ -198,7 +198,7 @@ func TestBackfillNetnsIdentity_RejectsInvalidArgs(t *testing.T) {
 // bad adoption and must fail.
 func TestBackfillNetnsIdentity_ThenAdopt_StarttimeMismatch_Refuses(t *testing.T) {
 	const wantSocket = "/tmp/nx3-backfill-mismatch.sock"
-	const wantTap = "nx3g-mismatch"
+	const wantTap = "nxg-mismatch"
 	spawnFakeNetnsChild(t, wantSocket, wantTap)
 	time.Sleep(20 * time.Millisecond)
 

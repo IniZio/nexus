@@ -1,7 +1,7 @@
 #!/bin/sh
 # pane.sh <subcommand> [args] — called by herdr as the pane's argv.
-# The shim is written by build.sh at install time (absolute path to nexus3 binary).
-SHIM="$(dirname "$0")/../nexus3-shim.sh"
+# The shim is written by build.sh at install time (absolute path to nexus binary).
+SHIM="$(dirname "$0")/../nexus-shim.sh"
 
 case "$1" in
     attach|workspaces)
@@ -9,11 +9,11 @@ case "$1" in
         exec "$SHIM" herdr "$@"
         ;;
     shell)
-        # Guest interactive shell: exec into the sandbox identified by NEXUS3_WORKSPACE.
+        # Guest interactive shell: exec into the sandbox identified by NEXUS_WORKSPACE.
         # Herdr provides a PTY for this pane, so exec works as an interactive shell.
-        REF="${NEXUS3_WORKSPACE:-}"
+        REF="${NEXUS_WORKSPACE:-}"
         if [ -z "$REF" ]; then
-            echo "pane.sh shell: NEXUS3_WORKSPACE not set" >&2
+            echo "pane.sh shell: NEXUS_WORKSPACE not set" >&2
             exit 1
         fi
         # Resolve workspace guest directory (prints /root when no workspace is mounted).
@@ -22,9 +22,9 @@ case "$1" in
         SHELL_CWD=$("$SHIM" herdr shell-cwd "$REF" 2>/dev/null)
         SHELL_CWD_STATUS=$?
         if [ "$SHELL_CWD_STATUS" -ne 0 ]; then
-            printf "pane.sh: 'nexus3 herdr shell-cwd %s' failed (exit %d)\n" "$REF" "$SHELL_CWD_STATUS"
-            printf "The nexus3 binary is likely stale and does not recognise the 'herdr' command group.\n"
-            printf "Fix: reinstall the nexus3 binary and re-run plugins/herdr/build.sh\n"
+            printf "pane.sh: 'nexus herdr shell-cwd %s' failed (exit %d)\n" "$REF" "$SHELL_CWD_STATUS"
+            printf "The nexus binary is likely stale and does not recognise the 'herdr' command group.\n"
+            printf "Fix: reinstall the nexus binary and re-run plugins/herdr/build.sh\n"
             printf "Press Enter to close this pane.\n"
             read -r _
             exit 1
@@ -78,25 +78,25 @@ case "$1" in
             read -r _
             exit 1
         fi
-        # NEXUS3_WORKTREE_AUTO=1 selects --auto (the repo-level conditional rule:
-        # bind when some sibling workspace in this repo is already nexus3-bound
+        # NEXUS_WORKTREE_AUTO=1 selects --auto (the repo-level conditional rule:
+        # bind when some sibling workspace in this repo is already nexus-bound
         # or the checkout carries .nexus/config.yaml / .nexus/Containerfile; skip only
         # when neither). The worktree.created event hook sets it; the explicit
         # "sandbox this worktree" action does not, because an operator who asked
         # for a sandbox by name has already made the decision the predicate exists
         # to make.
         set -- "$WS"
-        if [ "${NEXUS3_WORKTREE_AUTO:-}" = "1" ]; then
+        if [ "${NEXUS_WORKTREE_AUTO:-}" = "1" ]; then
             set -- --auto "$WS"
         fi
-        printf "nexus3: provisioning a sandbox for this worktree (image pull + disk + VM boot; can take a few minutes on a cold cache)...\n\n"
+        printf "nexus: provisioning a sandbox for this worktree (image pull + disk + VM boot; can take a few minutes on a cold cache)...\n\n"
         # Tee the build into the per-workspace provisioning log. Every other
         # pane of this workspace that opens before the sandbox is ready
-        # (nexus3-guest-shell, herdrWtCreateLogPath in Go — same formula)
+        # (nexus-guest-shell, herdrWtCreateLogPath in Go — same formula)
         # tails this file instead of waiting in silence. Truncated per run;
         # herdr reuses workspace IDs. The exit status crosses the pipe via a
         # temp file because POSIX sh has no PIPESTATUS.
-        CREATE_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nexus3"
+        CREATE_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nexus"
         CREATE_LOG="$CREATE_LOG_DIR/herdr-wt-create-ws-$WS.log"
         mkdir -p "$CREATE_LOG_DIR" 2>/dev/null
         : > "$CREATE_LOG" 2>/dev/null
@@ -110,7 +110,7 @@ case "$1" in
         fi
         # Non-zero: HOLD THE PANE OPEN.  This is the whole point of running the
         # build here.  Closing on failure is what buried the last one.
-        printf "\nnexus3: worktree-sandbox FAILED (exit %d). The error is above.\n" "$STATUS"
+        printf "\nnexus: worktree-sandbox FAILED (exit %d). The error is above.\n" "$STATUS"
         printf "Press Enter to close this pane.\n"
         read -r _
         exit "$STATUS"

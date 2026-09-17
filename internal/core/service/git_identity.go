@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // ── git configuration constants ──
@@ -15,11 +15,11 @@ import (
 const GuestGitconfigPath = "/root/.gitconfig"
 
 // GuestGitCredentialHelperPath is the guest path for the credential-helper script.
-const GuestGitCredentialHelperPath = "/usr/local/bin/nexus3-git-credential"
+const GuestGitCredentialHelperPath = "/usr/local/bin/nexus-git-credential"
 
 // GuestGitCredentialHelperScript is the credential-helper script (POSIX sh, GH_TOKEN never to config/URLs).
 const GuestGitCredentialHelperScript = `#!/bin/sh
-# nexus3 git credential helper.
+# nexus git credential helper.
 case "$1" in
 get)
 	[ -n "${GH_TOKEN}" ] || exit 0
@@ -96,7 +96,7 @@ func sanitizeBranchSlug(slug string) string {
 	return strings.Trim(buf.String(), "-")
 }
 
-// SandboxBranchName returns git branch nexus3/<motive>/<id> (D-PD-03); deterministic.
+// SandboxBranchName returns git branch nexus/<motive>/<id> (D-PD-03); deterministic.
 func SandboxBranchName(labels map[string]string, id domain.SandboxID) string {
 	slug := labels["motive"]
 	if slug == "" {
@@ -106,7 +106,7 @@ func SandboxBranchName(labels map[string]string, id domain.SandboxID) string {
 	if slug == "" {
 		slug = "default"
 	}
-	return fmt.Sprintf("nexus3/%s/%s", slug, sandboxShortID(id))
+	return fmt.Sprintf("nexus/%s/%s", slug, sandboxShortID(id))
 }
 
 // SourceGuestPaths collects in-guest paths for git safe.directory entries.
@@ -144,7 +144,7 @@ func buildGitconfigPayload(name, email string, sourcePaths []string, branch stri
 	fmt.Fprintf(&buf, "\tdefaultBranch = %s\n", branch)
 	fmt.Fprintf(&buf, "[core]\n")
 	fmt.Fprintf(&buf, "\tsafecrlf = false\n")
-	buf.WriteString("\tsshCommand = /sbin/nexus3-agent git-ssh\n")
+	buf.WriteString("\tsshCommand = /sbin/nexus-agent git-ssh\n")
 	buf.WriteString("[credential \"https://github.com\"]\n")
 	buf.WriteString("\thelper = !sh " + GuestGitCredentialHelperPath + "\n")
 

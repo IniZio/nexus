@@ -16,7 +16,7 @@ import (
 )
 
 // WorkspaceMount describes a host git worktree that has been captured to an
-// ext4 disk image for attachment to a nexus3 sandbox VM as a read-write
+// ext4 disk image for attachment to a nexus sandbox VM as a read-write
 // workspace volume.
 //
 // WorkspaceMount is intentionally minimal: only the fields that current
@@ -94,7 +94,7 @@ func isVanishedEntry(err error) bool {
 //
 // Exclusion policy (applied before measuring or copying any content):
 //   - Paths matched by <srcDir>/.dockerignore are excluded.
-//   - Names in [nexus3AlwaysExclude] (.claude, .agents, .groundwork,
+//   - Names in [nexusAlwaysExclude] (.claude, .agents, .groundwork,
 //     .pnpm-store) are always excluded regardless of .dockerignore.
 //   - Sockets, device files, named pipes, and irregular files are skipped:
 //     they are not transferable to a guest filesystem.
@@ -129,9 +129,9 @@ func WorktreeToDiskWithExtra(ctx context.Context, srcDir, outExt4 string, maxByt
 		return fmt.Errorf("worktreedisk: load .dockerignore: %w", err)
 	}
 
-	// Merge .dockerignore patterns with the nexus3-internal always-exclude list
+	// Merge .dockerignore patterns with the nexus-internal always-exclude list
 	// and any caller-supplied extra patterns.
-	allPatterns := slices.Clone(nexus3AlwaysExclude)
+	allPatterns := slices.Clone(nexusAlwaysExclude)
 	if pm != nil {
 		for _, p := range pm.Patterns() {
 			allPatterns = append(allPatterns, p.String())
@@ -203,7 +203,7 @@ func WorktreeToDiskWithExtra(ctx context.Context, srcDir, outExt4 string, maxByt
 // policy. preflightCaptureSize fails closed if any such entry is encountered.
 //
 // Type-based skips (sockets, device files, named pipes) and exclusion-policy
-// skips (.dockerignore, nexus3AlwaysExclude) are legitimate and expected; they
+// skips (.dockerignore, nexusAlwaysExclude) are legitimate and expected; they
 // do NOT trigger this check.
 func preflightCaptureSize(srcDir, outExt4 string, combinedPM *patternmatcher.PatternMatcher, maxBytes int64) error {
 	topDirBytes := map[string]int64{}
@@ -395,7 +395,7 @@ func preflightCaptureSize(srcDir, outExt4 string, combinedPM *patternmatcher.Pat
 //
 // The caller must invoke the returned cleanup func when done.
 func filteredWorktreeDir(src string, combinedPM *patternmatcher.PatternMatcher, stagingBase string) (string, func(), error) {
-	tmpDir, err := os.MkdirTemp(stagingBase, "nexus3-wt-*")
+	tmpDir, err := os.MkdirTemp(stagingBase, "nexus-wt-*")
 	if err != nil {
 		return "", nil, err
 	}

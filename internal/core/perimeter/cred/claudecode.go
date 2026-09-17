@@ -11,9 +11,9 @@ import (
 
 // Claude Code OAuth constants extracted from the @anthropic-ai/claude-code CLI.
 //
-// These are an OPERATIONAL DEPENDENCY: nexus3's login flow and token refresh
+// These are an OPERATIONAL DEPENDENCY: nexus's login flow and token refresh
 // rely on them matching what the CLI uses. If Anthropic rotates the client_id
-// or token endpoint, nexus3 login will break and these constants must be
+// or token endpoint, nexus login will break and these constants must be
 // updated accordingly.
 const (
 	// ClaudeCodeClientID is the public PKCE OAuth client registered by the
@@ -36,16 +36,16 @@ const (
 // claudeCodeDefaultFromPath returns the default --from path for the CLI
 // `auth login` import route for claude-code: the dedicated session's
 // .credentials.json written by `claude auth login` when
-// CLAUDE_CONFIG_DIR=~/.config/nexus3/claude-dedicated is set.
+// CLAUDE_CONFIG_DIR=~/.config/nexus/claude-dedicated is set.
 //
-// This matches the historical hard-coded path so that `nexus3 auth login`
+// This matches the historical hard-coded path so that `nexus auth login`
 // with no flags is byte-identical in behaviour to the pre-profile
 // implementation.  The profile parameter is accepted to satisfy
 // [AgentRegistration.DefaultFromPathFn] but is not currently used (the path
 // is the same for all claude-code profiles).
 func claudeCodeDefaultFromPath(_ AgentProfile) string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "nexus3", "claude-dedicated", ".credentials.json")
+	return filepath.Join(home, ".config", "nexus", "claude-dedicated", ".credentials.json")
 }
 
 // claudeCredentialsFile is the on-disk shape of Claude Code's

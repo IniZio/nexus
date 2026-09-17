@@ -1,4 +1,4 @@
-// Package service provides the sandbox management service layer for nexus3.
+// Package service provides the sandbox management service layer for nexus.
 //
 // It coordinates the store, the driver, and the lifecycle machine without
 // exposing any presentation concerns. It is usable as a library by the CLI,
@@ -40,18 +40,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
-	"github.com/IniZio/nexus3/internal/core/statedir"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus/internal/core/statedir"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // ErrNoSubstrate is returned when an operation requires a hypervisor driver
@@ -268,7 +268,7 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 //   - They are implementation-internal (not user-created sandboxes).
 //   - If the CLI is SIGKILL'd after record creation but before the supervisor
 //     calls svc.Remove (and before the pipe-watchdog has triggered), a stale
-//     __builder record would pollute `nexus3 sandbox list`.
+//     __builder record would pollute `nexus sandbox list`.
 //
 // The filter here is the last-resort safety net. The primary cleanup mechanism
 // is: supervisor's svc.Remove in ephemeral mode + parent-watchdog pipe for
@@ -873,7 +873,7 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 // freshly constructed proxy, instead of minting a fresh CA. Used by the
 // hot-swap adopt path so the replacement supervisor continues signing leaf
 // certificates the guest already trusts (motive
-// nexus3-host-supervisor-hotswap).
+// nexus-host-supervisor-hotswap).
 type CASeed struct {
 	CertPEM []byte
 	KeyPEM  []byte
@@ -918,7 +918,7 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 		stateDir = statedir.SupervisorDir(storeRoot, sb.ID)
 	}
 
-	// Wire the egress decisions log so `nexus3 egress log` can stream verdicts.
+	// Wire the egress decisions log so `nexus egress log` can stream verdicts.
 	// Errors are non-fatal: the perimeter still enforces policy; we just lose
 	// the decisions log for this run.
 	//
@@ -1237,7 +1237,7 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 		// image read-write. Gating here covers every ForkFrom caller — the two that
 		// exist and any added later — which per-caller gating does not. TBR-PD-15
 		// will design snapshot-with-volumes as a whole; this gate is not a settled
-		// semantic. Use independent nexus3 create calls for sandboxes that need volumes.
+		// semantic. Use independent nexus create calls for sandboxes that need volumes.
 		var attachedVolDescs []string
 		for _, va := range rec.MountedVolumes {
 			attachedVolDescs = append(attachedVolDescs, va.Name+"(kind="+va.Kind+")")
@@ -1246,7 +1246,7 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 			return fmt.Errorf(
 				"sandbox has attached named volume(s) [%s]: "+
 					"snapshotting a sandbox with named volumes is not yet supported "+
-					"(TBR-PD-15, D-PD-96); use independent nexus3 create calls for "+
+					"(TBR-PD-15, D-PD-96); use independent nexus create calls for "+
 					"sandboxes that need volumes",
 				strings.Join(attachedVolDescs, ", "),
 			)
@@ -1330,7 +1330,7 @@ func newForkConfig(opts []ForkOption) forkConfig {
 // checkForkDiskSpace refuses a fork that cannot fit. Fork copies EVERY one of
 // the parent's disks once per child — root .raw plus workspace and shadow
 // disks — so an N-way fork of a 5 GiB parent needs 5N GiB. This is the single
-// largest allocation nexus3 performs, and until TBD-PD-26 it was unguarded.
+// largest allocation nexus performs, and until TBD-PD-26 it was unguarded.
 //
 // Projection is measured, not estimated: every file being copied already
 // exists on disk. A parent with nothing in diskDir projects zero and the check
@@ -1377,7 +1377,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 	//   kind=dir: host directory served over virtiofs; two VMs sharing the same
 	//     host directory get a single mutable view — the isolation that fork is
 	//     supposed to provide does not exist (D-PD-53).
-	// Use independent `nexus3 create` calls for sandboxes that need volumes.
+	// Use independent `nexus create` calls for sandboxes that need volumes.
 	var attachedVolDescs []string
 	for _, va := range parent.MountedVolumes {
 		attachedVolDescs = append(attachedVolDescs, va.Name+"(kind="+va.Kind+")")

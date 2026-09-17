@@ -1,10 +1,10 @@
-// Package wire implements the nexus3 data-plane session wire protocol —
+// Package wire implements the nexus data-plane session wire protocol —
 // the framed byte stream that carries interactive stdio for one session over
 // a single connection.
 //
 // # Two-plane split
 //
-// nexus3 uses two independent protocol planes:
+// nexus uses two independent protocol planes:
 //
 //  1. Control plane — gRPC over vsock (package agentpb). Small request/response
 //     RPCs: Exec/Spawn, Signal, SessionStatus, Copy, etc. The control plane
@@ -31,7 +31,7 @@
 // streams [Data] frames beginning at resume_from_offset bytes into the
 // guest-authoritative output ring.
 //
-// The output ring itself lives in the in-guest agent (cmd/nexus3-agent, a later
+// The output ring itself lives in the in-guest agent (cmd/nexus-agent, a later
 // slice); this package only defines the wire contract.  resume_from_offset is a
 // byte offset into the combined (stdout+stderr interleaved) output history that
 // the guest ring maintains.  The host tracks offsets; the guest is authoritative

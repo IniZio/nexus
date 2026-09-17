@@ -14,7 +14,7 @@ package selfhost
 //   - /dev/kvm absent or inaccessible
 //   - cloud-hypervisor binary not found (CLOUD_HYPERVISOR_BIN or PATH)
 //   - mke2fs not in PATH
-//   - images/kernel/vmlinux-x86_64 absent and NEXUS3_KERNEL_PATH not set
+//   - images/kernel/vmlinux-x86_64 absent and NEXUS_KERNEL_PATH not set
 //   - docker unavailable (needed by BuildSelfHostBaseImage)
 //
 // # Running
@@ -34,15 +34,15 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // TestOrcaSSH boots a sandbox with a provisioned ephemeral ed25519 keypair
@@ -212,7 +212,7 @@ func TestOrcaSSH(t *testing.T) {
 	diagCtx, diagCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer diagCancel()
 	var diagBuf bytes.Buffer
-	diagCmd := `/bin/sh -c 'echo "== ls /root =="; ls -la /root; echo "== ls /root/.ssh =="; ls -la /root/.ssh; echo "== authorized_keys =="; cat /root/.ssh/authorized_keys; echo "== sshd binary =="; ls -la /usr/sbin/sshd; echo "== sshd -T pubkey/root/strict =="; /usr/sbin/sshd -T 2>&1 | grep -iE "pubkey|permitroot|authorizedkeysfile|strictmodes"; echo "== drop-in =="; cat /etc/ssh/sshd_config.d/99-nexus3-orca.conf; echo "== listening =="; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -i :22'`
+	diagCmd := `/bin/sh -c 'echo "== ls /root =="; ls -la /root; echo "== ls /root/.ssh =="; ls -la /root/.ssh; echo "== authorized_keys =="; cat /root/.ssh/authorized_keys; echo "== sshd binary =="; ls -la /usr/sbin/sshd; echo "== sshd -T pubkey/root/strict =="; /usr/sbin/sshd -T 2>&1 | grep -iE "pubkey|permitroot|authorizedkeysfile|strictmodes"; echo "== drop-in =="; cat /etc/ssh/sshd_config.d/99-nexus-orca.conf; echo "== listening =="; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -i :22'`
 	_, diagErr := agentClient.Exec(diagCtx, agent.ExecOptions{
 		Argv:   []string{"/bin/sh", "-c", diagCmd},
 		Env:    map[string]string{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
@@ -223,7 +223,7 @@ func TestOrcaSSH(t *testing.T) {
 
 	// ── Step 7: SSH into the guest directly via vsock:22 ─────────────────────
 	// Dial vsock port 22 (sshd) directly through the cloud-hypervisor vsock
-	// multiplexer — no nexus3 binary or ProxyCommand needed.
+	// multiplexer — no nexus binary or ProxyCommand needed.
 	t.Log("dialing guest sshd via vsock port 22 …")
 	sshCtx, sshCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer sshCancel()

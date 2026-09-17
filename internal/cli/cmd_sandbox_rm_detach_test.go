@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // TestNewSandboxService_RemoveDetachesNamedVolume proves that a Service built by
@@ -15,7 +15,7 @@ import (
 // its volume store wired, so Service.Remove clears the volume's attachment lease.
 //
 // Regression: newSandboxService previously never called WithVolumes — only the
-// create path did, and only when --mount-named was present. So `nexus3 rm` (and
+// create path did, and only when --mount-named was present. So `nexus rm` (and
 // herdr worktree teardown) ran Remove with Service.volumes == nil, which silently
 // SKIPS the detach loop. The attachment stayed in the volume's meta.json, the
 // volume was stuck "in use: attached to <dead-sandbox>", and the next create that

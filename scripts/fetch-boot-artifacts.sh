@@ -194,7 +194,7 @@ if [ -n "$IFACE" ]; then
     ip link set "$IFACE" up 2>/dev/null || true
     udhcpc -i "$IFACE" -n -q -t 3 -T 2 2>/dev/null || true
 fi
-echo "nexus3-test-vm: init reached — sleeping forever"
+echo "nexus-test-vm: init reached — sleeping forever"
 while true; do
     sleep 60
 done

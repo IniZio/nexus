@@ -12,7 +12,7 @@ The persistent-perimeter implementation **shall not** add the non-essential old-
 
 - **Why** — Each additional proxy enlarges the trust surface and complicates the security review; real tokens on the guest disk break the host-side broker model and violate D-PP-04. Changing default flows without explicit requirement risks silent regressions in the existing sandbox user base.
 - **Fit criterion** — Code review of `internal/supervisor/supervisor.go` shows no ssh-agent, git-signing, docker-cred, notification-relay, or PTY-host vsock proxy. `internal/supervisor/supervisor.go:573` carries the `D-PP-04 zero-cred-in-guest` annotation; `SeedGuestAgent` writes only a placeholder token. Existing sandbox unit tests (`go test ./internal/...` excluding `integration` tag) pass without modification.
-- **Verification** manual · **Criticality** must · **Source** nexus3-persistent-perimeter#D-PP-02
+- **Verification** manual · **Criticality** must · **Source** nexus-persistent-perimeter#D-PP-02
 - **Code** `internal/supervisor/supervisor.go:573` (D-PP-04 annotation: placeholder only), `:566-580` (seed path: only CA cert + placeholder creds written to guest)
 
 ### Manual procedure

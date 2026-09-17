@@ -25,9 +25,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // TestForkScratchDiskName verifies that ChildExtraDiskPath names the child's
@@ -53,7 +53,7 @@ func TestForkScratchDiskName(t *testing.T) {
 // disk is enumerated by ResourceIndex.List as KindDiskScratch with the correct
 // OwnerID.  Before the fix, ResourceIndex.List silently skipped the file
 // because ParseSandboxID could not parse the mangled "<cID>-<pID>" stem —
-// an operator running `nexus3 reap` could not even SEE the leak.
+// an operator running `nexus reap` could not even SEE the leak.
 func TestForkScratchResourceIndexVisible(t *testing.T) {
 	t.Parallel()
 

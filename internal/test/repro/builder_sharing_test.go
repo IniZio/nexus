@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// fakeNexus3SandboxList writes a shell script that prints the given JSON
-// and returns its path. The script acts as a fake nexus3 binary.
-func fakeNexus3SandboxList(t *testing.T, sandboxes []struct {
+// fakeNexusSandboxList writes a shell script that prints the given JSON
+// and returns its path. The script acts as a fake nexus binary.
+func fakeNexusSandboxList(t *testing.T, sandboxes []struct {
 	Handle string
 	State  string
 }) string {
@@ -45,17 +45,17 @@ func fakeNexus3SandboxList(t *testing.T, sandboxes []struct {
 	}
 
 	dir := t.TempDir()
-	script := filepath.Join(dir, "nexus3")
+	script := filepath.Join(dir, "nexus")
 	content := fmt.Sprintf("#!/bin/sh\necho '%s'\n", string(payload))
 	if err := os.WriteFile(script, []byte(content), 0755); err != nil {
-		t.Fatalf("write fake nexus3: %v", err)
+		t.Fatalf("write fake nexus: %v", err)
 	}
 	return script
 }
 
 // TestCheckBuilderBusy_Empty verifies that an empty sandbox list reports not busy.
 func TestCheckBuilderBusy_Empty(t *testing.T) {
-	nx := fakeNexus3SandboxList(t, nil)
+	nx := fakeNexusSandboxList(t, nil)
 	busy, reason, err := checkBuilderBusy(nx, map[string]struct{}{"repro/baseline": {}})
 	if err != nil {
 		t.Fatalf("checkBuilderBusy: %v", err)
@@ -67,7 +67,7 @@ func TestCheckBuilderBusy_Empty(t *testing.T) {
 
 // TestCheckBuilderBusy_OtherProject verifies non-repro sandboxes are ignored.
 func TestCheckBuilderBusy_OtherProject(t *testing.T) {
-	nx := fakeNexus3SandboxList(t, []struct{ Handle, State string }{
+	nx := fakeNexusSandboxList(t, []struct{ Handle, State string }{
 		{"other-project/sandbox-1", "running"},
 		{"example-app/dev", "running"},
 	})
@@ -82,7 +82,7 @@ func TestCheckBuilderBusy_OtherProject(t *testing.T) {
 
 // TestCheckBuilderBusy_ReprosDetected verifies a repro/* sandbox (not ours) is flagged.
 func TestCheckBuilderBusy_ReprosDetected(t *testing.T) {
-	nx := fakeNexus3SandboxList(t, []struct{ Handle, State string }{
+	nx := fakeNexusSandboxList(t, []struct{ Handle, State string }{
 		{"repro/hostmem-3072-0", "running"},
 	})
 	busy, reason, err := checkBuilderBusy(nx, map[string]struct{}{"repro/baseline": {}})
@@ -99,7 +99,7 @@ func TestCheckBuilderBusy_ReprosDetected(t *testing.T) {
 
 // TestCheckBuilderBusy_OwnHandle verifies our own sandbox handle is not flagged.
 func TestCheckBuilderBusy_OwnHandle(t *testing.T) {
-	nx := fakeNexus3SandboxList(t, []struct{ Handle, State string }{
+	nx := fakeNexusSandboxList(t, []struct{ Handle, State string }{
 		{"repro/baseline", "running"},
 	})
 	busy, _, err := checkBuilderBusy(nx, map[string]struct{}{"repro/baseline": {}})
@@ -113,10 +113,10 @@ func TestCheckBuilderBusy_OwnHandle(t *testing.T) {
 
 // TestWaitForBuilderFree_InvokedAndReturns verifies that waitForBuilderFree
 // is invoked and returns immediately when no other repro/* sandbox exists.
-// It uses a fake nexus3 binary with an empty sandbox list so the test is
-// hermetic (does not depend on the host's live nexus3 state).
+// It uses a fake nexus binary with an empty sandbox list so the test is
+// hermetic (does not depend on the host's live nexus state).
 func TestWaitForBuilderFree_InvokedAndReturns(t *testing.T) {
-	nx := fakeNexus3SandboxList(t, nil)
+	nx := fakeNexusSandboxList(t, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -142,8 +142,8 @@ func TestWaitForBuilderFree_BlocksAndHIF(t *testing.T) {
 		t.Skip("skipping in short mode (involves a small sleep)")
 	}
 
-	// Fake nexus3 that always reports a busy repro/* sandbox.
-	nx := fakeNexus3SandboxList(t, []struct{ Handle, State string }{
+	// Fake nexus that always reports a busy repro/* sandbox.
+	nx := fakeNexusSandboxList(t, []struct{ Handle, State string }{
 		{"repro/hostmem-busy", "running"},
 	})
 
@@ -166,8 +166,8 @@ func TestWaitForBuilderFree_BlocksAndHIF(t *testing.T) {
 // ownHandle comparison), this test fails because "repro/conc-0" is not the
 // ownHandle "repro/conc-1" and would be flagged as busy.
 func TestCheckBuilderBusy_AllowedSet(t *testing.T) {
-	// Fake nexus3 listing repro/conc-0 as running (a peer in the same wave).
-	nx := fakeNexus3SandboxList(t, []struct{ Handle, State string }{
+	// Fake nexus listing repro/conc-0 as running (a peer in the same wave).
+	nx := fakeNexusSandboxList(t, []struct{ Handle, State string }{
 		{"repro/conc-0", "running"},
 	})
 
@@ -191,7 +191,7 @@ func TestCheckBuilderBusy_AllowedSet(t *testing.T) {
 // not weakened for handles outside the allowed set.
 func TestCheckBuilderBusy_AllowedSet_StillBlocksOthers(t *testing.T) {
 	// List: conc-0 (allowed) AND hostmem-3072-0 (NOT in allowed set).
-	nx := fakeNexus3SandboxList(t, []struct{ Handle, State string }{
+	nx := fakeNexusSandboxList(t, []struct{ Handle, State string }{
 		{"repro/conc-0", "running"},
 		{"repro/hostmem-3072-0", "running"},
 	})

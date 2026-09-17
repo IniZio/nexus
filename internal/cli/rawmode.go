@@ -6,7 +6,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/IniZio/nexus3/internal/core/agent/wire"
+	"github.com/IniZio/nexus/internal/core/agent/wire"
 	"golang.org/x/term"
 )
 

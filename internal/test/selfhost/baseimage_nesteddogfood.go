@@ -6,7 +6,7 @@
 // mke2fs (for ext4 conversion), cloud-hypervisor (for inner VM boot),
 // and a kernel at /boot/vmlinux (staged from the host repo).
 //
-// nexus3-agent is baked in as the final layer by the docker build (via
+// nexus-agent is baked in as the final layer by the docker build (via
 // the nestedDogfoodContainerfile COPY instruction) and serves as PID 1.
 package selfhost
 
@@ -17,13 +17,13 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 const (
-	nestedDogfoodDockerTag   = "nexus3-nested-dogfood-test:dev"
+	nestedDogfoodDockerTag   = "nexus-nested-dogfood-test:dev"
 	nestedDogfoodImageSizeGB = 3 << 30 // 3 GiB: ubuntu + Go tools + buildkitd
 )
 
@@ -33,17 +33,17 @@ const (
 //   - buildkitd, buildctl, buildkit-runc from moby/buildkit v0.18.2 — the
 //     in-guest build toolchain, matching the host go.mod moby/buildkit version.
 //   - mke2fs (e2fsprogs) — converts the built rootfs directory to a raw ext4.
-//   - cloud-hypervisor — launches the inner nexus3 microVM.
+//   - cloud-hypervisor — launches the inner nexus microVM.
 //   - vmlinux (staged from host build context) — the inner VM kernel.
-//   - nexus3-agent — PID 1 of the outer guest; ALSO baked into inner images
-//     as /sbin/nexus3-agent by the in-guest build.
+//   - nexus-agent — PID 1 of the outer guest; ALSO baked into inner images
+//     as /sbin/nexus-agent by the in-guest build.
 //
-// Boot contract: root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0
+// Boot contract: root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0
 //
 // This Containerfile is intentionally separate from the repo-root
 // .nexus/Containerfile; it is a test fixture that names all versions
 // explicitly and adds test-only tooling (mke2fs).
-const nestedDogfoodContainerfile = `# nexus3 nested-dogfood test fixture — outer VM image.
+const nestedDogfoodContainerfile = `# nexus nested-dogfood test fixture — outer VM image.
 # This image is built by BuildNestedDogfoodImage (internal/test/selfhost).
 FROM ubuntu:24.04
 
@@ -81,9 +81,9 @@ RUN curl -fsSL --retry 5 --retry-delay 2 \
 COPY vmlinux /boot/vmlinux
 
 # ── Guest agent (outer PID 1 + inner image ingredient) ───────────────────────
-# Boot contract: root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0
-COPY nexus3-agent /sbin/nexus3-agent
-RUN chmod 755 /sbin/nexus3-agent
+# Boot contract: root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0
+COPY nexus-agent /sbin/nexus-agent
+RUN chmod 755 /sbin/nexus-agent
 
 ENV IS_SANDBOX=1
 `
@@ -114,18 +114,18 @@ func BuildNestedDogfoodImage(ctx context.Context, cache *image.Cache) (domain.Im
 		return domain.Image{}, fmt.Errorf("nested-dogfood-image: kernel not found at %s: %w", kernelSrc, err)
 	}
 
-	// Compile nexus3-agent.
-	workDir, err := os.MkdirTemp("", "nexus3-nesteddogfood-build-")
+	// Compile nexus-agent.
+	workDir, err := os.MkdirTemp("", "nexus-nesteddogfood-build-")
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("nested-dogfood-image: mktemp: %w", err)
 	}
 	defer os.RemoveAll(workDir) //nolint:errcheck
 
-	agentBin := filepath.Join(workDir, "nexus3-agent")
+	agentBin := filepath.Join(workDir, "nexus-agent")
 	buildAgentCmd := exec.CommandContext(ctx,
 		"go", "build",
 		"-o", agentBin,
-		"./cmd/nexus3-agent",
+		"./cmd/nexus-agent",
 	)
 	buildAgentCmd.Dir = repoRoot
 	buildAgentCmd.Env = append(os.Environ(),
@@ -136,7 +136,7 @@ func BuildNestedDogfoodImage(ctx context.Context, cache *image.Cache) (domain.Im
 	buildAgentCmd.Stdout = os.Stderr
 	buildAgentCmd.Stderr = os.Stderr
 	if err := buildAgentCmd.Run(); err != nil {
-		return domain.Image{}, fmt.Errorf("nested-dogfood-image: compile nexus3-agent: %w", err)
+		return domain.Image{}, fmt.Errorf("nested-dogfood-image: compile nexus-agent: %w", err)
 	}
 
 	// Prepare docker build context.
@@ -155,8 +155,8 @@ func BuildNestedDogfoodImage(ctx context.Context, cache *image.Cache) (domain.Im
 		return domain.Image{}, fmt.Errorf("nested-dogfood-image: copy kernel: %w", err)
 	}
 
-	// Copy nexus3-agent into context.
-	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus3-agent"), 0o755); err != nil {
+	// Copy nexus-agent into context.
+	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus-agent"), 0o755); err != nil {
 		return domain.Image{}, fmt.Errorf("nested-dogfood-image: copy agent: %w", err)
 	}
 

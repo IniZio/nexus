@@ -8,7 +8,7 @@ package cloudhypervisor
 // # Regression this test catches
 //
 // The committed kernel enables CONFIG_DUMMY=y, which creates a dummy0 virtual
-// interface at boot. Before the fix in cmd/nexus3-agent/network.go
+// interface at boot. Before the fix in cmd/nexus-agent/network.go
 // (firstNonLoIfaceAt), the agent selected the first non-loopback interface
 // alphabetically. Because "dummy" < "eth", dummy0 was chosen ahead of eth0
 // (the virtio-net device), assigning 192.168.127.2/24 to a black-hole device
@@ -21,7 +21,7 @@ package cloudhypervisor
 // # What this test asserts
 //
 //  1. REQUIRED: The guest serial log contains a line
-//     "nexus3-agent: network: configuring eth0: …" — the agent picked a
+//     "nexus-agent: network: configuring eth0: …" — the agent picked a
 //     hardware-backed interface. If the regression returns and dummy0 is
 //     chosen, the line reads "configuring dummy0: …" and the test FAILS.
 //
@@ -53,15 +53,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // buildEgressSmokeRootfs assembles the minimal rootfs directory needed for the
-// egress smoke test. It contains only what nexus3-agent requires to boot as
+// egress smoke test. It contains only what nexus-agent requires to boot as
 // PID 1 and log its network-interface selection:
 //
-//	/sbin/nexus3-agent — PID-1 init binary (must be static; see buildNexus3Agent)
+//	/sbin/nexus-agent — PID-1 init binary (must be static; see buildNexusAgent)
 //	/etc/              — agent writes /etc/resolv.conf here
 //	/dev/ /proc/ /sys/ /tmp/ — empty mount-point directories
 //
@@ -82,9 +82,9 @@ func buildEgressSmokeRootfs(t *testing.T, agentBin string) string {
 	if err != nil {
 		t.Fatalf("read agent binary: %v", err)
 	}
-	dst := filepath.Join(rootfs, "sbin", "nexus3-agent")
+	dst := filepath.Join(rootfs, "sbin", "nexus-agent")
 	if err := os.WriteFile(dst, data, 0o755); err != nil {
-		t.Fatalf("write /sbin/nexus3-agent: %v", err)
+		t.Fatalf("write /sbin/nexus-agent: %v", err)
 	}
 	return rootfs
 }
@@ -96,7 +96,7 @@ func buildEgressSmokeRootfs(t *testing.T, agentBin string) string {
 // The agent logs this line immediately after firstNonLoIfaceAt() returns, so
 // it appears well before the agent starts listening on vsock.
 func pollSerialForNetworkIface(serialPath string, deadline time.Time) string {
-	const marker = "nexus3-agent: network: configuring "
+	const marker = "nexus-agent: network: configuring "
 	for time.Now().Before(deadline) {
 		f, err := os.Open(serialPath)
 		if err == nil {
@@ -104,7 +104,7 @@ func pollSerialForNetworkIface(serialPath string, deadline time.Time) string {
 			for sc.Scan() {
 				line := sc.Text()
 				if idx := strings.Index(line, marker); idx >= 0 {
-					// Format: "nexus3-agent: network: configuring <iface>: ip=… gw=…"
+					// Format: "nexus-agent: network: configuring <iface>: ip=… gw=…"
 					// Extract interface name: text after marker up to the first ":".
 					rest := line[idx+len(marker):]
 					if colon := strings.IndexByte(rest, ':'); colon > 0 {
@@ -121,7 +121,7 @@ func pollSerialForNetworkIface(serialPath string, deadline time.Time) string {
 }
 
 // TestBootEgressSmoke boots a real microVM on the committed guest kernel
-// (Linux 6.12.76) with the current nexus3-agent as PID 1 and asserts that the
+// (Linux 6.12.76) with the current nexus-agent as PID 1 and asserts that the
 // agent configures a hardware-backed network interface (eth0), NOT the virtual
 // dummy0 interface that CONFIG_DUMMY=y creates.
 //
@@ -131,7 +131,7 @@ func pollSerialForNetworkIface(serialPath string, deadline time.Time) string {
 // 192.168.127.2/24 to dummy0 (a black-hole TX device), and all DNS and egress
 // from the guest silently fail. The serial log then shows:
 //
-//	nexus3-agent: network: configuring dummy0: ip=192.168.127.2/24 gw=…
+//	nexus-agent: network: configuring dummy0: ip=192.168.127.2/24 gw=…
 //
 // This test catches that: pollSerialForNetworkIface extracts "dummy0", the
 // gotIface == "dummy0" check fires, and the test FAILS.
@@ -145,9 +145,9 @@ func TestBootEgressSmoke(t *testing.T) {
 	// build static agent binary
 	// CRITICAL: CGO_ENABLED=0 (static) is mandatory for a PID-1 binary.
 	// A dynamically-linked binary panics the kernel (ENOENT on the dynamic
-	// loader, which is absent from the minimal rootfs). buildNexus3Agent sets
+	// loader, which is absent from the minimal rootfs). buildNexusAgent sets
 	// CGO_ENABLED=0 internally (see agent_integration_test.go).
-	agentBin := buildNexus3Agent(t)
+	agentBin := buildNexusAgent(t)
 
 	// assemble rootfs + ext4
 	rootfsDir := buildEgressSmokeRootfs(t, agentBin)
@@ -166,7 +166,7 @@ func TestBootEgressSmoke(t *testing.T) {
 		BinaryPath:       chBin,
 		SocketDir:        socketDir,
 		KernelPath:       kernelPath,
-		DiskImagePath:    ext4Path,   // disk-boot: root=/dev/vda, init=/sbin/nexus3-agent
+		DiskImagePath:    ext4Path,   // disk-boot: root=/dev/vda, init=/sbin/nexus-agent
 		SerialOutputPath: serialPath, // capture kernel + agent output to file
 		VCPUs:            1,
 		MemoryMiB:        256,
@@ -216,7 +216,7 @@ func TestBootEgressSmoke(t *testing.T) {
 	drv.mu.Unlock()
 
 	// wait for agent
-	// Poll vsock port 1024 (AgentControlPort) until nexus3-agent accepts.
+	// Poll vsock port 1024 (AgentControlPort) until nexus-agent accepts.
 	// By the time vsock is up, the agent has already logged its network
 	// selection — so the serial assertion below will find the line immediately.
 	waitForAgentReady(t, drv, id, 30*time.Second)
@@ -225,7 +225,7 @@ func TestBootEgressSmoke(t *testing.T) {
 	// assert hardware interface (primary gate)
 	//
 	// The agent logs immediately after firstNonLoIfaceAt() returns:
-	//   "nexus3-agent: network: configuring <iface>: ip=192.168.127.2/24 gw=…"
+	//   "nexus-agent: network: configuring <iface>: ip=192.168.127.2/24 gw=…"
 	//
 	// REGRESSION: old firstNonLoIfaceAt (alphabetical-first-non-lo) would
 	// return "dummy0" on this kernel because "dummy" < "eth". The line would
@@ -249,14 +249,14 @@ func TestBootEgressSmoke(t *testing.T) {
 	// REGRESSION GUARD: dummy0 means the old alphabetical selection is back.
 	if gotIface == "dummy0" {
 		t.Errorf("REGRESSION: agent configured dummy0 (virtual, black-hole TX) instead of eth0 (virtio-net).\n" +
-			"Cause: firstNonLoIfaceAt in cmd/nexus3-agent/network.go reverted to alphabetical\n" +
+			"Cause: firstNonLoIfaceAt in cmd/nexus-agent/network.go reverted to alphabetical\n" +
 			"       first-non-lo selection. Restore the /sys/class/net/<name>/device-symlink\n" +
 			"       preference so hardware interfaces are preferred over virtual ones.")
 	}
 
 	// Require eth-prefixed name: Cloud Hypervisor's virtio-net always appears
 	// as "eth0" on kernels without predictable-name udev (which is the case
-	// here — nexus3-agent is PID 1 and udev is absent).
+	// here — nexus-agent is PID 1 and udev is absent).
 	if !strings.HasPrefix(gotIface, "eth") {
 		t.Errorf("unexpected interface %q: expected eth0 (virtio-net on Cloud Hypervisor).\n"+
 			"If the kernel renamed the interface (e.g. ens3), update this assertion.", gotIface)

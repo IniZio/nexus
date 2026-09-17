@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"slices"
 )
 
@@ -434,7 +434,7 @@ func TestCursorReadyMatch_AgainstLiveCapturedPaneOutput(t *testing.T) {
   → Plan, search, build anything
 
   Cursor Grok 4.5 High Fast
-  ~/magic/nexus3/.claude/worktrees/agent-a81fcacc4e0838ade · nexus3/cursor-s6-readymatch`
+  ~/magic/nexus/.claude/worktrees/agent-a81fcacc4e0838ade · nexus/cursor-s6-readymatch`
 
 	const stillStartingPane = `  Cursor Agent
   v2026.09.02-c22c1a3`

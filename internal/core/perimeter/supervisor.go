@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/sni"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/sni"
 )
 
 // dialerSetter is an optional interface a Perimeter implementation may satisfy
@@ -258,7 +258,7 @@ func (s *PerimeterSupervisor) CACert() *x509.Certificate {
 // service.SandboxHasMITMProxy, which answers the same question from the store
 // record; the handoff path uses THIS one so a record that disagrees with the
 // process cannot decide whether CA material is required
-// (motive nexus3-host-supervisor-hotswap, ticket 14).
+// (motive nexus-host-supervisor-hotswap, ticket 14).
 //
 // It deliberately does not touch the CA. [PerimeterSupervisor.CAKeyPair]
 // returns an error in three distinct situations — no proxy at all, a CA
@@ -277,7 +277,7 @@ func (s *PerimeterSupervisor) CACert() *x509.Certificate {
 func (s *PerimeterSupervisor) HasMITMProxy() bool { return s.proxy != nil }
 
 // CAKeyPair PEM-encodes the MITM proxy's CA certificate and private key, for
-// inclusion in a handoff payload (motive nexus3-host-supervisor-hotswap).
+// inclusion in a handoff payload (motive nexus-host-supervisor-hotswap).
 // Returns an error when the supervisor was started without a proxy (AllowAll
 // mode) — there is no CA to hand off.
 //
@@ -293,7 +293,7 @@ func (s *PerimeterSupervisor) CAKeyPair() (certPEM, keyPEM []byte, err error) {
 
 // PerimeterFD returns a dup'd *os.File wrapping R1, the perimeter-facing
 // network connection, for handoff to a replacement supervisor via SCM_RIGHTS
-// (motive nexus3-host-supervisor-hotswap, slice 04).
+// (motive nexus-host-supervisor-hotswap, slice 04).
 //
 // The returned File is an independent duplicate (via (*net.UnixConn).File):
 // closing it, or the caller's use of it, has no effect on this

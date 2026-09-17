@@ -57,7 +57,7 @@ var listProcesses = func(_ context.Context) ([]procEntry, error) {
 
 // matchesAgentArgv is the single identity gate; removing it must break tests.
 func matchesAgentArgv(argv string) bool {
-	return strings.Contains(argv, "nexus3-client") &&
+	return strings.Contains(argv, "nexus-client") &&
 		strings.Contains(argv, "herdr") &&
 		strings.Contains(argv, "local-agent-startup")
 }
@@ -75,20 +75,20 @@ func reapOnePid(pid int) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "nexus3-client: reaping previous instance pid %d\n", pid)
+	fmt.Fprintf(os.Stderr, "nexus-client: reaping previous instance pid %d\n", pid)
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus3-client: SIGTERM pid %d: %v\n", pid, err)
+		fmt.Fprintf(os.Stderr, "nexus-client: SIGTERM pid %d: %v\n", pid, err)
 		return
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 		if !isAgentProcess(pid) {
-			fmt.Fprintf(os.Stderr, "nexus3-client: previous instance pid %d exited\n", pid)
+			fmt.Fprintf(os.Stderr, "nexus-client: previous instance pid %d exited\n", pid)
 			return
 		}
 	}
-	fmt.Fprintf(os.Stderr, "nexus3-client: SIGKILL pid %d (did not exit within 5s)\n", pid)
+	fmt.Fprintf(os.Stderr, "nexus-client: SIGKILL pid %d (did not exit within 5s)\n", pid)
 	_ = proc.Signal(syscall.SIGKILL)
 }
 

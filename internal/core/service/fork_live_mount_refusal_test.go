@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // TestFork_LiveMountRefusal_ReadWrite covers the primary D-PD-53 case: a

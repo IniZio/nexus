@@ -95,12 +95,12 @@ The conflict is between the host-OOM guard (O_DIRECT on ExtraDisks) and
 
 **Old nexus never used O_DIRECT.** All workspace I/O — including heavy Docker
 layer writes — flowed through the host page cache. Old nexus therefore DID
-carry the host-OOM risk that nexus3 was built to avoid. If old nexus had run
+carry the host-OOM risk that nexus was built to avoid. If old nexus had run
 the same buildkit-nested-build workload that produced the `pump: read frame:
-EOF` failure in nexus3, it would likely have hit the same host-OOM wall.
+EOF` failure in nexus, it would likely have hit the same host-OOM wall.
 
 Old nexus dodged the conflict by **not having the guard**, which is not a
-solution nexus3 can copy. The 100 GiB virtual-size approach succeeded there
+solution nexus can copy. The 100 GiB virtual-size approach succeeded there
 precisely because that workspace disk was buffered — but a buffered disk means
 heavy buildkit writes dirty the host page cache, which causes OOM under the
 nested-build workload that CH-RESIZE-400 was filed against.
@@ -157,29 +157,29 @@ pub struct VmResizeDiskData {
 }
 ```
 
-nexus3's client struct is:
+nexus's client struct is:
 
 ```go
-// nexus3 internal/core/driver/cloudhypervisor/client.go:229–232
+// nexus internal/core/driver/cloudhypervisor/client.go:229–232
 type vmResizeDiskRequest struct {
     ID   string `json:"id"`
     Size uint64 `json:"size"`    // WRONG — CH expects "desired_size"
 }
 ```
 
-nexus3 sends `{"id":"_disk1","size":16106127360}`. Serde on the CH side
+nexus sends `{"id":"_disk1","size":16106127360}`. Serde on the CH side
 deserializes `id = "_disk1"` from the JSON but finds no `desired_size` key.
 Because `desired_size` is a required `u64` field without `#[serde(default)]`,
 Serde returns "missing field `desired_size`", which the CH HTTP framework
 converts to **HTTP 400 Bad Request**. The HTTP 400 is a client-side API error
-in nexus3, not a CH restriction on Direct-mode disks.
+in nexus, not a CH restriction on Direct-mode disks.
 
 The code comment in `driver_resize.go:230–233` attributes the 400 to
 Direct:true. That attribution is incorrect — a non-direct disk also returns
 400 when the same wrong field name is sent. The old nexus client used the
 correct field name `"desired_size"` and its CH calls succeeded for raw disks.
 
-CH version pinned in nexus3: **v52.0** (binary at
+CH version pinned in nexus: **v52.0** (binary at
 `~/.local/bin/cloud-hypervisor`, released 2026-05-14).
 CH v53.0 (released 2026-07-12) contains no related fix because there is no
 bug in CH to fix.
@@ -219,7 +219,7 @@ device reports the new capacity to the guest.
 `resize2fs` wire command. The TODO block at `driver_resize.go:224–236` lists
 a second condition: `SandboxResizer` has no vsock dialer. Wiring that path
 (adding a `DialGuest` seam to `SandboxResizer` and sending
-`resize.EncodeGrowRequest` over vsock port 3002 to `cmd/nexus3-agent/
+`resize.EncodeGrowRequest` over vsock port 3002 to `cmd/nexus-agent/
 resize_actuate_linux.go:handleDiskGrow`) must accompany the JSON fix before
 disk auto-grow is end-to-end live.
 
@@ -268,12 +268,12 @@ bcache).
 **Effect on host-OOM guard**: Preserves O_DIRECT. The new disk is attached
 with `Direct:true`, same as the initial ExtraDisks.
 
-**ExtraDisks seam reusability**: nexus3 already has the ExtraDisks→/dev/vdb
+**ExtraDisks seam reusability**: nexus already has the ExtraDisks→/dev/vdb
 seam and the guest-agent mount/unmount path at `internal/core/agent/
 workspace_mount.go`. The guest can detect a new virtio-blk device via udev.
-nexus3 does not have a `VMAddDisk` client call yet; it would need to be added.
+nexus does not have a `VMAddDisk` client call yet; it would need to be added.
 
-**Cost**: Significant. Adding LVM or span-and-mount logic in-guest; the nexus3
+**Cost**: Significant. Adding LVM or span-and-mount logic in-guest; the nexus
 agent must track the multi-disk logical volume; snapshots and forks become more
 complex (each child needs to inherit all N disks). Materially more work than
 Option A.
@@ -317,7 +317,7 @@ regardless of the Direct flag.
 **Fix the JSON field name first.** The single strongest piece of evidence is
 the CH v52.0 API struct (`vmm/src/api/mod.rs:VmResizeDiskData.desired_size`)
 and OpenAPI schema (`openapi/cloud-hypervisor.yaml:VmResizeDisk.desired_size`)
-confirming that the field nexus3 sends as `"size"` must be `"desired_size"`.
+confirming that the field nexus sends as `"size"` must be `"desired_size"`.
 This is a two-character identifier change in `client.go:231` (`Size` →
 `DesiredSize`, `"size"` → `"desired_size"`). The CH raw-disk resize
 implementation (`RawDisk::resize`) calls `ftruncate` unconditionally and is
@@ -332,7 +332,7 @@ overlays backed by a base image returned an "unsupported" error (vs. a
 different error) was inferred from the `unsupported bool` flag comment; the
 exact CH error response for backed-qcow2 resize was not reproduced live.
 
-**UNVERIFIED**: Whether a nexus3 sandbox in the current build actually emits
+**UNVERIFIED**: Whether a nexus sandbox in the current build actually emits
 the HTTP 400 error when the governor fires and calls `GrowDisk` was not
 live-tested; the code path to `VMResizeDisk` is exercised in unit test at
 `internal/test/selfhost/autoresize_disk_vcpu_test.go:16` but the test outcome

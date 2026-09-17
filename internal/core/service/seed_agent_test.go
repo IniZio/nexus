@@ -5,9 +5,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func TestSeedGuestAgent_ClaudeVarsPresentRealTokenAbsent(t *testing.T) {
@@ -87,9 +87,9 @@ func TestSeedGuestAgent_BothAnthropicHostsSeeded(t *testing.T) {
 
 	payload := cap.payload
 	for _, host := range hosts {
-		key := "NEXUS3_CRED_" + hostToEnvKey(host) + "_TOKEN="
+		key := "NEXUS_CRED_" + hostToEnvKey(host) + "_TOKEN="
 		if !bytes.Contains(payload, []byte(key)) {
-			t.Errorf("payload missing NEXUS3_CRED_* key for host %q\npayload:\n%s", host, payload)
+			t.Errorf("payload missing NEXUS_CRED_* key for host %q\npayload:\n%s", host, payload)
 		}
 	}
 }

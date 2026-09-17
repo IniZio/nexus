@@ -7,7 +7,7 @@ package cloudhypervisor
 //
 // # What this tests
 //
-// Boots a microVM with nexus3-agent as init and two live virtiofs mounts:
+// Boots a microVM with nexus-agent as init and two live virtiofs mounts:
 //
 //   - /mnt/rw  read-write, contains a .git directory (D-PD-99)
 //   - /mnt/ro  read-only
@@ -46,13 +46,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	driverfake "github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	driverfake "github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 var e2eVirtiofsdBin = filepath.Join(os.Getenv("HOME"), ".local/bin/virtiofsd")
@@ -70,8 +70,8 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 		t.Skipf("virtiofsd not found at %s — install virtiofsd 1.x first", e2eVirtiofsdBin)
 	}
 
-	// ── build nexus3-agent initramfs ────────────────────────────────────────────
-	agentBin := buildNexus3Agent(t)
+	// ── build nexus-agent initramfs ────────────────────────────────────────────
+	agentBin := buildNexusAgent(t)
 	initramfsPath := buildAgentInitramfs(t, agentBin, baseInitramfs)
 
 	// ── host share directories ──────────────────────────────────────────────────
@@ -117,7 +117,7 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 	}
 
 	// Kernel cmdline: kernel params, " --" PID-1 boundary, then
-	// --workspace-mount args consumed by nexus3-agent from os.Args.
+	// --workspace-mount args consumed by nexus-agent from os.Args.
 	// Format matches workspaceMountCmdline (cmd_sandbox.go): 6 fields:
 	//   --workspace-mount=<tag>:<guestPath>:<fstype>:<ro>:<isWorkspace>:<resizable>
 	// 5-field (old) format is still accepted by the parser for backward compat.
@@ -176,7 +176,7 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 	}
 	drv.mu.Unlock()
 
-	// Give nexus3-agent time to mount virtiofs shares and bind vsock listeners.
+	// Give nexus-agent time to mount virtiofs shares and bind vsock listeners.
 	// Virtiofs mounts happen before vsock listeners bind (fatal if they fail),
 	// so a successful agent.Exec confirms mounts succeeded.
 	time.Sleep(3 * time.Second)

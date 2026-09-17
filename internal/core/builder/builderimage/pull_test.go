@@ -19,10 +19,10 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
-	"github.com/IniZio/nexus3/internal/core/bootspec"
-	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/bootspec"
+	"github.com/IniZio/nexus/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // TestPullAndCacheOCI_EmptyAgentBytes verifies that nil agentBytes produces a
@@ -184,7 +184,7 @@ func (b brokenLayersImage) Layers() ([]v1.Layer, error) {
 }
 
 // TestPullAndCacheOCI_Ext4Payload builds a full ext4 via the mock pipeline and
-// verifies the injected payload: securetty contains "ttyS0", /sbin/nexus3-agent
+// verifies the injected payload: securetty contains "ttyS0", /sbin/nexus-agent
 // is present, and boot.json exists. Skipped when mke2fs is not in PATH.
 func TestPullAndCacheOCI_Ext4Payload(t *testing.T) {
 	if _, err := exec.LookPath("mke2fs"); err != nil {
@@ -222,9 +222,9 @@ func TestPullAndCacheOCI_Ext4Payload(t *testing.T) {
 		t.Fatalf("artifact not found at %s: %v", imagePath, err)
 	}
 
-	verifyExt4HasFile(t, imagePath, "/sbin/nexus3-agent", "nexus3-agent-fake")
+	verifyExt4HasFile(t, imagePath, "/sbin/nexus-agent", "nexus-agent-fake")
 	verifyExt4HasFile(t, imagePath, "/etc/securetty", "ttyS0")
-	verifyExt4FileExists(t, imagePath, "/etc/nexus3/boot.json")
+	verifyExt4FileExists(t, imagePath, "/etc/nexus/boot.json")
 }
 
 // verifyExt4HasFile asserts that path exists in the ext4 and its content

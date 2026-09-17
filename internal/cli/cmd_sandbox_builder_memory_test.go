@@ -3,7 +3,7 @@ package cli
 import (
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder"
 )
 
 // TestParseSandboxCreateArgs_BuilderMemory verifies that --builder-memory is

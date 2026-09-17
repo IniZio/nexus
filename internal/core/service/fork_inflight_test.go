@@ -9,7 +9,7 @@ package service_test
 // reaches the same window by a different path: the driver writes
 // <diskDir>/<childID>.raw for every child inside ForkFrom, and Service.Fork
 // does not commit any child record until ForkFrom has returned for all of
-// them. Without a lease, a `nexus3 reap --apply` firing in that window sees a
+// them. Without a lease, a `nexus reap --apply` firing in that window sees a
 // ULID-keyed disk with no record and no live process — an orphan by every
 // rule the reaper has — and unlinks it, while Fork goes on to return the child
 // as a live sandbox. Silent loss, not a failed fork.
@@ -25,12 +25,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // reapDuringForkDriver wraps FakeDriver so a test can run arbitrary code at the
@@ -66,7 +66,7 @@ type forkInflightHarness struct {
 	idx     *service.ResourceIndex
 	// procDir is deliberately empty: during the fork window no process
 	// anywhere carries a child ULID in its cmdline (the forking process is the
-	// nexus3 CLI, and the child VMM is not addressable by ULID), which is
+	// nexus CLI, and the child VMM is not addressable by ULID), which is
 	// exactly the production situation the /proc gate cannot see.
 	procDir string
 }
@@ -149,7 +149,7 @@ func TestFork_InFlightChildDiskSurvivesConcurrentReap(t *testing.T) {
 	var report *service.ReapReport
 	h.drv.onFork = func(childIDs []domain.SandboxID) {
 		h.materialiseChildDisks(t, childIDs)
-		// A concurrent `nexus3 reap --apply` fires mid-fork.
+		// A concurrent `nexus reap --apply` fires mid-fork.
 		report = h.reapApply(t)
 	}
 

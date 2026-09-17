@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func runHerdrFocusWatchCmd(ctx context.Context, args []string, out *Output) error {
@@ -374,7 +374,7 @@ var focusWatchPidAlive = func(pid int) bool {
 		return false
 	}
 	s := string(cmdline)
-	return strings.Contains(s, "nexus3") &&
+	return strings.Contains(s, "nexus") &&
 		(strings.Contains(s, "focus-watch") || strings.Contains(s, "local-agent-startup"))
 }
 

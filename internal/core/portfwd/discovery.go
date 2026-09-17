@@ -28,7 +28,7 @@ type SandboxRef struct {
 	Status SandboxStatus
 }
 
-// Backend abstracts the nexus3 exec path for /proc/net reads. T4b wires this.
+// Backend abstracts the nexus exec path for /proc/net reads. T4b wires this.
 type Backend interface {
 	ListSandboxes(ctx context.Context) ([]SandboxRef, error)
 	ReadProcNet(ctx context.Context, sandboxID string) (tcp, tcp6 []byte, err error)

@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // SandboxHarvestOutcome records the result of harvesting one sandbox.

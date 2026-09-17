@@ -15,26 +15,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
 )
 
-// TestMain skips the entire package when running inside the nexus3 guest VM.
+// TestMain skips the entire package when running inside the nexus guest VM.
 //
 // The perimeter/netstack package imports gvisor-tap-vsock → gvisor.dev/gvisor,
 // whose pkg/sync uses //go:linkname assembly to hook into runtime.sched at a
 // hardcoded byte offset.  Running the resulting test binary inside the
-// constrained nexus3 microVM causes the guest agent to lose its vsock
+// constrained nexus microVM causes the guest agent to lose its vsock
 // connection (silent EOF, empty stdout/stderr), which aborts the dogfood suite.
 //
-// Detection: /proc/1/comm == "nexus3-agent" → we are init inside the guest.
+// Detection: /proc/1/comm == "nexus-agent" → we are init inside the guest.
 // On any normal host (bare-metal, CI, container) /proc/1/comm is something
 // else (systemd, docker-init, …) and tests run normally.
 func TestMain(m *testing.M) {
 	if proc1comm, err := os.ReadFile("/proc/1/comm"); err == nil {
-		if strings.TrimSpace(string(proc1comm)) == "nexus3-agent" {
-			fmt.Fprintln(os.Stderr, "netstack: skipping tests — running inside nexus3 guest VM (host-side package)")
+		if strings.TrimSpace(string(proc1comm)) == "nexus-agent" {
+			fmt.Fprintln(os.Stderr, "netstack: skipping tests — running inside nexus guest VM (host-side package)")
 			os.Exit(0)
 		}
 	}

@@ -52,7 +52,7 @@ jobs:
 
       - name: Install semantic-release and plugins
         # Pinned to exact versions; no package.json is added to the repo
-        # because nexus3 is a Go project and a lockfile would need to be
+        # because nexus is a Go project and a lockfile would need to be
         # generated in CI. These versions match the sibling repo's
         # devDependencies and are tested together.  conventional-changelog-conventionalcommits
         # is REQUIRED by the `conventionalcommits` preset — omitting it made
@@ -129,7 +129,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build nexus3 binary
+      - name: Build nexus binary
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
@@ -137,15 +137,15 @@ jobs:
           VERSION: ${{ needs.release-create.outputs.version }}
         run: |
           set -euo pipefail
-          OUTFILE="nexus3-${{ matrix.goos }}-${{ matrix.goarch }}"
+          OUTFILE="nexus-${{ matrix.goos }}-${{ matrix.goarch }}"
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
             echo "ERROR: invalid version '$VERSION' — expected semver"
             exit 1
           fi
           LDFLAGS="-s -w \
-            -X github.com/IniZio/nexus3/internal/cli.version=${VERSION} \
-            -X github.com/IniZio/nexus3/internal/cli.herdrDefaultImageTag=${VERSION}"
-          go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus3
+            -X github.com/IniZio/nexus/internal/cli.version=${VERSION} \
+            -X github.com/IniZio/nexus/internal/cli.herdrDefaultImageTag=${VERSION}"
+          go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus
           echo "Built $OUTFILE ($(du -sh "$OUTFILE" | cut -f1))"
 
       - name: Upload binary to release
@@ -154,7 +154,7 @@ jobs:
           TAG: ${{ needs.release-create.outputs.tag }}
         run: |
           set -euo pipefail
-          OUTFILE="nexus3-${{ matrix.goos }}-${{ matrix.goarch }}"
+          OUTFILE="nexus-${{ matrix.goos }}-${{ matrix.goarch }}"
           gh release upload "$TAG" "$OUTFILE" --clobber
 
       - name: Upload kernel image to release
@@ -167,8 +167,8 @@ jobs:
           gh release upload "$TAG" images/kernel/vmlinux-x86_64 --clobber
           gh release upload "$TAG" vmlinux-x86_64.sha256 --clobber
 
-  # ── Build nexus3-client binaries (pure Go, cross-compiled) ─────────────
-  # nexus3-client is CGO_ENABLED=0 so it cross-compiles from ubuntu-latest
+  # ── Build nexus-client binaries (pure Go, cross-compiled) ─────────────
+  # nexus-client is CGO_ENABLED=0 so it cross-compiles from ubuntu-latest
   # for all three targets without native runners.
   release-build-client:
     name: Build client (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -195,7 +195,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build nexus3-client binary
+      - name: Build nexus-client binary
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
@@ -203,13 +203,13 @@ jobs:
           VERSION: ${{ needs.release-create.outputs.version }}
         run: |
           set -euo pipefail
-          OUTFILE="nexus3-client-${{ matrix.goos }}-${{ matrix.goarch }}"
+          OUTFILE="nexus-client-${{ matrix.goos }}-${{ matrix.goarch }}"
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
             echo "ERROR: invalid version '$VERSION' — expected semver"
             exit 1
           fi
           LDFLAGS="-s -w -X 'main.version=${VERSION}'"
-          go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus3-client
+          go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus-client
           echo "Built $OUTFILE ($(du -sh "$OUTFILE" | cut -f1))"
 
       - name: Upload binary to release
@@ -218,7 +218,7 @@ jobs:
           TAG: ${{ needs.release-create.outputs.tag }}
         run: |
           set -euo pipefail
-          OUTFILE="nexus3-client-${{ matrix.goos }}-${{ matrix.goarch }}"
+          OUTFILE="nexus-client-${{ matrix.goos }}-${{ matrix.goarch }}"
           gh release upload "$TAG" "$OUTFILE" --clobber
 
   # ── Build and push base container image ──────────────────────────────────
@@ -239,13 +239,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build nexus3-agent (static, for base image layer)
-        # images/base/Containerfile COPYs nexus3-agent as the final layer so an
+      - name: Build nexus-agent (static, for base image layer)
+        # images/base/Containerfile COPYs nexus-agent as the final layer so an
         # agent bump only rebuilds that layer. CGO_ENABLED=0 produces a fully
         # static binary that runs on the Debian bookworm-slim base without any
         # glibc compatibility layer. A bare `go build` yields a glibc-linked
-        # binary that kernel-panics Alpine-based builder VMs (memory: nexus3-agent-binary-must-be-static).
-        run: CGO_ENABLED=0 go build -o images/base/nexus3-agent ./cmd/nexus3-agent
+        # binary that kernel-panics Alpine-based builder VMs (memory: nexus-agent-binary-must-be-static).
+        run: CGO_ENABLED=0 go build -o images/base/nexus-agent ./cmd/nexus-agent
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -259,7 +259,7 @@ jobs:
           VERSION: ${{ needs.release-create.outputs.version }}
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/inizio/nexus3-base"
+          IMAGE="ghcr.io/inizio/nexus-base"
           docker build \
             -t "${IMAGE}:${VERSION}" \
             -t "${IMAGE}:latest" \
@@ -296,7 +296,7 @@ jobs:
           mkdir -p release-assets
           gh release download "$TAG" --dir release-assets
           cd release-assets
-          sha256sum nexus3-* > SHA256SUMS
+          sha256sum nexus-* > SHA256SUMS
           echo "=== SHA256SUMS ==="
           cat SHA256SUMS
 
@@ -309,18 +309,18 @@ jobs:
           gh release upload "$TAG" release-assets/SHA256SUMS --clobber
           echo "Release $TAG assets published."
 
-  # ── Stamp plugin nexus3-version with the released tag ────────────────────
-  # Keeps plugins/herdr/nexus3-version in sync with the published binary so
+  # ── Stamp plugin nexus-version with the released tag ────────────────────
+  # Keeps plugins/herdr/nexus-version in sync with the published binary so
   # `herdr plugin install` always fetches the matching release.
   # Runs after release-publish so the binary + SHA256SUMS are confirmed live
   # before we point the plugin at the new version.
   # The commit uses [skip ci] to suppress re-triggering CI/CD.
   release-stamp:
-    name: Stamp plugin nexus3-version
+    name: Stamp plugin nexus-version
     needs: [release-create, release-publish]
     # main-only: nightly prereleases from develop must NOT stamp the plugin
     # version or push back to main. Only a stable release repoints
-    # plugins/herdr/nexus3-version.
+    # plugins/herdr/nexus-version.
     if: needs.release-create.outputs.released == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -331,19 +331,19 @@ jobs:
           # fetch the branch tip so we can push back to it cleanly.
           ref: main
 
-      - name: Stamp nexus3-version
+      - name: Stamp nexus-version
         env:
           TAG: ${{ needs.release-create.outputs.tag }}
         run: |
           set -euo pipefail
-          echo "$TAG" > plugins/herdr/nexus3-version
+          echo "$TAG" > plugins/herdr/nexus-version
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add plugins/herdr/nexus3-version
+          git add plugins/herdr/nexus-version
           if git diff --cached --quiet; then
-            echo "nexus3-version already up to date."
+            echo "nexus-version already up to date."
           else
-            git commit -m "chore(plugin): stamp nexus3-version to ${TAG} [skip ci]"
+            git commit -m "chore(plugin): stamp nexus-version to ${TAG} [skip ci]"
             git push
           fi
           STAMP_COMMIT="$(git rev-parse HEAD)"
@@ -355,7 +355,7 @@ jobs:
           else
             git checkout -b tmp-stamp-merge origin/develop
             git merge --no-ff "$STAMP_COMMIT" \
-              -m "chore(release): merge nexus3-version stamp ${TAG} into develop" || {
+              -m "chore(release): merge nexus-version stamp ${TAG} into develop" || {
               echo "::error::Merge of stamp into develop conflicted — resolve manually." >&2
               exit 1
             }

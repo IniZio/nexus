@@ -13,15 +13,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // ErrAgentUnreachable is returned by CreateAndBoot when the VM starts but the
@@ -116,7 +116,7 @@ type ImageSpec struct {
 	// from the cache at <cacheRoot>/<algo>/<hex>/artifact.
 	Digest string
 
-	// Ref is a human-readable image tag (e.g. "nexus3-base:20260807"). The
+	// Ref is a human-readable image tag (e.g. "nexus-base:20260807"). The
 	// image cache is scanned to find the matching entry. Ref may also be a
 	// "sha256:<hex>" digest string — ParseDigest is tried first.
 	Ref string
@@ -167,10 +167,10 @@ type CreateAndBootOptions struct {
 	// Image.Digest or Image.Ref is set; ignored when Image.RootfsPath is set.
 	CacheRoot string
 
-	// AgentBytes is the raw content of the nexus3-agent binary. Required only
+	// AgentBytes is the raw content of the nexus-agent binary. Required only
 	// when Image.Ref names an OCI image that is not yet in the cache; in that
 	// case resolveExt4 pulls the image from the registry and injects the agent
-	// binary as /sbin/nexus3-agent (PID 1). For cached images this field may
+	// binary as /sbin/nexus-agent (PID 1). For cached images this field may
 	// be nil (the agent was already injected when the image was first cached).
 	AgentBytes []byte
 
@@ -211,7 +211,7 @@ type CreateAndBootOptions struct {
 	// branch — see resolveAllowedBranches. Set this explicitly only to
 	// override that derivation. With no workspace bound at all, nil is
 	// stored as-is and Envelope.ResolvedAllowedBranches returns the hardcoded
-	// default ["refs/heads/nexus3/**"] at runtime.
+	// default ["refs/heads/nexus/**"] at runtime.
 	AllowedBranches []string
 
 	// ExtraSecretHosts lists additional hostnames to include in
@@ -270,7 +270,7 @@ type CreateAndBootOptions struct {
 	// When true, SeedGuestAgent is called instead of SeedGuest; the resulting
 	// payload includes CLAUDE_CODE_OAUTH_TOKEN, NODE_EXTRA_CA_CERTS, and
 	// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC in addition to the generic
-	// NEXUS3_CRED_* vars. Set via WireClaudeEgress.
+	// NEXUS_CRED_* vars. Set via WireClaudeEgress.
 	UseAgentSeed bool
 
 	// AgentEgressToken is the real bearer token for the direct API-key path
@@ -351,7 +351,7 @@ type CreateAndBootOptions struct {
 
 	// BaseRef is the full 40-hex SHA of the host repository's HEAD commit
 	// at sandbox-creation time (D-PD-19). Recorded on the Sandbox domain record
-	// as the shallow-clone boundary for G2 (nexus3 bundle). Empty means no git
+	// as the shallow-clone boundary for G2 (nexus bundle). Empty means no git
 	// workspace is attached; G2 will fail fast for such sandboxes.
 	//
 	// Compute this value via HostHeadSHA(Workspace.SourcePath) before calling
@@ -429,7 +429,7 @@ func WireAgentEgress(opts *CreateAndBootOptions, profile cred.AgentProfile, brok
 //
 //	cred.NewStaticCredentialSource(&cred.DedicatedCredStore{AccessToken: tok})
 //
-// for a fixed token read from the NEXUS3_CLAUDE_OAUTH_TOKEN env var, or a
+// for a fixed token read from the NEXUS_CLAUDE_OAUTH_TOKEN env var, or a
 // *cred.Refresher constructed from [DefaultDedicatedCredStorePath] for
 // automatic token rotation. When src is nil no real token is wired and the
 // MITM proxy forwards the placeholder (egress still works, bearer is invalid).
@@ -443,12 +443,12 @@ func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder Gu
 // DedicatedCredStorePathForProfile returns the host-side OAuth credential store
 // path for the given agent profile.
 //
-// claude-code is a special case: it always resolves to ~/.config/nexus3/creds.json —
+// claude-code is a special case: it always resolves to ~/.config/nexus/creds.json —
 // the legacy single-tenant path. Operators have live credentials at that path and
 // changing it would silently log them out of every existing sandbox. The
-// NEXUS3_DEDICATED_CRED_STORE environment variable applies only to this alias.
+// NEXUS_DEDICATED_CRED_STORE environment variable applies only to this alias.
 //
-// All other profiles resolve to ~/.config/nexus3/agent-creds/<name>.json where
+// All other profiles resolve to ~/.config/nexus/agent-creds/<name>.json where
 // <name> is the sanitized profile name, following the same sanitization convention
 // as DefaultMCPOAuthStoreRoot (see mcpoauth_refresh.go:sanitizeForFS).
 func DedicatedCredStorePathForProfile(profile cred.AgentProfile) string {
@@ -456,14 +456,14 @@ func DedicatedCredStorePathForProfile(profile cred.AgentProfile) string {
 	// here; any change silently invalidates every existing sandbox. The env-var
 	// override applies only to this alias so it stays forward-compatible.
 	if profile.Name == "" || profile.Name == cred.ClaudeCodeProfileName {
-		if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
+		if p := os.Getenv("NEXUS_DEDICATED_CRED_STORE"); p != "" {
 			return p
 		}
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".config", "nexus3", "creds.json")
+		return filepath.Join(home, ".config", "nexus", "creds.json")
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "nexus3", "agent-creds", sanitizeForFS(profile.Name)+".json")
+	return filepath.Join(home, ".config", "nexus", "agent-creds", sanitizeForFS(profile.Name)+".json")
 }
 
 // DedicatedLockFilePathForProfile returns the advisory lock file path for the
@@ -473,7 +473,7 @@ func DedicatedLockFilePathForProfile(profile cred.AgentProfile) string {
 	return DedicatedCredStorePathForProfile(profile) + ".lock"
 }
 
-// DefaultDedicatedCredStorePath returns the path for nexus3's dedicated OAuth
+// DefaultDedicatedCredStorePath returns the path for nexus's dedicated OAuth
 // credential store. Deprecated: all production call sites now use
 // [DedicatedCredStorePathForProfile] with the agent's profile. This wrapper
 // delegates to DedicatedCredStorePathForProfile for the claude-code alias and
@@ -735,7 +735,7 @@ func CreateAndBoot(
 	// 4.5 Capture workspace to ext4 (if requested)
 	//
 	// WorktreeToDisk (or the injected WorkspaceCapturer stub) walks the host
-	// source tree, applies the .dockerignore + nexus3 exclusion policy, enforces
+	// source tree, applies the .dockerignore + nexus exclusion policy, enforces
 	// the size guard, and writes a raw ext4 image. The image is appended to
 	// opts.ExtraDisks so the DriverFactory sees it as the last extra disk:
 	// caller-supplied ExtraDisks[0..n-1] keep their positions and the workspace
@@ -1106,7 +1106,7 @@ func CreateAndBoot(
 				svc.storeDeregistrar(booted.ID, dr)
 			}
 		} else if realToken == "" {
-			hint := "configure NEXUS3_DEDICATED_CRED_STORE (OAuth path)"
+			hint := "configure NEXUS_DEDICATED_CRED_STORE (OAuth path)"
 			if agentProfile.APIKeyEnvVar != "" {
 				hint = fmt.Sprintf("set %s (API-key path) or %s", agentProfile.APIKeyEnvVar, hint)
 			}
@@ -1165,7 +1165,7 @@ func CreateAndBoot(
 	// identity from the host's global git config (user.name, user.email) and
 	// pushes a gitconfig to GuestGitconfigPath (/root/.gitconfig) configuring
 	// that real identity, the workspace safe.directory, and the per-sandbox
-	// branch name (nexus3/<motive-slug>/<short-id>).
+	// branch name (nexus/<motive-slug>/<short-id>).
 	//
 	// If the host git identity is not configured, CreateAndBoot returns an
 	// actionable error — a silent bot-identity fallback is deliberately absent
@@ -1276,7 +1276,7 @@ func resolveExt4(
 		switch len(matches) {
 		case 0:
 			// Cache miss: pull from the OCI registry, convert to an ext4 rootfs,
-			// inject the nexus3-agent binary, and store in the image cache. Then
+			// inject the nexus-agent binary, and store in the image cache. Then
 			// recurse by digest so the path is returned from the single-match branch.
 			if len(agentBytes) == 0 {
 				return "", "", fmt.Errorf("resolve image: no cached image with ref %q: %w", spec.Ref, ErrAgentBytesRequired)
@@ -1403,7 +1403,7 @@ func hostWorktreeBranch(repoPath string) (string, error) {
 
 // resolveAllowedBranches derives the Envelope.AllowedBranches value for a
 // CreateAndBoot call (TBD-1: what should bound a sandbox's pushable
-// branches once the nexus3-only default no longer fits every repo).
+// branches once the nexus-only default no longer fits every repo).
 //
 // A caller-supplied opts.AllowedBranches always wins — it is an explicit
 // override and is returned unchanged.
@@ -1422,8 +1422,8 @@ func hostWorktreeBranch(repoPath string) (string, error) {
 // When a workspace IS bound but its branch cannot be derived (detached HEAD,
 // git unavailable, unreadable worktree), this fails closed: it returns
 // domain.UnresolvedBranchSentinel, a ref pattern that can never match a real
-// push, rather than falling back to the nexus3-only default (wrong for a
-// non-nexus3 repo, and would incorrectly widen access) or to an empty slice
+// push, rather than falling back to the nexus-only default (wrong for a
+// non-nexus repo, and would incorrectly widen access) or to an empty slice
 // (which Envelope.ResolvedAllowedBranches treats as "unset" and would apply
 // that same wrong default).
 //

@@ -1,7 +1,7 @@
 package perimeter
 
 // TestPerimeterFD_* proves the handoff contract PerimeterFD exists for
-// (motive nexus3-host-supervisor-hotswap, slice 04): the returned *os.File is
+// (motive nexus-host-supervisor-hotswap, slice 04): the returned *os.File is
 // an INDEPENDENT dup of the live perimeter connection. A caller that offers
 // this dup to a replacement supervisor and then discards it on failure (or
 // success) must not disturb the PerimeterSupervisor's own ongoing use of the

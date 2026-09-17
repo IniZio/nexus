@@ -88,7 +88,7 @@ func ensureCacheDiskAt(ctx context.Context, cacheDir, ecosystemKey string, entry
 		}
 	}
 
-	tmpSrc, err := os.MkdirTemp("", "nexus3-cachedisk-src-*")
+	tmpSrc, err := os.MkdirTemp("", "nexus-cachedisk-src-*")
 	if err != nil {
 		return CacheDiskSpec{}, fmt.Errorf("cachedisk: create src tmpdir: %w", err)
 	}
@@ -211,7 +211,7 @@ func leaseCacheDiskSlot(ctx context.Context, cacheDir, ecosystemKey string, entr
 
 // ── Slot leases (D-HSH-07) ──
 // A lease is flock(LOCK_EX) on slot's <image>.lock sidecar (motive
-// nexus3-builder-supervisor-spawn-race, fixes b4489a5 / 95ba583):
+// nexus-builder-supervisor-spawn-race, fixes b4489a5 / 95ba583):
 // 1. NEVER unlink lease file: flock attached to inode; unlinking lets next opener
 // create fresh inode and "hold" same slot at same time. Release only CLOSEs
 // descriptor; see CacheDiskLease.Release why LOCK_UN is wrong on shared

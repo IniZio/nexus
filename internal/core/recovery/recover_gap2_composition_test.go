@@ -19,17 +19,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	. "github.com/IniZio/nexus3/internal/core/recovery"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	. "github.com/IniZio/nexus/internal/core/recovery"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── Gap-2 documentation: non-delete absent path intentionally does NOT call Stop ─
 //
 // R0 audit finding 2: "Non-delete recovery (running → stopped) does not clean
-// run-dir sockets — they survive nexus3 recover."
+// run-dir sockets — they survive nexus recover."
 //
 // RESOLUTION: documented as correct by design, not a bug.
 //
@@ -108,7 +108,7 @@ func TestRecover_Gap2_DocumentedCorrect(t *testing.T) {
 // and service.ReapDiskCopy is the correct reclamation primitive for the
 // delete path.
 //
-// NOTE on R1 reaper availability: The full `nexus3 reap` command (R1's
+// NOTE on R1 reaper availability: The full `nexus reap` command (R1's
 // resource_index + CLI) is outside this slice. This test demonstrates the
 // COMPOSITION INTERFACE — the contract between recover and reap — using the
 // primitive that the full reaper will call internally. When R1's reap.go is
@@ -206,7 +206,7 @@ func TestComposition_RecoverThenReap(t *testing.T) {
 	}
 
 	// ── Step 6: manual reap for A (simulating what R1's reaper does) ────────
-	// When the operator runs `nexus3 reap`, the resource index scans diskDir
+	// When the operator runs `nexus reap`, the resource index scans diskDir
 	// and calls service.ReapDiskCopy for each ULID whose disk files have no
 	// corresponding live sandbox (or have a create-intent with no record).
 	// Sandbox A is stopped but its record exists — the reaper would leave it.

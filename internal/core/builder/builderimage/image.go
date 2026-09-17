@@ -11,7 +11,7 @@
 //
 // The digest is the OCI manifest digest of the pulled image; agenthash is
 // the first 16 hex characters of SHA-256(agentBytes). Both are required
-// so that a changed or grown nexus3-agent binary forces a rebuild instead
+// so that a changed or grown nexus-agent binary forces a rebuild instead
 // of reusing a stale image sized for a smaller agent.
 package builderimage
 
@@ -88,7 +88,7 @@ var pullRemoteImage = func(ctx context.Context, ociRef string) (v1.Image, error)
 //
 // The filename encodes both the OCI digest (digestSafe, already sanitised for
 // filesystem use) and a short hash of the agent binary. Including the agent
-// hash ensures that a grown or rebuilt nexus3-agent produces a distinct key
+// hash ensures that a grown or rebuilt nexus-agent produces a distinct key
 // and triggers a fresh image build rather than reusing a stale, too-small
 // ext4.
 func builderImageCachePath(imagesDir, digestSafe string, agentBytes []byte) string {
@@ -102,10 +102,10 @@ func builderImageCachePath(imagesDir, digestSafe string, agentBytes []byte) stri
 // its layers, adds VM-boot infrastructure, and converts to ext4. Subsequent
 // calls for the same OCI digest skip all network and conversion work.
 //
-// embeddedAgentBytes is the raw bytes of the nexus3-agent binary to inject
+// embeddedAgentBytes is the raw bytes of the nexus-agent binary to inject
 // into the rootfs as PID-1 for the builder VM. It must not be nil or empty.
 //
-// dataDir is the nexus3 data directory; images are written under
+// dataDir is the nexus data directory; images are written under
 // <dataDir>/images/.
 func EnsureBuilderImage(ctx context.Context, dataDir string, embeddedAgentBytes []byte) (string, error) {
 	if len(embeddedAgentBytes) == 0 {
@@ -139,7 +139,7 @@ func EnsureBuilderImage(ctx context.Context, dataDir string, embeddedAgentBytes 
 		return "", fmt.Errorf("builderimage: pull: %w", err)
 	}
 
-	stagingDir, err := os.MkdirTemp("", "nexus3-builder-rootfs-*")
+	stagingDir, err := os.MkdirTemp("", "nexus-builder-rootfs-*")
 	if err != nil {
 		return "", fmt.Errorf("builderimage: staging dir: %w", err)
 	}

@@ -12,7 +12,7 @@
 //	attacker <workdir>    — plays a hostile same-uid peer that found the
 //	                        socket path but has no token.
 //
-// The re-exec sentinel is handled exactly as cmd/nexus3/main.go does, so the
+// The re-exec sentinel is handled exactly as cmd/nexus/main.go does, so the
 // child that runs is the real RunNetnsChild.
 package main
 
@@ -25,8 +25,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 )
 
 type identity struct {
@@ -48,7 +48,7 @@ func die(f string, a ...any) {
 }
 
 func main() {
-	// Same dispatch as cmd/nexus3/main.go — the child image is this binary.
+	// Same dispatch as cmd/nexus/main.go — the child image is this binary.
 	if os.Getenv(cloudhypervisor.NetnsRunEnv) == "1" {
 		cloudhypervisor.RunNetnsChild()
 		return

@@ -10,10 +10,10 @@ package builder_test
 // Coverage claim: the test drives the REAL guestBuild production code path via
 // the GuestBuild export shim. The path it covers is:
 //
-//	BuildInVM → guestBuild → argv → nexus3-agent --builder-role --tool-recipe=... --target-arch=...
+//	BuildInVM → guestBuild → argv → nexus-agent --builder-role --tool-recipe=... --target-arch=...
 //
 // What remains uncovered by make test (//go:build integration files):
-//   - The in-VM half: nexus3-agent parsing --tool-recipe → RunBuilderRole →
+//   - The in-VM half: nexus-agent parsing --tool-recipe → RunBuilderRole →
 //     BuildInGuestImage → buildkit_linux.go → SolveRequest.
 //     That wiring is tested end-to-end by the S4 live proof
 //     (internal/test/selfhost/builder_vm_e2e_test.go, //go:build integration).
@@ -26,8 +26,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // fakeExecFn is a GuestExecFn substitute that captures argv without executing

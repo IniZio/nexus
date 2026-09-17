@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // forkPreflightHarness stands up a running parent with a real disk on disk, so
@@ -49,7 +49,7 @@ func forkPreflightHarness(t *testing.T) (*Service, domain.Sandbox, string) {
 }
 
 // TestFork_PreflightRefusalLeavesNoChildDisks is the fork half of TBD-PD-26.
-// Fork is the largest allocator in nexus3 — it copies the parent's ENTIRE
+// Fork is the largest allocator in nexus — it copies the parent's ENTIRE
 // footprint once per child — and it was completely unguarded.
 //
 // The assertion that matters is the second one: a refusal must happen before

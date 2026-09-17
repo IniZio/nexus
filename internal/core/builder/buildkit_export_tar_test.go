@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder"
 )
 
 // TestExportAndUnpack_FailClosed_TruncatedBody proves that a tar entry whose

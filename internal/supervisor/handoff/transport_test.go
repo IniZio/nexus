@@ -86,7 +86,7 @@ func TestRoundTrip_AcceptedHandoff(t *testing.T) {
 		Version:   CurrentVersion,
 		Perimeter: PerimeterHandle{Present: true},
 		Virtiofs: []VirtiofsHandle{
-			{PID: 4242, SocketPath: "/run/nexus3/sb1/virtiofs-0.sock", SharedDir: "/workspace", ReadOnly: false},
+			{PID: 4242, SocketPath: "/run/nexus/sb1/virtiofs-0.sock", SharedDir: "/workspace", ReadOnly: false},
 		},
 		CA: CAMaterial{
 			CertPEM: []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),

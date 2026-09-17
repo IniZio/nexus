@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/bootspec"
+	"github.com/IniZio/nexus/internal/core/bootspec"
 )
 
 // ociIndex is the subset of an OCI image index (index.json) this package needs.
@@ -132,7 +132,7 @@ func parseOCIConfigFromTar(r io.Reader) (bootspec.OCIImageConfig, bool, error) {
 	return cfg, true, nil
 }
 
-// captureBootSpec writes boot.json into <outDir>/etc/nexus3/boot.json.
+// captureBootSpec writes boot.json into <outDir>/etc/nexus/boot.json.
 //
 // When ociCfg is non-nil it is the authoritative effective image config —
 // the merged result of the built OCI image that already incorporates both
@@ -163,7 +163,7 @@ func captureBootSpec(containerfileBytes []byte, ociCfg *bootspec.OCIImageConfig,
 	captureBootSpecFromContainerfile(containerfileBytes, outDir)
 }
 
-// writeBootJSON marshals spec and writes it to <outDir>/etc/nexus3/boot.json.
+// writeBootJSON marshals spec and writes it to <outDir>/etc/nexus/boot.json.
 // source is a short label for log messages. All failures are non-fatal.
 func writeBootJSON(spec bootspec.Spec, outDir string, source string) {
 	specJSON, err := json.Marshal(spec)
@@ -171,7 +171,7 @@ func writeBootJSON(spec bootspec.Spec, outDir string, source string) {
 		slog.Warn("buildkit: writeBootJSON: failed to marshal boot spec", "source", source, "err", err)
 		return
 	}
-	bootJSONPath := filepath.Join(outDir, "etc", "nexus3", "boot.json")
+	bootJSONPath := filepath.Join(outDir, "etc", "nexus", "boot.json")
 	if err := os.MkdirAll(filepath.Dir(bootJSONPath), 0755); err != nil {
 		slog.Warn("buildkit: writeBootJSON: failed to create parent dirs", "source", source, "err", err)
 		return

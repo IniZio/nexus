@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // GuestCuratedPATHDirs: authoritative guest PATH dirs, staged/rebuilt by SeedGuestUserMounts (don't hardcode).
@@ -74,13 +74,13 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 			if base == "" || base == "." || base == "/" {
 				base = "um"
 			}
-			stagingGuestPath = "/run/nexus3/usermount/bin-" + base
+			stagingGuestPath = "/run/nexus/usermount/bin-" + base
 		case overlay:
 			base := filepath.Base(guestPath)
 			if base == "" || base == "." || base == "/" {
 				base = "um"
 			}
-			stagingGuestPath = "/run/nexus3/usermount/" + base
+			stagingGuestPath = "/run/nexus/usermount/" + base
 		}
 
 		m.Mounts = append(m.Mounts, ResolvedUserMount{

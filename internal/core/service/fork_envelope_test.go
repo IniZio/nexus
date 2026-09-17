@@ -22,13 +22,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── forkNetHookDriver ─────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ var _ driver.NetworkHook = (*forkNetHookDriver)(nil)
 // MITM proxy (service.go:685-698).
 var curatedParentHosts = []string{"allowed.example.invalid"}
 
-const curatedParentSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFORKTESTKEY parent@nexus3"
+const curatedParentSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFORKTESTKEY parent@nexus"
 
 // newForkEnvelopeSvc builds a service wired for perimeter assembly and seeds a
 // parent sandbox record carrying a curated Envelope and a label set.

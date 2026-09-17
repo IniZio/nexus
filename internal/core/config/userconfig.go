@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 )
 
-// LoadUserGlobal reads the user-global nexus3 config from
-// $XDG_CONFIG_HOME/nexus3/config.yaml (falling back to ~/.config/nexus3/config.yaml).
+// LoadUserGlobal reads the user-global nexus config from
+// $XDG_CONFIG_HOME/nexus/config.yaml (falling back to ~/.config/nexus/config.yaml).
 //
 // An absent file returns a zero Config and nil error — callers treat absence
 // as "no overrides". A malformed file returns a non-nil error; the caller logs
@@ -20,7 +20,7 @@ func LoadUserGlobal() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("user config: resolve dir: %w", err)
 	}
-	path := filepath.Join(dir, "nexus3", "config.yaml")
+	path := filepath.Join(dir, "nexus", "config.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

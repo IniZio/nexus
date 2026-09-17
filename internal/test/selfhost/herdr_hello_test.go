@@ -16,16 +16,16 @@ package selfhost
 //  4. svc.Remove on cleanup — mirrors the defer in herdrPluginLaunch.
 //
 // The herdr binary is NOT required for this proof; `__herdr-plugin launch` is
-// the nexus3-side of the herdr contract and this test exercises that same
+// the nexus-side of the herdr contract and this test exercises that same
 // service-layer call path directly, keeping image cache and store isolated to
-// t.TempDir() (herdrPluginLaunch uses ~/.nexus3 in production).
+// t.TempDir() (herdrPluginLaunch uses ~/.nexus in production).
 //
 // # Skip conditions (same as TestTracerLaunch)
 //
 //   - /dev/kvm absent or inaccessible
 //   - cloud-hypervisor binary not found (CLOUD_HYPERVISOR_BIN or PATH)
 //   - mke2fs not in PATH
-//   - images/kernel/vmlinux-x86_64 absent and NEXUS3_KERNEL_PATH not set
+//   - images/kernel/vmlinux-x86_64 absent and NEXUS_KERNEL_PATH not set
 //   - docker unavailable (needed by BuildSelfHostBaseImage)
 //
 // # Running
@@ -42,15 +42,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // TestHerdrHello boots a sandbox with motiveID="herdr" (matching
@@ -185,7 +185,7 @@ func TestHerdrHello(t *testing.T) {
 	// ── Step 4: exec hello-world — mirrors herdrPluginLaunch svc.Exec call ────
 	// argv[0] MUST be an absolute path; the guest agent resolves via
 	// exec.LookPath in the agent binary's own PATH, NOT the injected PATH.
-	const wantMsg = "hello from nexus3 sandbox"
+	const wantMsg = "hello from nexus sandbox"
 	var stdout bytes.Buffer
 	execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer execCancel()

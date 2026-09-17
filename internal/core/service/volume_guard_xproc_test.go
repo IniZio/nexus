@@ -12,7 +12,7 @@ package service_test
 // with M3, whereas the correct flock implementation serialises them.
 //
 // The tests use the re-exec pattern: each subprocess is the same test binary
-// re-invoked with NEXUS3_VOL_GUARD_HELPER set to a helper name. TestMain
+// re-invoked with NEXUS_VOL_GUARD_HELPER set to a helper name. TestMain
 // intercepts this and runs the helper instead of the test suite.
 
 import (
@@ -27,10 +27,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // Subprocess helper dispatch
@@ -44,7 +44,7 @@ func runSubprocessHelper(helper string) {
 	case "storm_rootfs_attach":
 		subprocStormRootfsAttach()
 	default:
-		fmt.Fprintf(os.Stderr, "NEXUS3_VOL_GUARD_HELPER: unknown helper %q\n", helper)
+		fmt.Fprintf(os.Stderr, "NEXUS_VOL_GUARD_HELPER: unknown helper %q\n", helper)
 		os.Exit(2)
 	}
 	os.Exit(0)
@@ -309,7 +309,7 @@ func testBinary() string {
 func spawnHelper(helper, ctrlDir, diskDir, storeDir, volStoreDir, volName, sandboxID string, idx int) *exec.Cmd {
 	cmd := exec.Command(testBinary(), "-test.run=^$") // no tests — helper mode
 	cmd.Env = append(os.Environ(),
-		"NEXUS3_VOL_GUARD_HELPER="+helper,
+		"NEXUS_VOL_GUARD_HELPER="+helper,
 		"NXVG_CTRLDIR="+ctrlDir,
 		"NXVG_DISKDIR="+diskDir,
 		"NXVG_STOREDIR="+storeDir,

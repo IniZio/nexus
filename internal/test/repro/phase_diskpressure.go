@@ -34,7 +34,7 @@ type DiskPressurePhaseConfig struct {
 	// FillDir is where fill files are written (default: os.TempDir()).
 	FillDir string
 	// Runner is the build runner. Nil uses RunBuild (production default).
-	// Set to a fake in tests to avoid real nexus3/VM invocations.
+	// Set to a fake in tests to avoid real nexus/VM invocations.
 	Runner BuildRunner
 }
 

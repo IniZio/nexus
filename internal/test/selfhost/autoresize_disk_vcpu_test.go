@@ -42,17 +42,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // arWsMountCmdline builds a kernel cmdline that routes workspace and shadow
@@ -191,7 +191,7 @@ func TestAutoResizeDiskTelemetry(t *testing.T) {
 		os.RemoveAll(stateDir)
 	})
 
-	// ── Step 2: build base image + nexus3 binary ──────────────────────────────
+	// ── Step 2: build base image + nexus binary ──────────────────────────────
 	cache, err := image.NewCache(cacheRoot)
 	if err != nil {
 		t.Fatalf("image.NewCache: %v", err)
@@ -210,8 +210,8 @@ func TestAutoResizeDiskTelemetry(t *testing.T) {
 		t.Fatalf("BuildAgentBaseImage: %v", buildErr)
 	}
 	t.Logf("base image ready: digest=%s", img.Digest)
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	// ── Step 3: CreateAndBoot with workspace disk ─────────────────────────────
 	const memCeiling int64 = 1024 * 1024 * 1024 // 1 GiB
@@ -299,7 +299,7 @@ func TestAutoResizeDiskTelemetry(t *testing.T) {
 			WorkspaceDiskIndex: 0,
 			Cmdline:            svCmdline,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	})
@@ -450,7 +450,7 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 		os.RemoveAll(stateDir)
 	})
 
-	// ── Step 2: build base image + nexus3 binary ──────────────────────────────
+	// ── Step 2: build base image + nexus binary ──────────────────────────────
 	cache, err := image.NewCache(cacheRoot)
 	if err != nil {
 		t.Fatalf("image.NewCache: %v", err)
@@ -469,7 +469,7 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 		t.Fatalf("BuildAgentBaseImage: %v", buildErr)
 	}
 	t.Logf("base image ready: digest=%s", img.Digest)
-	nexus3Bin := buildNexus3Bin(t)
+	nexusBin := buildNexusBin(t)
 
 	// ── Step 3: CreateAndBoot with 2 extra disks ──────────────────────────────
 	const memCeiling int64 = 1024 * 1024 * 1024 // 1 GiB
@@ -557,7 +557,7 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 			WorkspaceDiskIndex: 1, // ExtraDisks[1] = wsPath
 			Cmdline:            svCmdline,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	})
@@ -680,7 +680,7 @@ func TestAutoResizeDiskGrowDevice(t *testing.T) {
 	// Assertion 1: workspace backing file grew.
 	//
 	// An HTTP 400 from vm.resize-disk is not an acceptable outcome: the root cause
-	// (nexus3 sending JSON field "size" instead of "desired_size") was fixed in
+	// (nexus sending JSON field "size" instead of "desired_size") was fixed in
 	// client.go:231-233 and confirmed via a live 204 response against CH v52.0.
 	// If ch400Rejected is true here, that fix has regressed.
 	//
@@ -832,7 +832,7 @@ func TestAutoResizeVCPU(t *testing.T) {
 		os.RemoveAll(stateDir)
 	})
 
-	// ── Step 2: build base image + nexus3 binary ──────────────────────────────
+	// ── Step 2: build base image + nexus binary ──────────────────────────────
 	cache, err := image.NewCache(cacheRoot)
 	if err != nil {
 		t.Fatalf("image.NewCache: %v", err)
@@ -850,7 +850,7 @@ func TestAutoResizeVCPU(t *testing.T) {
 		}
 		t.Fatalf("BuildAgentBaseImage: %v", buildErr)
 	}
-	nexus3Bin := buildNexus3Bin(t)
+	nexusBin := buildNexusBin(t)
 
 	// ── Step 3: CreateAndBoot with VCPUMax=2 ─────────────────────────────────
 	// VCPUMax=2 reserves a hotplug slot in CH at vm.create time.
@@ -930,7 +930,7 @@ func TestAutoResizeVCPU(t *testing.T) {
 			},
 			Cmdline: svCmdline,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	})

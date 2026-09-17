@@ -45,10 +45,10 @@ func TestWrapOutOfSpaceErr_VMBuild(t *testing.T) {
 
 	t.Run("hollow-export path not mislabeled disk-full", func(t *testing.T) {
 		// Regression guard: an error whose message mentions the export scratch path
-		// (/var/lib/buildkit/nexus3-export) but carries no ENOSPC signal must NOT
+		// (/var/lib/buildkit/nexus-export) but carries no ENOSPC signal must NOT
 		// be classified as cache-disk-full. With the bare path clause present this
 		// test fails (false positive); after removal it passes.
-		orig := errors.New("rootfs hollow: /var/lib/buildkit/nexus3-export: no artifacts written")
+		orig := errors.New("rootfs hollow: /var/lib/buildkit/nexus-export: no artifacts written")
 		got := wrapOutOfSpaceErr(orig)
 		if got != orig {
 			t.Fatalf("hollow-export error must pass through unchanged; got: %v", got)

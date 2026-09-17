@@ -43,7 +43,7 @@ artifacts, and a docker daemon.
 
 ## Environment used for the evidence below
 
-This slice ran inside a nexus3 guest VM:
+This slice ran inside a nexus guest VM:
 
 | Prerequisite | State |
 |---|---|
@@ -57,7 +57,7 @@ This slice ran inside a nexus3 guest VM:
 | euid | **root** (`CapEff=0x1ffffffffff`) — see the CAP_NET_ADMIN note below |
 
 `systemd-run` does not exist in this guest, so `CAPPED` fails closed as designed;
-all runs used the documented `NEXUS3_ALLOW_UNCAPPED=1` escape, exactly as CI does.
+all runs used the documented `NEXUS_ALLOW_UNCAPPED=1` escape, exactly as CI does.
 
 ---
 
@@ -75,9 +75,9 @@ runs.
 ### Caveat: this package has an in-guest TestMain guard
 
 `internal/core/perimeter/netstack/netstack_test.go:35` exits 0 when
-`/proc/1/comm == "nexus3-agent"`. Inside a nexus3 guest the package prints
+`/proc/1/comm == "nexus-agent"`. Inside a nexus guest the package prints
 
-    netstack: skipping tests — running inside nexus3 guest VM (host-side package)
+    netstack: skipping tests — running inside nexus guest VM (host-side package)
 
 and reports `ok` having run **nothing**. In-guest greens for this package are
 meaningless. Verify with `unshare --pid --mount-proc --fork`, which changes
@@ -201,7 +201,7 @@ all-VM `ch_netns_lifecycle_test.go` (6 more tests, same defect, untagged for the
 same reason) was tagged in place. `ch_netns_test.go` keeps `TestMain` and its
 three pure unit tests untagged — tagging the whole file would have deleted
 those from `make test` while looking like a gating fix. `TestMain` must stay
-untagged anyway: it is the `NEXUS3_NETNS_RUN` re-exec dispatcher, and untagged
+untagged anyway: it is the `NEXUS_NETNS_RUN` re-exec dispatcher, and untagged
 files compile into the integration build too, so the test binary remains its
 own re-exec image there.
 

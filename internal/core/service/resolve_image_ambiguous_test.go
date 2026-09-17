@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // seedRef stores content under ref with an explicit creation time, bypassing
@@ -56,8 +56,8 @@ func retag(t *testing.T, root string, d domain.Digest, ref string) {
 	}
 }
 
-// TBD-PD-36: three cache entries all tagged nexus3-agent-base meant `--image
-// nexus3-agent-base` booted the OLDEST one, silently testing stale code. The
+// TBD-PD-36: three cache entries all tagged nexus-agent-base meant `--image
+// nexus-agent-base` booted the OLDEST one, silently testing stale code. The
 // resolver must refuse rather than pick, and must name the digests so the
 // operator can pin one.
 func TestResolveExt4_AmbiguousRefIsRefused(t *testing.T) {

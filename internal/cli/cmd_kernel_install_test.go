@@ -72,7 +72,7 @@ func TestKernelInstall(t *testing.T) {
 			xdgDir := t.TempDir()
 			t.Setenv("XDG_DATA_HOME", xdgDir)
 
-			kernelDest := filepath.Join(xdgDir, "nexus3", "images", "kernel", "vmlinux-x86_64")
+			kernelDest := filepath.Join(xdgDir, "nexus", "images", "kernel", "vmlinux-x86_64")
 
 			if tc.preInstall {
 				if err := os.MkdirAll(filepath.Dir(kernelDest), 0o755); err != nil {
@@ -100,7 +100,7 @@ func TestKernelInstall(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			t.Setenv("NEXUS3_RELEASE_BASE_URL", srv.URL)
+			t.Setenv("NEXUS_RELEASE_BASE_URL", srv.URL)
 
 			var stdout, stderr bytes.Buffer
 			out := NewOutput(&stdout, &stderr, false)

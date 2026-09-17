@@ -433,7 +433,7 @@ func TestBuildLocalMounts_AllWrapped(t *testing.T) {
 	const (
 		keyContext = "context"
 		keyDF      = "dockerfile"
-		keyAgent   = "nexus3agent"
+		keyAgent   = "nexusagent"
 	)
 	wantKeys := []string{keyContext, keyDF, keyAgent}
 
@@ -503,11 +503,11 @@ func TestBuildLocalMounts_AllWrapped(t *testing.T) {
 		})
 	}
 
-	// ── mutation: raw nexus3agent bypasses set.Err() ──────────────────────────
+	// ── mutation: raw nexusagent bypasses set.Err() ──────────────────────────
 	// Asserts the dangerous behaviour that buildLocalMounts prevents. If
-	// buildLocalMounts were changed to leave nexus3agent raw, the sub-tests
+	// buildLocalMounts were changed to leave nexusagent raw, the sub-tests
 	// above would t.Errorf("set.Err() nil…") — caught in plain go test.
-	t.Run("mutation-raw-nexus3agent", func(t *testing.T) {
+	t.Run("mutation-raw-nexusagent", func(t *testing.T) {
 		ctx, cancelCause := context.WithCancelCause(context.Background())
 		defer cancelCause(nil)
 		set := newSizeVerifiedSet(cancelCause)
@@ -516,7 +516,7 @@ func TestBuildLocalMounts_AllWrapped(t *testing.T) {
 		_, real1 := makeSizedFSTempDir(t)
 		_, real2 := makeSizedFSTempDir(t)
 
-		// MUTATION: nexus3agent is raw — simulates a regression in buildLocalMounts.
+		// MUTATION: nexusagent is raw — simulates a regression in buildLocalMounts.
 		mounts := map[string]fsutil.FS{
 			keyContext: set.Wrap(real0),
 			keyDF:      set.Wrap(real1),
@@ -541,10 +541,10 @@ func TestBuildLocalMounts_AllWrapped(t *testing.T) {
 		}
 		select {
 		case <-ctx.Done():
-			t.Error("MUTATION FAIL: context cancelled by raw nexus3agent violation")
+			t.Error("MUTATION FAIL: context cancelled by raw nexusagent violation")
 		default:
 		}
-		t.Log("MUTATION: raw nexus3agent bypassed set — buildLocalMounts wrapping is the only guard")
+		t.Log("MUTATION: raw nexusagent bypassed set — buildLocalMounts wrapping is the only guard")
 	})
 }
 

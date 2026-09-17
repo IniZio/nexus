@@ -251,7 +251,7 @@ func TestWorktreeToDisk_DockerignoreExcludes(t *testing.T) {
 }
 
 // TestWorktreeToDisk_NexusAlwaysExclude verifies that paths in
-// [nexus3AlwaysExclude] (.claude, .agents, .groundwork, .pnpm-store) are NOT
+// [nexusAlwaysExclude] (.claude, .agents, .groundwork, .pnpm-store) are NOT
 // captured even when no .dockerignore is present.
 func TestWorktreeToDisk_NexusAlwaysExclude(t *testing.T) {
 	skipIfInGuest(t)
@@ -269,7 +269,7 @@ func TestWorktreeToDisk_NexusAlwaysExclude(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(srcDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// .claude is in nexus3AlwaysExclude; must be excluded without any .dockerignore.
+	// .claude is in nexusAlwaysExclude; must be excluded without any .dockerignore.
 	claudeDir := filepath.Join(srcDir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -277,7 +277,7 @@ func TestWorktreeToDisk_NexusAlwaysExclude(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// .groundwork is in nexus3AlwaysExclude; must be excluded too. It holds run
+	// .groundwork is in nexusAlwaysExclude; must be excluded too. It holds run
 	// ledgers with write-tokens — capturing it would leak them into the guest.
 	gwDir := filepath.Join(srcDir, ".groundwork", "runs")
 	if err := os.MkdirAll(gwDir, 0o755); err != nil {
@@ -294,10 +294,10 @@ func TestWorktreeToDisk_NexusAlwaysExclude(t *testing.T) {
 
 	lsOut, _ := exec.CommandContext(ctx, "debugfs", "-R", "ls /", outExt4).CombinedOutput()
 	if strings.Contains(string(lsOut), ".claude") {
-		t.Errorf(".claude should be excluded (nexus3AlwaysExclude) but appears in root listing: %s", lsOut)
+		t.Errorf(".claude should be excluded (nexusAlwaysExclude) but appears in root listing: %s", lsOut)
 	}
 	if strings.Contains(string(lsOut), ".groundwork") {
-		t.Errorf(".groundwork should be excluded (nexus3AlwaysExclude) but appears in root listing: %s", lsOut)
+		t.Errorf(".groundwork should be excluded (nexusAlwaysExclude) but appears in root listing: %s", lsOut)
 	}
 
 	// main.go must be present.

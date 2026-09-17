@@ -30,7 +30,7 @@ func checkHerdrProcesses(ctx context.Context, lister func(context.Context) ([]He
 			serversBySess[p.Session] = append(serversBySess[p.Session], p)
 		case HerdrRemoteClientBridge:
 			bridgesBySess[p.Session] = append(bridgesBySess[p.Session], p)
-		case Nexus3ClientAgent:
+		case NexusClientAgent:
 			agents = append(agents, p)
 		}
 	}
@@ -67,7 +67,7 @@ func checkHerdrProcesses(ctx context.Context, lister func(context.Context) ([]He
 		sort.Slice(agents, func(i, j int) bool { return agents[i].Start.Before(agents[j].Start) })
 		for _, p := range agents[:len(agents)-1] {
 			remLines = append(remLines,
-				fmt.Sprintf("stale nexus3-client-agent pid %d: kill %d", p.PID, p.PID))
+				fmt.Sprintf("stale nexus-client-agent pid %d: kill %d", p.PID, p.PID))
 		}
 	}
 

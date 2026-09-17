@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func TestClaudeCodeProfile_Fields(t *testing.T) {
@@ -104,7 +104,7 @@ func TestCursorAgentProfile_CredentialPaths(t *testing.T) {
 
 // ── TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath ──
 // Mutation-relevant invariant: cursor's settings file (cli-config.json)
-// must be filtered even though nexus3 never brokers cursor's credential.
+// must be filtered even though nexus never brokers cursor's credential.
 // authInfo carries identity and PII (email, displayName, userId, authId),
 // and must not be shared into a sandbox regardless of credential path.
 func TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath(t *testing.T) {

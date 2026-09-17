@@ -15,7 +15,7 @@
 // # Why 0700 / 0600
 //
 // The directory holds, or is about to hold, secret material: the MITM CA
-// private key (motive nexus3-host-supervisor-hotswap, ticket 13 / D-HSH-18).
+// private key (motive nexus-host-supervisor-hotswap, ticket 13 / D-HSH-18).
 // It already holds the egress decisions log, which is a record of every host a
 // sandbox talked to. Host-root can read any of it regardless; the boundary
 // being drawn here is against other unprivileged users on a shared host.
@@ -26,7 +26,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 const (

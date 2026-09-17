@@ -1,0 +1,413 @@
+# nexus egress policy — reference
+
+Covers: `egress.policy` allowlist structure, the `egress.secrets` brokering
+model, per-provider patterns (GitHub, GitLab, generic tokens), the four
+verification probes, `--allow-host` for agent sandboxes, and per-ecosystem host
+sets. Also the answer to "GH_TOKEN in the guest", cross-repo 403, GraphQL 403,
+and "why does the sandbox have open egress."
+
+For first-run authoring of `.nexus/config.yaml` (detecting the repo's stack and
+deriving the host list from build manifests) see `onboard.md`.
+
+## `--allow-host` for agent sandboxes
+
+An agent sandbox (`--agent <name>`) created with `nexus create` (without
+`--egress open`) boots with **default-deny egress**. Only the agent profile's
+own hosts are reachable — for `claude-code` that is `api.anthropic.com` and
+`platform.claude.com`. Nothing else resolves, so every package manager fails at
+connect time until its hosts are named explicitly.
+
+Worktree sandboxes created by the herdr plugin are the exception: they run with
+open egress (see the next section).
+
+Add dev-toolchain hosts with `--allow-host <host>` (repeatable):
+
+```sh
+nexus create <project>/<name> --image <digest> --agent claude-code \
+  --mount /path/to/checkout:/work \
+  --allow-host proxy.golang.org \
+  --allow-host sum.golang.org \
+  --allow-host storage.googleapis.com
+```
+
+### Do not combine `--allow-host` with `--egress closed` on an agent sandbox
+
+The flag's own help text says `--allow-host` applies "when `--egress closed`".
+For an agent sandbox that combination is **structurally impossible**:
+`--egress closed` requires `--repo`, which binds a GitHub secret, which
+`service.ValidateSecrets` refuses with `ErrAgentGitHubSecret`.
+
+`--allow-host` works on an agent sandbox **without** `--egress closed` —
+`resolveAgentPosture` unions the list onto the profile's hosts unconditionally.
+Pass `--allow-host` alone.
+
+### Per-ecosystem host sets
+
+| Toolchain | Hosts required |
+|-----------|----------------|
+| Go | `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` |
+
+`storage.googleapis.com` is **not optional** for Go: `proxy.golang.org` serves
+module zips as redirects to signed `storage.googleapis.com` URLs. Omitting it
+produces a build that downloads part of the dependency graph and then fails with
+`connection refused` — a confusing partial failure, not a clean one.
+
+Note that `storage.googleapis.com` is a broad host (every GCS bucket). Treat
+adding it as a deliberate widening, not a formality.
+
+Host sets for other ecosystems are **not yet verified** at runtime. Determine
+them by running the toolchain and reading the refused hostnames out of the
+failure — do not guess. (`onboard.md` Step 2 lists the build-time hosts
+implied by common Dockerfile patterns.)
+
+---
+
+## CRITICAL: OpenEgress posture of worktree sandboxes (TBD-2 SETTLED)
+
+**The `egress.policy.allow` host allowlist is inert for worktree sandboxes.**
+
+Every worktree sandbox created by the herdr plugin is created with `OpenEgress: true`.
+Source: `internal/cli/cmd_herdr_plugin.go:3764` — the build-args function appends
+`--egress open` to every `nexus sandbox create` call:
+
+```go
+args = append(args, "--agent", herdrPrimaryAgent(), "--egress", "open", handle)
+```
+
+Result: `internal/core/service/service.go:959` sets `allowAll = sb.Envelope.OpenEgress`,
+which is `true`, so `al.AllowAllFor(72 * time.Hour)` is called and the netfilter ACL
+passes everything. The `egress.policy.allow` list from `.nexus/config.yaml` is stored in the
+envelope's `AllowedHosts` and is never consulted as a gate.
+
+**What IS enforced for worktree sandboxes:**
+
+| Layer | Enforced? | Evidence |
+|---|---|---|
+| `egress.secrets` credential brokering (placeholder swap) | YES | MITM proxy always runs when `SecretHosts` or `AgentName` is non-empty (`service.go:1132-1135`) |
+| `egress.policy.paths` for SecretHosts (e.g. GitHub REST path ACL, cross-repo deny) | YES | MITM enforces `PathPolicies` regardless of `AllowAll` mode (`service.go:998-999`) |
+| `egress.policy.paths` for non-secret hosts | NO | Path policies are only checked at the MITM layer for MITM-intercepted hosts |
+| `egress.policy.allow` host allowlist (general ACL) | NO | Bypassed by `AllowAll` from `OpenEgress: true` |
+
+**Live-verified (a downstream repo, 2026-09-07):**
+```
+$ cat ~/.local/state/nexus/sandboxes/sb-06G7NG0K49VPNB8PHVX237H368/record.json | python3 -m json.tool | grep open_egress
+    "open_egress": true,
+```
+Egress log: all decisions logged as "open egress bypass", zero enforced denies — matching
+the MAP.md observation of 215 and 698 "open egress bypass" decisions.
+
+**Stale comments in the source:**
+- `cmd_sandbox.go:2209`: "Agent sandboxes (orca, herdr) must NOT set OpenEgress=true" —
+  contradicted by `cmd_herdr_plugin.go:3764` which does set it. The comment describes the
+  intended policy; the code does the opposite.
+- `cmd_herdr_plugin.go:1163`: "OpenEgress left false — agent sandboxes never do" — this
+  describes only the `buildLaunchBootOpts` function (used for pane-open launch), not the
+  worktree-sandbox create path.
+
+**Consequence for skill consumers:** Document `egress.policy.allow` as a best-effort
+declaration of intent, not a security boundary. The binding security properties are:
+secret brokering and the MITM path policy for SecretHosts.
+
+---
+
+## Brokering model (file:line citations)
+
+The guest **never holds the real credential**. The model has three components:
+
+### 1. Guest-side placeholder
+
+The supervisor mints a 64-hex placeholder and writes it to `/run/nexus/cred.env` inside
+the guest (`internal/cli/cmd_herdr_plugin.go:1193-1210`, `internal/supervisor/supervisor.go`
+`SeedGuestAgent`). The agent launch wrapper sources this file before exec'ing the real agent
+command (`launchCredSourcedArgv`, `cmd_herdr_plugin.go:1193`), so the agent process sees the
+placeholder as `GH_TOKEN` (or the appropriate env var).
+
+The file is on a tmpfs (`/run`), so it does not survive a reboot. On supervisor re-adopt the
+file is re-seeded from the same broker instance, keeping placeholder and proxy in sync.
+
+### 2. MITM proxy substitution
+
+`internal/core/service/service.go:982-1033` creates a `mitm.Proxy` whenever
+`SandboxHasMITMProxy` returns true. For worktree sandboxes with secrets this is always true
+(`service.go:1132-1135`). The proxy is configured with:
+- `SecretHosts` — hosts whose outbound requests are intercepted for credential swap
+- `SecretHostSuffixes` — dot-anchored DNS suffixes (covers sharded endpoints)
+- `Broker` — the credential broker that knows the real secret
+- `PathPolicies` — per-host path ACL for `SecretHosts`
+
+On each outbound HTTPS request to a `SecretHost`, the proxy intercepts (MITM), replaces the
+`Authorization: Bearer <placeholder>` header with `Authorization: Bearer <real-secret>`,
+enforces the path ACL, and forwards. If the path is not in the allowlist the proxy returns
+403 before forwarding.
+
+### 3. Which hosts a secret is forwarded to
+
+`.nexus/config.yaml` `egress.secrets` entries bind an env-var name to a list of hostnames
+(`internal/core/config/config.go:44-51`, `EgressSecret`). This list becomes the
+`SecretHosts` in the envelope. The MITM proxy intercepts only these hosts — traffic to
+other hosts flows through unmodified (no credential swap, no path ACL).
+
+---
+
+## .nexus/config.yaml egress section
+
+Place `.nexus/config.yaml` at the **repository root** and commit it on the branch you work
+on. New worktree sandboxes read it from their own checkout, so it takes effect on the next
+worktree-sandbox create; no merge to the default branch is needed.
+
+```yaml
+version: 1
+egress:
+  policy:
+    # Per-host path allowlist for secret hosts.
+    # Required for GitHub hosts (sandbox create refuses without it).
+    # Not enforced as a general ACL for non-secret hosts.
+    - host: api.github.com
+      paths:
+        - "/repos/owner/myrepo"
+        - "/repos/owner/myrepo/**"
+        - "/user"
+    - host: github.com
+      paths:
+        - "/owner/myrepo/**"
+        - "/owner/myrepo.git/**"
+  secrets:
+    # Bind host env var → target hosts (swap on these hosts only).
+    - env: GH_TOKEN
+      hosts: [github.com, api.github.com]
+  allow:
+    # Host allowlist — stored in envelope but NOT enforced as an ACL
+    # for worktree sandboxes (open_egress: true bypasses the netfilter).
+    # Declare it anyway as documented intent; it becomes the ACL if
+    # OpenEgress is ever changed to false for this create path.
+    - registry-1.docker.io
+    - auth.docker.io
+    - pypi.org
+```
+
+### allow vs policy — a host is one or the other, never both
+
+- `egress.allow` — **open passthrough**: any path, any method, no credential. Use it for
+  package registries, image registries, apt mirrors, CDNs (`pypi.org`, `registry-1.docker.io`,
+  `deb.debian.org`, `codeload.github.com`).
+- `egress.policy` / `egress.secrets[].hosts` — **policy-gated**: default-deny path allowlist,
+  credential brokered by the MITM. Use it for every host that receives a token
+  (`github.com`, `api.github.com`, `gitlab.com`, ...).
+
+The policy layer takes precedence, so an `allow` entry for a policy-gated host is silently
+inert — the file claims open access the perimeter does not grant. `config.Load` rejects such a
+file at parse time, comparing hostnames case-insensitively:
+
+```text
+nexus config: host "github.com" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow
+```
+
+**GitHub release tarballs need no `allow` entry.** On policy-gated `github.com`, `GET`/`HEAD`
+on `/<owner>/<repo>/archive/*` and `/<owner>/<repo>/releases/download/*` are permitted for
+ANY repository (credential stripped, not swapped). A `wget https://github.com/org/tool/archive/v1.zip`
+from the guest works with `github.com` under `policy` only. The redirect target
+`codeload.github.com` is never policy-gated, so list it under `allow` if the download follows
+the redirect.
+
+**Hard rule:** never add `/graphql` under `api.github.com` paths. The GitHub GraphQL endpoint
+is a parallel write channel; the `nexus-github-token-sole-bound` MEMORY note documents why
+this matters. The MITM returns 403 for GraphQL even if listed (`service.go:971-977` backstop
+fires for unbound GitHub secrets, and the graphql backstop in the MITM layer is a separate
+guard).
+
+---
+
+## Provider patterns
+
+### GitHub (github.com / api.github.com)
+
+GitHub hosts require a path policy entry when listed in `egress.secrets`. Without one,
+`StartPerimeterOnly` / `Start` returns `ErrUnboundGitHubSecret` (`service.go:971-977`).
+
+```yaml
+egress:
+  policy:
+    - host: api.github.com
+      paths:
+        - "/repos/{owner}/{repo}"
+        - "/repos/{owner}/{repo}/**"
+        - "/user"
+    - host: github.com
+      paths:
+        - "/{owner}/{repo}/**"
+        - "/{owner}/{repo}.git/**"
+  secrets:
+    - env: GH_TOKEN
+      hosts: [github.com, api.github.com]
+```
+
+Replace `{owner}` and `{repo}` with the actual values. Keep paths scoped to the repo —
+never `/repos/**` or `/**` at root. If the workflow needs release uploads, add
+`uploads.github.com` to the `secrets.hosts` list and a matching path entry.
+
+### GitLab (gitlab.com or self-hosted)
+
+GitLab hosts are not checked by `isGitHubHost` (`service.go:972`), so no mandatory path
+policy. The path-policy feature for non-GitHub hosts is available but optional.
+
+```yaml
+egress:
+  secrets:
+    - env: GL_TOKEN
+      hosts: [gitlab.com]
+    # Self-hosted example:
+    # - env: GL_PRIVATE_TOKEN
+    #   hosts: [git.example.com]
+```
+
+If a GitLab instance uses a shared runner or package registry at a different subdomain,
+add those hostnames to the same or a separate secrets entry.
+
+### Generic API token (non-VCS)
+
+For any service that needs a bearer token brokered (package registries, internal APIs):
+
+```yaml
+egress:
+  secrets:
+    - env: NPM_TOKEN
+      hosts: [registry.npmjs.org]
+    - env: PYPI_TOKEN
+      hosts: [upload.pypi.org]
+```
+
+Short form (equivalent to the long mapping):
+```yaml
+egress:
+  secrets:
+    - "NPM_TOKEN@registry.npmjs.org"
+```
+
+No path policy requirement for non-GitHub hosts. The broker swaps the token on all requests
+to the listed hosts regardless of path.
+
+### Shared shape across providers
+
+All providers share the same model:
+1. Add the env var name and target hostnames to `egress.secrets`.
+2. For GitHub hosts: also add `egress.policy` entries with specific paths.
+3. For non-GitHub hosts: path policy is optional.
+4. The MITM proxy handles the swap; the guest always sees a placeholder.
+5. Do NOT list the same hosts in `egress.allow` — the loader rejects the file (see
+   "allow vs policy" above).
+
+---
+
+## Docker build and TLS-intercepted hosts
+
+`RUN wget/curl/git/pip/apt https://<secret-host>` inside a Dockerfile used to fail with "certificate of X is not trusted" because each container ran without the sandbox CA bundle. That symptom is now handled automatically: every `--file` (`.nexus/Containerfile`) image bakes a runc shim at `/usr/local/sbin/runc` that bind-mounts `/etc/nexus/ca/` and pre-sets `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `PIP_CERT`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, `WGETRC`, and `APT_CONFIG` into every container the guest's docker creates. No Dockerfile change is needed. See `guest-setup.md §1 → Docker build containers` for caveats (vendored trust stores, sandboxes predating this change) and diagnostics.
+
+**"403 Forbidden" after TLS succeeds** is egress policy, not a certificate problem. The MITM path ACL denied the request — add the needed path to `egress.policy` in `.nexus/config.yaml`. Do not work around it.
+
+## Verification probes
+
+Run inside the sandbox shell after sourcing credentials:
+
+```bash
+source /run/nexus/cred.env
+```
+
+(The agent process sources this automatically at launch via `launchCredSourcedArgv`. A bare
+`nexus exec` shell does NOT source it — run the `source` command above before probing.)
+
+### Probe 1 — Own-repo REST → 200 expected
+
+```bash
+curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  https://api.github.com/repos/{owner}/{repo}
+# Expected: HTTP 200
+```
+
+### Probe 2 — Cross-repo REST → 403 expected
+
+```bash
+curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  https://api.github.com/repos/some-other-org/other-repo
+# Expected: HTTP 403  (MITM path policy deny)
+```
+
+### Probe 3 — GraphQL → 403 expected
+
+```bash
+curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+  -X POST \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ viewer { login } }"}' \
+  https://api.github.com/graphql
+# Expected: HTTP 403  (GraphQL denied fail-closed)
+```
+
+### Probe 4 — Placeholder check → 64-hex expected
+
+```bash
+echo "$GH_TOKEN" | grep -E '^[0-9a-f]{64}$' \
+  && echo "PASS: placeholder" \
+  || echo "FAIL: real token exposed"
+```
+
+---
+
+## Evidence — live run (a downstream repo, 2026-09-07)
+
+```
+=== Probe 4: placeholder ===
+ae0d7a81926cda8b80764d513c4240d2cba9e5fc2be5d021013e0bd11fac9c24
+PASS: 64-hex placeholder
+
+=== Probe 1: own-repo REST ===
+HTTP 200
+
+=== Probe 2: cross-repo REST ===
+HTTP 403
+
+=== Probe 3: GraphQL ===
+HTTP 403
+```
+
+### AC-3: Failure demonstration
+
+Both arms recorded against a downstream repo (2026-09-07):
+
+**Wrong configuration — real-looking token, not a placeholder** (fails probe 4):
+```
+export GH_TOKEN=ghp_xK3mQvN8pL2rJ7wT1cF0yB9nE4uH6oI5sA
+echo "$GH_TOKEN" | grep -E '^[0-9a-f]{64}$' && echo PASS || echo 'FAIL: real token exposed'
+→  FAIL: real token exposed
+```
+
+**Correct configuration — placeholder from cred.env** (passes probe 4):
+```
+source /run/nexus/cred.env
+echo "$GH_TOKEN" | grep -E '^[0-9a-f]{64}$' && echo PASS || echo 'FAIL: real token exposed'
+→  ae0d7a81926cda8b80764d513c4240d2cba9e5fc2be5d021013e0bd11fac9c24
+→  PASS: placeholder
+```
+
+---
+
+## Statements that are easy to over-generalise
+
+- "An agent sandbox boots with default-deny egress." True for sandboxes created with
+  `nexus create` without `--egress open`. NOT true for worktree sandboxes created by the
+  herdr plugin — those get `open_egress: true` and bypass the netfilter ACL.
+
+- "The MITM proxy enforces default-deny — only listed paths are forwarded." Correct for
+  SecretHost path policies. Incorrect as a statement about the general host ACL —
+  non-secret hosts are not path-filtered at all.
+
+- "Without a path policy, `sandbox create` is refused with a hard error." Correctly describes
+  `ErrUnboundGitHubSecret` (`service.go:971-977`), but only applies to GitHub hosts in
+  `egress.secrets`. Non-GitHub hosts can be listed in secrets without a policy.
+
+- "`gh auth status` needs `/graphql` or `/` in my `egress.policy`." No — the two
+  probes it makes (`GET /` and the viewer-login `POST /graphql` query) are admitted
+  for api.github.com regardless of policy kind; every other GraphQL query is still
+  403 (see github-pr.md).

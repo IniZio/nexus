@@ -1,12 +1,12 @@
 // Package builder produces a bootable guest rootfs by driving stock buildkitd
 // via BuildKit's Go client, from an OCI base plus a repo-committed
-// .nexus/Containerfile, baking nexus3-agent as the final layer, and exporting
+// .nexus/Containerfile, baking nexus-agent as the final layer, and exporting
 // one raw ext4 artifact into the image cache keyed by SHA-256 digest.
 //
 // # Build flow
 //
 //  1. Read the project-committed .nexus/Containerfile from the workspace root.
-//  2. Verify the nexus3-agent binary exists at Config.AgentBinaryPath.
+//  2. Verify the nexus-agent binary exists at Config.AgentBinaryPath.
 //  3. Drive the buildkitd via the [BuildkitClient] seam — a narrow interface
 //     that isolates all buildkitd protocol details — producing a populated
 //     filesystem directory.
@@ -17,7 +17,7 @@
 //
 // Running builds requires a buildkitd process. The intended topology is:
 //
-//	nexus3 host boots a builder VM (images/builder/Containerfile — stock
+//	nexus host boots a builder VM (images/builder/Containerfile — stock
 //	moby/buildkit image) via the driver seam (internal/core/driver), then
 //	connects to buildkitd at the address passed in Config.BuildkitdAddr.
 //	Forwarding options: vsock relay, guest-visible TCP port, or direct
@@ -29,14 +29,14 @@
 // # Bootstrap circularity (flag — not resolved in this slice)
 //
 // The builder VM image (images/builder/Containerfile) must itself be converted
-// to a raw ext4 rootfs before nexus3 can boot it and reach buildkitd. That
+// to a raw ext4 rootfs before nexus can boot it and reach buildkitd. That
 // first-time conversion cannot use this package — circular dependency: you
 // need a running buildkitd to build a rootfs, but you need the builder rootfs
 // to boot buildkitd.
 //
 // Resolved approach from ticket 14: ship the builder rootfs as a pre-built
 // release artifact (built once out-of-band with plain docker/podman and
-// converted with "mke2fs -d"). On first run, nexus3 downloads the builder
+// converted with "mke2fs -d"). On first run, nexus downloads the builder
 // rootfs. This package is never responsible for building its own host image.
 package builder
 
@@ -46,21 +46,21 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // containerfilePath is the workspace-relative path to the project's build
 // definition. The file must exist in the workspace root before Build is called.
 const containerfilePath = ".nexus/Containerfile"
 
-// agentInstallPath is the absolute in-guest path where the nexus3-agent binary
+// agentInstallPath is the absolute in-guest path where the nexus-agent binary
 // is placed as the final layer of every built rootfs.
 //
-// Boot contract: the Linux kernel command line must include init=/sbin/nexus3-agent
+// Boot contract: the Linux kernel command line must include init=/sbin/nexus-agent
 // so that the guest kernel boots directly into the agent as PID 1.
-const agentInstallPath = "/sbin/nexus3-agent"
+const agentInstallPath = "/sbin/nexus-agent"
 
 // Config holds the configuration for a [Builder].
 type Config struct {
@@ -71,7 +71,7 @@ type Config struct {
 	//
 	// How this endpoint is provisioned at runtime:
 	//
-	//   The nexus3 host boots a builder VM (images/builder/Containerfile —
+	//   The nexus host boots a builder VM (images/builder/Containerfile —
 	//   stock moby/buildkit) via internal/core/driver, then forwards
 	//   buildkitd's gRPC socket (/run/buildkit/buildkitd.sock inside the
 	//   guest) to a host-visible address. The forwarding transport (vsock
@@ -80,8 +80,8 @@ type Config struct {
 	//   wires Builder with driver.Start and driver.GuestDialer.
 	BuildkitdAddr string
 
-	// AgentBinaryPath is the host filesystem path to the nexus3-agent binary.
-	// It is baked as /sbin/nexus3-agent (0755) as the final layer of every
+	// AgentBinaryPath is the host filesystem path to the nexus-agent binary.
+	// It is baked as /sbin/nexus-agent (0755) as the final layer of every
 	// built rootfs.
 	AgentBinaryPath string
 
@@ -102,15 +102,15 @@ type BuildRequest struct {
 	WorkspaceDir string
 
 	// Ref is the optional human-readable tag stamped on the resulting
-	// domain.Image, e.g. "nexus3-base:20260807". Informational only; not
+	// domain.Image, e.g. "nexus-base:20260807". Informational only; not
 	// used for cache lookup or equality.
 	Ref string
 
 	// ToolRecipe is the profile's declared install recipe for the agent tool.
 	// When Packages is non-empty and the project's .nexus/Containerfile does
-	// not opt out via the nexus3:recipe-skip directive, the recipe is rendered
+	// not opt out via the nexus:recipe-skip directive, the recipe is rendered
 	// into the synthesised Dockerfile between the user's instructions and the
-	// nexus3-agent COPY. A zero ToolRecipe (no Packages) is silently ignored.
+	// nexus-agent COPY. A zero ToolRecipe (no Packages) is silently ignored.
 	ToolRecipe cred.ToolRecipe
 
 	// TargetArch is the CPU architecture for which the recipe is rendered,
@@ -148,7 +148,7 @@ func newWithClient(cfg Config, client BuildkitClient, cache *image.Cache) *Build
 //  1. Read .nexus/Containerfile from req.WorkspaceDir.
 //  2. Verify the agent binary exists at cfg.AgentBinaryPath.
 //  3. Invoke [BuildkitClient.Solve] — builds from the OCI base + Containerfile,
-//     with nexus3-agent installed as /sbin/nexus3-agent in the final layer.
+//     with nexus-agent installed as /sbin/nexus-agent in the final layer.
 //  4. Export the resulting filesystem directory to a raw ext4 image, hash it,
 //     and store it in the cache via [image.Cache.Put].
 //
@@ -180,7 +180,7 @@ func (b *Builder) Build(ctx context.Context, req BuildRequest) (domain.Image, er
 	}
 
 	// 3. Invoke the BuildkitClient seam.
-	outDir, err := os.MkdirTemp("", "nexus3-builder-*")
+	outDir, err := os.MkdirTemp("", "nexus-builder-*")
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("builder: Build: create temp dir: %w", err)
 	}

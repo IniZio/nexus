@@ -5,7 +5,7 @@ package builder_test
 // builder_integration_test.go proves, end-to-end, that:
 //
 //  1. (TestImageBootsAndAgentReachable) An ext4 image produced by the builder's
-//     ext4 path boots under Cloud Hypervisor with nexus3-agent as PID-1 init,
+//     ext4 path boots under Cloud Hypervisor with nexus-agent as PID-1 init,
 //     and the guest agent is reachable over vsock.
 //
 //  2. (TestBuildkitBaseBuild) Builder.Build against images/base/Containerfile
@@ -14,7 +14,7 @@ package builder_test
 //
 // # Driver gap note (Run-4 input)
 //
-// TestImageBootsAndAgentReachable bypasses the nexus3 CHDriver because the
+// TestImageBootsAndAgentReachable bypasses the nexus CHDriver because the
 // driver's vmConfig struct has no disk/blk surface (Payload/CPUs/Memory/Serial
 // only; no Disks field). The pinned kernel DOES have virtio-blk built in
 // (confirmed via strings(1) on vmlinux-x86_64: virtio_blk.c, virtio-blk,
@@ -50,11 +50,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -114,14 +114,14 @@ func skipUnlessKernel(t *testing.T) string {
 
 // ── binary builders ───────────────────────────────────────────────────────────
 
-// buildNexus3Agent compiles cmd/nexus3-agent as a static Linux/amd64 binary
+// buildNexusAgent compiles cmd/nexus-agent as a static Linux/amd64 binary
 // and returns its path in a temp dir cleaned up when t ends.
-func buildNexus3Agent(t *testing.T) string {
+func buildNexusAgent(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "nexus3-agent")
+	bin := filepath.Join(dir, "nexus-agent")
 	cmd := exec.Command("go", "build", "-o", bin,
-		"github.com/IniZio/nexus3/cmd/nexus3-agent")
+		"github.com/IniZio/nexus/cmd/nexus-agent")
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
@@ -129,7 +129,7 @@ func buildNexus3Agent(t *testing.T) string {
 		"GOARCH=amd64",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build nexus3-agent: %s\n%v", out, err)
+		t.Fatalf("go build nexus-agent: %s\n%v", out, err)
 	}
 	return bin
 }
@@ -171,10 +171,10 @@ func main() {
 
 // ── rootfs builder ────────────────────────────────────────────────────────────
 
-// buildRootfsDir creates a minimal rootfs tree suitable for nexus3-agent as
+// buildRootfsDir creates a minimal rootfs tree suitable for nexus-agent as
 // PID-1 init. The tree contains:
 //
-//	/sbin/nexus3-agent  — the agent binary (static)
+//	/sbin/nexus-agent  — the agent binary (static)
 //	/bin/hello          — a tiny static hello binary for Exec probing
 //	/dev/               — empty; agent mounts devtmpfs here
 //	/proc/              — empty; agent mounts proc here
@@ -189,7 +189,7 @@ func buildRootfsDir(t *testing.T, agentBin, helloBin string) string {
 			t.Fatalf("mkdir rootfs/%s: %v", d, err)
 		}
 	}
-	copyExec(t, agentBin, filepath.Join(rootfs, "sbin", "nexus3-agent"))
+	copyExec(t, agentBin, filepath.Join(rootfs, "sbin", "nexus-agent"))
 	copyExec(t, helloBin, filepath.Join(rootfs, "bin", "hello"))
 	return rootfs
 }
@@ -235,7 +235,7 @@ func buildExt4(t *testing.T, srcDir string) string {
 // serial log path. The CH process is killed on test completion; serial log is
 // printed on failure.
 //
-// NOTE: This bypasses the nexus3 CHDriver (Run-4 gap: driver lacks disk/blk
+// NOTE: This bypasses the nexus CHDriver (Run-4 gap: driver lacks disk/blk
 // surface). CH CLI mode auto-boots the VM from the supplied flags.
 func bootCHWithDisk(t *testing.T, chBin, kernelPath, ext4Path string) (vsockSock, serialLog string) {
 	t.Helper()
@@ -256,7 +256,7 @@ func bootCHWithDisk(t *testing.T, chBin, kernelPath, ext4Path string) (vsockSock
 	//nolint:gosec // subprocess with controlled arguments; test-only code.
 	cmd := exec.Command(chBin,
 		"--kernel", kernelPath,
-		"--cmdline", "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0 panic=1",
+		"--cmdline", "root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0 panic=1",
 		// image_type=raw is required on CH v52+. Without it CH auto-detects
 		// the image type and disables sector-0 writes as a protection against
 		// overwriting MBR/GPT partition tables. Ext4 writes its superblock at
@@ -376,10 +376,10 @@ func (c *vsockConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 
 // TestImageBootsAndAgentReachable is the primary Run-3 proof:
 // the builder's ext4 pipeline produces a rootfs that boots under Cloud
-// Hypervisor with nexus3-agent as PID-1 init, and the guest agent answers an
+// Hypervisor with nexus-agent as PID-1 init, and the guest agent answers an
 // Exec RPC over vsock.
 //
-// DRIVER GAP (Run-4 input): The nexus3 CHDriver does not yet pass disk config
+// DRIVER GAP (Run-4 input): The nexus CHDriver does not yet pass disk config
 // to Cloud Hypervisor (vmConfig has no Disks field). This test invokes CH
 // directly with --disk to provide the end-to-end proof independently of the
 // driver gap. The gap is shallow: the kernel has virtio-blk built in, and CH
@@ -392,7 +392,7 @@ func TestImageBootsAndAgentReachable(t *testing.T) {
 		t.Skip("skipping: mke2fs not available; install e2fsprogs")
 	}
 
-	agentBin := buildNexus3Agent(t)
+	agentBin := buildNexusAgent(t)
 	helloBin := buildHelloGuestBin(t)
 
 	rootfsDir := buildRootfsDir(t, agentBin, helloBin)
@@ -449,7 +449,7 @@ func TestBuildkitBaseBuild(t *testing.T) {
 		t.Skip("skipping: mke2fs not available; install e2fsprogs")
 	}
 
-	agentBin := buildNexus3Agent(t)
+	agentBin := buildNexusAgent(t)
 	cacheDir := t.TempDir()
 	cache, err := image.NewCache(cacheDir)
 	if err != nil {

@@ -13,8 +13,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // TestGHBootGuard_AgentSeed_NoRepo_Refused verifies that UseAgentSeed + GitHub

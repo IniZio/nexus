@@ -59,7 +59,7 @@ func TestShell_TrailingCommand_Parsed(t *testing.T) {
 	ref := createTestSandbox(t, svc)
 
 	out, _, _ := capture(false)
-	// Simulate: nexus3 shell <ref> /bin/sh -c echo (after -- stripping by shellArgv).
+	// Simulate: nexus shell <ref> /bin/sh -c echo (after -- stripping by shellArgv).
 	err := runExecWithSvc(context.Background(), ref, []string{"/bin/sh", "-c", "echo"}, "", nil, out, svc)
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -79,7 +79,7 @@ func TestShell_TrailingCommand_Parsed(t *testing.T) {
 }
 
 // TestShellArgv_DashDashStripped verifies that a leading "--" in the post-ref
-// positionals is dropped, so "nexus3 shell <ref> -- /bin/sh -c echo" produces
+// positionals is dropped, so "nexus shell <ref> -- /bin/sh -c echo" produces
 // argv ["/bin/sh", "-c", "echo"] — identical to the no-"--" form.
 func TestShellArgv_DashDashStripped(t *testing.T) {
 	got := shellArgv([]string{"--", "/bin/sh", "-c", "echo"})
@@ -90,7 +90,7 @@ func TestShellArgv_DashDashStripped(t *testing.T) {
 }
 
 // TestShellArgv_NoDashDash_Unchanged verifies that without a "--" separator
-// the argv is returned as-is — "nexus3 shell <ref> /bin/sh -c echo" produces
+// the argv is returned as-is — "nexus shell <ref> /bin/sh -c echo" produces
 // argv ["/bin/sh", "-c", "echo"], identical to the "--" form.
 func TestShellArgv_NoDashDash_Unchanged(t *testing.T) {
 	got := shellArgv([]string{"/bin/sh", "-c", "echo"})

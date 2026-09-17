@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "nexus-sandbox",
+  "name": "nexus microVM sandbox",
+  "description": "Boot a nexus VM sandbox, clone the repo, and run the agent inside it.",
+  "create":  "nexus orca create",
+  "suspend": "nexus orca suspend",
+  "resume":  "nexus orca resume",
+  "destroy": "nexus orca destroy"
+}

@@ -70,7 +70,7 @@ custom `/init` injected. The injected `/init`:
 
 1. Mounts devtmpfs on `/dev`
 2. Mounts proc on `/proc`
-3. Prints `nexus3-test-vm: init reached — sleeping forever` to stdout
+3. Prints `nexus-test-vm: init reached — sleeping forever` to stdout
 4. Loops forever (never calls `poweroff` or `reboot` — that would drive
    the VM to `"Shutdown"`, which the driver maps to `driver.Unknown` and
    would break the pause/resume lifecycle test)
@@ -79,7 +79,7 @@ custom `/init` injected. The injected `/init`:
 with `Cmdline: "console=ttyS0 panic=1"` and `SerialOutputPath` set.
 The test asserts the serial log contains the kernel marker
 `"Run /init as init process"` and the userspace marker
-`"nexus3-test-vm: init reached"`.
+`"nexus-test-vm: init reached"`.
 
 **Empirically verified 2026-08-05**: both markers appear within ~600 ms
 of the VM entering `Running` state on the test host.

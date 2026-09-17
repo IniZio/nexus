@@ -7,7 +7,7 @@ import (
 
 // TestReadCAOutcome_UnknownOnEveryUnreadableShape is the fail-honest guard.
 // Absent, empty, garbage, and a value from some future build must all read as
-// UNKNOWN. If any of them read as CAOutcomeRecovered, `nexus3 recover` would
+// UNKNOWN. If any of them read as CAOutcomeRecovered, `nexus recover` would
 // tell an operator that in-guest TLS survived on the strength of a file that
 // says nothing of the kind.
 func TestReadCAOutcome_UnknownOnEveryUnreadableShape(t *testing.T) {
@@ -69,7 +69,7 @@ func TestClearCAOutcome_RemovesPreviousRun(t *testing.T) {
 // (ReacquireResult.CALost, which RunReacquire sets from reacquireSeedInput).
 //
 // This is the link that carries the answer out of the detached supervisor and
-// into `nexus3 recover`. Inverting the mapping here — recording Lost when the
+// into `nexus recover`. Inverting the mapping here — recording Lost when the
 // CA was in fact recovered — reproduces the live-proven defect, so this test
 // must fail if it is.
 func TestRecordReacquireCAOutcome_MatchesTheSeedDecision(t *testing.T) {

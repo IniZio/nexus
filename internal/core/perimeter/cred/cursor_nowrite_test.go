@@ -1,9 +1,9 @@
 package cred
 
-// Automated regressions for AC-4 (S18): nexus3 never writes to the operator's
+// Automated regressions for AC-4 (S18): nexus never writes to the operator's
 // cursor credential file.
 //
-// The invariant (D-MAC-01 as amended 2026-09-05): nexus3 may READ
+// The invariant (D-MAC-01 as amended 2026-09-05): nexus may READ
 // ~/.config/cursor/auth.json for static, non-rotating agents but must NEVER
 // write, rename, truncate, or take a refresh grant against it.
 //

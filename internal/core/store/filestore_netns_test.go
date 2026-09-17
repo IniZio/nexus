@@ -18,8 +18,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func TestNetnsFieldsRoundTrip(t *testing.T) {
@@ -42,7 +42,7 @@ func TestNetnsFieldsRoundTrip(t *testing.T) {
 	wantPGID := 12345
 	wantStartTime := uint64(9876543210)
 	wantTap := "tap0-abc123"
-	wantSock := "/run/nexus3/netns-rt/ch.sock"
+	wantSock := "/run/nexus/netns-rt/ch.sock"
 
 	if err := st.Update(ctx, sb.ID, func(rec *domain.Sandbox) error {
 		rec.NetnsChildPID = wantPID

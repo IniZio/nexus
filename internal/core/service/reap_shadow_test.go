@@ -3,7 +3,7 @@ package service_test
 // Tests for shadow disk enumeration and classification (spec §4.4).
 //
 // Requirement traceability:
-//   B7-AC1: nexus3 reap reports shadow disks with allocated bytes.
+//   B7-AC1: nexus reap reports shadow disks with allocated bytes.
 //   B7-AC2: Legacy-format shadow disks classify as orphan unconditionally.
 //   B7-AC3: B1-format shadow disks classify as orphan when handle matches
 //           no live sandbox; owned when the handle matches a live sandbox.
@@ -16,9 +16,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────

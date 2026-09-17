@@ -30,7 +30,7 @@ HERDR_VER="` + herdrVer + `"
 if [ -n "$HERDR_VER" ]; then
     LOWEST="$(printf '%s\n%s\n' "$MIN_HERDR" "$HERDR_VER" | sort -V | head -1)"
     if [ "$LOWEST" != "$MIN_HERDR" ]; then
-        echo "nexus3: error: herdr ${HERDR_VER} < ${MIN_HERDR}: upgrade herdr first" >&2
+        echo "nexus: error: herdr ${HERDR_VER} < ${MIN_HERDR}: upgrade herdr first" >&2
         exit 1
     fi
 fi

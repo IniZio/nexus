@@ -1,4 +1,4 @@
-// Package driver defines the substrate seam: the boundary between nexus3's
+// Package driver defines the substrate seam: the boundary between nexus's
 // core and whatever actually runs a VM.
 //
 // Two real substrates are planned — Cloud Hypervisor on Linux and Apple's
@@ -24,7 +24,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // RunState is the actual execution state of a VM as reported by the
@@ -97,7 +97,7 @@ type StartRequest struct {
 	ImageDigest string
 }
 
-// Driver is the substrate seam: the boundary between nexus3's core and
+// Driver is the substrate seam: the boundary between nexus's core and
 // whatever actually runs a VM.
 //
 // The driver is authoritative over the stored record. Where a live VM
@@ -111,10 +111,10 @@ type StartRequest struct {
 //
 // # Reentrancy prohibition — self-deadlock hazard
 //
-// Driver methods are called while the nexus3 core holds the per-sandbox
+// Driver methods are called while the nexus core holds the per-sandbox
 // exclusive flock (store.Update acquires LOCK_EX and calls the substrate
 // method inside the callback). Implementations MUST NOT call back into any
-// nexus3 store method — store.Update, store.Delete, store.SetRemovalMarker,
+// nexus store method — store.Update, store.Delete, store.SetRemovalMarker,
 // store.ClearRemovalMarker, or any other method that acquires that flock —
 // because the flock is non-recursive: a second attempt from the same process
 // to acquire a lock it already holds will deadlock, spinning forever while
@@ -126,7 +126,7 @@ type StartRequest struct {
 //
 // This is safe today only because no production code constructs a Recoverer
 // and no real driver exists — cmd_recover.go refuses with "no substrate
-// configured". Wiring a real Cloud Hypervisor or nexus3-vzd driver arms this
+// configured". Wiring a real Cloud Hypervisor or nexus-vzd driver arms this
 // hazard immediately. See motive.md for the recorded deferral.
 type Driver interface {
 	// Name returns a human-readable identifier for the substrate, used in

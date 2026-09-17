@@ -1,5 +1,5 @@
 // mount_flag.go — the SINGLE SOURCE OF TRUTH for encoding a domain.LiveMount
-// as a `nexus3 __supervisor --mount` argument and decoding it back.
+// as a `nexus __supervisor --mount` argument and decoding it back.
 //
 // The supervisor is spawned as a detached process whose entire configuration
 // travels as argv (see BuildSupervisorArgv / parseSupervisorFlags). Encoding
@@ -14,11 +14,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // EncodeLiveMount renders lm as "<host-path>:<guest-path>[:ro]", the same spec
-// shape the user types for `nexus3 create --mount`.
+// shape the user types for `nexus create --mount`.
 func EncodeLiveMount(lm domain.LiveMount) string {
 	spec := lm.HostPath + ":" + lm.GuestPath
 	if lm.ReadOnly {

@@ -1,7 +1,7 @@
 {
-  "name": "nexus3-docs",
+  "name": "nexus-docs",
   "private": true,
-  "description": "Documentation site for nexus3. Scoped to docs/site so the Go repo root stays free of a JS toolchain.",
+  "description": "Documentation site for nexus. Scoped to docs/site so the Go repo root stays free of a JS toolchain.",
   "scripts": {
     "dev": "vitepress dev",
     "build": "vitepress build",

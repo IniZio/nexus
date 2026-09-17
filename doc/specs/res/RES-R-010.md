@@ -1,14 +1,14 @@
 ---
 id: RES-R-010
 concept: C-RES
-summary: "nexus3 reap is liveness-gated: never deletes a resource owned by a sandbox with a live process, open handle, or fresh lease; ambiguity resolves to keep."
+summary: "nexus reap is liveness-gated: never deletes a resource owned by a sandbox with a live process, open handle, or fresh lease; ambiguity resolves to keep."
 criticality: must
 verification: manual
 status: active
 trace: D-HSH-24, AC-7a, AC-7b
 ---
 
-`nexus3 reap` **shall** be liveness-gated: it must never delete a resource — disk slot, state directory, volume, named lock — that is owned by a sandbox whose supervisor process is alive, whose netns child is alive, or that holds an unexpired resource lease. When liveness cannot be determined, the ambiguity resolves to keep.
+`nexus reap` **shall** be liveness-gated: it must never delete a resource — disk slot, state directory, volume, named lock — that is owned by a sandbox whose supervisor process is alive, whose netns child is alive, or that holds an unexpired resource lease. When liveness cannot be determined, the ambiguity resolves to keep.
 
 The builder cache-disk slot lease is the concrete resource this requirement addresses in the hot-swap motive (D-HSH-24). The slot flock must be held by the **supervisor** process, not the launching CLI, so the flock expires with the VM rather than with the CLI. A reap that runs while the supervisor is alive must see the slot as busy and leave it alone.
 

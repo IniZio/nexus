@@ -7,7 +7,7 @@ import (
 
 // The documented form of both `exec` and `run` is
 //
-//	nexus3 exec <ref> -- <command> [args...]
+//	nexus exec <ref> -- <command> [args...]
 //
 // and it did not work: flag.Parse stops at the first positional, so "--" was
 // never consumed and became the executable name inside the guest —
@@ -35,14 +35,14 @@ func TestStripArgvSeparator(t *testing.T) {
 			want: []string{},
 		},
 		{
-			// `nexus3 exec box -- git log --` must reach git intact. A later
+			// `nexus exec box -- git log --` must reach git intact. A later
 			// separator is the guest command's, not ours.
 			name: "trailing separator belongs to the guest command",
 			in:   []string{"--", "git", "log", "--"},
 			want: []string{"git", "log", "--"},
 		},
 		{
-			// `nexus3 exec box -- -- weird` — only ONE is ours. Stripping both
+			// `nexus exec box -- -- weird` — only ONE is ours. Stripping both
 			// would silently rewrite the operator's command.
 			name: "only the first separator is stripped",
 			in:   []string{"--", "--", "weird"},

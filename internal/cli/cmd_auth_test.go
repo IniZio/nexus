@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // ── fixture helpers ───────────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ func TestAuthLogin_UnknownAgent_Error(t *testing.T) {
 // AC-1, AC-2, AC-6 (RED probe).
 func TestAuthLoginCursor_WritesNothing(t *testing.T) {
 	claudeStore := filepath.Join(t.TempDir(), "creds.json")
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", claudeStore)
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", claudeStore)
 
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
@@ -253,7 +253,7 @@ func TestAuthLoginCursor_WritesNothing(t *testing.T) {
 func TestAuthLoginCursor_MissingFile(t *testing.T) {
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", filepath.Join(t.TempDir(), "creds.json"))
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", filepath.Join(t.TempDir(), "creds.json"))
 
 	out, _, _ := capture(false)
 	err := runAuthLogin(context.Background(), []string{"--agent", "cursor"}, out)
@@ -269,7 +269,7 @@ func TestAuthLoginCursor_MissingFile(t *testing.T) {
 func TestAuthLoginCursor_ReportsExpiry(t *testing.T) {
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", filepath.Join(t.TempDir(), "creds.json"))
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", filepath.Join(t.TempDir(), "creds.json"))
 
 	exp := time.Now().Add(48 * time.Hour).Unix()
 	token := buildTestJWT(t, exp)
@@ -296,7 +296,7 @@ func TestAuthLoginCursor_ReportsExpiry(t *testing.T) {
 func TestAuthLoginCursor_NoTokenInOutput(t *testing.T) {
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", filepath.Join(t.TempDir(), "creds.json"))
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", filepath.Join(t.TempDir(), "creds.json"))
 
 	const sentinel = "SENTINEL-CURSOR-TOKEN-MUST-NOT-APPEAR-IN-OUTPUT"
 	writeCursorAuthFixture(t, filepath.Join(xdgHome, "cursor", "auth.json"), sentinel)
@@ -321,7 +321,7 @@ func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", filepath.Join(home, "creds.json"))
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", filepath.Join(home, "creds.json"))
 
 	fromDir := t.TempDir()
 	fromPath := filepath.Join(fromDir, "agent-creds.json")
@@ -350,7 +350,7 @@ func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 	}
 	t.Cleanup(unregisterProfile)
 
-	agentCredsDir := filepath.Join(home, ".config", "nexus3", "agent-creds")
+	agentCredsDir := filepath.Join(home, ".config", "nexus", "agent-creds")
 	if err := os.MkdirAll(agentCredsDir, 0o700); err != nil {
 		t.Fatalf("create agent-creds dir: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestAuthLoginImport_ProfileDriven_MutationProof(t *testing.T) {
 		t.Fatalf("runAuthLogin --agent s20-synthetic-agent: %v", err)
 	}
 
-	syntheticDest := filepath.Join(home, ".config", "nexus3", "agent-creds", "s20-synthetic-agent.json")
+	syntheticDest := filepath.Join(home, ".config", "nexus", "agent-creds", "s20-synthetic-agent.json")
 	store, err := cred.LoadStore(syntheticDest)
 	if err != nil {
 		t.Fatalf("LoadStore after import: %v", err)

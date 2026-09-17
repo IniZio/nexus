@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // ExecOptions groups the per-execution parameters passed to RunEphemeral.

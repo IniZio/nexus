@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/portfwd"
 )
 
 type fakeGuestExecer struct {
@@ -441,7 +441,7 @@ func TestMakePortForwardReporter_DialsSessionSocket(t *testing.T) {
 	stateBase := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateBase)
 
-	storeRoot := filepath.Join(stateBase, "nexus3")
+	storeRoot := filepath.Join(stateBase, "nexus")
 	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}

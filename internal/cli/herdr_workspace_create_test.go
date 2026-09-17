@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // fakeHerdrExec installs a fake herdrExecCommandContext for the duration of
@@ -57,12 +57,12 @@ func fakeWorkspaceCreateCmd(workspaceID, rootPaneID string) *exec.Cmd {
 //
 //	{"id":"cli:plugin","result":{"plugin_pane":{"entrypoint":"shell",
 //	  "pane":{"pane_id":"w1V:p2","tab_id":"w1V:t1","workspace_id":"w1V",
-//	          "label":"nexus3 guest shell"},"plugin_id":"nexus3"},
+//	          "label":"nexus guest shell"},"plugin_id":"nexus"},
 //	  "type":"plugin_pane_opened"}}
 func fakePaneOpenCmd(paneID string) *exec.Cmd {
 	body := fmt.Sprintf(`{"id":"cli:plugin","result":{"plugin_pane":{"entrypoint":"shell",`+
-		`"pane":{"pane_id":%q,"tab_id":"w1V:t1","workspace_id":"w1V","label":"nexus3 guest shell"},`+
-		`"plugin_id":"nexus3"},"type":"plugin_pane_opened"}}`, paneID)
+		`"pane":{"pane_id":%q,"tab_id":"w1V:t1","workspace_id":"w1V","label":"nexus guest shell"},`+
+		`"plugin_id":"nexus"},"type":"plugin_pane_opened"}}`, paneID)
 	return exec.Command("printf", "%s", body)
 }
 
@@ -92,7 +92,7 @@ func TestHerdrWorkspaceCreate_PassesCwdFlagWhenKnown(t *testing.T) {
 		return fakeWorkspaceCreateCmd("wF", "p1")
 	})
 
-	wsID, rootPaneID, err := herdrWorkspaceCreate(context.Background(), "/fake/herdr", "nexus3:proj/x", "/home/me/proj-x")
+	wsID, rootPaneID, err := herdrWorkspaceCreate(context.Background(), "/fake/herdr", "nexus:proj/x", "/home/me/proj-x")
 	if err != nil {
 		t.Fatalf("herdrWorkspaceCreate: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestHerdrWorkspaceCreate_OmitsCwdFlagWhenUnknown(t *testing.T) {
 		return fakeWorkspaceCreateCmd("wQ", "p9")
 	})
 
-	if _, _, err := herdrWorkspaceCreate(context.Background(), "/fake/herdr", "nexus3:proj/x", ""); err != nil {
+	if _, _, err := herdrWorkspaceCreate(context.Background(), "/fake/herdr", "nexus:proj/x", ""); err != nil {
 		t.Fatalf("herdrWorkspaceCreate: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestHerdrWorkspaceCreate_PlainTextFallbackHasNoRootPaneID(t *testing.T) {
 		return exec.Command("printf", "%s", "wPlain")
 	})
 
-	wsID, rootPaneID, err := herdrWorkspaceCreate(context.Background(), "/fake/herdr", "nexus3:proj/x", "")
+	wsID, rootPaneID, err := herdrWorkspaceCreate(context.Background(), "/fake/herdr", "nexus:proj/x", "")
 	if err != nil {
 		t.Fatalf("herdrWorkspaceCreate: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestHerdrOpenGuestShellPane_FallsBackToWorkspaceWhenNoRootPaneID(t *testing
 func TestHerdrOpenGuestShellPane_ParsesRealisticEnvelope(t *testing.T) {
 	envelope := `{"id":"cli:plugin","result":{"plugin_pane":{"entrypoint":"shell",` +
 		`"pane":{"pane_id":"w1V:p2","tab_id":"w1V:t1","workspace_id":"w1V",` +
-		`"label":"nexus3 guest shell"},"plugin_id":"nexus3"},"type":"plugin_pane_opened"}}`
+		`"label":"nexus guest shell"},"plugin_id":"nexus"},"type":"plugin_pane_opened"}}`
 
 	fakeHerdrExec(t, &[][]string{}, func(args []string) *exec.Cmd {
 		return exec.Command("printf", "%s", envelope)
@@ -343,7 +343,7 @@ func TestHerdrSpaceBinding_GuestPaneIDRoundTrips(t *testing.T) {
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/x", HerdrWorkspaceID: "wF",
+		SpaceLabel: "nexus:proj/x", HerdrWorkspaceID: "wF",
 		SandboxHandle: "proj/x", SandboxID: "sb-x", GuestPaneID: "w1V:p2",
 	}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
@@ -371,7 +371,7 @@ func TestHerdrSpaceBinding_OldBindingWithoutPaneIDFieldStillLoads(t *testing.T) 
 	// all, simulating a file written by a pre-J1 binary.
 	oldJSON := `[
 		{
-			"space_label": "nexus3:proj/old",
+			"space_label": "nexus:proj/old",
 			"herdr_workspace_id": "wOld",
 			"sandbox_handle": "proj/old",
 			"sandbox_id": "sb-old"
@@ -384,7 +384,7 @@ func TestHerdrSpaceBinding_OldBindingWithoutPaneIDFieldStillLoads(t *testing.T) 
 		t.Fatalf("write old-shape bindings file: %v", err)
 	}
 
-	got, err := HerdrSpaceGetByLabel(ctx, root, "nexus3:proj/old")
+	got, err := HerdrSpaceGetByLabel(ctx, root, "nexus:proj/old")
 	if err != nil {
 		t.Fatalf("old binding failed to load: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestHerdrPluginSpaceList_ShowsPaneID(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/x", HerdrWorkspaceID: "wF",
+		SpaceLabel: "nexus:proj/x", HerdrWorkspaceID: "wF",
 		SandboxHandle: "proj/x", SandboxID: "sb-x", GuestPaneID: "w1V:p2",
 	}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
@@ -539,7 +539,7 @@ func TestHerdrPluginSpaceOpenPane_ReusedWorkspaceOpensPaneWithoutCreating(t *tes
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/z", HerdrWorkspaceID: "wExisting",
+		SpaceLabel: "nexus:proj/z", HerdrWorkspaceID: "wExisting",
 		SandboxHandle: "proj/z", SandboxID: "sb-z",
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
@@ -582,7 +582,7 @@ func TestHerdrPluginSpaceOpenPane_ReusedWorkspaceOpensPaneWithoutCreating(t *tes
 		t.Error("plugin pane open was never called")
 	}
 
-	got, err := HerdrSpaceGetByLabel(ctx, storeRoot, "nexus3:proj/z")
+	got, err := HerdrSpaceGetByLabel(ctx, storeRoot, "nexus:proj/z")
 	if err != nil {
 		t.Fatalf("binding not found: %v", err)
 	}
@@ -683,7 +683,7 @@ func TestHerdrPluginSpaceOpenPane_DoesNotCloseRootPaneIfGuestPaneOpenFails(t *te
 
 // TestHerdrPluginSpaceOpenPane_CloseRootPaneFailureDoesNotFailSpaceCreate
 // pins the failure policy: a pane-close failure is cosmetic. The sandbox is
-// fully operational; herdr is a terminal multiplexer and nexus3 is a VM
+// fully operational; herdr is a terminal multiplexer and nexus is a VM
 // manager — a herdr problem must not break a working sandbox.
 func TestHerdrPluginSpaceOpenPane_CloseRootPaneFailureDoesNotFailSpaceCreate(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
@@ -775,7 +775,7 @@ func TestHerdrPluginSpaceCreate_StaleBindingMints(t *testing.T) {
 
 	// Pre-write a binding whose workspace is gone.
 	staleBinding := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/stale", HerdrWorkspaceID: "wStale",
+		SpaceLabel: "nexus:proj/stale", HerdrWorkspaceID: "wStale",
 		SandboxHandle: "proj/stale", SandboxID: sb.ID.String(),
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, staleBinding); err != nil {
@@ -811,7 +811,7 @@ func TestHerdrPluginSpaceCreate_StaleBindingMints(t *testing.T) {
 	}
 
 	// Binding must be updated to the new workspace, not left pointing at the stale one.
-	got, err := HerdrSpaceGetByLabel(ctx, storeRoot, "nexus3:proj/stale")
+	got, err := HerdrSpaceGetByLabel(ctx, storeRoot, "nexus:proj/stale")
 	if err != nil {
 		t.Fatalf("GetByLabel after mint: %v", err)
 	}
@@ -845,7 +845,7 @@ func TestHerdrPluginSpaceCreate_LiveBindingReuses(t *testing.T) {
 	svc := &fakeSpaceCreateSvc{sb: sb}
 
 	liveBinding := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/live", HerdrWorkspaceID: "wLive",
+		SpaceLabel: "nexus:proj/live", HerdrWorkspaceID: "wLive",
 		SandboxHandle: "proj/live", SandboxID: sb.ID.String(),
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, liveBinding); err != nil {
@@ -894,7 +894,7 @@ func TestHerdrPluginSpaceCreate_HerdrUnreachableReuses(t *testing.T) {
 	svc := &fakeSpaceCreateSvc{sb: sb}
 
 	binding := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/outage", HerdrWorkspaceID: "wExisting",
+		SpaceLabel: "nexus:proj/outage", HerdrWorkspaceID: "wExisting",
 		SandboxHandle: "proj/outage", SandboxID: sb.ID.String(),
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
@@ -943,7 +943,7 @@ func TestHerdrPluginSpaceCreate_MalformedWorkspaceListReuses(t *testing.T) {
 	svc := &fakeSpaceCreateSvc{sb: sb}
 
 	binding := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/malformed", HerdrWorkspaceID: "wExisting",
+		SpaceLabel: "nexus:proj/malformed", HerdrWorkspaceID: "wExisting",
 		SandboxHandle: "proj/malformed", SandboxID: sb.ID.String(),
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
@@ -1084,7 +1084,7 @@ func TestHerdrPluginSpaceCreate_DoesNotCloseRootPaneIfGuestPaneOpenFails(t *test
 
 // TestHerdrPluginSpaceCreate_CloseRootPaneFailureDoesNotFailSpaceCreate
 // pins the failure policy: a pane-close failure is cosmetic. The sandbox is
-// fully operational; herdr is a terminal multiplexer and nexus3 is a VM
+// fully operational; herdr is a terminal multiplexer and nexus is a VM
 // manager — a herdr problem must not break a working sandbox.
 func TestHerdrPluginSpaceCreate_CloseRootPaneFailureDoesNotFailSpaceCreate(t *testing.T) {
 	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
@@ -1169,7 +1169,7 @@ func TestHerdrPluginSpaceCreate_LivePane_NoNewPaneOpened(t *testing.T) {
 
 	const existingPaneID = "wLP:p1"
 	binding := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/livepane", HerdrWorkspaceID: "wLP",
+		SpaceLabel: "nexus:proj/livepane", HerdrWorkspaceID: "wLP",
 		SandboxHandle: "proj/livepane", SandboxID: sb.ID.String(),
 		GuestPaneID: existingPaneID,
 	}
@@ -1235,7 +1235,7 @@ func TestHerdrPluginSpaceCreate_GonePane_NewPaneOpened(t *testing.T) {
 	const stalePane = "wGP:stale"
 	const newPane = "wGP:fresh"
 	binding := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/gonepane", HerdrWorkspaceID: "wGP",
+		SpaceLabel: "nexus:proj/gonepane", HerdrWorkspaceID: "wGP",
 		SandboxHandle: "proj/gonepane", SandboxID: sb.ID.String(),
 		GuestPaneID: stalePane,
 	}
@@ -1299,7 +1299,7 @@ func TestHerdrPluginSpaceCreate_EmptyGuestPaneID_NewPaneOpened(t *testing.T) {
 
 	// Binding with no GuestPaneID (the common case before J1 shipped).
 	binding := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/nopane", HerdrWorkspaceID: "wNP",
+		SpaceLabel: "nexus:proj/nopane", HerdrWorkspaceID: "wNP",
 		SandboxHandle: "proj/nopane", SandboxID: sb.ID.String(),
 		// GuestPaneID intentionally empty
 	}
@@ -1350,7 +1350,7 @@ func TestHerdrPluginSpaceCreate_PaneListError_FailSafeOpensNewPane(t *testing.T)
 
 	const stalePane = "wPE:old"
 	binding := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:proj/paneerr", HerdrWorkspaceID: "wPE",
+		SpaceLabel: "nexus:proj/paneerr", HerdrWorkspaceID: "wPE",
 		SandboxHandle: "proj/paneerr", SandboxID: sb.ID.String(),
 		GuestPaneID: stalePane,
 	}

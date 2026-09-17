@@ -12,17 +12,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/statedir"
+	"github.com/IniZio/nexus/internal/core/statedir"
 )
 
 // SpawnConfig carries the parameters for spawning a detached supervisor.
-// It maps 1:1 with the flags accepted by `nexus3 __supervisor`.
+// It maps 1:1 with the flags accepted by `nexus __supervisor`.
 type SpawnConfig struct {
 	// Config is the supervisor configuration forwarded verbatim to the
 	// subprocess as command-line flags.
 	Config
 
-	// Exe is the absolute path to the nexus3 binary to re-exec.
+	// Exe is the absolute path to the nexus binary to re-exec.
 	// Defaults to os.Executable() when empty.
 	Exe string
 
@@ -35,7 +35,7 @@ type SpawnConfig struct {
 	ReadyTimeout time.Duration
 
 	// AdoptHandoffSock, when non-empty, spawns the subprocess in adopt mode
-	// (nexus3 __supervisor --adopt-handoff-sock <path>) instead of boot mode.
+	// (nexus __supervisor --adopt-handoff-sock <path>) instead of boot mode.
 	// See [SpawnAdoptDetached], which is the entry point that waits for the
 	// adopt-mode readiness signal (the handoff socket appearing) rather than
 	// for supervisor.pid — the pidfile is written much later in adopt mode,
@@ -52,7 +52,7 @@ type SpawnConfig struct {
 	CacheDiskLeaseFiles []*os.File
 
 	// Reacquire, when true, spawns the subprocess in RE-ACQUIRE mode
-	// (nexus3 __supervisor --reacquire) instead of boot mode: it never boots
+	// (nexus __supervisor --reacquire) instead of boot mode: it never boots
 	// a VM, and instead rebuilds the perimeter for an already-running VM
 	// through the surviving netns child's control socket. See
 	// [RunReacquire] and [SpawnReacquireDetached].
@@ -63,7 +63,7 @@ type SpawnConfig struct {
 	Reacquire bool
 }
 
-// BuildSupervisorArgv constructs the argv slice for `nexus3 __supervisor`
+// BuildSupervisorArgv constructs the argv slice for `nexus __supervisor`
 // from cfg. Extracted from SpawnDetached for unit-testability: callers can
 // verify that a realistic SpawnConfig produces the expected flags without
 // actually forking a subprocess.
@@ -451,7 +451,7 @@ const terminateSupervisorGrace = 10 * time.Second
 // (supervisor.go:212) and its shutdown path calls svc.Remove/svc.Stop, which
 // stops the VM through the driver. SIGKILL remains as the last resort for a
 // supervisor wedged before it installed that handler — in which case the VM is
-// orphaned as before, and only `nexus3 reap` can reclaim it (TBD-PD-30).
+// orphaned as before, and only `nexus reap` can reclaim it (TBD-PD-30).
 func terminateSupervisor(pid int, exited <-chan struct{}, grace time.Duration) {
 	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
 		return // already gone

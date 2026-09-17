@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vmcfg"
 )
 
 func init() {
@@ -24,7 +24,7 @@ func init() {
 	})
 }
 
-// runRun implements `nexus3 run [flags] <image-ref> -- <command> [args...]`.
+// runRun implements `nexus run [flags] <image-ref> -- <command> [args...]`.
 //
 // Flags:
 //
@@ -105,15 +105,15 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		PID1Args:     ar.PID1Args,
 	}, nil)
 
-	// Locate the nexus3-agent binary to inject into OCI images on a cache miss.
+	// Locate the nexus-agent binary to inject into OCI images on a cache miss.
 	// D2: a present-but-unreadable binary must surface a clear error rather than
 	// silently passing a nil slice (which produces a misleading "no agent binary"
 	// error downstream on a cache miss).
 	var agentBytes []byte
-	if agentBin, lookErr := exec.LookPath("nexus3-agent"); lookErr == nil {
+	if agentBin, lookErr := exec.LookPath("nexus-agent"); lookErr == nil {
 		agentBytes, err = os.ReadFile(agentBin)
 		if err != nil {
-			return errSandbox("run", fmt.Errorf("found nexus3-agent but cannot read %s: %w", agentBin, err))
+			return errSandbox("run", fmt.Errorf("found nexus-agent but cannot read %s: %w", agentBin, err))
 		}
 	}
 

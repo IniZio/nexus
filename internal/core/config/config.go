@@ -1,4 +1,4 @@
-// Package config loads and represents per-repository nexus3 configuration
+// Package config loads and represents per-repository nexus configuration
 // from a .nexus/config.yaml file found by walking up from a start directory.
 //
 // Discovery: Load walks from startDir toward the filesystem root, stopping
@@ -294,8 +294,8 @@ type SandboxConfig struct {
 	// given at sandbox create time. Must be a registered cred.AgentProfile name
 	// (e.g. "claude-code"). Empty (the default) means no agent by default.
 	//
-	// User-global location: $XDG_CONFIG_HOME/nexus3/config.yaml
-	// (falls back to ~/.config/nexus3/config.yaml).
+	// User-global location: $XDG_CONFIG_HOME/nexus/config.yaml
+	// (falls back to ~/.config/nexus/config.yaml).
 	//
 	// Example:
 	//   version: 1
@@ -340,7 +340,7 @@ type SandboxConfig struct {
 // ImageGCConfig holds image garbage collection settings.
 type ImageGCConfig struct {
 	// FreeSpaceFloorGiB is the minimum free disk space (in GiB) required on
-	// the filesystem backing ~/.local/state/nexus3 before a build starts.
+	// the filesystem backing ~/.local/state/nexus before a build starts.
 	// When free space falls below this floor, automatic GC runs first.
 	// Zero means "use the built-in default" (DefaultGCFreeSpaceFloorGiB = 15 GiB).
 	FreeSpaceFloorGiB int `yaml:"free_space_floor_gib"`
@@ -467,15 +467,15 @@ func parse(data []byte) (Config, error) {
 	}
 	if fc.Version == nil {
 		return Config{}, fmt.Errorf(
-			"nexus3 config: missing required field \"version\" — add `version: %d` as the first line",
+			"nexus config: missing required field \"version\" — add `version: %d` as the first line",
 			SupportedVersion,
 		)
 	}
 	v := *fc.Version
 	if v < MinSupportedVersion || v > SupportedVersion {
 		return Config{}, fmt.Errorf(
-			"nexus3 config declares version %d; this nexus3 supports versions %d–%d — "+
-				"upgrade nexus3 if the file is newer, or re-create the file if it is older",
+			"nexus config declares version %d; this nexus supports versions %d–%d — "+
+				"upgrade nexus if the file is newer, or re-create the file if it is older",
 			v, MinSupportedVersion, SupportedVersion,
 		)
 	}
@@ -512,7 +512,7 @@ func validateEgressHostOverlap(eg EgressConfig) error {
 	for _, h := range eg.Allow {
 		if where, ok := gated[strings.ToLower(h)]; ok {
 			return fmt.Errorf(
-				"nexus3 config: host %q is listed under egress.allow and %s; "+
+				"nexus config: host %q is listed under egress.allow and %s; "+
 					"a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow",
 				h, where,
 			)

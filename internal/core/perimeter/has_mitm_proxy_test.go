@@ -4,7 +4,7 @@ package perimeter
 // as the handoff's "CA material is mandatory" predicate: it is true whenever a
 // proxy exists, INCLUDING when that proxy's CA cannot be encoded.
 //
-// The trap this guards (motive nexus3-host-supervisor-hotswap, ticket 14):
+// The trap this guards (motive nexus-host-supervisor-hotswap, ticket 14):
 // PerimeterSupervisor.CAKeyPair returns a non-nil error in three distinct
 // situations, and only ONE of them means "no MITM proxy":
 //
@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
 )
 
 // rsaCAPEM mints a self-signed CA whose private key is *rsa.PrivateKey, not
@@ -42,7 +42,7 @@ func rsaCAPEM(t *testing.T) (certPEM, keyPEM []byte) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "nexus3 test rsa CA"},
+		Subject:               pkix.Name{CommonName: "nexus test rsa CA"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,

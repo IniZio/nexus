@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ErrNoKernelConfigured is returned by Start when Config.KernelPath is empty.
@@ -33,7 +33,7 @@ const maxSocketPathLen = 107
 // Default kernel cmdlines by boot mode.
 const (
 	defaultCmdline  = "console=ttyS0"
-	diskBootCmdline = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0"
+	diskBootCmdline = "root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0"
 
 	// memHotplugCmdline is appended to the guest cmdline when a virtio-mem
 	// hotplug region is reserved (Config.MemoryMaxMiB > Config.MemoryMiB).
@@ -44,7 +44,7 @@ const (
 	//   memory_hotplug.online_policy=auto-movable: zone blocks as MOVABLE so
 	//     they can be migrated back out during shrink (Leg 7 shrink path).
 	// CONFIG_MEMORY_HOTPLUG_DEFAULT_ONLINE is deliberately absent from the
-	// nexus3 kernel config (scripts/kernel/config-6.12.76:895) — the cmdline
+	// nexus kernel config (scripts/kernel/config-6.12.76:895) — the cmdline
 	// override provides per-sandbox control without baking it into the image.
 	memHotplugCmdline = " memhp_default_state=online memory_hotplug.online_policy=auto-movable"
 )
@@ -82,7 +82,7 @@ func buildCmdline(base string, memoryMaxMiB uint32) string {
 // overhead on every sandbox; gating on LiveMounts keeps the blast radius small.
 //
 // hugepages is NOT used: it requires host-level huge page pre-allocation and
-// is an operator/system decision outside nexus3's scope.
+// is an operator/system decision outside nexus's scope.
 func buildMemoryConfig(cfg Config, memMiB uint64) *vmMemoryConfig {
 	mc := &vmMemoryConfig{
 		SizeBytes: memMiB * 1024 * 1024,
@@ -108,7 +108,7 @@ type Config struct {
 	// SocketDir is the directory under which per-sandbox API sockets are
 	// created. Each socket is named "<sandboxID>.sock".
 	//
-	// Defaults to $XDG_RUNTIME_DIR/nexus3, or /tmp/nexus3-<uid> if
+	// Defaults to $XDG_RUNTIME_DIR/nexus, or /tmp/nexus-<uid> if
 	// XDG_RUNTIME_DIR is unset.
 	//
 	// If the requested directory is too long for the Linux sun_path limit
@@ -140,9 +140,9 @@ type Config struct {
 	// When DiskImagePath is set and Cmdline is empty the driver substitutes
 	// the disk-boot default cmdline:
 	//
-	//	root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0
+	//	root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0
 	//
-	// The raw ext4 image must contain /sbin/nexus3-agent as its init process.
+	// The raw ext4 image must contain /sbin/nexus-agent as its init process.
 	// image_type=raw is passed to Cloud Hypervisor to bypass auto-detection,
 	// which otherwise disables sector-0 writes and breaks ext4 rw mounts
 	// (see CH vmm/src/device_manager.rs "Disabling sector 0 writes").
@@ -181,7 +181,7 @@ type Config struct {
 	// kernel still panics regardless.
 	//
 	// Callers MUST set Cmdline explicitly for production use. The eventual
-	// nexus3 guest agent runs as PID 1 via init=/sbin/nexus3-agent; that path
+	// nexus guest agent runs as PID 1 via init=/sbin/nexus-agent; that path
 	// is on the critical boot path and must appear in Cmdline.
 	Cmdline string
 
@@ -197,7 +197,7 @@ type Config struct {
 
 	// ConsoleLogPath, when set, is the path to a file that receives the guest
 	// virtio-console output. Cloud-hypervisor defaults to console:{mode:"Tty"},
-	// which writes the guest console stream to CH's own stdout; nexus3 drains
+	// which writes the guest console stream to CH's own stdout; nexus drains
 	// that pipe via a capped writer (see cappedConsoleWriter) and writes to this
 	// file, stopping at maxConsoleSizeBytes (16 MiB) to prevent unbounded growth.
 	//
@@ -270,7 +270,7 @@ type Config struct {
 	// occupies a subdirectory named by its SnapshotID (CH files) plus a
 	// .payload and .commit file managed by the artifact.Store for integrity.
 	//
-	// Defaults to $XDG_STATE_HOME/nexus3/snapshots (or ~/.local/state/nexus3/snapshots
+	// Defaults to $XDG_STATE_HOME/nexus/snapshots (or ~/.local/state/nexus/snapshots
 	// if XDG_STATE_HOME is unset) — a durable location that survives reboots.
 	// SocketDir remains on the ephemeral runtime directory (sun_path limit);
 	// only SnapshotDir moves to the durable state home.
@@ -422,14 +422,14 @@ func New(cfg Config) (*CHDriver, error) {
 	}, nil
 }
 
-// defaultSocketDir returns $XDG_RUNTIME_DIR/nexus3 or a /tmp fallback.
+// defaultSocketDir returns $XDG_RUNTIME_DIR/nexus or a /tmp fallback.
 // It deliberately uses /tmp (not os.TempDir()) so that the default is always
 // short enough to satisfy the Linux sun_path limit, regardless of $TMPDIR.
 func defaultSocketDir() (string, error) {
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
-		return filepath.Join(xdg, "nexus3"), nil
+		return filepath.Join(xdg, "nexus"), nil
 	}
-	return fmt.Sprintf("/tmp/nexus3-%d", os.Getuid()), nil
+	return fmt.Sprintf("/tmp/nexus-%d", os.Getuid()), nil
 }
 
 // relocateSocketDir returns a short, deterministic, collision-free socket
@@ -523,7 +523,7 @@ func (d *CHDriver) socketPath(id domain.SandboxID) string {
 
 // iidPath returns the per-sandbox instance-ID sidecar file path.
 // The InstanceID is stored in a small file alongside the socket so it
-// survives nexus3 restarts (the CH API does not expose a nexus3 InstanceID).
+// survives nexus restarts (the CH API does not expose a nexus InstanceID).
 //
 // Note: the SandboxID String() value appears in the filename, not the
 // InstanceID itself. This is intentional — domain.Sandbox.InstanceID must
@@ -701,7 +701,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	}
 
 	// Launch the netns child. StartNetnsRuntime re-execs this binary with
-	// NEXUS3_NETNS_RUN=1 inside CLONE_NEWUSER|CLONE_NEWNET, creates the
+	// NEXUS_NETNS_RUN=1 inside CLONE_NEWUSER|CLONE_NEWNET, creates the
 	// TAP/bridge topology, spawnVMM (CH), and the frame pump, then returns
 	// without waiting for CH to be API-ready.
 	rt, err := StartNetnsRuntime(ctx, d.cfg, id, socketPath, "") // "" = boot mode; parent issues vm.create + vm.boot
@@ -947,7 +947,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 // Steps 1 and 2 are best-effort: a non-absent error (e.g. CH's 500 "VM is not
 // running" when there is nothing to shut down) is logged but does not abort
 // the sequence. VMMShutdown (step 3) always runs unless the socket is absent,
-// ensuring no orphaned cloud-hypervisor process survives a nexus3 restart.
+// ensuring no orphaned cloud-hypervisor process survives a nexus restart.
 func (d *CHDriver) Stop(ctx context.Context, id domain.SandboxID) error {
 	c := newClient(d.socketPath(id))
 

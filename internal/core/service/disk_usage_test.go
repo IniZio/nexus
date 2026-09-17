@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 func allocOf(t *testing.T, path string) int64 {
@@ -129,7 +129,7 @@ func TestDiskUsage_ClassifiesReferencedVsReclaimable(t *testing.T) {
 	if cache.Reclaimable != fx.wantCacheReclaim {
 		t.Errorf("image cache reclaimable=%d, want %d (orphan entry only)", cache.Reclaimable, fx.wantCacheReclaim)
 	}
-	if !strings.Contains(cache.Note, "nexus3 image prune") {
+	if !strings.Contains(cache.Note, "nexus image prune") {
 		t.Errorf("image cache note=%q, want image prune hint", cache.Note)
 	}
 
@@ -151,7 +151,7 @@ func TestDiskUsage_ClassifiesReferencedVsReclaimable(t *testing.T) {
 	if disks.Reclaimable != fx.wantDiskReclaim {
 		t.Errorf("disks reclaimable=%d, want %d (orphan disk only; shadow disk kept)", disks.Reclaimable, fx.wantDiskReclaim)
 	}
-	if !strings.Contains(disks.Note, "nexus3 reap") {
+	if !strings.Contains(disks.Note, "nexus reap") {
 		t.Errorf("disks note=%q, want reap hint", disks.Note)
 	}
 
@@ -190,8 +190,8 @@ func TestDiskUsage_ClassifiesReferencedVsReclaimable(t *testing.T) {
 	if rep.FloorBytes != uint64(service.DefaultGCFreeSpaceFloorGiB)<<30 || rep.FreeBytes != 100<<30 || rep.BelowFloor {
 		t.Errorf("free/floor: free=%d floor=%d below=%v", rep.FreeBytes, rep.FloorBytes, rep.BelowFloor)
 	}
-	if len(rep.Hints) != 2 || rep.Hints[0] != "nexus3 image prune" || rep.Hints[1] != "nexus3 reap" {
-		t.Errorf("hints=%v, want [nexus3 image prune, nexus3 reap]", rep.Hints)
+	if len(rep.Hints) != 2 || rep.Hints[0] != "nexus image prune" || rep.Hints[1] != "nexus reap" {
+		t.Errorf("hints=%v, want [nexus image prune, nexus reap]", rep.Hints)
 	}
 }
 

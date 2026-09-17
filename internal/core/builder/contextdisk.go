@@ -13,7 +13,7 @@ import (
 	"github.com/moby/patternmatcher/ignorefile"
 )
 
-// nexus3AlwaysExclude is a set of directory names that nexus3 unconditionally
+// nexusAlwaysExclude is a set of directory names that nexus unconditionally
 // excludes from the build context, even when absent from the project's
 // .dockerignore. These are tool-specific directories that are never relevant
 // to Docker builds and are always development infrastructure:
@@ -27,7 +27,7 @@ import (
 // boot when the context disk file is cached by the host kernel. Projects that
 // genuinely need one of these names in their Docker image can use the source
 // workspace build-context approach directly (not via --file).
-var nexus3AlwaysExclude = []string{
+var nexusAlwaysExclude = []string{
 	".claude",
 	".agents",
 	".groundwork",
@@ -44,8 +44,8 @@ var nexus3AlwaysExclude = []string{
 // Docker's standard ignore semantics apply (globs, directory prefixes, leading
 // "!" negation).
 //
-// In addition to project-provided .dockerignore patterns, nexus3 automatically
-// excludes a small set of development-tool directories (see [nexus3AlwaysExclude]).
+// In addition to project-provided .dockerignore patterns, nexus automatically
+// excludes a small set of development-tool directories (see [nexusAlwaysExclude]).
 //
 // The caller is responsible for choosing the output path (e.g. a temporary
 // file in a work directory); ContextToDisk creates or overwrites that path.
@@ -57,11 +57,11 @@ func ContextToDisk(ctx context.Context, contextDir string, outExt4 string) error
 		return fmt.Errorf("contextdisk: load .dockerignore: %w", err)
 	}
 
-	// Merge user .dockerignore patterns with nexus3-internal always-exclude
+	// Merge user .dockerignore patterns with nexus-internal always-exclude
 	// patterns. The always-exclude list catches tool directories that are never
 	// relevant to builds (Claude agent dirs, pnpm store, etc.) and can easily
 	// exceed 1 GiB, causing host OOM when the context disk is loaded by the VM.
-	allPatterns := slices.Clone(nexus3AlwaysExclude)
+	allPatterns := slices.Clone(nexusAlwaysExclude)
 	if pm != nil {
 		for _, p := range pm.Patterns() {
 			allPatterns = append(allPatterns, p.String())
@@ -72,7 +72,7 @@ func ContextToDisk(ctx context.Context, contextDir string, outExt4 string) error
 		return fmt.Errorf("contextdisk: build combined ignore patterns: %w", err)
 	}
 
-	// When a .dockerignore is present (or nexus3AlwaysExclude applies), build a
+	// When a .dockerignore is present (or nexusAlwaysExclude applies), build a
 	// filtered view of the context directory so that both the size measurement
 	// and the mke2fs invocation see only the included files. Files are hardlinked
 	// (not copied) so the intermediate tree is cheap even for large repositories.
@@ -129,7 +129,7 @@ func loadDockerIgnore(contextDir string) (*patternmatcher.PatternMatcher, error)
 // (not copied) so the intermediate tree is cheap even for large repos.
 // The caller must invoke the returned cleanup func when done.
 func filteredContextDir(src string, pm *patternmatcher.PatternMatcher) (string, func(), error) {
-	tmpDir, err := os.MkdirTemp("", "nexus3-ctx-*")
+	tmpDir, err := os.MkdirTemp("", "nexus-ctx-*")
 	if err != nil {
 		return "", nil, err
 	}

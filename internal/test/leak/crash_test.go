@@ -1,4 +1,4 @@
-// Package leak — extreme-case leak suite for the nexus3 resource-lifecycle contract.
+// Package leak — extreme-case leak suite for the nexus resource-lifecycle contract.
 //
 // Covers:
 //
@@ -10,7 +10,7 @@
 //
 // # Subprocess pattern
 //
-// Crash tests spawn THIS binary as a subprocess helper (via NEXUS3_LEAK_HELPER).
+// Crash tests spawn THIS binary as a subprocess helper (via NEXUS_LEAK_HELPER).
 // TestMain detects the env var and runs the helper instead of the test suite.
 // The helper mimics CreateAndBoot by writing disk resources in stage order, then
 // blocks until the parent sends SIGKILL. This exercises the real crash path:
@@ -58,18 +58,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // helperEnv is the env var that signals subprocess helper mode.
 // Its value is the stage number (1, 2, or 3).
-const helperEnv = "NEXUS3_LEAK_HELPER"
+const helperEnv = "NEXUS_LEAK_HELPER"
 
 // TestMain detects subprocess helper mode before running any tests.
 //
-// When NEXUS3_LEAK_HELPER is non-empty this binary is running as a crash
+// When NEXUS_LEAK_HELPER is non-empty this binary is running as a crash
 // stub. It writes disk resources up to the given stage, signals readiness,
 // then blocks until SIGKILL'd. This proves the mechanism: the OS kills the
 // process, defers do not run, and files remain on disk.
@@ -94,18 +94,18 @@ func TestMain(m *testing.M) {
 //
 // Environment inputs (all required):
 //
-//	NEXUS3_LEAK_HELPER   stage number
-//	NEXUS3_LEAK_DIR      disk directory (= <stateRoot>/disks/)
-//	NEXUS3_LEAK_ID       sandbox ULID string (e.g. "sb-01XXXXXXXXXXXXXXXXXXXXXXXX")
-//	NEXUS3_LEAK_READY    path of sentinel file to write when ready to be killed
+//	NEXUS_LEAK_HELPER   stage number
+//	NEXUS_LEAK_DIR      disk directory (= <stateRoot>/disks/)
+//	NEXUS_LEAK_ID       sandbox ULID string (e.g. "sb-01XXXXXXXXXXXXXXXXXXXXXXXX")
+//	NEXUS_LEAK_READY    path of sentinel file to write when ready to be killed
 func helperRun(stage string) {
-	diskDir := helperMustEnv("NEXUS3_LEAK_DIR")
-	idStr := helperMustEnv("NEXUS3_LEAK_ID")
-	readyPath := helperMustEnv("NEXUS3_LEAK_READY")
+	diskDir := helperMustEnv("NEXUS_LEAK_DIR")
+	idStr := helperMustEnv("NEXUS_LEAK_ID")
+	readyPath := helperMustEnv("NEXUS_LEAK_READY")
 
 	var stageNum int
 	if _, err := fmt.Sscanf(stage, "%d", &stageNum); err != nil || stageNum < 1 || stageNum > 4 {
-		fmt.Fprintf(os.Stderr, "NEXUS3_LEAK_HELPER: invalid stage %q\n", stage)
+		fmt.Fprintf(os.Stderr, "NEXUS_LEAK_HELPER: invalid stage %q\n", stage)
 		os.Exit(2)
 	}
 
@@ -241,9 +241,9 @@ func spawnAndKill(t *testing.T, id domain.SandboxID, stage int, pgrpKill bool) (
 	cmd := exec.Command(os.Args[0]) // same test binary, enters TestMain helper mode
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("%s=%d", helperEnv, stage),
-		"NEXUS3_LEAK_DIR="+diskDir,
-		"NEXUS3_LEAK_ID="+id.String(),
-		"NEXUS3_LEAK_READY="+readyPath,
+		"NEXUS_LEAK_DIR="+diskDir,
+		"NEXUS_LEAK_ID="+id.String(),
+		"NEXUS_LEAK_READY="+readyPath,
 	)
 	if pgrpKill {
 		// Put the subprocess in its own process group so we can kill the

@@ -1,3 +1,3 @@
-label=nexus3:project/worktree-feature	workspace_id=ws-abc	handle=project/worktree-feature	sandbox_id=sb-01FIXTURE0000000000000000000A	pane_id=ws-abc:p1
-label=nexus3:other/worktree-main	workspace_id=ws-def	handle=other/worktree-main	sandbox_id=sb-02FIXTURE0000000000000000000B	pane_id=ws-def:p1
+label=nexus:project/worktree-feature	workspace_id=ws-abc	handle=project/worktree-feature	sandbox_id=sb-01FIXTURE0000000000000000000A	pane_id=ws-abc:p1
+label=nexus:other/worktree-main	workspace_id=ws-def	handle=other/worktree-main	sandbox_id=sb-02FIXTURE0000000000000000000B	pane_id=ws-def:p1
 (2 herdr space bindings)

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // makeSnap writes a minimal retained snapshot record to st and returns the snap.
@@ -39,7 +39,7 @@ func makeSnap(t *testing.T, st *artifact.Store, id artifact.SnapshotID) artifact
 func TestFUPAC1_SnapshotRm_DeletesBothRecordAndDir(t *testing.T) {
 	// root serves as both the artifact-store root and the fake driver's
 	// SnapshotDir, matching the production layout where defaultSnapshotDir and
-	// newSnapshotService both resolve to <XDG_STATE_HOME>/nexus3/snapshots.
+	// newSnapshotService both resolve to <XDG_STATE_HOME>/nexus/snapshots.
 	root := t.TempDir()
 
 	aStore, err := artifact.NewStore(root)

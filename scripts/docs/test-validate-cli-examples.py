@@ -8,7 +8,7 @@ Each test:
   1. Creates a minimal fixture environment (docs dir + TOML manifest) in a
      temporary directory.
   2. Runs validate-cli-examples.py against it via env var overrides
-     (NEXUS3_DOCS_DIR, NEXUS3_CLI_DIR, NEXUS3_SURFACE_MANIFEST).
+     (NEXUS_DOCS_DIR, NEXUS_CLI_DIR, NEXUS_SURFACE_MANIFEST).
   3. Verifies that the "dirty" fixture (missing badge or removed verb/flag
      present) causes FAIL, and the "clean" fixture causes OK.
 
@@ -41,9 +41,9 @@ def run_validator(docs_dir: str, cli_dir: str, manifest_path: str) -> tuple[int,
     """Run the validator with custom dirs via env vars. Returns (returncode, combined output)."""
     env = {
         **os.environ,
-        "NEXUS3_DOCS_DIR": docs_dir,
-        "NEXUS3_CLI_DIR": cli_dir,
-        "NEXUS3_SURFACE_MANIFEST": manifest_path,
+        "NEXUS_DOCS_DIR": docs_dir,
+        "NEXUS_CLI_DIR": cli_dir,
+        "NEXUS_SURFACE_MANIFEST": manifest_path,
     }
     result = subprocess.run(
         [sys.executable, VALIDATOR],
@@ -132,18 +132,18 @@ def main() -> None:
         name="removed_verbs",
         manifest_toml='removed_verbs = ["shell"]\n',
         dirty_pages={"cli/fixture.md": """\
-## nexus3 exec
+## nexus exec
 
 ```bash
-nexus3 shell
+nexus shell
 ```
 """},
         expect_violations=["verb 'shell' has been removed from the target"],
         clean_pages={"cli/fixture.md": """\
-## nexus3 exec
+## nexus exec
 
 ```bash
-nexus3 exec
+nexus exec
 ```
 """},
     ))
@@ -159,15 +159,15 @@ removed_verbs = []
 create = ["--workspace"]
 """,
         dirty_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 ```bash
-nexus3 create --workspace /path
+nexus create --workspace /path
 ```
 """},
         expect_violations=["'--workspace'", "removed from the target"],
         clean_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 No code block with removed flag.
 """},
@@ -186,20 +186,20 @@ verb = "logs"
 page = "cli/fixture.md"
 """,
         dirty_pages={"cli/fixture.md": """\
-## nexus3 logs
+## nexus logs
 
 No badge here.
 
 ```bash
-nexus3 logs
+nexus logs
 ```
 """},
         expect_violations=["verb 'logs' is target-only", 'section has no <Badge type="danger">'],
         clean_pages={"cli/fixture.md": """\
-## nexus3 logs <Badge type="danger" text="not built" />
+## nexus logs <Badge type="danger" text="not built" />
 
 ```bash
-nexus3 logs
+nexus logs
 ```
 """},
     ))
@@ -218,20 +218,20 @@ page = "cli/fixture.md"
 flags = ["--volume"]
 """,
         dirty_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 No badge here.
 
 ```bash
-nexus3 create --volume /host:/guest
+nexus create --volume /host:/guest
 ```
 """},
         expect_violations=["'--volume'", 'section has no <Badge type="danger">'],
         clean_pages={"cli/fixture.md": """\
-## nexus3 create <Badge type="danger" text="not built" />
+## nexus create <Badge type="danger" text="not built" />
 
 ```bash
-nexus3 create --volume /host:/guest
+nexus create --volume /host:/guest
 ```
 """},
     ))
@@ -250,20 +250,20 @@ page = "cli/fixture.md"
 flags = ["--context"]
 """,
         dirty_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 No badge here.
 
 ```bash
-nexus3 create --context /dir
+nexus create --context /dir
 ```
 """},
         expect_violations=["'--context'", "partial target flag"],
         clean_pages={"cli/fixture.md": """\
-## nexus3 create <Badge type="warning" text="partial" />
+## nexus create <Badge type="warning" text="partial" />
 
 ```bash
-nexus3 create --context /dir
+nexus create --context /dir
 ```
 """},
     ))
@@ -298,10 +298,10 @@ No mention of the fake verb here, and no badge.
         name="docs→manifest orphan (flag in code block, not in manifest)",
         manifest_toml="removed_verbs = []\n",
         dirty_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 ```bash
-nexus3 create --totally-unknown-flag
+nexus create --totally-unknown-flag
 ```
 """},
         expect_violations=["unknown flag '--totally-unknown-flag'"],
@@ -309,49 +309,49 @@ nexus3 create --totally-unknown-flag
 
     # ── line continuations ───────────────────────────────────────────────────
     # Until TBD-PD-24, extract_invocations only looked at lines STARTING with
-    # "nexus3 ", so every flag on a backslash-continued line was invisible. A
+    # "nexus ", so every flag on a backslash-continued line was invisible. A
     # fabricated --shadow flag lived in the docs through repeated green runs
     # because of it. 20 of 128 fenced invocations are continued.
     results.append(test(
         name="line continuation (flag on continued line is checked)",
         manifest_toml="removed_verbs = []\n",
         dirty_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 ```bash
-nexus3 create myproject/dev \\
+nexus create myproject/dev \\
   --totally-unknown-flag \\
   --memory 2048
 ```
 """},
         expect_violations=["unknown flag '--totally-unknown-flag'"],
         clean_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 ```bash
-nexus3 create myproject/dev \\
+nexus create myproject/dev \\
   myproject/dev2
 ```
 """},
     ))
 
     # ── inline prose spelling ────────────────────────────────────────────────
-    # The old `nexus3 sandbox <verb>` spelling in narrative text passed clean
+    # The old `nexus sandbox <verb>` spelling in narrative text passed clean
     # because only fenced blocks were parsed; two real occurrences survived a
     # green run on 2026-08-19 and were caught by hand.
     results.append(test(
         name="inline prose spelling (old verb in narrative text)",
         manifest_toml="removed_verbs = []\n",
         dirty_pages={"cli/fixture.md": """\
-## nexus3 rm
+## nexus rm
 
-To delete a sandbox, run `nexus3 sandbox rm myproject/dev`.
+To delete a sandbox, run `nexus sandbox rm myproject/dev`.
 """},
-        expect_violations=["old spelling 'nexus3 sandbox rm"],
+        expect_violations=["old spelling 'nexus sandbox rm"],
         clean_pages={"cli/fixture.md": """\
-## nexus3 rm
+## nexus rm
 
-To delete a sandbox, run `nexus3 rm myproject/dev`.
+To delete a sandbox, run `nexus rm myproject/dev`.
 """},
     ))
 
@@ -361,17 +361,17 @@ To delete a sandbox, run `nexus3 rm myproject/dev`.
         name="inline prose spelling (dirty without marker, clean with it)",
         manifest_toml="removed_verbs = []\n",
         dirty_pages={"cli/fixture.md": """\
-## nexus3 rm
+## nexus rm
 
-Use `nexus3 sandbox rm` for this.
+Use `nexus sandbox rm` for this.
 """},
-        expect_violations=["old spelling 'nexus3 sandbox rm' in prose"],
+        expect_violations=["old spelling 'nexus sandbox rm' in prose"],
         clean_pages={"cli/fixture.md": """\
-## nexus3 rm
+## nexus rm
 
-current implementation uses `nexus3 sandbox rm`; see the mapping.
+current implementation uses `nexus sandbox rm`; see the mapping.
 
-Use `nexus3 sandbox rm` for this. <!-- cli-spelling-exempt -->
+Use `nexus sandbox rm` for this. <!-- cli-spelling-exempt -->
 """},
     ))
 
@@ -381,20 +381,20 @@ Use `nexus3 sandbox rm` for this. <!-- cli-spelling-exempt -->
         name="closed-set badge (unknown type is a violation)",
         manifest_toml="removed_verbs = []\n",
         dirty_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 <Badge type="success" text="done" />
 
 ```bash
-nexus3 create myproject/dev
+nexus create myproject/dev
 ```
 """},
         expect_violations=['badge type \'success\' is not in the closed set'],
         clean_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 ```bash
-nexus3 create myproject/dev
+nexus create myproject/dev
 ```
 """},
     ))
@@ -404,20 +404,20 @@ nexus3 create myproject/dev
         name="closed-set badge (wrong text for valid type is a violation)",
         manifest_toml="removed_verbs = []\n",
         dirty_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 <Badge type="tip" text="wip" />
 
 ```bash
-nexus3 create myproject/dev
+nexus create myproject/dev
 ```
 """},
         expect_violations=["badge type='tip' text='wip' is not a valid combination"],
         clean_pages={"cli/fixture.md": """\
-## nexus3 create
+## nexus create
 
 ```bash
-nexus3 create myproject/dev
+nexus create myproject/dev
 ```
 """},
     ))
@@ -432,7 +432,7 @@ nexus3 create myproject/dev
 ## Feature <Badge type="tip" text="built" />
 
 ```bash
-nexus3 fabricatedverb
+nexus fabricatedverb
 ```
 """},
         expect_violations=[
@@ -451,7 +451,7 @@ No code block here — prose-only built section is valid.
     # A "built" badge on a section whose code block invokes a noun-group verb
     # (image, snapshot, auth, sandbox, ssh) with a fabricated subverb must fail.
     # This is the hole that existed before the _SUBVERBS resolver was added to
-    # check_built_badge_claims(): "nexus3 image frobnicate" with no flags used
+    # check_built_badge_claims(): "nexus image frobnicate" with no flags used
     # to exit rc=0 because only the verb "image" was validated, not the subverb.
     results.append(test(
         name="built badge with unknown noun-group subverb (fabricated subverb is a violation)",
@@ -460,7 +460,7 @@ No code block here — prose-only built section is valid.
 ## Image commands <Badge type="tip" text="built" />
 
 ```bash
-nexus3 image frobnicate
+nexus image frobnicate
 ```
 """},
         expect_violations=[
@@ -471,7 +471,7 @@ nexus3 image frobnicate
 ## Image commands <Badge type="tip" text="built" />
 
 ```bash
-nexus3 image ls
+nexus image ls
 ```
 """},
     ))

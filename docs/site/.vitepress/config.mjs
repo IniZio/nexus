@@ -1,4 +1,4 @@
-// VitePress config for the nexus3 documentation site.
+// VitePress config for the nexus documentation site.
 //
 // Structure follows microsandbox's docs (docs.microsandbox.dev): a short
 // getting-started path, then concepts separated from operational guides, with
@@ -11,13 +11,13 @@
 
 import { withMermaid } from 'vitepress-plugin-mermaid'
 
-// The site is published to GitHub Pages at https://inizio.github.io/nexus3/,
+// The site is published to GitHub Pages at https://inizio.github.io/nexus/,
 // so every asset URL has to be prefixed with the repository name. Overridable
 // via DOCS_BASE for a different host (a custom domain would use '/').
-const base = process.env.DOCS_BASE ?? '/nexus3/'
+const base = process.env.DOCS_BASE ?? '/nexus/'
 
 export default withMermaid({
-  title: 'nexus3',
+  title: 'nexus',
   description: 'MicroVM sandboxes for parallel agent development',
   lang: 'en-US',
   cleanUrls: true,
@@ -117,7 +117,7 @@ export default withMermaid({
           { text: 'Building images', link: '/recipes/building-images' },
           { text: 'Docker in a sandbox', link: '/recipes/docker-in-sandbox' },
           { text: 'Parallel development flow', link: '/recipes/parallel-dev-flow' },
-          { text: 'Using nexus3 from herdr', link: '/recipes/herdr' },
+          { text: 'Using nexus from herdr', link: '/recipes/herdr' },
           { text: 'Claude Code plugin', link: '/recipes/claude-plugin' },
         ],
       },
@@ -141,7 +141,7 @@ export default withMermaid({
     outline: { level: [2, 3] },
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/IniZio/nexus3' },
+      { icon: 'github', link: 'https://github.com/IniZio/nexus' },
     ],
   },
 

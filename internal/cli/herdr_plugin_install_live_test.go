@@ -25,11 +25,11 @@ func fakeReleaseServer(t *testing.T, binaryContent []byte) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/nexus3-linux-amd64"):
+		case strings.HasSuffix(r.URL.Path, "/nexus-linux-amd64"):
 			w.Header().Set("Content-Type", "application/octet-stream")
 			_, _ = w.Write(binaryContent)
 		case strings.HasSuffix(r.URL.Path, "/SHA256SUMS"):
-			fmt.Fprintf(w, "%s  nexus3-linux-amd64\n", checksum)
+			fmt.Fprintf(w, "%s  nexus-linux-amd64\n", checksum)
 		default:
 			http.NotFound(w, r)
 		}
@@ -39,28 +39,28 @@ func fakeReleaseServer(t *testing.T, binaryContent []byte) *httptest.Server {
 	return srv
 }
 
-func buildNexus3Binary(t *testing.T) string {
+func buildNexusBinary(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "nexus3")
+	binary := filepath.Join(binDir, "nexus")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, "./cmd/nexus3")
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, "./cmd/nexus")
 	cmd.Dir = filepath.Join("..", "..")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		liveSkip(t, "go build ./cmd/nexus3 failed: %v\n%s", err, out)
+		liveSkip(t, "go build ./cmd/nexus failed: %v\n%s", err, out)
 	}
 	return binary
 }
 
-func buildNexus3BinaryVersioned(t *testing.T, ver string) string {
+func buildNexusBinaryVersioned(t *testing.T, ver string) string {
 	t.Helper()
 	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "nexus3")
-	ldflag := fmt.Sprintf("-X github.com/IniZio/nexus3/internal/cli.version=%s", ver)
+	binary := filepath.Join(binDir, "nexus")
+	ldflag := fmt.Sprintf("-X github.com/IniZio/nexus/internal/cli.version=%s", ver)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-ldflags", ldflag, "-o", binary, "./cmd/nexus3")
+	cmd := exec.CommandContext(ctx, "go", "build", "-ldflags", ldflag, "-o", binary, "./cmd/nexus")
 	cmd.Dir = filepath.Join("..", "..")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		liveSkip(t, "go build (versioned) failed: %v\n%s", err, out)
@@ -82,9 +82,9 @@ func runBuildSh(t *testing.T, probeHome, installDir, shimDir, baseURL string, ex
 	env := []string{
 		"HOME=" + probeHome,
 		"PATH=" + os.Getenv("PATH"),
-		"NEXUS3_RELEASE_BASE_URL=" + baseURL,
+		"NEXUS_RELEASE_BASE_URL=" + baseURL,
 		"INSTALL_DIR=" + installDir,
-		"NEXUS3_SHIM_DIR=" + shimDir,
+		"NEXUS_SHIM_DIR=" + shimDir,
 		"HERDR_PLUGIN_ROOT=" + pluginDirPath(t),
 	}
 	env = append(env, extraEnv...)
@@ -100,7 +100,7 @@ func writeStubBinary(t *testing.T, path, ver string, vcExit int) {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = "version" ]; then
-    echo "nexus3 %s (go1.26.6)"
+    echo "nexus %s (go1.26.6)"
 elif [ "$1" = "--version" ]; then
     exit 1
 elif [ "$1" = "herdr" ] && [ "$2" = "version-check" ]; then
@@ -177,11 +177,11 @@ func TestHerdrRefusalGuard(t *testing.T) {
 // plugin link is not used (herdr 0.9.0 never runs [[build]] on link).
 func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 	probeHome, sess := startIsolatedHerdr(t)
-	nexus3Bin := buildNexus3Binary(t)
+	nexusBin := buildNexusBinary(t)
 
-	binaryContent, err := os.ReadFile(nexus3Bin)
+	binaryContent, err := os.ReadFile(nexusBin)
 	if err != nil {
-		t.Fatalf("read nexus3 binary: %v", err)
+		t.Fatalf("read nexus binary: %v", err)
 	}
 
 	srv := fakeReleaseServer(t, binaryContent)
@@ -194,7 +194,7 @@ func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 	}
 	t.Logf("build.sh output:\n%s", out)
 
-	installedBin := filepath.Join(installDir, "nexus3")
+	installedBin := filepath.Join(installDir, "nexus")
 	fi, err := os.Stat(installedBin)
 	if err != nil {
 		t.Fatalf("installed binary not found at %s: %v", installedBin, err)
@@ -203,13 +203,13 @@ func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 		t.Fatalf("installed binary %s is not executable (mode %o)", installedBin, fi.Mode())
 	}
 
-	shimPath := filepath.Join(shimDir, "nexus3-shim.sh")
+	shimPath := filepath.Join(shimDir, "nexus-shim.sh")
 	if _, err := os.Stat(shimPath); err != nil {
-		t.Fatalf("nexus3-shim.sh not found at %s: %v", shimPath, err)
+		t.Fatalf("nexus-shim.sh not found at %s: %v", shimPath, err)
 	}
 
 	outStr := string(out)
-	if !strings.Contains(outStr, "nexus3 plugin: installed") && !strings.Contains(outStr, "nexus3 plugin: shim written") {
+	if !strings.Contains(outStr, "nexus plugin: installed") && !strings.Contains(outStr, "nexus plugin: shim written") {
 		t.Errorf("build.sh output missing install confirmation:\n%s", outStr)
 	}
 
@@ -224,7 +224,7 @@ func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 		t.Fatalf("herdr plugin list --json: %v\n%s", listErr, listOut)
 	}
 	t.Logf("plugin list: %s", listOut)
-	assertPluginListed(t, listOut, "nexus3")
+	assertPluginListed(t, listOut, "nexus")
 
 	// Mutation note: removing --write-config from build.sh's install-default-shell call
 	// causes this assertion to fail — the config file is never written.
@@ -234,7 +234,7 @@ func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 		t.Errorf("herdr config.toml not found at %s: %v", configPath, cfgErr)
 	} else {
 		configStr := string(configBytes)
-		guestShellPath := filepath.Join(probeHome, ".local", "bin", "nexus3-guest-shell")
+		guestShellPath := filepath.Join(probeHome, ".local", "bin", "nexus-guest-shell")
 		if !strings.Contains(configStr, "default_shell") {
 			t.Errorf("config.toml missing default_shell entry:\n%s", configStr)
 		}
@@ -253,7 +253,7 @@ func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 	}
 
 	outStr = string(out)
-	if !strings.Contains(outStr, "nexus3 plugin: shim written") {
+	if !strings.Contains(outStr, "nexus plugin: shim written") {
 		t.Errorf("build.sh did not reach shim-written step; full output:\n%s", outStr)
 	}
 }
@@ -262,11 +262,11 @@ func TestHerdrPluginInstall_FreshHome(t *testing.T) {
 // three stubs: older (exit 10 → download), dev (exit 12 → keep), newer (exit 11 → keep).
 func TestHerdrPluginInstall_Upgrade(t *testing.T) {
 	probeHome, _ := startIsolatedHerdr(t)
-	nexus3Bin := buildNexus3Binary(t)
+	nexusBin := buildNexusBinary(t)
 
-	binaryContent, err := os.ReadFile(nexus3Bin)
+	binaryContent, err := os.ReadFile(nexusBin)
 	if err != nil {
-		t.Fatalf("read nexus3 binary: %v", err)
+		t.Fatalf("read nexus binary: %v", err)
 	}
 
 	srv := fakeReleaseServer(t, binaryContent)
@@ -274,7 +274,7 @@ func TestHerdrPluginInstall_Upgrade(t *testing.T) {
 	t.Run("A_UpgradeOlder", func(t *testing.T) {
 		installDir := t.TempDir()
 		shimDir := t.TempDir()
-		stubPath := filepath.Join(installDir, "nexus3")
+		stubPath := filepath.Join(installDir, "nexus")
 		writeStubBinary(t, stubPath, "v0.0.1", int(vcoPinNewer))
 
 		out, err := runBuildSh(t, probeHome, installDir, shimDir, srv.URL)
@@ -286,7 +286,7 @@ func TestHerdrPluginInstall_Upgrade(t *testing.T) {
 		if strings.Contains(outStr, "kept") {
 			t.Errorf("sub-test A: expected download, got 'kept': %s", outStr)
 		}
-		if !strings.Contains(outStr, "nexus3 plugin: installed") && !strings.Contains(outStr, "nexus3 plugin: upgraded") {
+		if !strings.Contains(outStr, "nexus plugin: installed") && !strings.Contains(outStr, "nexus plugin: upgraded") {
 			t.Errorf("sub-test A: neither 'installed' nor 'upgraded' in output: %s", outStr)
 		}
 		fi, err := os.Stat(stubPath)
@@ -301,7 +301,7 @@ func TestHerdrPluginInstall_Upgrade(t *testing.T) {
 	t.Run("B_KeepDevBuild", func(t *testing.T) {
 		installDir := t.TempDir()
 		shimDir := t.TempDir()
-		writeStubBinary(t, filepath.Join(installDir, "nexus3"), "v99.99.99-dev+abc", int(vcoDev))
+		writeStubBinary(t, filepath.Join(installDir, "nexus"), "v99.99.99-dev+abc", int(vcoDev))
 
 		out, err := runBuildSh(t, probeHome, installDir, shimDir, srv.URL)
 		t.Logf("build.sh output (B):\n%s", out)
@@ -320,7 +320,7 @@ func TestHerdrPluginInstall_Upgrade(t *testing.T) {
 	t.Run("C_KeepNewer", func(t *testing.T) {
 		installDir := t.TempDir()
 		shimDir := t.TempDir()
-		writeStubBinary(t, filepath.Join(installDir, "nexus3"), "v999.0.0", int(vcoInstalledNewer))
+		writeStubBinary(t, filepath.Join(installDir, "nexus"), "v999.0.0", int(vcoInstalledNewer))
 
 		out, err := runBuildSh(t, probeHome, installDir, shimDir, srv.URL)
 		t.Logf("build.sh output (C):\n%s", out)
@@ -337,21 +337,21 @@ func TestHerdrPluginInstall_Upgrade(t *testing.T) {
 	})
 }
 
-// TestHerdrPluginStartup_SkewNotice verifies that nexus3 herdr version-check
+// TestHerdrPluginStartup_SkewNotice verifies that nexus herdr version-check
 // emits herdrUpdateRemedy (exit 10) when the pin file names a newer release.
 //
 // The binary is built with -ldflags version=0.1.0 so the comparison is a
 // proper semver check rather than the always-exit-12 dev-build fast-path.
 func TestHerdrPluginStartup_SkewNotice(t *testing.T) {
 	probeHome, _ := startIsolatedHerdr(t)
-	nexus3Bin := buildNexus3Binary(t)
+	nexusBin := buildNexusBinary(t)
 
-	binaryContent, err := os.ReadFile(nexus3Bin)
+	binaryContent, err := os.ReadFile(nexusBin)
 	if err != nil {
-		t.Fatalf("read nexus3 binary: %v", err)
+		t.Fatalf("read nexus binary: %v", err)
 	}
 
-	versionedBin := buildNexus3BinaryVersioned(t, "0.1.0")
+	versionedBin := buildNexusBinaryVersioned(t, "0.1.0")
 
 	srv := fakeReleaseServer(t, binaryContent)
 	installDir := t.TempDir()
@@ -362,7 +362,7 @@ func TestHerdrPluginStartup_SkewNotice(t *testing.T) {
 		t.Fatalf("build.sh failed: %v\n%s", err, out)
 	}
 
-	installedBin := filepath.Join(installDir, "nexus3")
+	installedBin := filepath.Join(installDir, "nexus")
 	versionedContent, err := os.ReadFile(versionedBin)
 	if err != nil {
 		t.Fatalf("read versioned binary: %v", err)
@@ -371,7 +371,7 @@ func TestHerdrPluginStartup_SkewNotice(t *testing.T) {
 		t.Fatalf("replace installed binary: %v", err)
 	}
 
-	pinFile := filepath.Join(t.TempDir(), "nexus3-version")
+	pinFile := filepath.Join(t.TempDir(), "nexus-version")
 	if err := os.WriteFile(pinFile, []byte("v999.99.99"), 0o644); err != nil {
 		t.Fatalf("write pin file: %v", err)
 	}

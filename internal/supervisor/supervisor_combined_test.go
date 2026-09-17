@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 type captureGuestSeeder struct {
@@ -60,12 +60,12 @@ func combinedSandboxWithEnvSecret(id domain.SandboxID, envKey string) domain.San
 // Mutation guard: Drop SeedGuestAgentAndSecrets call → NODE_EXTRA_CA_CERTS disappears → RED.
 func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "") // ensure kindOAuth path
-	t.Setenv("NEXUS3_TEST_SECRET_A1", "supervisor-secret-for-a1")
+	t.Setenv("NEXUS_TEST_SECRET_A1", "supervisor-secret-for-a1")
 
 	ctx := context.Background()
 	var id domain.SandboxID
 	id[0] = 0xA1
-	sb := combinedSandboxWithEnvSecret(id, "NEXUS3_TEST_SECRET_A1")
+	sb := combinedSandboxWithEnvSecret(id, "NEXUS_TEST_SECRET_A1")
 
 	broker := cred.NewBroker()
 	credCap := &captureGuestSeeder{}
@@ -86,15 +86,15 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	}
 }
 
-// Mutation guard: Drop SecretSpecs → NEXUS3_CRED_EXAMPLE_COM_TOKEN disappears → RED.
+// Mutation guard: Drop SecretSpecs → NEXUS_CRED_EXAMPLE_COM_TOKEN disappears → RED.
 func TestSeedAgentAndHumanSecrets_ContainsSecretVars(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("NEXUS3_TEST_SECRET_A2", "supervisor-secret-for-a2")
+	t.Setenv("NEXUS_TEST_SECRET_A2", "supervisor-secret-for-a2")
 
 	ctx := context.Background()
 	var id domain.SandboxID
 	id[0] = 0xA2
-	sb := combinedSandboxWithEnvSecret(id, "NEXUS3_TEST_SECRET_A2")
+	sb := combinedSandboxWithEnvSecret(id, "NEXUS_TEST_SECRET_A2")
 
 	broker := cred.NewBroker()
 	credCap := &captureGuestSeeder{}
@@ -107,19 +107,19 @@ func TestSeedAgentAndHumanSecrets_ContainsSecretVars(t *testing.T) {
 
 	payload := credCap.combined()
 
-	if !bytes.Contains(payload, []byte("NEXUS3_TEST_SECRET_A2=")) {
-		t.Errorf("combined supervisor payload missing NEXUS3_TEST_SECRET_A2= (secret half absent)\npayload:\n%s", payload)
+	if !bytes.Contains(payload, []byte("NEXUS_TEST_SECRET_A2=")) {
+		t.Errorf("combined supervisor payload missing NEXUS_TEST_SECRET_A2= (secret half absent)\npayload:\n%s", payload)
 	}
 }
 
 func TestSeedAgentAndHumanSecrets_OneWrite(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("NEXUS3_TEST_SECRET_A3", "supervisor-secret-for-a3")
+	t.Setenv("NEXUS_TEST_SECRET_A3", "supervisor-secret-for-a3")
 
 	ctx := context.Background()
 	var id domain.SandboxID
 	id[0] = 0xA3
-	sb := combinedSandboxWithEnvSecret(id, "NEXUS3_TEST_SECRET_A3")
+	sb := combinedSandboxWithEnvSecret(id, "NEXUS_TEST_SECRET_A3")
 
 	broker := cred.NewBroker()
 	credCap := &captureGuestSeeder{}
@@ -199,7 +199,7 @@ func TestChooseSeedRoute_Ordering(t *testing.T) {
 // ── route→seeder binding tests ──
 func TestRunSeedRoute_CombinedCallsCombinedSeeder(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("NEXUS3_TEST_SECRET_RS1", "rs1-secret")
+	t.Setenv("NEXUS_TEST_SECRET_RS1", "rs1-secret")
 
 	var combinedCalled, humanCalled bool
 
@@ -458,7 +458,7 @@ func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
 
 func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("NEXUS3_TEST_SAHS_FP", "secret-val-for-fp-test")
+	t.Setenv("NEXUS_TEST_SAHS_FP", "secret-val-for-fp-test")
 
 	const realToken = "tok-real-sahs-fp"
 	var id domain.SandboxID
@@ -487,7 +487,7 @@ func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 		t.Fatalf("after ticker push: placeholder resolves to %q, want %q (precondition)", got, realToken)
 	}
 
-	sb := combinedSandboxWithEnvSecret(id, "NEXUS3_TEST_SAHS_FP")
+	sb := combinedSandboxWithEnvSecret(id, "NEXUS_TEST_SAHS_FP")
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 	credCap := &captureGuestSeeder{}
 	ok, _ := seedAgentAndHumanSecrets(
@@ -595,7 +595,7 @@ func TestMCPOAuthSeedPayload(t *testing.T) {
 	}
 
 	payload := buildMCPOAuthCredPayload(seeds)
-	wantLine := "NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION='Bearer " + ph + "'\n"
+	wantLine := "NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION='Bearer " + ph + "'\n"
 	if !bytes.Contains(payload, []byte(wantLine)) {
 		t.Errorf("buildMCPOAuthCredPayload payload missing expected line %q:\n%s", wantLine, payload)
 	}
@@ -619,7 +619,7 @@ func TestMCPOAuthSeedPayloadShellSourceable(t *testing.T) {
 		t.Fatalf("write cred.env: %v", err)
 	}
 
-	script := "set -a; . " + credEnv + "; set +a; printf %s \"$NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION\""
+	script := "set -a; . " + credEnv + "; set +a; printf %s \"$NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION\""
 	out, err := exec.Command("/bin/sh", "-c", script).Output()
 	if err != nil {
 		t.Fatalf("sourcing cred.env failed (unquoted value breaks the shell): %v", err)
@@ -627,7 +627,7 @@ func TestMCPOAuthSeedPayloadShellSourceable(t *testing.T) {
 
 	want := "Bearer " + ph
 	if string(out) != want {
-		t.Errorf("sourced NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION = %q; want %q\n"+
+		t.Errorf("sourced NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION = %q; want %q\n"+
 			"the cred.env value must be shell-quoted so POSIX `. file` preserves the space", string(out), want)
 	}
 }

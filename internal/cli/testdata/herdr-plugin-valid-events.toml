@@ -6,8 +6,8 @@
 #
 # Expected outcome: TestHerdrPluginManifest_EventNamesValid PASSES (GREEN) against
 # this fixture.
-id = "nexus3-test-fixture"
-name = "nexus3-test-fixture"
+id = "nexus-test-fixture"
+name = "nexus-test-fixture"
 version = "0.0.0"
 min_herdr_version = "0.7.4"
 description = "Mutation-proof fixture — valid event name (dot separator)."

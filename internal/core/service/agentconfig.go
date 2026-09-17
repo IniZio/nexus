@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // secretFileNames is the hard exclusion list. These filenames are NEVER copied
@@ -368,7 +368,7 @@ func ensureStagedBypassConsentKey(destDir string, profile cred.AgentProfile) err
 	// existing file; the new file is created writable and the caller's process
 	// umask applies to the temp, but we set the final mode explicitly via
 	// os.Chmod after rename.
-	tmp := p + ".nexus3tmp"
+	tmp := p + ".nexustmp"
 	if err := os.WriteFile(tmp, out, 0o644); err != nil {
 		return err
 	}

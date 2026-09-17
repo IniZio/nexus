@@ -10,7 +10,7 @@
 // touches the image store. That is exactly why the failure
 //
 //	sandbox create: service: create-and-boot ...:
-//	    resolve image: no cached image with ref "nexus3-agent-base"
+//	    resolve image: no cached image with ref "nexus-agent-base"
 //
 // fell straight through a fully green unit suite — nothing drove the worktree
 // path through the real resolve-and-boot code. This test closes that gap: it
@@ -18,7 +18,7 @@
 // (herdrResolveWorktreeImage → herdrWorktreeSandboxCreateArgs, with the same
 // `<checkout>:/workspace` mountSpec and .git extra-mount as
 // herdrWorktreeSandbox), then runs a real `sandbox create` against the operator's
-// cached nexus3-agent-base image and asserts the guest boots.
+// cached nexus-agent-base image and asserts the guest boots.
 //
 // It catches three regression classes that the stubbed tests cannot:
 //   - default-image REF DRIFT — herdrResolveWorktreeImage returning a ref the
@@ -30,19 +30,19 @@
 //
 // It cannot catch "the operator never built the base image" — that is an
 // environment precondition, not a code defect, and the pre-check below turns it
-// into a clear skip (or a hard failure under NEXUS3_LIVE_REQUIRED=1).
+// into a clear skip (or a hard failure under NEXUS_LIVE_REQUIRED=1).
 //
 // Run with:
 //
-//	TMPDIR=/tmp NEXUS3_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
-//	  NEXUS3_LIVE_REQUIRED=1 \
+//	TMPDIR=/tmp NEXUS_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
+//	  NEXUS_LIVE_REQUIRED=1 \
 //	  go test -tags herdr_live ./internal/cli/ \
 //	  -run TestHerdrWorktreeSandbox_Live_ResolvesBaseImageAndBoots -v -count=1
 //
 // Prerequisites:
 //   - /dev/kvm available
-//   - NEXUS3_KERNEL_PATH set to a vmlinux image
-//   - nexus3-agent-base cached (else: `go run ./cmd/rebuild-agent-base`)
+//   - NEXUS_KERNEL_PATH set to a vmlinux image
+//   - nexus-agent-base cached (else: `go run ./cmd/rebuild-agent-base`)
 //   - git in PATH
 //
 // # Negative-control guide
@@ -50,10 +50,10 @@
 // To prove this test catches the ref-drift bug class:
 //
 //	# In cmd_herdr_plugin.go, break the default ref:
-//	sed -i 's/const herdrDefaultImage = "nexus3-agent-base"/const herdrDefaultImage = "nexus3-agent-BOGUS"/' \
+//	sed -i 's/const herdrDefaultImage = "nexus-agent-base"/const herdrDefaultImage = "nexus-agent-BOGUS"/' \
 //	    internal/cli/cmd_herdr_plugin.go
 //	go test -tags herdr_live ./internal/cli/ -run TestHerdrWorktreeSandbox_Live -v -count=1
-//	# FAIL: herdrResolveWorktreeImage returned image "nexus3-agent-BOGUS", want "nexus3-agent-base"
+//	# FAIL: herdrResolveWorktreeImage returned image "nexus-agent-BOGUS", want "nexus-agent-base"
 //	# Revert before continuing.
 package cli
 
@@ -66,20 +66,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
-// worktreeLiveStateHome resolves the durable state dir the real nexus3 image
+// worktreeLiveStateHome resolves the durable state dir the real nexus image
 // store lives under, so the create subprocess can reach the operator's cached
-// nexus3-agent-base image.
+// nexus-agent-base image.
 //
 // This package's TestMain clobbers XDG_STATE_HOME to a throwaway temp dir for
 // the whole run, so reading XDG_STATE_HOME in-process yields the empty temp
 // store — never the operator's real one. HOME is NOT clobbered in-process, so we
 // derive the real state dir from it (store.DefaultRoot's fallback layout), with
-// NEXUS3_WT_LIVE_STATE_HOME as an escape hatch for a custom XDG layout.
+// NEXUS_WT_LIVE_STATE_HOME as an escape hatch for a custom XDG layout.
 func worktreeLiveStateHome() string {
-	if v := os.Getenv("NEXUS3_WT_LIVE_STATE_HOME"); v != "" {
+	if v := os.Getenv("NEXUS_WT_LIVE_STATE_HOME"); v != "" {
 		return v
 	}
 	if h := os.Getenv("HOME"); h != "" {
@@ -88,15 +88,15 @@ func worktreeLiveStateHome() string {
 	return ""
 }
 
-// baseImageCached reports whether an image with ref nexus3-agent-base is present
-// in the operator's real image store (<state>/nexus3/images).
+// baseImageCached reports whether an image with ref nexus-agent-base is present
+// in the operator's real image store (<state>/nexus/images).
 func baseImageCached(t *testing.T, ref string) bool {
 	t.Helper()
 	state := worktreeLiveStateHome()
 	if state == "" {
 		return false
 	}
-	cacheRoot := filepath.Join(state, "nexus3", "images")
+	cacheRoot := filepath.Join(state, "nexus", "images")
 	cache, err := image.NewCache(cacheRoot)
 	if err != nil {
 		t.Logf("open image cache %s: %v", cacheRoot, err)
@@ -115,7 +115,7 @@ func baseImageCached(t *testing.T, ref string) bool {
 	return false
 }
 
-// worktreeLiveCmd builds a nexus3 subprocess with XDG_STATE_HOME pinned to the
+// worktreeLiveCmd builds a nexus subprocess with XDG_STATE_HOME pinned to the
 // real state dir so `sandbox create`/`exec`/`rm` address the operator's real
 // image store even though this package's TestMain clobbered XDG_STATE_HOME.
 func worktreeLiveCmd(binary string, args ...string) *exec.Cmd {
@@ -136,14 +136,14 @@ func worktreeLiveCmd(binary string, args ...string) *exec.Cmd {
 }
 
 func TestHerdrWorktreeSandbox_Live_ResolvesBaseImageAndBoots(t *testing.T) {
-	if os.Getenv("NEXUS3_LIVE_REQUIRED") == "" {
-		t.Skip("set NEXUS3_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
+	if os.Getenv("NEXUS_LIVE_REQUIRED") == "" {
+		t.Skip("set NEXUS_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
 	}
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		liveSkip(t, "worktree-live: /dev/kvm not available: %v", err)
 	}
-	if os.Getenv("NEXUS3_KERNEL_PATH") == "" {
-		liveSkip(t, "worktree-live: NEXUS3_KERNEL_PATH is not set; set it to a vmlinux image")
+	if os.Getenv("NEXUS_KERNEL_PATH") == "" {
+		liveSkip(t, "worktree-live: NEXUS_KERNEL_PATH is not set; set it to a vmlinux image")
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		liveSkip(t, "worktree-live: git not in PATH: %v", err)
@@ -152,13 +152,13 @@ func TestHerdrWorktreeSandbox_Live_ResolvesBaseImageAndBoots(t *testing.T) {
 		liveSkip(t, "worktree-live: %q not cached — run `go run ./cmd/rebuild-agent-base`", herdrDefaultImage)
 	}
 
-	// Build the nexus3 binary.
+	// Build the nexus binary.
 	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "nexus3-worktree-live")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
+	binary := filepath.Join(binDir, "nexus-worktree-live")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus")
 	build.Dir = filepath.Join("..", "..")
 	if out, err := build.CombinedOutput(); err != nil {
-		liveSkip(t, "worktree-live: nexus3 binary cannot be built: %v\n%s", err, out)
+		liveSkip(t, "worktree-live: nexus binary cannot be built: %v\n%s", err, out)
 	}
 
 	// --- Build a REAL linked git worktree. ---
@@ -180,7 +180,7 @@ func TestHerdrWorktreeSandbox_Live_ResolvesBaseImageAndBoots(t *testing.T) {
 		}
 	}
 	git(mainDir, "init")
-	git(mainDir, "config", "user.email", "worktree-live@nexus3.test")
+	git(mainDir, "config", "user.email", "worktree-live@nexus.test")
 	git(mainDir, "config", "user.name", "worktree-live")
 	if err := os.WriteFile(filepath.Join(mainDir, "README"), []byte("worktree-live tracer\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
@@ -223,18 +223,18 @@ func TestHerdrWorktreeSandbox_Live_ResolvesBaseImageAndBoots(t *testing.T) {
 	t.Cleanup(func() {
 		rmOut, rmErr := worktreeLiveCmd(binary, "rm", handle).CombinedOutput()
 		if rmErr != nil {
-			t.Logf("cleanup: nexus3 rm %s: %v\n%s", handle, rmErr, rmOut)
+			t.Logf("cleanup: nexus rm %s: %v\n%s", handle, rmErr, rmOut)
 		} else {
-			t.Logf("cleanup: nexus3 rm %s: %s", handle, rmOut)
+			t.Logf("cleanup: nexus rm %s: %s", handle, rmOut)
 		}
 	})
 
-	// --- Core proof: real `sandbox create` resolves nexus3-agent-base and boots. ---
+	// --- Core proof: real `sandbox create` resolves nexus-agent-base and boots. ---
 	createArgs := append([]string{"sandbox", "create"}, args...)
 	createOut, createErr := worktreeLiveCmd(binary, createArgs...).CombinedOutput()
-	t.Logf("nexus3 sandbox create:\n%s", createOut)
+	t.Logf("nexus sandbox create:\n%s", createOut)
 	if createErr != nil {
-		t.Fatalf("nexus3 sandbox create: %v\n%s\n(check NEXUS3_KERNEL_PATH and that %q is cached)",
+		t.Fatalf("nexus sandbox create: %v\n%s\n(check NEXUS_KERNEL_PATH and that %q is cached)",
 			createErr, createOut, imageVal)
 	}
 	// The exact failure this test guards against must not reappear silently.
@@ -251,9 +251,9 @@ grep -q 'worktree-live tracer' /workspace/README || { echo "FAIL: README content
 echo ` + tracerToken + `
 `
 	execOut, execErr := worktreeLiveCmd(binary, "exec", handle, "--", "/bin/bash", "-c", script).CombinedOutput()
-	t.Logf("nexus3 exec (liveness):\n%s", execOut)
+	t.Logf("nexus exec (liveness):\n%s", execOut)
 	if execErr != nil {
-		t.Fatalf("nexus3 exec %s: %v\n%s", handle, execErr, execOut)
+		t.Fatalf("nexus exec %s: %v\n%s", handle, execErr, execOut)
 	}
 	if !bytes.Contains(execOut, []byte(tracerToken)) {
 		t.Errorf("tracer token %q absent — guest did not boot cleanly or worktree not mounted\n%s", tracerToken, execOut)

@@ -20,7 +20,7 @@
 | Grow target | 912 MiB requested (`desired_ram: 956301312`) → 400 MiB added |
 | Initramfs | Alpine minirootfs with custom `/init` (prints `/proc/meminfo` every 2 s) |
 
-The probe drove the CH REST API directly (no nexus3 driver code). Each leg started a fresh VMM process, called `PUT /api/v1/vm.create` then `PUT /api/v1/vm.boot`, optionally `PUT /api/v1/vm.resize`, and collected serial-console meminfo output.
+The probe drove the CH REST API directly (no nexus driver code). Each leg started a fresh VMM process, called `PUT /api/v1/vm.create` then `PUT /api/v1/vm.boot`, optionally `PUT /api/v1/vm.resize`, and collected serial-console meminfo output.
 
 ---
 
@@ -76,7 +76,7 @@ PUT /api/v1/vm.boot    → HTTP 204
 
 Guest booted, `PROBE_BOOT` marker seen in serial. `virtio_mem virtio1` enumerated identically to Leg 1. MemTotal: **496060 kB (484 MiB)**.
 
-**Finding**: nexus3's balloon config (`size=0`, `deflate_on_oom=true`, `free_page_reporting=true`) coexists cleanly with a VirtioMem hotplug region. CH does not reject the combination and the guest kernel enumerates both devices.
+**Finding**: nexus's balloon config (`size=0`, `deflate_on_oom=true`, `free_page_reporting=true`) coexists cleanly with a VirtioMem hotplug region. CH does not reject the combination and the guest kernel enumerates both devices.
 
 ---
 
@@ -125,7 +125,7 @@ PUT /api/v1/vm.boot    → HTTP 204
 
 Guest serial shows nested KVM messages and virtio_mem enumeration. MemTotal: **496060 kB (484 MiB)**.
 
-**Finding**: All three constraints nexus3 carries (VirtioMem hotplug region, balloon with deflate_on_oom + free_page_reporting, nested=true) coexist simultaneously on CH v52.0. No rejection, no interaction failure.
+**Finding**: All three constraints nexus carries (VirtioMem hotplug region, balloon with deflate_on_oom + free_page_reporting, nested=true) coexist simultaneously on CH v52.0. No rejection, no interaction failure.
 
 ---
 
@@ -196,7 +196,7 @@ virtio_mem serial messages:
 
 MemTotal stayed at 496060 kB for all 7 readings (boot through 14 s after resize).
 
-**Finding**: Without `memhp_default_state=online` on the kernel cmdline, the CH API call succeeds and the virtio-mem device receives the plug request (`requested size: 0x19000000`) but the guest kernel never onlines the blocks — `plugged size` stays at `0x0`. The guest sees no change in `MemTotal`. This is the exact trap described in the spike spec: `vm.resize` returning HTTP 204 is NOT sufficient evidence that memory grew. The cmdline params are **required**, not optional. Because `CONFIG_MEMORY_HOTPLUG_DEFAULT_ONLINE` is not set in the nexus3 kernel config (`:895`), there is no fallback.
+**Finding**: Without `memhp_default_state=online` on the kernel cmdline, the CH API call succeeds and the virtio-mem device receives the plug request (`requested size: 0x19000000`) but the guest kernel never onlines the blocks — `plugged size` stays at `0x0`. The guest sees no change in `MemTotal`. This is the exact trap described in the spike spec: `vm.resize` returning HTTP 204 is NOT sufficient evidence that memory grew. The cmdline params are **required**, not optional. Because `CONFIG_MEMORY_HOTPLUG_DEFAULT_ONLINE` is not set in the nexus kernel config (`:895`), there is no fallback.
 
 ---
 
@@ -264,7 +264,7 @@ MemTotal:         496060 kB   ← after shrink (3 readings)
 
 2. **Cmdline params are required, not optional**: append `memhp_default_state=online memory_hotplug.online_policy=auto-movable` to every cmdline that carries a hotplug region. Leg 6 proves that omitting them causes vm.resize to silently succeed without the guest seeing any memory growth. The second param (`auto-movable`) is also required for the shrink path to work (Leg 7): movable-zoned blocks can be migrated out before unplug; non-movable blocks cannot.
 
-3. **Balloon coexistence and nested=true coexistence are both confirmed** (Legs 2, 3, 4). These were the two nexus3-specific unknowns that OLD-nexus never exercised. No CH API changes are needed to accommodate them.
+3. **Balloon coexistence and nested=true coexistence are both confirmed** (Legs 2, 3, 4). These were the two nexus-specific unknowns that OLD-nexus never exercised. No CH API changes are needed to accommodate them.
 
 4. **The shrink path works** (Leg 7 PASS). The design can offer shrink-back (cost optimisation) without requiring an additional feasibility spike. Whether to expose it in the governor is a policy decision, not a feasibility constraint.
 
@@ -288,7 +288,7 @@ The only scenario that could change this verdict is a CH rejection of the combin
 | Leg 6 serial | `scratchpad/probe/serial-leg6.log` |
 | Leg 7 serial | `scratchpad/probe/serial-leg7.log` |
 
-Scratchpad root: `/tmp/claude-1003/-home-newman-magic-nexus3/936bbf09-eada-4f11-b138-c0c58f820d1b/scratchpad/probe/`
+Scratchpad root: `/tmp/claude-1003/-home-newman-magic-nexus/936bbf09-eada-4f11-b138-c0c58f820d1b/scratchpad/probe/`
 
 ---
 
@@ -296,7 +296,7 @@ Scratchpad root: `/tmp/claude-1003/-home-newman-magic-nexus3/936bbf09-eada-4f11-
 
 **Date**: 2026-08-14  
 **Branch**: milestone-a-agent-sandbox  
-**Operator**: junior orchestrator (nexus3 live-verification domain)
+**Operator**: junior orchestrator (nexus live-verification domain)
 
 ## Sub-part 1 — Observability gap fix (DONE, unit-proven)
 
@@ -322,7 +322,7 @@ Additionally, `buildOrcaSpawnConfig` (the only production call site for `SpawnDe
 
 2. `internal/supervisor/spawn_linux.go` — Add `--cmdline` flag to `buildSupervisorArgv` when `cfg.Cmdline != ""`.
 
-3. `cmd/nexus3/supervisor_linux.go` — Add `--cmdline` flag parsing; wire into `cfg.Cmdline`.
+3. `cmd/nexus/supervisor_linux.go` — Add `--cmdline` flag parsing; wire into `cfg.Cmdline`.
 
 4. `internal/cli/cmd_orca.go` — Update `buildOrcaSpawnConfig` to accept `guestPath string`; compute workspace mount cmdline + auto-resize PID-1 args and populate `Config.Cmdline`. Update the production call site to extract `guestPath` from `opts.Workspace.GuestPath`.
 
@@ -336,10 +336,10 @@ Additionally, `buildOrcaSpawnConfig` (the only production call site for `SpawnDe
 $ TMPDIR=/tmp go build ./...
 (no output — clean build)
 
-$ TMPDIR=/tmp go test ./internal/supervisor/... ./internal/cli/... ./cmd/nexus3-agent/...
-ok   github.com/IniZio/nexus3/internal/supervisor    0.010s
-ok   github.com/IniZio/nexus3/internal/cli          31.581s
-ok   github.com/IniZio/nexus3/cmd/nexus3-agent      (cached)
+$ TMPDIR=/tmp go test ./internal/supervisor/... ./internal/cli/... ./cmd/nexus-agent/...
+ok   github.com/IniZio/nexus/internal/supervisor    0.010s
+ok   github.com/IniZio/nexus/internal/cli          31.581s
+ok   github.com/IniZio/nexus/cmd/nexus-agent      (cached)
 
 $ TMPDIR=/tmp go test -run TestOrcaSpawnConfig ./internal/cli/... -v
 # 2 passed
@@ -375,7 +375,7 @@ Run command: `TMPDIR=/tmp go test -tags=integration -run TestAutoResizeMemGrow .
 
 **Guest `/proc/cmdline` (verbatim):**
 ```
-root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0 memhp_default_state=online memory_hotplug.online_policy=auto-movable -- --mem-ceiling=1073741824
+root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0 memhp_default_state=online memory_hotplug.online_policy=auto-movable -- --mem-ceiling=1073741824
 ```
 
 **Telemetry sequence (vsock:3002):**
@@ -455,7 +455,7 @@ WorkspaceDiskIndex=1, DiskMaxBytes=512 MiB. Workspace filled to 81.8% (140 MiB /
 **Finding CH-RESIZE-400 (root-cause corrected — CLOSED):** The test observed HTTP 400 from
 `vm.resize-disk`. The original theory — that `Direct:true` at `driver.go:708` makes virtio-blk
 disks unresizable — was **disproven**: `Direct:true` is still set at `driver.go:708` and disks
-resize correctly after the fix. The actual cause was a JSON field-name mismatch: nexus3 was
+resize correctly after the fix. The actual cause was a JSON field-name mismatch: nexus was
 sending `"size"` in the request body where CH v52.0's `VmResizeDisk` schema requires
 `"desired_size"` (fixed at `client.go:231-233`; live-proven with `HTTP/1.1 204` against a
 real CH v52.0 socket). The rollback path (`driver_resize.go:214-221`) still fires correctly

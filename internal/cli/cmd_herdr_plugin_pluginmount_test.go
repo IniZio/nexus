@@ -17,7 +17,7 @@ func TestHerdrWorktreePluginMounts(t *testing.T) {
 	if err := os.MkdirAll(ext, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(ext, filepath.Join(pluginsDir, "nexus3")); err != nil {
+	if err := os.Symlink(ext, filepath.Join(pluginsDir, "nexus")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(tmp, "missing"), filepath.Join(pluginsDir, "dangling")); err != nil {

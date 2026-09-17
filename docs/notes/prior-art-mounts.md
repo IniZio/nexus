@@ -2,7 +2,7 @@
 
 **Scope:** How comparable tools expose live host directory mounts to a guest VM.  
 **Central question:** What happens when a running VM with a host mount is forked or snapshotted?  
-**Status of nexus3 live mounts:** UNBUILT as of 2026-08-18. This document describes other systems only.
+**Status of nexus live mounts:** UNBUILT as of 2026-08-18. This document describes other systems only.
 
 ---
 
@@ -247,7 +247,7 @@ read-write.
 
 ---
 
-## 4. What nexus3 should copy, what it should not, and why
+## 4. What nexus should copy, what it should not, and why
 
 ### Copy
 
@@ -258,42 +258,42 @@ one flag forces callers to reason about lifetime semantics.
 
 **4.2 Read-only as a first-class option (microsandbox).**  
 `:ro` in the options block is the established convention (Docker, microsandbox,
-Lima). nexus3 should accept `ro` in the mount option string and enforce it at
+Lima). nexus should accept `ro` in the mount option string and enforce it at
 the virtiofs layer, not only trust the guest to honour it.
 
 **4.3 Disk checkpoint refusal on running VMs (microsandbox, gondolin).**  
-Both tools refuse to snapshot a running sandbox. nexus3's ratified refusal to
+Both tools refuse to snapshot a running sandbox. nexus's ratified refusal to
 snapshot or fork a sandbox that has live mounts (D-PD-53) is consistent with
 this prior art and goes one step further: rather than snapshotting without the
-mount (which leaves the snapshot ambiguously useful), nexus3 refuses the entire
+mount (which leaves the snapshot ambiguously useful), nexus refuses the entire
 operation. That is the correct position.
 
 **4.4 Mounts are re-specified at boot, not stored in the snapshot (microsandbox,
 gondolin).**  
 Neither system serialises mount configuration into the snapshot artifact.
-nexus3 should not attempt to do so either. A snapshot captures the guest disk;
+nexus should not attempt to do so either. A snapshot captures the guest disk;
 the caller re-mounts at boot time with the same or a different source.
 
 ### Do not copy
 
 **4.5 Unlimited concurrent RW on directory volumes (microsandbox `kind=dir` policy).**  
 microsandbox allows unlimited concurrent rw mounts of the same named dir volume
-and documents that conflicts are the caller's problem. For nexus3's use case —
+and documents that conflicts are the caller's problem. For nexus's use case —
 agent workflows where multiple agents could fork-and-mount the same working tree
 — silent concurrent-write conflicts are a correctness hazard (`.git/index.lock`
-deadlocks, mid-write file observations). nexus3's fork refusal on mounts
+deadlocks, mid-write file observations). nexus's fork refusal on mounts
 (D-PD-53) is the right divergence.
 
 **4.6 FUSE-backed VFS providers (gondolin pattern).**  
 gondolin's programmable JavaScript VFS layer is flexible but introduces a
-userspace IPC hop on every filesystem operation. nexus3 has already measured
+userspace IPC hop on every filesystem operation. nexus has already measured
 virtiofs (in-kernel passthroughfs, same as microsandbox uses) and ruled it the
 transport (D-PD-100). The FUSE intermediary adds latency for no benefit in
-nexus3's workload.
+nexus's workload.
 
 **4.7 No snapshot support for mounts at all (gondolin).**  
 Gondolin simply has no story for snapshotting a VM that has a VFS mount active.
-nexus3 should be explicit about the refusal rather than silent about it — a
+nexus should be explicit about the refusal rather than silent about it — a
 documented refusal (already ratified) is better than an undocumented gap.
 
 ---

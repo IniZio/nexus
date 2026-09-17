@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/supervisor/handoff"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/supervisor/handoff"
 )
 
 // handoffDialTimeout bounds how long performHandoff waits to reach the
@@ -41,7 +41,7 @@ type payloadBuilder func() (handoff.Payload, *os.File, error)
 // function specifically so a test can invoke the exact code path a real
 // handoff uses — the class of bug that let a motive-long, always-refusing
 // handoff pass every unit suite was every test hand-rolling its own payload
-// instead of calling this (motive nexus3-host-supervisor-hotswap, ticket 08
+// instead of calling this (motive nexus-host-supervisor-hotswap, ticket 08
 // gate finding). Any future field this function forgets to populate is a bug
 // that same test will catch; a hand-rolled payload in a test would not.
 //
@@ -95,7 +95,7 @@ func buildHandoffPayload(sup *perimeter.PerimeterSupervisor, sandboxRef string, 
 // mandatory (sup.HasMITMProxy). Deriving the predicate from the running
 // process rather than from the store record makes record/runtime divergence
 // structurally impossible instead of merely unreachable-by-inspection
-// (motive nexus3-host-supervisor-hotswap, ticket 14). Note the predicate is
+// (motive nexus-host-supervisor-hotswap, ticket 14). Note the predicate is
 // deliberately NOT `CAKeyPair() == nil`: see
 // [perimeter.PerimeterSupervisor.HasMITMProxy] for why that probe is a
 // security regression.

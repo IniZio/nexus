@@ -9,7 +9,7 @@ import (
 
 // PortForwardMuxVsockPort is the fixed vsock port the in-guest agent binds for
 // the generic port-forward multiplexer.  Must match portForwardMuxVsockPort in
-// cmd/nexus3-agent/port_forward.go.
+// cmd/nexus-agent/port_forward.go.
 const PortForwardMuxVsockPort uint32 = 3001
 
 // DialGuestPortForward resolves the sandbox identified by ref, dials the

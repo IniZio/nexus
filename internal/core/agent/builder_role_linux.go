@@ -15,7 +15,7 @@ import (
 const contextMountPoint = "/build-context"
 
 // RunBuilderRole executes the in-guest builder lifecycle. It is called from
-// cmd/nexus3-agent when the --builder-role flag is present. The VM must have
+// cmd/nexus-agent when the --builder-role flag is present. The VM must have
 // been booted with the following virtio-blk layout:
 //
 //	vda — builder rootfs (this VM's own disk)
@@ -33,7 +33,7 @@ const contextMountPoint = "/build-context"
 //     the virtio-blk backend before the host tears down the VMM.
 //  5. Unmount the context disk.
 //
-// On success RunBuilderRole returns nil. The caller (cmd/nexus3-agent) should
+// On success RunBuilderRole returns nil. The caller (cmd/nexus-agent) should
 // os.Exit(0) immediately after, letting the agent terminate cleanly.
 func RunBuilderRole(ctx context.Context, opts BuilderRoleOptions) error {
 	contextDev := opts.ContextDev
@@ -50,7 +50,7 @@ func RunBuilderRole(ctx context.Context, opts BuilderRoleOptions) error {
 	}
 	agentPath := opts.AgentPath
 	if agentPath == "" {
-		agentPath = "/sbin/nexus3-agent"
+		agentPath = "/sbin/nexus-agent"
 	}
 
 	// ── 1. Mount the context disk ─────────────────────────────────────────────

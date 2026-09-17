@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -857,7 +857,7 @@ func TestCreateAndBoot_LiveMounts_ReadOnly_EndToEnd(t *testing.T) {
 }
 
 func TestResolveExt4_ImageRefCacheMiss(t *testing.T) {
-	const fakeRef = "ghcr.io/inizio/nexus3-base:v0.1.1"
+	const fakeRef = "ghcr.io/inizio/nexus-base:v0.1.1"
 	const fakeAgent = "fakeagentbytes"
 
 	cacheDir := t.TempDir()
@@ -931,7 +931,7 @@ func TestResolveExt4_ImageRefCacheMiss_NoAgentBytes(t *testing.T) {
 		return "", nil
 	}
 
-	spec := ImageSpec{Ref: "ghcr.io/inizio/nexus3-base:latest"}
+	spec := ImageSpec{Ref: "ghcr.io/inizio/nexus-base:latest"}
 	_, _, err = resolveExt4(context.Background(), spec, cache, cacheDir, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")

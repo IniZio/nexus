@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // ── Fake DiskResizer ──────────────────────────────────────────────────────────

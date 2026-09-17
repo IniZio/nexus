@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // claudeCodeRecipe mirrors [cred.ClaudeCodeProfile].ToolRecipe as a local copy to avoid dependency on the live profile value.

@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
-// TBD-PD-39. `nexus3 stop` on a sandbox with a detached supervisor announced
+// TBD-PD-39. `nexus stop` on a sandbox with a detached supervisor announced
 // "stopped sandbox X" and emitted a `sandbox.stopped` envelope carrying
 // "state":"running" — a self-contradicting machine contract, reproduced in 2
 // of 3 live runs.

@@ -3,19 +3,19 @@ package service_test
 // start_perimeter_only_test.go verifies Service.StartPerimeterOnly, the seam
 // the supervisor's adopt-mode entrypoint (RunAdopt) uses in place of Start
 // when a VM predates the process and must not be rebooted (motive
-// nexus3-host-supervisor-hotswap, slice 07).
+// nexus-host-supervisor-hotswap, slice 07).
 
 import (
 	"context"
 	"net"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // TestStartPerimeterOnly_RefusesWhenNotRunning is the mutation-bearing proof

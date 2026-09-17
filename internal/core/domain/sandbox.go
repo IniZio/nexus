@@ -16,7 +16,7 @@ type StopReason string
 
 const (
 	// StopReasonClean indicates the sandbox was stopped by an explicit user
-	// command (e.g. `nexus3 stop`). All state was flushed cleanly; the
+	// command (e.g. `nexus stop`). All state was flushed cleanly; the
 	// sandbox is safe to restart.
 	StopReasonClean StopReason = "clean"
 
@@ -27,7 +27,7 @@ const (
 	StopReasonMemoryLost StopReason = "memory_lost"
 )
 
-// Sandbox is the ONE durable entity in nexus3. There is no separate VM or
+// Sandbox is the ONE durable entity in nexus. There is no separate VM or
 // instance entity; a running Sandbox IS the VM.
 type Sandbox struct {
 	// Identity
@@ -179,7 +179,7 @@ type Sandbox struct {
 	// (G2) use it as the base ref anchor.
 	//
 	// Empty for sandboxes created without a git workspace (no WorkspaceSpec) or
-	// before G1 was introduced. G2 (nexus3 bundle) fails fast when BaseRef is
+	// before G1 was introduced. G2 (nexus bundle) fails fast when BaseRef is
 	// absent on a motive sandbox — callers must check.
 	BaseRef string `json:"base_ref,omitempty"`
 
@@ -331,10 +331,10 @@ type Envelope struct {
 
 	// AllowedBranches is the list of git ref patterns the sandbox may push to
 	// through the host-side git MITM. Patterns support a trailing "/**" for
-	// namespace-prefix matching at any depth (e.g. "refs/heads/nexus3/**"),
+	// namespace-prefix matching at any depth (e.g. "refs/heads/nexus/**"),
 	// or standard path.Match single-segment "*" for explicit patterns
-	// (e.g. "refs/heads/nexus3/e2e/*"). When empty, ResolvedAllowedBranches
-	// returns the hardcoded default ["refs/heads/nexus3/**"].
+	// (e.g. "refs/heads/nexus/e2e/*"). When empty, ResolvedAllowedBranches
+	// returns the hardcoded default ["refs/heads/nexus/**"].
 	AllowedBranches []string `json:"allowed_branches,omitempty"`
 
 	// PathPolicies carries per-(placeholder, host) path restrictions frozen at
@@ -377,16 +377,16 @@ type EgressPathPolicies map[string]map[string]EgressHostPolicy
 // forbids in ref names, so it can never match a real push ref: every push is
 // denied (D-PD-38) until whatever broke branch derivation is fixed. This is
 // the fail-closed alternative to two unsafe options: falling back to the
-// nexus3-only default (wrong repo, and would incorrectly permit a push the
+// nexus-only default (wrong repo, and would incorrectly permit a push the
 // operator never scoped this sandbox for) or to an empty AllowedBranches
 // slice (which ResolvedAllowedBranches would treat as "unset" and again
 // apply the wrong default — see below).
 const UnresolvedBranchSentinel = "refs/heads/\x00unresolved"
 
 // ResolvedAllowedBranches returns AllowedBranches with the project default
-// applied when the field is empty. The default is ["refs/heads/nexus3/**"],
-// which permits any ref under the nexus3/ namespace at any depth — matching
-// the D-PD-03 convention nexus3/<motive-slug>/<sandbox-short-id>. It applies
+// applied when the field is empty. The default is ["refs/heads/nexus/**"],
+// which permits any ref under the nexus/ namespace at any depth — matching
+// the D-PD-03 convention nexus/<motive-slug>/<sandbox-short-id>. It applies
 // only to sandboxes with no workspace bound (nothing to derive a branch
 // from); the worktree-sandbox create path populates AllowedBranches
 // explicitly from the bound worktree's own branch (see
@@ -395,7 +395,7 @@ const UnresolvedBranchSentinel = "refs/heads/\x00unresolved"
 // than reading AllowedBranches directly.
 func (e Envelope) ResolvedAllowedBranches() []string {
 	if len(e.AllowedBranches) == 0 {
-		return []string{"refs/heads/nexus3/**"}
+		return []string{"refs/heads/nexus/**"}
 	}
 	out := make([]string, len(e.AllowedBranches))
 	copy(out, e.AllowedBranches)

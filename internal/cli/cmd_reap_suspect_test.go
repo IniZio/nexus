@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // reapSuspectFixture builds a fake procDir containing one synthetic netns-child
-// entry (NEXUS3_NETNS_RUN=1 with an unparseable socket path) that the sweep
+// entry (NEXUS_NETNS_RUN=1 with an unparseable socket path) that the sweep
 // will classify as Suspect: the process is owned by the test runner's uid
 // (procDir is a t.TempDir()), but the socket path does not parse as a sandbox
 // ID, so reap cannot rule out that it is an unrecorded orphan.
@@ -37,7 +37,7 @@ func reapSuspectFixture(t *testing.T) (store.Store, *service.ResourceIndex, serv
 	// Not a sandbox-id socket path → sandboxIDFromSocketPath will fail →
 	// classified as Suspect (fail-closed rail: cannot rule out orphan).
 	const notASocket = "/run/some-foreign-daemon.sock"
-	environ := "NEXUS3_NETNS_RUN=1\x00NEXUS3_NETNS_API_SOCKET=" + notASocket + "\x00PATH=/usr/bin\x00"
+	environ := "NEXUS_NETNS_RUN=1\x00NEXUS_NETNS_API_SOCKET=" + notASocket + "\x00PATH=/usr/bin\x00"
 	if err := os.WriteFile(filepath.Join(pidDir, "environ"), []byte(environ), 0o600); err != nil {
 		t.Fatalf("write environ: %v", err)
 	}
@@ -126,7 +126,7 @@ func reapUninspectableFixture(t *testing.T) (store.Store, *service.ResourceIndex
 	// file is only unreadable for a uid that is subject to the DAC check. Root
 	// holds CAP_DAC_OVERRIDE and reads it successfully, so under uid 0 the sweep
 	// parses the environ and reports the pid as an ORPHAN — the assertions in the
-	// tests below then cannot fail, and the coverage is vacuous. Every nexus3
+	// tests below then cannot fail, and the coverage is vacuous. Every nexus
 	// sandbox runs its tests as uid 0, so the chmod form was silently dead on the
 	// runner that matters most.
 	//
@@ -283,7 +283,7 @@ func TestRunReapFull_ApplyLeavesSuspectAlive(t *testing.T) {
 
 	pid := cmd.Process.Pid
 
-	// Write a synthetic /proc entry for the real PID: NEXUS3_NETNS_RUN=1 with
+	// Write a synthetic /proc entry for the real PID: NEXUS_NETNS_RUN=1 with
 	// an unparseable socket path → classified Suspect (fail-closed: socket path
 	// is not a sandbox ID, so reap cannot rule out orphan).
 	pidDir := filepath.Join(procDir, fmt.Sprintf("%d", pid))
@@ -291,7 +291,7 @@ func TestRunReapFull_ApplyLeavesSuspectAlive(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	const notASocket = "/run/some-foreign-daemon.sock"
-	environ := "NEXUS3_NETNS_RUN=1\x00NEXUS3_NETNS_API_SOCKET=" + notASocket + "\x00PATH=/usr/bin\x00"
+	environ := "NEXUS_NETNS_RUN=1\x00NEXUS_NETNS_API_SOCKET=" + notASocket + "\x00PATH=/usr/bin\x00"
 	if err := os.WriteFile(filepath.Join(pidDir, "environ"), []byte(environ), 0o600); err != nil {
 		t.Fatalf("write environ: %v", err)
 	}
@@ -434,7 +434,7 @@ func reapZombieFixture(t *testing.T) (store.Store, *service.ResourceIndex, servi
 
 // TestRunReapFull_JSONCarriesZombieCount verifies that the JSON envelope
 // includes zombie_processes as a distinct field (not merged into
-// uninspectable_processes), so machine callers can track the virtiofsd/nexus3
+// uninspectable_processes), so machine callers can track the virtiofsd/nexus
 // Wait() leak independently from other uninspectable processes.
 //
 // Mutation proof: in sweepOrphanNetnsProcesses change the zombie branch from

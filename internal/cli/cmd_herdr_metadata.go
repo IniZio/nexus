@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func herdrSocketPath(session string) string {
@@ -43,7 +43,7 @@ func reportForwardStatusToSocket(socketPath, workspaceID string, ports []uint16)
 		"method": "workspace.report_metadata",
 		"params": map[string]any{
 			"workspace_id": workspaceID,
-			"source":       "plugin:nexus3",
+			"source":       "plugin:nexus",
 			"tokens":       map[string]any{"port_forward_status": portVal},
 		},
 	}

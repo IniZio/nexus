@@ -10,7 +10,7 @@ import (
 	"context"
 )
 
-// sandboxListOutput is the JSON shape of `nexus3 --json sandbox list`.
+// sandboxListOutput is the JSON shape of `nexus --json sandbox list`.
 type sandboxListOutput struct {
 	Data struct {
 		Sandboxes []struct {
@@ -26,10 +26,10 @@ type sandboxListOutput struct {
 //
 // allowedHandles is the set of sandbox refs that are allowed to coexist.
 // Call this before every RunBuild invocation.
-func waitForBuilderFree(ctx context.Context, nexus3Bin string, allowedHandles map[string]struct{}) *ProbeResult {
+func waitForBuilderFree(ctx context.Context, nexusBin string, allowedHandles map[string]struct{}) *ProbeResult {
 	deadline := time.Now().Add(15 * time.Minute)
 	for {
-		blocked, reason, checkErr := checkBuilderBusy(nexus3Bin, allowedHandles)
+		blocked, reason, checkErr := checkBuilderBusy(nexusBin, allowedHandles)
 		if checkErr != nil {
 			// Check failure is non-fatal: log and proceed — the build's own
 			// preconditions will surface environment problems.
@@ -56,18 +56,18 @@ func waitForBuilderFree(ctx context.Context, nexus3Bin string, allowedHandles ma
 }
 
 // checkBuilderBusy returns (true, reason, nil) if another repro/* sandbox is
-// running. It checks via `nexus3 --json sandbox list` (authoritative) and
+// running. It checks via `nexus --json sandbox list` (authoritative) and
 // then cross-checks with pgrep for cloud-hypervisor processes that have a
 // repro sandbox handle in their command line (belt-and-suspenders).
-func checkBuilderBusy(nexus3Bin string, allowedHandles map[string]struct{}) (busy bool, reason string, err error) {
-	if nexus3Bin == "" {
-		nexus3Bin = "nexus3"
+func checkBuilderBusy(nexusBin string, allowedHandles map[string]struct{}) (busy bool, reason string, err error) {
+	if nexusBin == "" {
+		nexusBin = "nexus"
 	}
 
-	// Primary check: nexus3 sandbox list JSON.
-	out, err := exec.Command(nexus3Bin, "--json", "sandbox", "list").Output()
+	// Primary check: nexus sandbox list JSON.
+	out, err := exec.Command(nexusBin, "--json", "sandbox", "list").Output()
 	if err != nil {
-		return false, "", fmt.Errorf("nexus3 sandbox list: %w", err)
+		return false, "", fmt.Errorf("nexus sandbox list: %w", err)
 	}
 	var parsed sandboxListOutput
 	if jsonErr := json.Unmarshal(out, &parsed); jsonErr != nil {

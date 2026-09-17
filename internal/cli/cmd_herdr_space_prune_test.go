@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // noopRemoveSandbox is a no-op removeSandbox stub for existing prune tests
@@ -63,7 +63,7 @@ func TestHerdrSpacePrune_StaleSandbox(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:gone-sandbox",
+		SpaceLabel:       "nexus:gone-sandbox",
 		HerdrWorkspaceID: "wSTALE",
 		SandboxHandle:    "proj/gone",
 		SandboxID:        "sb-gone",
@@ -112,7 +112,7 @@ func TestHerdrSpacePrune_StaleWorkspace(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:alive-sandbox-gone-ws",
+		SpaceLabel:       "nexus:alive-sandbox-gone-ws",
 		HerdrWorkspaceID: "wGONE",
 		SandboxHandle:    "proj/alive",
 		SandboxID:        "sb-alive",
@@ -155,7 +155,7 @@ func TestHerdrSpacePrune_ValidBinding(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:keep-me",
+		SpaceLabel:       "nexus:keep-me",
 		HerdrWorkspaceID: "wKEEP",
 		SandboxHandle:    "proj/keep",
 		SandboxID:        "sb-keep",
@@ -196,7 +196,7 @@ func TestHerdrSpacePrune_DryRunPreservesAll(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:dry-run-stale",
+		SpaceLabel:       "nexus:dry-run-stale",
 		HerdrWorkspaceID: "wDRY",
 		SandboxHandle:    "proj/dry",
 		SandboxID:        "sb-dry",
@@ -242,9 +242,9 @@ func TestHerdrSpacePrune_MixedBindings(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 
-	b1 := HerdrSpaceBinding{SpaceLabel: "nexus3:a", HerdrWorkspaceID: "wA", SandboxHandle: "p/a", SandboxID: "sb-a"}
-	b2 := HerdrSpaceBinding{SpaceLabel: "nexus3:b", HerdrWorkspaceID: "wB", SandboxHandle: "p/b", SandboxID: "sb-b"}
-	b3 := HerdrSpaceBinding{SpaceLabel: "nexus3:c", HerdrWorkspaceID: "wC", SandboxHandle: "p/c", SandboxID: "sb-c"}
+	b1 := HerdrSpaceBinding{SpaceLabel: "nexus:a", HerdrWorkspaceID: "wA", SandboxHandle: "p/a", SandboxID: "sb-a"}
+	b2 := HerdrSpaceBinding{SpaceLabel: "nexus:b", HerdrWorkspaceID: "wB", SandboxHandle: "p/b", SandboxID: "sb-b"}
+	b3 := HerdrSpaceBinding{SpaceLabel: "nexus:c", HerdrWorkspaceID: "wC", SandboxHandle: "p/c", SandboxID: "sb-c"}
 	for _, b := range []HerdrSpaceBinding{b1, b2, b3} {
 		if err := HerdrSpacePut(ctx, root, b); err != nil {
 			t.Fatalf("HerdrSpacePut %s: %v", b.SpaceLabel, err)
@@ -516,7 +516,7 @@ func TestHerdrSpacePrune_NoHerdr_ApplyRefused(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:apply-guard",
+		SpaceLabel:       "nexus:apply-guard",
 		HerdrWorkspaceID: "wAPPLY",
 		SandboxHandle:    "proj/apply-guard",
 		SandboxID:        "sb-ag",
@@ -551,7 +551,7 @@ func TestHerdrSpacePrune_NoHerdr_DryRunAllowed(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:dry-no-herdr",
+		SpaceLabel:       "nexus:dry-no-herdr",
 		HerdrWorkspaceID: "wDNH",
 		SandboxHandle:    "proj/dry-no-herdr",
 		SandboxID:        "sb-dnh",
@@ -586,7 +586,7 @@ func TestHerdrSpacePruneFull_CloseFail_BindingRetained(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:close-fail",
+		SpaceLabel:       "nexus:close-fail",
 		HerdrWorkspaceID: "wFAIL",
 		SandboxHandle:    "proj/close-fail",
 		SandboxID:        "sb-cf",
@@ -628,7 +628,7 @@ func TestHerdrSpacePruneFull_CloseSucceeds_BindingDeleted(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:close-ok",
+		SpaceLabel:       "nexus:close-ok",
 		HerdrWorkspaceID: "wOK",
 		SandboxHandle:    "proj/close-ok",
 		SandboxID:        "sb-ok",
@@ -679,7 +679,7 @@ func TestHerdrSpacePruneWorkspaceExistsFn_AdoptedBinding(t *testing.T) {
 
 	// Adopted binding: HerdrWorkspaceID intentionally empty (see herdrSpaceAdopt).
 	adopted := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:adopted-live",
+		SpaceLabel:       "nexus:adopted-live",
 		SandboxHandle:    "proj/adopted-live",
 		SandboxID:        "sb-adopted-live",
 		HerdrWorkspaceID: "", // empty by design
@@ -736,7 +736,7 @@ func TestHerdrSpacePruneFull_DeleteFail_BindingRetained(t *testing.T) {
 	root := t.TempDir()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:delete-fail",
+		SpaceLabel:       "nexus:delete-fail",
 		HerdrWorkspaceID: "wDELFAIL",
 		SandboxHandle:    "proj/delete-fail",
 		SandboxID:        "sb-df",

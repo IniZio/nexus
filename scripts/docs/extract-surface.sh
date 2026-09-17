@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Extract the nexus3 CLI surface from source, with file:line for every claim.
+# Extract the nexus CLI surface from source, with file:line for every claim.
 #
-# Help is partial (bare `nexus3` lists commands on stderr; flag.FlagSet verbs
+# Help is partial (bare `nexus` lists commands on stderr; flag.FlagSet verbs
 # answer --help; hand-rolled groups like `sandbox` answer nothing), and flag
 # parsing is not uniform: some
 # commands declare flags via flag.FlagSet (fs.Bool("pty", ...)), others match
@@ -15,7 +15,7 @@ set -uo pipefail
 
 CLI_DIR="${1:-internal/cli}"
 
-printf '# nexus3 CLI surface inventory\n\n'
+printf '# nexus CLI surface inventory\n\n'
 printf 'Generated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf 'Source: `%s` at commit `%s`\n\n' "$CLI_DIR" "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 printf 'Every entry carries file:line. Regenerate with `scripts/docs/extract-surface.sh`.\n'

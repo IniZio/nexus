@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 type fakeDefaultShellGetter struct {
@@ -74,7 +74,7 @@ func makeBindings(t *testing.T, storeRoot string, bindings []HerdrSpaceBinding) 
 }
 
 var testBinding = HerdrSpaceBinding{
-	SpaceLabel:       "nexus3:ac3/testbox",
+	SpaceLabel:       "nexus:ac3/testbox",
 	HerdrWorkspaceID: "wXX",
 	SandboxHandle:    "ac3/testbox",
 	SandboxID:        "sb-TESTID",
@@ -87,7 +87,7 @@ func runCore(
 	svc sandboxGetter,
 	execFn herdrExecFn,
 ) error {
-	return herdrDefaultShellCore(ctx, getenv, storeRoot, svc, "/fake/nexus3", execFn)
+	return herdrDefaultShellCore(ctx, getenv, storeRoot, svc, "/fake/nexus", execFn)
 }
 
 // TestHerdrDefaultShell_BoundWorkspace verifies that a workspace bound to a
@@ -126,8 +126,8 @@ func TestHerdrDefaultShell_BoundWorkspace(t *testing.T) {
 		t.Fatalf("exec called %d times, want 1", cap.calls)
 	}
 
-	if cap.argv0 != "/fake/nexus3" {
-		t.Errorf("argv0 = %q, want /fake/nexus3 (nexus3 binary for re-exec)", cap.argv0)
+	if cap.argv0 != "/fake/nexus" {
+		t.Errorf("argv0 = %q, want /fake/nexus (nexus binary for re-exec)", cap.argv0)
 	}
 	if len(cap.argv) < 2 || cap.argv[1] != "exec" {
 		t.Errorf("argv[1] = %q, want \"exec\"", safeIdx(cap.argv, 1))
@@ -181,7 +181,7 @@ func TestHerdrDefaultShell_NoWorkspaceID(t *testing.T) {
 // shell to be exec'd.
 //
 // Mutation proof: remove the !found guard → test fails because the zero-value
-// binding (empty SandboxHandle) is used, and exec is called with the nexus3
+// binding (empty SandboxHandle) is used, and exec is called with the nexus
 // binary and an empty handle.
 func TestHerdrDefaultShell_WorkspaceNotInBindings(t *testing.T) {
 	root := t.TempDir()
@@ -262,8 +262,8 @@ func TestHerdrDefaultShell_BindingsFileMalformed(t *testing.T) {
 	assertHostShell(t, cap, "/bin/zsh")
 }
 
-// TestHerdrDefaultShell_PlainNexus3WorkspaceNoBinding tests the w8-shaped
-// case: a workspace whose label would be plain "nexus3" (no colon) has no
+// TestHerdrDefaultShell_PlainNexusWorkspaceNoBinding tests the w8-shaped
+// case: a workspace whose label would be plain "nexus" (no colon) has no
 // binding in the file. The workspace ID is simply not present, so the host
 // shell is chosen. This confirms nothing in the lookup accidentally matches on
 // partial label fields.
@@ -271,11 +271,11 @@ func TestHerdrDefaultShell_BindingsFileMalformed(t *testing.T) {
 // Note: we match by HerdrWorkspaceID, not by SpaceLabel, so label format is
 // irrelevant here — the real guard is the absence of a binding entry for that
 // workspace ID.
-func TestHerdrDefaultShell_PlainNexus3WorkspaceNoBinding(t *testing.T) {
+func TestHerdrDefaultShell_PlainNexusWorkspaceNoBinding(t *testing.T) {
 	root := t.TempDir()
 	makeBindings(t, root, []HerdrSpaceBinding{
 		{
-			SpaceLabel:       "nexus3:ac3/testbox",
+			SpaceLabel:       "nexus:ac3/testbox",
 			HerdrWorkspaceID: "wXX",
 			SandboxHandle:    "ac3/testbox",
 			SandboxID:        "sb-TESTID",
@@ -286,7 +286,7 @@ func TestHerdrDefaultShell_PlainNexus3WorkspaceNoBinding(t *testing.T) {
 	getenv := func(k string) string {
 		switch k {
 		case "HERDR_WORKSPACE_ID":
-			return "w8" // operator's own workspace — no nexus3 binding
+			return "w8" // operator's own workspace — no nexus binding
 		case "SHELL":
 			return "/bin/bash"
 		}
@@ -299,11 +299,11 @@ func TestHerdrDefaultShell_PlainNexus3WorkspaceNoBinding(t *testing.T) {
 	assertHostShell(t, cap, "/bin/bash")
 }
 
-// TestHerdrDefaultShell_EscapeHatch verifies that NEXUS3_HOST_SHELL=1 forces
+// TestHerdrDefaultShell_EscapeHatch verifies that NEXUS_HOST_SHELL=1 forces
 // the host shell even when a valid binding exists.
 //
-// Mutation proof: remove the NEXUS3_HOST_SHELL guard in herdrDefaultShellCore
-// → test fails because exec is called with the nexus3 binary (guest exec path)
+// Mutation proof: remove the NEXUS_HOST_SHELL guard in herdrDefaultShellCore
+// → test fails because exec is called with the nexus binary (guest exec path)
 // instead of the host shell.
 func TestHerdrDefaultShell_EscapeHatch(t *testing.T) {
 	root := t.TempDir()
@@ -319,7 +319,7 @@ func TestHerdrDefaultShell_EscapeHatch(t *testing.T) {
 	cap := &capturedExec{}
 	getenv := func(k string) string {
 		switch k {
-		case "NEXUS3_HOST_SHELL":
+		case "NEXUS_HOST_SHELL":
 			return "1"
 		case "HERDR_WORKSPACE_ID":
 			return "wXX"
@@ -381,8 +381,8 @@ func TestHerdrDefaultShell_NilServiceFallsBackToCwd(t *testing.T) {
 	if err := runCore(context.Background(), getenv, root, nil /* svc=nil */, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cap.argv0 != "/fake/nexus3" {
-		t.Errorf("argv0 = %q, want /fake/nexus3 (guest exec)", cap.argv0)
+	if cap.argv0 != "/fake/nexus" {
+		t.Errorf("argv0 = %q, want /fake/nexus (guest exec)", cap.argv0)
 	}
 	cwdIdx := argvIndexOf(cap.argv, "--cwd")
 	if cwdIdx < 0 || cwdIdx+1 >= len(cap.argv) || cap.argv[cwdIdx+1] != "/root" {
@@ -404,7 +404,7 @@ func assertHostShell(t *testing.T, cap *capturedExec, wantShell string) {
 	}
 	// Must not contain "exec" subcommand — that would indicate the guest path.
 	if len(cap.argv) > 1 && cap.argv[1] == "exec" {
-		t.Errorf("host shell exec must not use nexus3 exec subcommand; argv = %v", cap.argv)
+		t.Errorf("host shell exec must not use nexus exec subcommand; argv = %v", cap.argv)
 	}
 }
 
@@ -436,11 +436,11 @@ func argvIndexOf(argv []string, s string) int {
 // TestHerdrDefaultShell_GuestNotDialable verifies that when the sandbox record
 // says Running but the vsock dial fails (e.g. substrate/driver not resolved
 // because PATH lacks the hypervisor binary), the host shell is exec'd rather
-// than attempting "nexus3 exec --pty" after the point of no return.
+// than attempting "nexus exec --pty" after the point of no return.
 //
 // This covers the CRITICAL gap: reproduced live as:
 //
-//	env -i HOME=... PATH=/usr/bin:/bin HERDR_WORKSPACE_ID=w34 ~/.local/bin/nexus3-guest-shell
+//	env -i HOME=... PATH=/usr/bin:/bin HERDR_WORKSPACE_ID=w34 ~/.local/bin/nexus-guest-shell
 //	→ error: exec: service: agent: driver "none" does not support guest dialing:
 //	        service: no substrate configured
 //
@@ -448,8 +448,8 @@ func argvIndexOf(argv []string, s string) int {
 //
 // Mutation proof: remove the `if d, ok := svc.(sandboxDialer); ok` block (or
 // its `dialErr != nil` return) in herdrDefaultShellCore → execFn is called
-// with "/fake/nexus3" as argv0 (the guest exec path). assertHostShell checks
-// argv0 == "/bin/bash" but gets "/fake/nexus3" → RED.
+// with "/fake/nexus" as argv0 (the guest exec path). assertHostShell checks
+// argv0 == "/bin/bash" but gets "/fake/nexus" → RED.
 func TestHerdrDefaultShell_GuestNotDialable(t *testing.T) {
 	root := t.TempDir()
 	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
@@ -525,8 +525,8 @@ func TestHerdrDefaultShell_GuestDialable(t *testing.T) {
 	if err := runCore(context.Background(), getenv, root, svc, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cap.argv0 != "/fake/nexus3" {
-		t.Errorf("argv0 = %q, want /fake/nexus3 (guest exec after successful dial)", cap.argv0)
+	if cap.argv0 != "/fake/nexus" {
+		t.Errorf("argv0 = %q, want /fake/nexus (guest exec after successful dial)", cap.argv0)
 	}
 	if !svc.dialed {
 		t.Error("DialGuest was never called — dialability check not exercised")
@@ -545,12 +545,12 @@ func TestHerdrDefaultShell_GuestDialable(t *testing.T) {
 // The probe is skipped in all unit tests (herdrSkipInstallProbeForTest=true),
 // so a broken probe (wrong Args, misspelled env key) would install a shell
 // that silently fails. This test covers those invariants:
-//   - Args[0] == "nexus3-guest-shell" triggers the argv[0] dispatch in main.go
-//   - NEXUS3_HOST_SHELL=1 causes herdrDefaultShellCore to exec $SHELL immediately
+//   - Args[0] == "nexus-guest-shell" triggers the argv[0] dispatch in main.go
+//   - NEXUS_HOST_SHELL=1 causes herdrDefaultShellCore to exec $SHELL immediately
 //   - SHELL=/bin/true gives a clean exit 0 to confirm the dispatch works
 //
-// Mutation proof: change Args[0] from "nexus3-guest-shell" to "nexus3" in
-// herdrInstallProbeCmd → test fails because Args[0] != "nexus3-guest-shell" → RED.
+// Mutation proof: change Args[0] from "nexus-guest-shell" to "nexus" in
+// herdrInstallProbeCmd → test fails because Args[0] != "nexus-guest-shell" → RED.
 func TestHerdrInstallDefaultShell_ProbeStructure(t *testing.T) {
 	cmd := herdrInstallProbeCmd("/fake/install/path")
 
@@ -561,14 +561,14 @@ func TestHerdrInstallDefaultShell_ProbeStructure(t *testing.T) {
 			cmd.Path, "/fake/install/path")
 	}
 
-	if len(cmd.Args) == 0 || cmd.Args[0] != "nexus3-guest-shell" {
-		t.Errorf("probe Args[0] = %q, want \"nexus3-guest-shell\" (argv[0] dispatch trigger)",
+	if len(cmd.Args) == 0 || cmd.Args[0] != "nexus-guest-shell" {
+		t.Errorf("probe Args[0] = %q, want \"nexus-guest-shell\" (argv[0] dispatch trigger)",
 			safeIdx(cmd.Args, 0))
 	}
 
 	var hasHostShell, hasShellBin bool
 	for _, e := range cmd.Env {
-		if e == "NEXUS3_HOST_SHELL=1" {
+		if e == "NEXUS_HOST_SHELL=1" {
 			hasHostShell = true
 		}
 		if e == "SHELL=/bin/true" {
@@ -576,7 +576,7 @@ func TestHerdrInstallDefaultShell_ProbeStructure(t *testing.T) {
 		}
 	}
 	if !hasHostShell {
-		t.Error("probe Env missing NEXUS3_HOST_SHELL=1 — escape hatch will not fire; probe hangs on stdin")
+		t.Error("probe Env missing NEXUS_HOST_SHELL=1 — escape hatch will not fire; probe hangs on stdin")
 	}
 	if !hasShellBin {
 		t.Error("probe Env missing SHELL=/bin/true — probe will not get a clean exit 0")
@@ -606,8 +606,8 @@ func TestHerdrDefaultShell_ShellFallbackToSlashSh(t *testing.T) {
 }
 
 // TestHerdrInstallDefaultShell verifies that install-default-shell creates a
-// hard link (or copy) of the nexus3 binary at ~/.local/bin/nexus3-guest-shell,
-// writes the sidecar with the nexus3 binary path, and prints the config snippet.
+// hard link (or copy) of the nexus binary at ~/.local/bin/nexus-guest-shell,
+// writes the sidecar with the nexus binary path, and prints the config snippet.
 //
 // The installed file is a binary, not a shell script — no PATH lookup at
 // runtime (CRITICAL 1), and survives rebuilds via hard-link inode decoupling
@@ -621,7 +621,7 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 		t.Fatalf("install-default-shell: %v", err)
 	}
 
-	installPath := filepath.Join(tmpHome, ".local", "bin", "nexus3-guest-shell")
+	installPath := filepath.Join(tmpHome, ".local", "bin", "nexus-guest-shell")
 	sidecarPath := installPath + herdrSidecarSuffix // MAJOR 8: single constant, no divergence
 
 	info, err := os.Stat(installPath)
@@ -661,7 +661,7 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 		}
 	}
 
-	// Sidecar must exist and line 1 must equal the real nexus3 binary path
+	// Sidecar must exist and line 1 must equal the real nexus binary path
 	// dead pane — the only unsafe corruption that bypasses fail-open.
 	sidecarData, err := os.ReadFile(sidecarPath)
 	if err != nil {
@@ -670,7 +670,7 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 	lines := strings.SplitN(strings.TrimRight(string(sidecarData), "\n"), "\n", 2)
 	expectedBin, _ := os.Executable()
 	if len(lines) == 0 || lines[0] != expectedBin {
-		t.Errorf("sidecar line 1 = %q, want nexus3 binary path %q", func() string {
+		t.Errorf("sidecar line 1 = %q, want nexus binary path %q", func() string {
 			if len(lines) == 0 {
 				return ""
 			}
@@ -687,17 +687,17 @@ func TestHerdrInstallDefaultShell(t *testing.T) {
 	}
 }
 
-// TestHerdrDefaultShell_EmptyNexus3Bin verifies that an empty nexus3Bin causes
+// TestHerdrDefaultShell_EmptyNexusBin verifies that an empty nexusBin causes
 // the host shell to be exec'd rather than attempting exec with an empty path.
 //
 // This is the unit-level equivalent of CRITICAL 1: when the delivery mechanism
 // (sidecar file) is missing after install, herdrReadSidecar() returns ("", "")
 // and the core must fall through to the host shell, not exec("", ...).
 //
-// Mutation proof: remove the nexus3Bin == "" guard in herdrDefaultShellCore →
+// Mutation proof: remove the nexusBin == "" guard in herdrDefaultShellCore →
 // execFn is called with argv0="" and argv[0]="" instead of argv0="/bin/zsh".
 // The assertion checks the exact argv0, so "" ≠ "/bin/zsh" → RED.
-func TestHerdrDefaultShell_EmptyNexus3Bin(t *testing.T) {
+func TestHerdrDefaultShell_EmptyNexusBin(t *testing.T) {
 	root := t.TempDir()
 	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
 
@@ -712,7 +712,7 @@ func TestHerdrDefaultShell_EmptyNexus3Bin(t *testing.T) {
 		return ""
 	}
 
-	if err := herdrDefaultShellCore(context.Background(), getenv, root, nil, "" /* nexus3Bin */, cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), getenv, root, nil, "" /* nexusBin */, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertHostShell(t, cap, "/bin/zsh")
@@ -720,12 +720,12 @@ func TestHerdrDefaultShell_EmptyNexus3Bin(t *testing.T) {
 
 // TestHerdrDefaultShell_SandboxNotRunning verifies that a bound workspace
 // whose sandbox is not in Running state falls back to the host shell rather
-// than exec'ing "nexus3 exec --pty" after the point of no return.
+// than exec'ing "nexus exec --pty" after the point of no return.
 //
 // Mutation proof: remove the sb.State != domain.Running check in
-// herdrDefaultShellCore → execFn is called with "/fake/nexus3" as argv0
+// herdrDefaultShellCore → execFn is called with "/fake/nexus" as argv0
 // (the guest exec path). The assertion checks for the host shell argv0, so
-// "/fake/nexus3" ≠ "/bin/bash" → RED.
+// "/fake/nexus" ≠ "/bin/bash" → RED.
 func TestHerdrDefaultShell_SandboxNotRunning(t *testing.T) {
 	root := t.TempDir()
 	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
@@ -760,9 +760,9 @@ func TestHerdrDefaultShell_SandboxNotRunning(t *testing.T) {
 // Mutation proof: change `sbErr != nil || sb.State != domain.Running` to
 // `sbErr == nil && sb.State != domain.Running` in herdrDefaultShellCore.
 // When sbErr != nil (error case): `sbErr == nil` is false → AND short-circuits
-// → condition is false → falls through to exec with "/fake/nexus3" as argv0.
-// assertHostShell checks argv0 == "/bin/bash" but gets "/fake/nexus3" → RED.
-// (Verified: FAIL — "argv0 = "/fake/nexus3", want "/bin/bash" (host shell)")
+// → condition is false → falls through to exec with "/fake/nexus" as argv0.
+// assertHostShell checks argv0 == "/bin/bash" but gets "/fake/nexus" → RED.
+// (Verified: FAIL — "argv0 = "/fake/nexus", want "/bin/bash" (host shell)")
 func TestHerdrDefaultShell_SandboxGetError(t *testing.T) {
 	root := t.TempDir()
 	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
@@ -817,9 +817,9 @@ func TestRunHerdrGuestShell_PanicRecovery(t *testing.T) {
 	exitedWith := -1
 	herdrGuestShellExitFn = func(code int) { exitedWith = code }
 
-	// NEXUS3_HOST_SHELL=1 routes herdrDefaultShellCore to execHostShell early,
+	// NEXUS_HOST_SHELL=1 routes herdrDefaultShellCore to execHostShell early,
 	// ensuring the first execFn call happens with minimal setup so the panic
-	t.Setenv("NEXUS3_HOST_SHELL", "1")
+	t.Setenv("NEXUS_HOST_SHELL", "1")
 	t.Setenv("SHELL", "/bin/bash")
 
 	RunHerdrGuestShell() // must not crash the test process
@@ -869,7 +869,7 @@ func TestHerdrApplyKernelPath(t *testing.T) {
 			var askedKey string
 			getenv := func(key string) string {
 				askedKey = key
-				if key == "NEXUS3_KERNEL_PATH" {
+				if key == "NEXUS_KERNEL_PATH" {
 					return tc.existing
 				}
 				return ""
@@ -877,16 +877,16 @@ func TestHerdrApplyKernelPath(t *testing.T) {
 
 			herdrApplyKernelPath(tc.kernelPath, getenv, setenv)
 
-			if tc.kernelPath != "" && askedKey != "NEXUS3_KERNEL_PATH" {
-				t.Errorf("getenv called with key %q, want %q", askedKey, "NEXUS3_KERNEL_PATH")
+			if tc.kernelPath != "" && askedKey != "NEXUS_KERNEL_PATH" {
+				t.Errorf("getenv called with key %q, want %q", askedKey, "NEXUS_KERNEL_PATH")
 			}
 
 			if tc.wantSet {
 				if calls != 1 {
 					t.Fatalf("setenv calls = %d, want 1 — the stamped kernel path was not published", calls)
 				}
-				if gotKey != "NEXUS3_KERNEL_PATH" {
-					t.Errorf("setenv key = %q, want %q", gotKey, "NEXUS3_KERNEL_PATH")
+				if gotKey != "NEXUS_KERNEL_PATH" {
+					t.Errorf("setenv key = %q, want %q", gotKey, "NEXUS_KERNEL_PATH")
 				}
 				if gotValue != tc.wantValue {
 					t.Errorf("setenv value = %q, want %q", gotValue, tc.wantValue)
@@ -909,8 +909,8 @@ func TestHerdrApplyKernelPath(t *testing.T) {
 // left the entire suite green. This test closes that gap.
 //
 // Mutation proof: replace the call with `_ = kernelPath` in RunHerdrGuestShell.
-// The sidecar contains "/stamped/kernel" as line 2, but NEXUS3_KERNEL_PATH is
-// never set, so os.Getenv("NEXUS3_KERNEL_PATH") returns "" after the call →
+// The sidecar contains "/stamped/kernel" as line 2, but NEXUS_KERNEL_PATH is
+// never set, so os.Getenv("NEXUS_KERNEL_PATH") returns "" after the call →
 // t.Errorf fires → RED.
 func TestRunHerdrGuestShell_KernelPathPublished(t *testing.T) {
 	origExec := herdrGuestShellExecFn
@@ -937,16 +937,16 @@ func TestRunHerdrGuestShell_KernelPathPublished(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Remove(sidecarPath) })
 
-	t.Setenv("NEXUS3_KERNEL_PATH", "")
+	t.Setenv("NEXUS_KERNEL_PATH", "")
 	// Route herdrDefaultShellCore to execHostShell immediately — keeps the rest
-	t.Setenv("NEXUS3_HOST_SHELL", "1")
+	t.Setenv("NEXUS_HOST_SHELL", "1")
 	t.Setenv("SHELL", "/bin/bash")
 
 	RunHerdrGuestShell()
 
-	got := os.Getenv("NEXUS3_KERNEL_PATH")
+	got := os.Getenv("NEXUS_KERNEL_PATH")
 	if got != stampedKernel {
-		t.Errorf("NEXUS3_KERNEL_PATH = %q after RunHerdrGuestShell, want %q — herdrApplyKernelPath call site may be suppressed", got, stampedKernel)
+		t.Errorf("NEXUS_KERNEL_PATH = %q after RunHerdrGuestShell, want %q — herdrApplyKernelPath call site may be suppressed", got, stampedKernel)
 	}
 }
 
@@ -964,7 +964,7 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 	wsID := "wWT1"
 
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:wt/feat",
+		SpaceLabel:       "nexus:wt/feat",
 		HerdrWorkspaceID: wsID,
 		SandboxHandle:    "wt/feat",
 		SandboxID:        "sb-wt1",
@@ -1023,14 +1023,14 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 
 	cap := &capturedExec{}
 	emptyRoot := t.TempDir()
-	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, svc, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, svc, "/fake/nexus", cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(childArgv) == 0 {
 		t.Fatal("herdrWtChildRunnerFn was not called; wt/ binding must use supervised path")
 	}
 	if len(childArgv) > 0 && (childArgv[0] == "/bin/bash" || childArgv[0] == "/bin/sh") {
-		t.Errorf("herdrWtChildRunnerFn called with host shell %q; want nexus3 exec argv", childArgv[0])
+		t.Errorf("herdrWtChildRunnerFn called with host shell %q; want nexus exec argv", childArgv[0])
 	}
 	// execFn (cap) must NOT have been called — wt/ takes the supervised path.
 	if cap.argv0 != "" {
@@ -1066,7 +1066,7 @@ func TestHerdrDefaultShell_UnboundNonWorktree_NoSpawn_HostShell(t *testing.T) {
 
 	cap := &capturedExec{}
 	emptyRoot := t.TempDir()
-	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, nil, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), getenv, emptyRoot, nil, "/fake/nexus", cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// The auto-create fn must NOT have been called.
@@ -1110,7 +1110,7 @@ func TestHerdrDefaultShell_AutoCreateFails_HostShell(t *testing.T) {
 	}
 
 	cap := &capturedExec{}
-	if err := herdrDefaultShellCore(context.Background(), getenv, storeRoot, nil, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), getenv, storeRoot, nil, "/fake/nexus", cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !autoCreateCalled {
@@ -1138,7 +1138,7 @@ func makeLinkedWorktreeFixture(t *testing.T, dir string) (worktreePath string, b
 		t.Fatal(err)
 	}
 	binding = HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:wt/feat",
+		SpaceLabel:       "nexus:wt/feat",
 		HerdrWorkspaceID: "wWT2",
 		SandboxHandle:    "wt/feat",
 		SandboxID:        "sb-wt2",
@@ -1207,7 +1207,7 @@ func TestHerdrAutoCreatePredicate_DifferentRepoRoot_DoesNotEngage(t *testing.T) 
 	cwd, _ := makeLinkedWorktreeFixture(t, dir)
 
 	unrelatedBinding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:wt/other",
+		SpaceLabel:       "nexus:wt/other",
 		HerdrWorkspaceID: "wOTH",
 		SandboxHandle:    "wt/other",
 		SandboxID:        "sb-other",
@@ -1228,7 +1228,7 @@ func TestHerdrAutoCreatePredicate_EmptyRepoRoot_LegacyBinding_DoesNotEngage(t *t
 	cwd, _ := makeLinkedWorktreeFixture(t, dir)
 
 	legacyBinding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:wt/legacy",
+		SpaceLabel:       "nexus:wt/legacy",
 		HerdrWorkspaceID: "wLEG",
 		SandboxHandle:    "wt/legacy",
 		SandboxID:        "sb-leg",
@@ -1242,7 +1242,7 @@ func TestHerdrAutoCreatePredicate_EmptyRepoRoot_LegacyBinding_DoesNotEngage(t *t
 }
 
 func TestHerdrSpaceBinding_LegacyJSON_DecodesCleanly(t *testing.T) {
-	legacy := `[{"space_label":"nexus3:demo","herdr_workspace_id":"wXX","sandbox_handle":"demo","sandbox_id":"sb-demo"}]`
+	legacy := `[{"space_label":"nexus:demo","herdr_workspace_id":"wXX","sandbox_handle":"demo","sandbox_id":"sb-demo"}]`
 	var bindings []HerdrSpaceBinding
 	if err := json.Unmarshal([]byte(legacy), &bindings); err != nil {
 		t.Fatalf("unmarshal legacy binding: %v", err)
@@ -1295,7 +1295,7 @@ func TestHerdrInstallDefaultShell_BackupRemovedOnConfigCheckFail(t *testing.T) {
 	}
 }
 
-func TestHerdrInstallDefaultShell_ForeignNexus3GuestShellNotChained(t *testing.T) {
+func TestHerdrInstallDefaultShell_ForeignNexusGuestShellNotChained(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
@@ -1306,7 +1306,7 @@ func TestHerdrInstallDefaultShell_ForeignNexus3GuestShellNotChained(t *testing.T
 	t.Setenv("HERDR_BIN_PATH", fakeHerdr)
 
 	cfgFile := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(cfgFile, []byte("[terminal]\ndefault_shell = \"/some/other/path/nexus3-guest-shell\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgFile, []byte("[terminal]\ndefault_shell = \"/some/other/path/nexus-guest-shell\"\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	t.Setenv("HERDR_CONFIG_PATH", cfgFile)
@@ -1318,9 +1318,9 @@ func TestHerdrInstallDefaultShell_ForeignNexus3GuestShellNotChained(t *testing.T
 
 	outStr := out.w.(*strings.Builder).String()
 	if strings.Contains(outStr, "Chained guest shell") {
-		t.Errorf("output contains 'Chained guest shell' — nexus3-guest-shell was chained when it must not be: %s", outStr)
+		t.Errorf("output contains 'Chained guest shell' — nexus-guest-shell was chained when it must not be: %s", outStr)
 	}
-	if !strings.Contains(outStr, "nexus3-guest-shell") {
-		t.Errorf("output missing note about nexus3-guest-shell: %s", outStr)
+	if !strings.Contains(outStr, "nexus-guest-shell") {
+		t.Errorf("output missing note about nexus-guest-shell: %s", outStr)
 	}
 }

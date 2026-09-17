@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // blockingReader yields the first half of content, signals ready, waits for
@@ -86,7 +86,7 @@ func TestPrune_DoesNotDeleteInFlightPut(t *testing.T) {
 	content := bytes.Repeat([]byte("in-flight-artifact-bytes"), 4096)
 	img := domain.Image{
 		Digest:    digestOf(content),
-		Ref:       "nexus3-inflight:latest",
+		Ref:       "nexus-inflight:latest",
 		Kind:      domain.KindBuilder,
 		Size:      int64(len(content)),
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
@@ -166,7 +166,7 @@ func TestPrune_DoesNotDeleteInFlightPut(t *testing.T) {
 // yet. A pin released at the end of Put closes only the first window.
 //
 // The writer and the pruner are separate Cache instances over one root, the
-// production shape: two `nexus3 create --file` processes.
+// production shape: two `nexus create --file` processes.
 //
 // Mutation proof: release the pin at the end of Put (drop `committed = true`)
 // and this test fails — the committed entry is collected before its owner can

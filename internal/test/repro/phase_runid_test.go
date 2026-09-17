@@ -14,7 +14,7 @@
 // Mutation proof (executed, W42): Removed the StageBRunIDProbe call from phase_cpu.go →
 //
 //	--- FAIL: TestAllPhasesHaveRunIDProbe/cpu
-//	    phase_runid_test.go:114: RunCPUPhase result[0]: no probe named "stageB.run_id"; probes=[builder.state_backend stageA.manifest stageB.file_8m stageB.file_31m stageB.file_32m stageB.file_33m stageB.file_40m stageB.file_64m stageB.file_200m stageB.file_elf stageB.run-produced-40m stageB.docker-compose stageB.nexus3-agent stageB.file_32m.hash stageB.file_elf.hash]
+//	    phase_runid_test.go:114: RunCPUPhase result[0]: no probe named "stageB.run_id"; probes=[builder.state_backend stageA.manifest stageB.file_8m stageB.file_31m stageB.file_32m stageB.file_33m stageB.file_40m stageB.file_64m stageB.file_200m stageB.file_elf stageB.run-produced-40m stageB.docker-compose stageB.nexus-agent stageB.file_32m.hash stageB.file_elf.hash]
 //
 // Restored → PASS.
 package repro

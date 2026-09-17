@@ -50,10 +50,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // ── marker binary helpers ──────────────────────────────────────────────────
@@ -167,7 +167,7 @@ func TestForkDiskIsolation(t *testing.T) {
 
 	// build guest binaries
 	t.Log("building guest binaries...")
-	agentBin := buildNexus3Agent(t)
+	agentBin := buildNexusAgent(t)
 	helloBin := buildHelloBinForDisk(t)
 	writeMarkerBin := buildMarkerBin(t, "write-marker", writeMarkerSrc)
 	readMarkerBin := buildMarkerBin(t, "read-marker", readMarkerSrc)

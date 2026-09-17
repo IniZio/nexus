@@ -68,10 +68,10 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // ── constants ────────────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ const (
 // TestBuilderVMToolchain is the primary G2 live proof:
 //
 //  1. EnsureBuilderImage produces a bootable moby/buildkit ext4.
-//  2. The builder VM boots and nexus3-agent is reachable over vsock.
+//  2. The builder VM boots and nexus-agent is reachable over vsock.
 //  3. buildkitd starts inside the VM.
 //  4. A Dockerfile with FROM debian:stable-slim; RUN apt-get update executes
 //     successfully inside the builder VM using the OCI executor — the FROM
@@ -148,7 +148,7 @@ func TestBuilderVMToolchain(t *testing.T) {
 
 	// ── 3. Build (or cache-hit) the builder VM rootfs ────────────────────────
 	// EnsureBuilderImage pulls moby/buildkit, extracts layers, adds
-	// nexus3-agent as PID-1 init, adds toolchain symlinks, and packs to ext4.
+	// nexus-agent as PID-1 init, adds toolchain symlinks, and packs to ext4.
 	agentBin := toolchainBuildAgent(t)
 	agentBytes, err := os.ReadFile(agentBin)
 	if err != nil {
@@ -163,16 +163,16 @@ func TestBuilderVMToolchain(t *testing.T) {
 	t.Logf("builder ext4: %s", builderExt4)
 
 	// ── 4. Boot the builder VM with two virtio-blk disks ─────────────────────
-	//   vda = builder rootfs (ext4 from moby/buildkit + nexus3-agent as init)
+	//   vda = builder rootfs (ext4 from moby/buildkit + nexus-agent as init)
 	//   vdb = debian:stable-slim OCI layout (ext4, read-only)
 	vsockSock := toolchainBootCH(t, chBin, kernelPath, builderExt4, debianRootfsDisk)
 
-	// ── 5. Wait for nexus3-agent to bind its vsock listeners ─────────────────
+	// ── 5. Wait for nexus-agent to bind its vsock listeners ─────────────────
 	// The CH vsock proxy socket appears on the host as soon as CH starts, but
 	// the guest agent may not be ready to accept connections for 10-30 s while
 	// the 515 MB builder ext4 is mounted and userspace boots. Poll with
 	// exponential-backoff retries until the agent responds to a CONNECT.
-	t.Log("waiting for nexus3-agent vsock readiness (builder VM boots slower due to large ext4)...")
+	t.Log("waiting for nexus-agent vsock readiness (builder VM boots slower due to large ext4)...")
 	dialer := &toolchainVsockDialer{sock: vsockSock}
 	toolchainWaitForAgentReady(ctx, t, vsockSock, dialer, 90*time.Second)
 	t.Logf("agent ready: %s", vsockSock)
@@ -439,7 +439,7 @@ func toolchainBootCH(t *testing.T, chBin, kernelPath, builderExt4, ociDiskPath s
 	serialLog := filepath.Join(tmpDir, "serial.log")
 
 	// The builder VM uses the standard /sbin/init shim written by G1's
-	// addBootLayers; that shim execs nexus3-agent via builder-init.sh.
+	// addBootLayers; that shim execs nexus-agent via builder-init.sh.
 	// We do NOT specify init= so the kernel finds /sbin/init naturally.
 	//nolint:gosec
 	cmd := exec.Command(chBin,
@@ -474,17 +474,17 @@ func toolchainBootCH(t *testing.T, chBin, kernelPath, builderExt4, ociDiskPath s
 	return vsockSock
 }
 
-// toolchainBuildAgent compiles the nexus3-agent as a static Linux/amd64 binary
+// toolchainBuildAgent compiles the nexus-agent as a static Linux/amd64 binary
 // and returns its path. The binary is the PID-1 init for the builder VM.
 func toolchainBuildAgent(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "nexus3-agent")
+	bin := filepath.Join(dir, "nexus-agent")
 
 	repoRoot := toolchainRepoRoot(t)
 	cmd := exec.Command("go", "build",
 		"-o", bin,
-		"github.com/IniZio/nexus3/cmd/nexus3-agent",
+		"github.com/IniZio/nexus/cmd/nexus-agent",
 	)
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(),
@@ -493,7 +493,7 @@ func toolchainBuildAgent(t *testing.T) string {
 		"GOARCH=amd64",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build nexus3-agent: %s\n%v", out, err)
+		t.Fatalf("go build nexus-agent: %s\n%v", out, err)
 	}
 	return bin
 }

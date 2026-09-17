@@ -11,12 +11,12 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
@@ -88,9 +88,9 @@ func defaultProbes() probes {
 }
 
 // SelectSubstrate selects and returns a usable driver.Driver based on
-// capability probes and the NEXUS3_SUBSTRATE environment variable.
+// capability probes and the NEXUS_SUBSTRATE environment variable.
 func SelectSubstrate() (driver.Driver, *SubstrateError) {
-	return selectWith(defaultProbes(), os.Getenv("NEXUS3_SUBSTRATE"))
+	return selectWith(defaultProbes(), os.Getenv("NEXUS_SUBSTRATE"))
 }
 
 // runAllChecks runs every capability probe and returns all results.
@@ -106,7 +106,7 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		platCheck.Detail = fmt.Sprintf("platform is %q — Cloud Hypervisor is supported", p.goos)
 	} else {
 		platCheck.Detail = fmt.Sprintf("platform %q is not supported; Cloud Hypervisor requires Linux", p.goos)
-		platCheck.Remediation = "The nexus3-vzd daemon (macOS / other platforms) is not yet implemented. Run nexus3 on a Linux host."
+		platCheck.Remediation = "The nexus-vzd daemon (macOS / other platforms) is not yet implemented. Run nexus on a Linux host."
 	}
 	checks = append(checks, platCheck)
 
@@ -174,7 +174,7 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		if kernelErr != nil {
 			kernelCheck.OK = false
 			kernelCheck.Detail = kernelErr.Error()
-			kernelCheck.Remediation = "run: nexus3 kernel install"
+			kernelCheck.Remediation = "run: nexus kernel install"
 			checks = append(checks, kernelCheck)
 			if p.listHerdrProcs != nil {
 				checks = append(checks, checkHerdrProcesses(context.Background(), p.listHerdrProcs))
@@ -205,10 +205,10 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 				baseImgCheck.OK = false
 				if p.registryReachable != nil && p.registryReachable(herdrDefaultImage) == nil {
 					baseImgCheck.Detail = "not cached; registry reachable — first sandbox create will pull it"
-					baseImgCheck.Remediation = "run: nexus3 sandbox create --image " + herdrDefaultImage + " (or first worktree-sandbox create pulls automatically)"
+					baseImgCheck.Remediation = "run: nexus sandbox create --image " + herdrDefaultImage + " (or first worktree-sandbox create pulls automatically)"
 				} else {
 					baseImgCheck.Detail = "not cached and registry unreachable"
-					baseImgCheck.Remediation = "run: nexus3 sandbox create --image " + herdrDefaultImage + " when registry is available"
+					baseImgCheck.Remediation = "run: nexus sandbox create --image " + herdrDefaultImage + " when registry is available"
 				}
 			}
 			checks = append(checks, baseImgCheck)
@@ -221,7 +221,7 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		if vp, verr := resolveVirtiofsdPath(); verr != nil {
 			virtiofsdCheck.OK = false
 			virtiofsdCheck.Detail = "not found"
-			virtiofsdCheck.Remediation = "Set NEXUS3_VIRTIOFSD_PATH to the virtiofsd binary path, or install virtiofsd (https://gitlab.com/virtio-fs/virtiofsd). Required only for --mount; sandboxes without --mount continue to work."
+			virtiofsdCheck.Remediation = "Set NEXUS_VIRTIOFSD_PATH to the virtiofsd binary path, or install virtiofsd (https://gitlab.com/virtio-fs/virtiofsd). Required only for --mount; sandboxes without --mount continue to work."
 		} else {
 			virtiofsdCheck.OK = true
 			virtiofsdCheck.Detail = vp
@@ -260,17 +260,17 @@ func selectWith(p probes, envVal string) (driver.Driver, *SubstrateError) {
 
 	case "none":
 		return nil, &SubstrateError{
-			Msg:         "substrate disabled by NEXUS3_SUBSTRATE=none",
-			Remediation: "Unset NEXUS3_SUBSTRATE or set it to 'cloudhypervisor' to enable auto-detection.",
+			Msg:         "substrate disabled by NEXUS_SUBSTRATE=none",
+			Remediation: "Unset NEXUS_SUBSTRATE or set it to 'cloudhypervisor' to enable auto-detection.",
 		}
 
 	default:
 		return nil, &SubstrateError{
 			Msg: fmt.Sprintf(
-				"NEXUS3_SUBSTRATE=%q is not a recognised value; accepted values: cloudhypervisor, none",
+				"NEXUS_SUBSTRATE=%q is not a recognised value; accepted values: cloudhypervisor, none",
 				envVal,
 			),
-			Remediation: "Set NEXUS3_SUBSTRATE to 'cloudhypervisor', 'none', or unset it for auto-detection. (\"fake\" is not accepted outside Go tests — inject the fake driver directly in Go test code.)",
+			Remediation: "Set NEXUS_SUBSTRATE to 'cloudhypervisor', 'none', or unset it for auto-detection. (\"fake\" is not accepted outside Go tests — inject the fake driver directly in Go test code.)",
 		}
 	}
 
@@ -289,6 +289,6 @@ func selectWith(p probes, envVal string) (driver.Driver, *SubstrateError) {
 	}
 
 	return nil, &SubstrateError{
-		Msg: "substrate unavailable: driver initialization failed (run nexus3 doctor for details)",
+		Msg: "substrate unavailable: driver initialization failed (run nexus doctor for details)",
 	}
 }

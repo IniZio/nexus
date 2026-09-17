@@ -4,7 +4,7 @@ package cli
 //
 // Go's flag package stops parsing at the first non-flag argument, so for
 //
-//	nexus3 exec myproject/hello -- uname -r
+//	nexus exec myproject/hello -- uname -r
 //
 // parsing halts on "myproject/hello" and the "--" is never consumed. It lands
 // in fs.Args() and, taken as argv, becomes the executable name — so the
@@ -17,9 +17,9 @@ package cli
 // across the manual use it, so this broke the documented shape of both.
 //
 // Only ONE leading separator is stripped, and only in the leading position. A
-// later "--" belongs to the guest command — `nexus3 exec box -- git log --`
+// later "--" belongs to the guest command — `nexus exec box -- git log --`
 // must reach git intact — and so must a second one, as in
-// `nexus3 exec box -- sh -c 'cmd -- arg'`. Stripping more than the first would
+// `nexus exec box -- sh -c 'cmd -- arg'`. Stripping more than the first would
 // silently rewrite the operator's command.
 func stripArgvSeparator(argv []string) []string {
 	if len(argv) > 0 && argv[0] == "--" {

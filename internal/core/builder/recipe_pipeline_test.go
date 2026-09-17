@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // minimalNPMRecipe returns a minimal npm recipe for use in pipeline tests.
@@ -39,19 +39,19 @@ func minimalTarballRecipe(arch string) cred.ToolRecipe {
 }
 
 // TestSynthesizeDockerfile_RecipeLayerOrdering proves that the recipe layer
-// appears AFTER the user's Containerfile and BEFORE the nexus3-agent COPY.
+// appears AFTER the user's Containerfile and BEFORE the nexus-agent COPY.
 //
 // Ordering rationale: the recipe installs the agent tool (claude-code,
 // cursor-agent) via deterministic RUN instructions that should cache-hit on a
-// warm buildkitd; the nexus3-agent COPY is always last and always a cache MISS
+// warm buildkitd; the nexus-agent COPY is always last and always a cache MISS
 // (nonce filename). Appending the recipe between user instructions and the
 // agent COPY groups the cacheable work together while preserving the
 // anti-corruption nonce for the boot binary.
 func TestSynthesizeDockerfile_RecipeLayerOrdering(t *testing.T) {
 	containerfile := []byte("FROM ubuntu:24.04\nRUN echo user-step\n")
 	recipeBytes := []byte("RUN npm install -g @test/agent@1.2.3\n")
-	const agentFile = "_nexus3-agent-deadbeef"
-	const installPath = "/sbin/nexus3-agent"
+	const agentFile = "_nexus-agent-deadbeef"
+	const installPath = "/sbin/nexus-agent"
 
 	df := string(synthesizeDockerfile(containerfile, recipeBytes, agentFile, installPath, runcShimContextFilename))
 
@@ -63,7 +63,7 @@ func TestSynthesizeDockerfile_RecipeLayerOrdering(t *testing.T) {
 	// Locate each section.
 	userEnd := strings.Index(df, "RUN echo user-step\n") + len("RUN echo user-step\n")
 	recipePos := strings.Index(df, "RUN npm install -g")
-	copyPos := strings.Index(df, "COPY --chmod=0755 --from=nexus3agent")
+	copyPos := strings.Index(df, "COPY --chmod=0755 --from=nexusagent")
 
 	if recipePos < 0 {
 		t.Fatal("recipe layer not found in synthesized Dockerfile")
@@ -83,12 +83,12 @@ func TestSynthesizeDockerfile_RecipeLayerOrdering(t *testing.T) {
 // bytes omits the recipe section entirely while still emitting the agent COPY.
 func TestSynthesizeDockerfile_NoRecipeLayerWhenNil(t *testing.T) {
 	containerfile := []byte("FROM ubuntu:24.04\n")
-	df := string(synthesizeDockerfile(containerfile, nil, "_nexus3-agent-x", "/sbin/nexus3-agent", runcShimContextFilename))
+	df := string(synthesizeDockerfile(containerfile, nil, "_nexus-agent-x", "/sbin/nexus-agent", runcShimContextFilename))
 
 	if strings.Contains(df, "Recipe layer") {
 		t.Fatalf("nil recipe bytes produced a recipe section:\n%s", df)
 	}
-	if !strings.Contains(df, "COPY --chmod=0755 --from=nexus3agent") {
+	if !strings.Contains(df, "COPY --chmod=0755 --from=nexusagent") {
 		t.Fatalf("agent COPY layer missing:\n%s", df)
 	}
 }
@@ -96,7 +96,7 @@ func TestSynthesizeDockerfile_NoRecipeLayerWhenNil(t *testing.T) {
 // TestContainerfileOptsOut_RecipeSkipDirective covers both the suppressed and
 // unsuppressed paths for the escape-hatch check (AC-7).
 //
-//   - A Containerfile containing the nexus3:recipe-skip directive must cause
+//   - A Containerfile containing the nexus:recipe-skip directive must cause
 //     renderRecipeIfNeeded to return nil bytes (suppressed).
 //   - A Containerfile without the directive must pass through to RenderRecipeLayer
 //     and return the rendered bytes.
@@ -110,7 +110,7 @@ func TestContainerfileOptsOut_RecipeSkipDirective(t *testing.T) {
 	recipe := minimalNPMRecipe()
 
 	t.Run("suppressed when directive present", func(t *testing.T) {
-		cf := []byte("FROM ubuntu:24.04\n# nexus3:recipe-skip\nRUN my-custom-install\n")
+		cf := []byte("FROM ubuntu:24.04\n# nexus:recipe-skip\nRUN my-custom-install\n")
 		got, err := renderRecipeIfNeeded(cf, recipe, "x64")
 		if err != nil {
 			t.Fatalf("renderRecipeIfNeeded: unexpected error: %v", err)
@@ -160,8 +160,8 @@ func TestSynthesizeDockerfile_RecipeDeterminism(t *testing.T) {
 	containerfile := []byte("FROM ubuntu:24.04\nRUN echo setup\n")
 	recipe := minimalNPMRecipe()
 	const arch = "x64"
-	const agentFile = "_nexus3-agent-fixed-for-test" // fixed: not testing nonce here
-	const installPath = "/sbin/nexus3-agent"
+	const agentFile = "_nexus-agent-fixed-for-test" // fixed: not testing nonce here
+	const installPath = "/sbin/nexus-agent"
 
 	recipeBytes1, err := renderRecipeIfNeeded(containerfile, recipe, arch)
 	if err != nil {

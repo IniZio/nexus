@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 const namedVolumeDiskFile = "disk.ext4"

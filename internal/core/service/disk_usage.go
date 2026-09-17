@@ -10,8 +10,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // DiskCategory is one row of a DiskUsageReport.
@@ -49,7 +49,7 @@ const (
 	DiskCategoryOther            = "other"
 )
 
-// DiskUsage walks stateDir and reports what nexus3 owns on disk by category.
+// DiskUsage walks stateDir and reports what nexus owns on disk by category.
 // Sizes are allocated bytes (disk images are sparse). Reclaimable is an
 // estimate: prune paths still keep lease-held and in-flight items. store nil
 // => disks/ and the cache report Reclaimable 0 with a Note; agentTag "" =>
@@ -101,7 +101,7 @@ func DiskUsage(ctx context.Context, stateDir string, c *image.Cache, store Sandb
 		case store == nil:
 			notes.add("no sandbox store; referenced set unknown")
 		case unreferenced > 0:
-			notes.add(fmt.Sprintf("%d unreferenced image(s); reclaim with nexus3 image prune", unreferenced))
+			notes.add(fmt.Sprintf("%d unreferenced image(s); reclaim with nexus image prune", unreferenced))
 		}
 		cache.Note = notes.String()
 	} else {
@@ -132,7 +132,7 @@ func DiskUsage(ctx context.Context, stateDir string, c *image.Cache, store Sandb
 		case agentTag == "":
 			templates.Note = "agent binary not found; cannot tell stale templates from current"
 		case stale > 0:
-			templates.Note = fmt.Sprintf("%d stale template(s) from previous agent builds; reclaim with nexus3 image prune", stale)
+			templates.Note = fmt.Sprintf("%d stale template(s) from previous agent builds; reclaim with nexus image prune", stale)
 		}
 	}
 	rep.Categories = append(rep.Categories, templates)
@@ -176,9 +176,9 @@ func DiskUsage(ctx context.Context, stateDir string, c *image.Cache, store Sandb
 		case store == nil:
 			notes.add("no sandbox store; cannot tell orphaned disks from live")
 		case orphans > 0:
-			notes.add(fmt.Sprintf("%d disk(s) with no sandbox record; run nexus3 reap", orphans))
+			notes.add(fmt.Sprintf("%d disk(s) with no sandbox record; run nexus reap", orphans))
 		}
-		notes.add("shadow disks and .intent markers are reaper-managed; see nexus3 reap")
+		notes.add("shadow disks and .intent markers are reaper-managed; see nexus reap")
 		disks.Note = notes.String()
 	}
 	rep.Categories = append(rep.Categories, disks)
@@ -186,7 +186,7 @@ func DiskUsage(ctx context.Context, stateDir string, c *image.Cache, store Sandb
 	// ── flat directory categories ───────────────────────────────────────────
 	rep.Categories = append(rep.Categories,
 		dirCategory(DiskCategoryBuildCaches, filepath.Join(stateDir, "caches"), "buildkit cache disks; kept while any build can reuse them"),
-		dirCategory(DiskCategoryNamedVolumes, filepath.Join(stateDir, "volumes"), "user data; remove with nexus3 volume rm"),
+		dirCategory(DiskCategoryNamedVolumes, filepath.Join(stateDir, "volumes"), "user data; remove with nexus volume rm"),
 		dirCategory(DiskCategorySnapshots, filepath.Join(stateDir, "snapshots"), ""),
 	)
 	sup := dirCategory(DiskCategorySupervisorLogs, filepath.Join(stateDir, "supervisors"), "")
@@ -246,13 +246,13 @@ func DiskUsage(ctx context.Context, stateDir string, c *image.Cache, store Sandb
 	rep.BelowFloor = free < rep.FloorBytes
 
 	if cache.Reclaimable > 0 || templates.Reclaimable > 0 {
-		rep.Hints = append(rep.Hints, "nexus3 image prune")
+		rep.Hints = append(rep.Hints, "nexus image prune")
 	}
 	if disks.Reclaimable > 0 {
-		rep.Hints = append(rep.Hints, "nexus3 reap")
+		rep.Hints = append(rep.Hints, "nexus reap")
 	}
 	if rep.BelowFloor && len(rep.Hints) == 0 {
-		rep.Hints = append(rep.Hints, "nexus3 reap", "nexus3 sandbox rm <id>", "nexus3 volume rm <name>")
+		rep.Hints = append(rep.Hints, "nexus reap", "nexus sandbox rm <id>", "nexus volume rm <name>")
 	}
 	return rep, nil
 }

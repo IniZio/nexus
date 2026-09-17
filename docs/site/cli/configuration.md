@@ -7,7 +7,7 @@ description: "Self-contained image build with --context and --dockerfile"
 
 > Build a guest image from a Dockerfile at create time, without a separate build step.
 
-The `--context <dir>` flag on `create` enables a self-contained build mode: nexus3 starts a buildkitd inside the VM, builds the image from the supplied Dockerfile context, and then boots the sandbox from the resulting image. No pre-built image reference is needed.
+The `--context <dir>` flag on `create` enables a self-contained build mode: nexus starts a buildkitd inside the VM, builds the image from the supplied Dockerfile context, and then boots the sandbox from the resulting image. No pre-built image reference is needed.
 
 ::: warning Implementation spelling <Badge type="warning" text="partial" />
 The flag is built today as `--file`. The target spelling is `--context`. All examples on this page use the target spelling.
@@ -27,14 +27,14 @@ These flags are part of `create`. See [Lifecycle commands](/cli/sandbox-commands
 ## Example
 
 ```
-nexus3 create myproject/dev-1 \
+nexus create myproject/dev-1 \
   --context /data/repos/myrepo \
   --memory 8192
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
-nexus3 copies the context directory into the VM, runs `buildkitd`, builds the image, and boots the sandbox. The build cache is stored on a virtio-blk disk and reused across subsequent `--context` creates for the same project.
+nexus copies the context directory into the VM, runs `buildkitd`, builds the image, and boots the sandbox. The build cache is stored on a virtio-blk disk and reused across subsequent `--context` creates for the same project.
 
 ## What `--context` captures
 
@@ -48,7 +48,7 @@ It does not include `.git` history beyond what the working tree reflects.
 
 ## Project config file (`.nexus/config.yaml`)
 
-`.nexus/config.yaml` is an optional per-repository configuration file placed inside the `.nexus/` directory at the repository root. nexus3 discovers it by walking up from the process working directory to the nearest directory that contains a `.git` entry (the repository root). An absent file is a no-op. A present but malformed file, or a file with an unknown YAML key, is a hard error.
+`.nexus/config.yaml` is an optional per-repository configuration file placed inside the `.nexus/` directory at the repository root. nexus discovers it by walking up from the process working directory to the nearest directory that contains a `.git` entry (the repository root). An absent file is a no-op. A present but malformed file, or a file with an unknown YAML key, is a hard error.
 
 ```yaml
 version: 1
@@ -119,7 +119,7 @@ Flag precedence: explicit CLI flags win over `.nexus/config.yaml` values; `.nexu
 A host is **either open or policy-gated, never both.** A host listed under `egress.allow` is open passthrough (any path, no credential). A host listed under `egress.policy` or `egress.secrets[].hosts` is policy-gated: default-deny on paths, credential brokered. Because the policy layer takes precedence, an `allow` entry for a policy-gated host would be silently inert — the file would claim open access the perimeter does not grant. `config.Load` therefore rejects the file at parse time (hostnames compare case-insensitively):
 
 ```text
-nexus3 config: host "github.com" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow
+nexus config: host "github.com" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow
 ```
 
 For policy-gated `github.com`, public archive and release downloads (`/<owner>/<repo>/archive/...`, `/<owner>/<repo>/releases/download/...`) are already permitted without an `allow` entry; see [Egress and perimeter](../security/egress-and-perimeter.md#github-and-the-request-allowlist).
@@ -129,10 +129,10 @@ For policy-gated `github.com`, public archive and release downloads (`/<owner>/<
 ### Validating the file
 
 ```sh
-nexus3 config validate [dir] [--json]
+nexus config validate [dir] [--json]
 ```
 
-`dir` defaults to the current directory. The command walks up to the nearest `.git` boundary, loads `.nexus/config.yaml`, and applies the same checks every other nexus3 command applies at load time: strict unknown-key rejection, `version` range check, and the egress allow/policy host-overlap rejection.
+`dir` defaults to the current directory. The command walks up to the nearest `.git` boundary, loads `.nexus/config.yaml`, and applies the same checks every other nexus command applies at load time: strict unknown-key rejection, `version` range check, and the egress allow/policy host-overlap rejection.
 
 Exit 0 on success:
 
@@ -150,4 +150,4 @@ ok: /path/to/repo/.nexus/config.yaml
 
 ### Config source for worktree sandboxes
 
-Worktree sandboxes (auto-created by the herdr plugin) read `.nexus/config.yaml` from the worktree's own checkout — the same file the `--file` build reads. Egress policy, brokered secrets, and `sandbox.nested` all come from that file. A change takes effect on the next worktree-sandbox create for that checkout; no push to the default branch is needed. A checkout without the file gets no egress policy and no nested opt-in; a malformed file is an error. See the [agent skill](https://github.com/IniZio/nexus3/blob/main/plugins/claude/skills/nexus3/SKILL.md) for the authoring workflow.
+Worktree sandboxes (auto-created by the herdr plugin) read `.nexus/config.yaml` from the worktree's own checkout — the same file the `--file` build reads. Egress policy, brokered secrets, and `sandbox.nested` all come from that file. A change takes effect on the next worktree-sandbox create for that checkout; no push to the default branch is needed. A checkout without the file gets no egress policy and no nested opt-in; a malformed file is an error. See the [agent skill](https://github.com/IniZio/nexus/blob/main/plugins/claude/skills/nexus/SKILL.md) for the authoring workflow.

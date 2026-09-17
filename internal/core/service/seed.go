@@ -18,17 +18,17 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // GuestCredEnvPath is the well-known path for credential seed env file.
-const GuestCredEnvPath = "/run/nexus3/cred.env"
+const GuestCredEnvPath = "/run/nexus/cred.env"
 
 // GuestCACertPath is the well-known path for MITM proxy CA cert (PEM-encoded).
-const GuestCACertPath = "/usr/local/share/ca-certificates/nexus3-mitm.crt"
+const GuestCACertPath = "/usr/local/share/ca-certificates/nexus-mitm.crt"
 
 // AnthropicAPIHost is the primary Anthropic API hostname.
 const AnthropicAPIHost = "api.anthropic.com"
@@ -98,8 +98,8 @@ func buildSeedPayload(records []cred.PlaceholderRecord) []byte {
 	var buf bytes.Buffer
 	for _, rec := range records {
 		key := hostToEnvKey(rec.Host)
-		fmt.Fprintf(&buf, "NEXUS3_CRED_%s_TOKEN=%s\n", key, rec.Placeholder)
-		fmt.Fprintf(&buf, "NEXUS3_CRED_%s_EXPIRES_AT=%s\n", key, rec.ExpiresAt.UTC().Format(time.RFC3339))
+		fmt.Fprintf(&buf, "NEXUS_CRED_%s_TOKEN=%s\n", key, rec.Placeholder)
+		fmt.Fprintf(&buf, "NEXUS_CRED_%s_EXPIRES_AT=%s\n", key, rec.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	return buf.Bytes()
 }
@@ -518,7 +518,7 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	return buf.Bytes(), nil
 }
 
-const GuestCredDirPath = "/run/nexus3/cred-dir"
+const GuestCredDirPath = "/run/nexus/cred-dir"
 
 func GuestCredFilePath(profile cred.AgentProfile) string {
 	if profile.CredentialFile == "" {
@@ -578,9 +578,9 @@ func SeedGuestCredFile(
 	return nil
 }
 
-const GuestShellProfilePath = "/etc/profile.d/nexus3-cred.sh"
+const GuestShellProfilePath = "/etc/profile.d/nexus-cred.sh"
 
-const guestShellProfileScript = `# nexus3: credential and sandbox marker for login shells.
+const guestShellProfileScript = `# nexus: credential and sandbox marker for login shells.
 # Written by SeedGuestShellProfile; do not edit.
 if [ -r ` + GuestCredEnvPath + ` ]; then
     set -a
@@ -589,11 +589,11 @@ if [ -r ` + GuestCredEnvPath + ` ]; then
 fi
 # Mark this as a sandbox environment. Required by claude when running as root.
 export IS_SANDBOX=1
-# Wire the SSH shim for git operations. /sbin/nexus3-agent is the boot
-# contract (init=/sbin/nexus3-agent) and therefore present in every guest;
-# /usr/local/bin/nexus3-agent exists only in builder images. This env var
+# Wire the SSH shim for git operations. /sbin/nexus-agent is the boot
+# contract (init=/sbin/nexus-agent) and therefore present in every guest;
+# /usr/local/bin/nexus-agent exists only in builder images. This env var
 # overrides the core.sshCommand written by git_identity.go, so both must agree.
-export GIT_SSH_COMMAND='/sbin/nexus3-agent git-ssh'
+export GIT_SSH_COMMAND='/sbin/nexus-agent git-ssh'
 `
 
 func SeedGuestShellProfile(ctx context.Context, id domain.SandboxID, seeder GuestSeeder) error {
@@ -619,7 +619,7 @@ func NewAgentExecer(c *agent.Client) GuestExecer {
 const guestAgentOnboardingScript = `set -e
 dst='` + GuestAgentOnboardingPath + `'
 [ -e "$dst" ] && exit 0
-tmp="${dst}.nexus3.tmp.$$"
+tmp="${dst}.nexus.tmp.$$"
 cat > "$tmp"
 mv "$tmp" "$dst"
 `
@@ -676,11 +676,11 @@ func SeedGuestAgentOnboarding(ctx context.Context, id domain.SandboxID, projectD
 	return nil
 }
 
-const GuestUserMountsProfilePath = "/etc/profile.d/nexus3-usermounts.sh"
+const GuestUserMountsProfilePath = "/etc/profile.d/nexus-usermounts.sh"
 
 const GuestNativePATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-const GuestUserMountsFarmReport = "/run/nexus3/hostbin.report"
+const GuestUserMountsFarmReport = "/run/nexus/hostbin.report"
 
 func shSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -742,12 +742,12 @@ func buildUserMountScript(manifest UserMountManifest) string {
 	qProfile := shSingleQuote(GuestUserMountsProfilePath)
 	fmt.Fprintf(&b, "# 2. PATH drop-in\n")
 	fmt.Fprintf(&b, "if [ ! -f %s ]; then\n", qProfile)
-	fmt.Fprintf(&b, "cat > %s << 'NEXUS3UMEOF'\n", qProfile)
-	fmt.Fprintf(&b, "# nexus3: user-mount PATH for login shells.\n")
+	fmt.Fprintf(&b, "cat > %s << 'NEXUSUMEOF'\n", qProfile)
+	fmt.Fprintf(&b, "# nexus: user-mount PATH for login shells.\n")
 	fmt.Fprintf(&b, "# Written by SeedGuestUserMounts; do not edit.\n")
 	pathSuffix := strings.Join(GuestCuratedPATHDirs, ":")
 	fmt.Fprintf(&b, "export PATH=\"$PATH:%s\"\n", pathSuffix)
-	fmt.Fprintf(&b, "NEXUS3UMEOF\n")
+	fmt.Fprintf(&b, "NEXUSUMEOF\n")
 	fmt.Fprintf(&b, "fi\n\n")
 
 	// Step 3: overlay mounts for overlay=true rows.
@@ -764,8 +764,8 @@ func buildUserMountScript(manifest UserMountManifest) string {
 		}
 		qStaging := shSingleQuote(m.StagingGuestPath)
 		qGuest := shSingleQuote(m.GuestPath)
-		qUp := shSingleQuote("/run/nexus3/ovl-um/" + name + "/up")
-		qWork := shSingleQuote("/run/nexus3/ovl-um/" + name + "/work")
+		qUp := shSingleQuote("/run/nexus/ovl-um/" + name + "/up")
+		qWork := shSingleQuote("/run/nexus/ovl-um/" + name + "/work")
 		fmt.Fprintf(&b, "# 3. Overlay: %s\n", m.GuestPath)
 		fmt.Fprintf(&b, "if [ -d %s ] && ! mountpoint -q %s 2>/dev/null; then\n", qStaging, qGuest)
 		fmt.Fprintf(&b, "  mkdir -p %s\n", qGuest)

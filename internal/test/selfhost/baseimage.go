@@ -1,6 +1,6 @@
-// Package selfhost provides a build harness for the nexus3 self-hosting base
-// ext4 image. The image bootstraps a nexus3 development workspace so that
-// nexus3 can be edited, built, and unit-tested entirely in-workspace without
+// Package selfhost provides a build harness for the nexus self-hosting base
+// ext4 image. The image bootstraps a nexus development workspace so that
+// nexus can be edited, built, and unit-tested entirely in-workspace without
 // needing the host environment.
 //
 // # Image contents
@@ -9,8 +9,8 @@
 //   - Upstream Go go1.26.5 (satisfies the module's "go 1.25.0" directive;
 //     Debian bookworm ships Go 1.19 — too old, prototype-28 finding)
 //   - git + ca-certificates; NO gcc / build-essential (CGO_ENABLED=0 throughout)
-//   - nexus3-agent compiled CGO_ENABLED=0 static, installed as /sbin/nexus3-agent
-//   - nexus3's Go module cache pre-seeded at /usr/local/gopath/pkg/mod so that
+//   - nexus-agent compiled CGO_ENABLED=0 static, installed as /sbin/nexus-agent
+//   - nexus's Go module cache pre-seeded at /usr/local/gopath/pkg/mod so that
 //     an in-workspace "go build ./..." needs no network; prototype 28 measured
 //     cold build at 32 s (incremental 11 s, per-pkg test 2 s) with this cache.
 //
@@ -43,9 +43,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 const (
@@ -59,10 +59,10 @@ const (
 	goSHA256AMD64 = "5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053"
 
 	// selfHostRef is the human-readable tag stamped on the produced Image.
-	selfHostRef = "nexus3-selfhost-base"
+	selfHostRef = "nexus-selfhost-base"
 
 	// selfHostDockerTag is the docker image tag used during the build.
-	selfHostDockerTag = "nexus3-selfhost-base:integration-test"
+	selfHostDockerTag = "nexus-selfhost-base:integration-test"
 
 	// imageSizeBytes is the pre-allocated sparse file size passed to mke2fs.
 	// Sized generously to hold: Debian base (~100 MB) + Go toolchain (~500 MB)
@@ -81,7 +81,7 @@ const (
 // not found on the host PATH. Tests should treat this as a SKIP signal.
 var ErrDockerUnavailable = errors.New("docker not found in PATH (install docker-ce or docker.io)")
 
-// BuildSelfHostBaseImage produces the nexus3 self-hosting base ext4 image and
+// BuildSelfHostBaseImage produces the nexus self-hosting base ext4 image and
 // stores it in cache keyed by SHA-256 digest.
 //
 // The caller provides an [image.Cache] to receive the finished artifact.
@@ -93,7 +93,7 @@ var ErrDockerUnavailable = errors.New("docker not found in PATH (install docker-
 //   - mke2fs in PATH (returns [builder.ErrMke2fsUnavailable] if absent)
 //
 // Build steps:
-//  1. Compile cmd/nexus3-agent CGO_ENABLED=0 GOOS=linux GOARCH=amd64.
+//  1. Compile cmd/nexus-agent CGO_ENABLED=0 GOOS=linux GOARCH=amd64.
 //  2. docker build: fetch Go 1.26.5, run go mod download all (GOTOOLCHAIN=local)
 //     to seed /usr/local/gopath/pkg/mod, install git+ca-certs, copy agent.
 //  3. docker create → docker export → extract tar → rootfs tree.
@@ -118,15 +118,15 @@ func BuildSelfHostBaseImage(ctx context.Context, cache *image.Cache) (domain.Ima
 
 	// ── Working directory ─────────────────────────────────────────────────────
 
-	workDir, err := os.MkdirTemp("", "nexus3-selfhost-build-*")
+	workDir, err := os.MkdirTemp("", "nexus-selfhost-build-*")
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("selfhost: mkdir work: %w", err)
 	}
 	defer os.RemoveAll(workDir)
 
-	// ── Step 1: build nexus3-agent static binary ──────────────────────────────
+	// ── Step 1: build nexus-agent static binary ──────────────────────────────
 
-	agentBin := filepath.Join(workDir, "nexus3-agent")
+	agentBin := filepath.Join(workDir, "nexus-agent")
 	if err := buildAgent(ctx, repoRoot, agentBin); err != nil {
 		return domain.Image{}, fmt.Errorf("selfhost: build agent: %w", err)
 	}
@@ -139,7 +139,7 @@ func BuildSelfHostBaseImage(ctx context.Context, cache *image.Cache) (domain.Ima
 	}
 
 	// Agent binary
-	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus3-agent"), 0o755); err != nil {
+	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus-agent"), 0o755); err != nil {
 		return domain.Image{}, fmt.Errorf("selfhost: copy agent to ctx: %w", err)
 	}
 
@@ -221,12 +221,12 @@ func findRepoRoot() (string, error) {
 	return filepath.Dir(gomod), nil
 }
 
-// buildAgent compiles cmd/nexus3-agent as a static CGO_ENABLED=0 linux/amd64
+// buildAgent compiles cmd/nexus-agent as a static CGO_ENABLED=0 linux/amd64
 // binary and writes it to dstPath.
 //
 // The binary is stamped with a build tag of the form "YYYYMMDD-<git-short-sha>"
 // via -ldflags so that image staleness can be detected at runtime: when the
-// sandbox starts, nexus3-agent logs "starting (pid=1 build=<tag>)" on the
+// sandbox starts, nexus-agent logs "starting (pid=1 build=<tag>)" on the
 // console, and the operator can compare <tag> against the current git revision.
 func buildAgent(ctx context.Context, repoRoot, dstPath string) error {
 	buildTag := agentBuildStamp(ctx, repoRoot)
@@ -234,7 +234,7 @@ func buildAgent(ctx context.Context, repoRoot, dstPath string) error {
 	cmd := exec.CommandContext(ctx, "go", "build",
 		"-ldflags", ldflag,
 		"-o", dstPath,
-		"./cmd/nexus3-agent",
+		"./cmd/nexus-agent",
 	)
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(),
@@ -245,7 +245,7 @@ func buildAgent(ctx context.Context, repoRoot, dstPath string) error {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go build ./cmd/nexus3-agent: %w", err)
+		return fmt.Errorf("go build ./cmd/nexus-agent: %w", err)
 	}
 	return nil
 }
@@ -508,12 +508,12 @@ func copyFile(src, dst string, mode os.FileMode) error {
 //  2. mod-seeder: go-fetcher + GOTOOLCHAIN=local + go mod download all to seed
 //     /usr/local/gopath/pkg/mod without re-downloading the Go toolchain binary.
 //  3. final: debian:bookworm-slim + Go toolchain (from go-fetcher) + seeded module
-//     cache (from mod-seeder) + git + ca-certificates + nexus3-agent as /sbin/init.
+//     cache (from mod-seeder) + git + ca-certificates + nexus-agent as /sbin/init.
 func generateContainerfile(goVer, goSHA256 string) string {
-	return fmt.Sprintf(`# nexus3 self-hosting base image
+	return fmt.Sprintf(`# nexus self-hosting base image
 # Generated by internal/test/selfhost — do not edit manually.
 #
-# Produces: Debian bookworm-slim + Go %s + git + ca-certs + nexus3-agent
+# Produces: Debian bookworm-slim + Go %s + git + ca-certs + nexus-agent
 # + seeded Go module cache for offline in-workspace builds.
 
 # ── Stage 1: fetch and verify the upstream Go toolchain ──────────────────────
@@ -550,7 +550,7 @@ FROM debian:bookworm-slim
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends git ca-certificates openssh-server && \
     rm -rf /var/lib/apt/lists/*
-RUN printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\nPubkeyAuthentication yes\n' > /etc/ssh/sshd_config.d/99-nexus3-orca.conf
+RUN printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\nPubkeyAuthentication yes\n' > /etc/ssh/sshd_config.d/99-nexus-orca.conf
 RUN ssh-keygen -A
 
 # Install the upstream Go toolchain from stage 1.
@@ -576,10 +576,10 @@ RUN go version
 # This chown runs after all apt installs and ssh-keygen so nothing re-owns /root.
 RUN chown -R root:root /root
 
-# ── Final layer: bake nexus3-agent ───────────────────────────────────────────
+# ── Final layer: bake nexus-agent ───────────────────────────────────────────
 # Placed last so an agent rebuild only invalidates this one layer.
-# Boot contract (kernel cmdline): init=/sbin/nexus3-agent
-COPY nexus3-agent /sbin/nexus3-agent
-RUN chmod 0755 /sbin/nexus3-agent
+# Boot contract (kernel cmdline): init=/sbin/nexus-agent
+COPY nexus-agent /sbin/nexus-agent
+RUN chmod 0755 /sbin/nexus-agent
 `, goVer, goVer, goSHA256, goVer)
 }

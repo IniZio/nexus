@@ -39,10 +39,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/diskname"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/diskname"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // DefaultShadowDirs is the documented default set of workspace-relative
@@ -367,7 +367,7 @@ var createShadowDiskFn = createShadowDisk
 // The ordering is the contract, not an implementation detail. Shadow disks are
 // created before CreateAndBoot writes the ULID-keyed create intent, so until
 // this function existed there was a window in which a shadow disk was on disk
-// with no marker of any kind claiming it — and a concurrent `nexus3 reap
+// with no marker of any kind claiming it — and a concurrent `nexus reap
 // --apply` deleted a live sandbox's node_modules (TBD-PD-25). Publishing the
 // intent first means no shadow disk is ever visible unprotected.
 //

@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // initTestGitRepo creates a throwaway git repo at t.TempDir(), commits one
@@ -71,11 +71,11 @@ func TestResolveAllowedBranches_WorkspaceBranchDerived(t *testing.T) {
 }
 
 func TestResolveAllowedBranches_LiveMountBranchDerived(t *testing.T) {
-	repo := initTestGitRepo(t, "nexus3/some-slice")
+	repo := initTestGitRepo(t, "nexus/some-slice")
 	got := resolveAllowedBranches(CreateAndBootOptions{
 		LiveMounts: []domain.LiveMount{{HostPath: repo, GuestPath: "/workspace"}},
 	})
-	want := []string{"refs/heads/nexus3/some-slice"}
+	want := []string{"refs/heads/nexus/some-slice"}
 	if len(got) != 1 || got[0] != want[0] {
 		t.Errorf("resolveAllowedBranches() = %v; want %v", got, want)
 	}
@@ -84,7 +84,7 @@ func TestResolveAllowedBranches_LiveMountBranchDerived(t *testing.T) {
 // TestResolveAllowedBranches_DetachedHead_FailsClosed proves the fail-closed
 // path: a workspace IS bound, but its branch cannot be resolved (detached
 // HEAD), so the sentinel is returned rather than nil (which would silently
-// re-apply the nexus3-only default) or an empty slice (allow-all).
+// re-apply the nexus-only default) or an empty slice (allow-all).
 //
 // Mutation evidence: see TestResolveAllowedBranches_MutationProof_FailOpen
 // below, which flips the `if err != nil` branch and shows it going RED.
@@ -134,7 +134,7 @@ func TestResolveAllowedBranches_NoWorkspace_LegacyDefault(t *testing.T) {
 
 // TestResolveAllowedBranches_MutationProof_FailOpen simulates the bug this
 // slice fixes reappearing: a derivation-failure path that returns nil
-// (fail-open, re-triggering the nexus3-only default) instead of the
+// (fail-open, re-triggering the nexus-only default) instead of the
 // sentinel. It calls hostWorktreeBranch directly and asserts the exact
 // failure mode resolveAllowedBranches must not paper over.
 //

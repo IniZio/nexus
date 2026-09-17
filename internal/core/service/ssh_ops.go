@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // Lookup resolves the sandbox identified by ref and returns it without

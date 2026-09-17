@@ -3,11 +3,11 @@
 **Project:** herdr  
 **Protocol version probed:** 0.9.0 / protocol 22  
 **Date:** 2026-09-16  
-**Filed by:** nexus3 maintainers
+**Filed by:** nexus maintainers
 
 ## Background
 
-nexus3 runs a remote-client daemon (`nexus3-client`) on macOS that forwards sandbox TCP ports scoped to the focused herdr workspace. To determine which workspace is focused, the daemon currently reads a `focus.state` file written by the host-side plugin on each `workspace.focused` event.
+nexus runs a remote-client daemon (`nexus-client`) on macOS that forwards sandbox TCP ports scoped to the focused herdr workspace. To determine which workspace is focused, the daemon currently reads a `focus.state` file written by the host-side plugin on each `workspace.focused` event.
 
 This design is a workaround for the absence of client identity in the herdr protocol. It is accurate only when the remote client is the **sole interactive client** on the session; with two clients attached the host session's last focus write wins, and the remote client cannot know whether a focus event originated from itself or from the host TUI.
 
@@ -57,7 +57,7 @@ Deliver `HERDR_CLIENT_ID` alongside the existing `HERDR_PANE_ID` / `TAB_ID` / `W
 
 ## Why this matters
 
-With these additions, nexus3-client can:
+With these additions, nexus-client can:
 
 - Ignore `workspace_focused` events from other clients (host TUI, other remote sessions).
 - Read its own focused workspace from `clients[self.client_id].focused_workspace_id` in the snapshot at startup rather than relying on a host-written file.
@@ -70,7 +70,7 @@ Without them, the sole-interactive-client constraint is a permanent documentatio
 herdr 0.9.0 logs workspace focus events from the Mac remote client to the session server log
 (`~/.config/herdr/herdr-server.log` or `~/.config/herdr/sessions/<s>/herdr-server.log`),
 but does NOT reflect them in `session.snapshot.focused_workspace_id`, `workspace.list`,
-`events.subscribe` delivery, or any plugin hook. nexus3 works around this by tailing the
+`events.subscribe` delivery, or any plugin hook. nexus works around this by tailing the
 server log for lines matching `event="workspace.focus"` with `outcome="ok"` (see
 `tailHerdrServerLog` in `internal/cli/cmd_herdr_focus_watch.go`). This gap should be
 resolved upstream by making remote-client focus changes observable through the existing API
@@ -85,12 +85,12 @@ switching workspaces in the host TUI update the session state — `workspace.lis
 `api snapshot` reflect the new `focused_workspace_id` immediately — but no plugin event
 hook is invoked.
 
-**Impact on nexus3**: the `[[events]] on = "workspace.focused"` hook in
-`herdr-plugin.toml` is unreliable for tracking operator focus. nexus3 works around this
+**Impact on nexus**: the `[[events]] on = "workspace.focused"` hook in
+`herdr-plugin.toml` is unreliable for tracking operator focus. nexus works around this
 with a long-lived `runHerdrFocusWatch` goroutine (started in `herdrPluginLocalAgentStartup`)
 that subscribes to the `events.subscribe` API stream — which DOES deliver all focus changes,
 including client-UI-originated ones — and maintains `focus.state` directly.
 
 **Filed**: this gap should be documented with the upstream herdr project; a plugin event
-hook that fires for all focus-change sources (not just API calls) would let nexus3 remove
+hook that fires for all focus-change sources (not just API calls) would let nexus remove
 the watcher goroutine.

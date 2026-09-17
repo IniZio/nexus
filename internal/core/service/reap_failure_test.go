@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // undeletableOrphan writes an orphan disk into disksDir and then makes the

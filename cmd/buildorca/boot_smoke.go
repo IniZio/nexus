@@ -1,8 +1,8 @@
-// boot_smoke.go — smoke-boot the nexus3-orca:latest image.
+// boot_smoke.go — smoke-boot the nexus-orca:latest image.
 // Uses the service layer (same as the CLI) but with a 60-second ReachabilityTimeout
 // and the full netns re-exec wired in via main()'s NetnsRunEnv check.
 //
-// Run: NEXUS3_KERNEL_PATH=$HOME/.pi/nexus-bin/vmlinux.bin
+// Run: NEXUS_KERNEL_PATH=$HOME/.pi/nexus-bin/vmlinux.bin
 //
 //	TMPDIR=/tmp go run ./cmd/buildorca/ -smoke
 package main
@@ -16,24 +16,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func smokeboot() error {
-	kernelPath := os.Getenv("NEXUS3_KERNEL_PATH")
+	kernelPath := os.Getenv("NEXUS_KERNEL_PATH")
 	if kernelPath == "" {
 		exe, _ := os.Executable()
 		kernelPath = filepath.Join(filepath.Dir(exe), "images", "kernel", "vmlinux-x86_64")
 	}
 	if _, err := os.Stat(kernelPath); err != nil {
-		return fmt.Errorf("kernel not found at %s (set NEXUS3_KERNEL_PATH)", kernelPath)
+		return fmt.Errorf("kernel not found at %s (set NEXUS_KERNEL_PATH)", kernelPath)
 	}
 	fmt.Fprintf(os.Stderr, "smokeboot: kernel=%s\n", kernelPath)
 
@@ -57,14 +57,14 @@ func smokeboot() error {
 	}
 	var found bool
 	for _, img := range imgs {
-		if img.Ref == "nexus3-orca:latest" {
-			fmt.Fprintf(os.Stderr, "smokeboot: found nexus3-orca:latest digest=%s size=%d\n", img.Digest, img.Size)
+		if img.Ref == "nexus-orca:latest" {
+			fmt.Fprintf(os.Stderr, "smokeboot: found nexus-orca:latest digest=%s size=%d\n", img.Digest, img.Size)
 			found = true
 			break
 		}
 	}
 	if !found {
-		return fmt.Errorf("nexus3-orca:latest not in cache")
+		return fmt.Errorf("nexus-orca:latest not in cache")
 	}
 
 	// Store, socket dir, disk dir all in /tmp
@@ -151,7 +151,7 @@ func smokeboot() error {
 			DiskDir:             diskDir,
 			ReachabilityTimeout: 120 * time.Second,
 			Image: service.ImageSpec{
-				Ref: "nexus3-orca:latest",
+				Ref: "nexus-orca:latest",
 			},
 		},
 	)
@@ -180,7 +180,7 @@ func smokeboot() error {
 	}
 	agentClient := agent.NewClient(gd, sb.ID)
 
-	// PATH needed because nexus3-agent runs as PID 1 (init) and the kernel
+	// PATH needed because nexus-agent runs as PID 1 (init) and the kernel
 	// does not set PATH; the guest environment is empty at boot.
 	guestEnv := map[string]string{
 		"PATH": "/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -194,7 +194,7 @@ func smokeboot() error {
 		{"command -v sshd", []string{"/bin/sh", "-c", "command -v sshd || ls -la /usr/sbin/sshd"}},
 		{"command -v claude", []string{"/bin/sh", "-c", "command -v claude"}},
 		{"PID1 cmdline", []string{"/bin/sh", "-c", "cat /proc/1/cmdline | tr '\\0' ' '"}},
-		{"nexus3-agent banner", []string{"/bin/sh", "-c", "dmesg 2>/dev/null | grep -i 'nexus3-agent' | head -5 || echo 'no dmesg nexus3-agent'"}},
+		{"nexus-agent banner", []string{"/bin/sh", "-c", "dmesg 2>/dev/null | grep -i 'nexus-agent' | head -5 || echo 'no dmesg nexus-agent'"}},
 	}
 
 	allPassed := true

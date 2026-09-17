@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/agent/wire"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/agent/wire"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // allowEgressFunc is the callback type the IPC egress-allow handler uses to
@@ -55,7 +55,7 @@ const ipcHandoffPath = "/supervisor/handoff"
 // this endpoint exists to catch (a wedged control plane behind a perimeter
 // that still looks fine from the outside).
 //
-// `nexus3 supervisor-upgrade` uses this to decide whether a supervisor
+// `nexus supervisor-upgrade` uses this to decide whether a supervisor
 // reporting the current binary hash (nothing to upgrade, by version) is
 // nonetheless worth force-adopting because its agent channel is dead.
 const ipcAgentHealthPath = "/supervisor/agent-health"
@@ -238,7 +238,7 @@ func isDefiniteGuestGone(err error) bool {
 }
 
 // ipcVersionPath is the HTTP path for the read-only binary-identity request.
-// `nexus3 supervisor-upgrade` uses this to decide whether the running
+// `nexus supervisor-upgrade` uses this to decide whether the running
 // supervisor already serves the same binary as the one it was invoked from —
 // in which case there is nothing to upgrade. The identity is a content hash
 // of the running process's own executable, not the ldflags-embedded version
@@ -261,7 +261,7 @@ type versionResponse struct {
 // computeBinaryHash returns the hex-encoded SHA-256 of the current process's
 // own executable, as resolved by os.Executable(). Both RunDetached and
 // RunAdopt call this once at startup to obtain the identity they serve over
-// ipcVersionPath, and `nexus3 supervisor-upgrade` calls it a second time
+// ipcVersionPath, and `nexus supervisor-upgrade` calls it a second time
 // (over its own os.Executable()) to compare against the value the running
 // supervisor reports.
 func computeBinaryHash() (string, error) {
@@ -677,7 +677,7 @@ func RequestHandoff(ctx context.Context, sockPath, peerSock string) (bool, error
 
 // RequestSupervisorVersion sends a GET /supervisor/version to the supervisor
 // at sockPath and returns its binary-identity hash. Used by
-// `nexus3 supervisor-upgrade` to decide whether the running supervisor
+// `nexus supervisor-upgrade` to decide whether the running supervisor
 // already serves the same binary the CLI was invoked from.
 func RequestSupervisorVersion(ctx context.Context, sockPath string) (string, error) {
 	client := &http.Client{
@@ -707,7 +707,7 @@ func RequestSupervisorVersion(ctx context.Context, sockPath string) (string, err
 }
 
 // HashOwnBinary returns the hex-encoded SHA-256 of the calling process's own
-// executable. Exported so `nexus3 supervisor-upgrade` (in package cli) can
+// executable. Exported so `nexus supervisor-upgrade` (in package cli) can
 // compute the same identity computeBinaryHash gives the running supervisor,
 // without duplicating the hashing logic.
 func HashOwnBinary() (string, error) {

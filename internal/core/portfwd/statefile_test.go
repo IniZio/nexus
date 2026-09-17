@@ -144,7 +144,7 @@ func writeLegacyState(t *testing.T, dir string, st State) {
 func TestMerge_CarriesLiveLegacyWriter(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
-	writeLegacyState(t, dir, State{WrittenBy: "nexus3/sb-old", UpdatedAt: now.Add(-3 * time.Second), Forwards: []Entry{
+	writeLegacyState(t, dir, State{WrittenBy: "nexus/sb-old", UpdatedAt: now.Add(-3 * time.Second), Forwards: []Entry{
 		{Port: 9749, Sandbox: "sb-old", Status: "live", ConfirmedAt: now.Add(-3 * time.Second)},
 	}})
 	if err := WriteSandboxState(dir, "sb-new", []Entry{{Port: 5173, Sandbox: "sb-new", Status: "live", ConfirmedAt: now}}, now); err != nil {
@@ -166,7 +166,7 @@ func TestMerge_CarriesLiveLegacyWriter(t *testing.T) {
 func TestMerge_DropsDeadLegacyWriter(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
-	writeLegacyState(t, dir, State{WrittenBy: "nexus3/sb-old", UpdatedAt: now.Add(-StaleAfter - time.Second), Forwards: []Entry{
+	writeLegacyState(t, dir, State{WrittenBy: "nexus/sb-old", UpdatedAt: now.Add(-StaleAfter - time.Second), Forwards: []Entry{
 		{Port: 9749, Sandbox: "sb-old", Status: "live", ConfirmedAt: now.Add(-StaleAfter - time.Second)},
 		{Port: 9750, Sandbox: "sb-noheartbeat", Status: "live"},
 	}})

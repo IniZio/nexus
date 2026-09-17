@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/IniZio/nexus3/internal/core/perimeter/cred"
+import "github.com/IniZio/nexus/internal/core/perimeter/cred"
 
 // CacheDiskMount describes a single ecosystem cache disk to be mounted inside
 // the builder VM before the build step runs. The device is a virtio-blk block
@@ -37,8 +37,8 @@ type BuilderRoleOptions struct {
 	// programmatic override.
 	BaseRef string
 
-	// AgentPath is the host-filesystem path to the nexus3-agent binary that
-	// will be baked into the produced rootfs. Defaults to /sbin/nexus3-agent.
+	// AgentPath is the host-filesystem path to the nexus-agent binary that
+	// will be baked into the produced rootfs. Defaults to /sbin/nexus-agent.
 	AgentPath string
 
 	// BuildkitdPath overrides the buildkitd binary path inside the VM.
@@ -52,7 +52,7 @@ type BuilderRoleOptions struct {
 	// before [BuildInGuestImage] checks for a persistent /var/lib/buildkit.
 	//
 	// The host wires these from builder.BuilderVMSpec.CacheDisks via
-	// "nexus3-agent --builder-role --cache-disk=<device>:<mountpath>" args.
+	// "nexus-agent --builder-role --cache-disk=<device>:<mountpath>" args.
 	// The order must match the order of ExtraDisks[2+] in the CH driver config.
 	CacheDisks []CacheDiskMount
 

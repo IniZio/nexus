@@ -2,7 +2,7 @@
 
 // Package selfhost — S-E2E-SOURCE-FIDELITY end-to-end proof.
 //
-// nexus3 now captures the host working tree via builder.WorktreeToDiskWithExtra
+// nexus now captures the host working tree via builder.WorktreeToDiskWithExtra
 // (walking the live filesystem) rather than via `git archive HEAD` or an
 // in-guest `git clone`.  This test boots a REAL VM with that captured disk and
 // verifies six fidelity claims against live guest state:
@@ -42,21 +42,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	cloudhypervisor "github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	cloudhypervisor "github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // diskBootCmdlineBaseSF is the kernel command line prefix for disk-boot
 // sandboxes.  Mirrors the private constant in internal/cli/cmd_sandbox.go so
 // this test file does not depend on the CLI package.
-const diskBootCmdlineBaseSF = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0"
+const diskBootCmdlineBaseSF = "root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0"
 
 // sfSockNameLen is "sb-<26chars>.sock" — the length of the socket file that
 // the cloud-hypervisor driver writes under SocketDir.  Used to guard against
@@ -82,7 +82,7 @@ func TestWorkspaceSourceFidelity(t *testing.T) {
 
 	// ── 2. Build / obtain the self-hosting base image ─────────────────────────
 	//
-	// We need a VM that runs nexus3-agent as PID 1.  It processes
+	// We need a VM that runs nexus-agent as PID 1.  It processes
 	// --workspace-mount args from the kernel cmdline before opening the vsock
 	// listener so the assertions can use agent.Exec on a workspace-ready guest.
 	t.Log("obtaining self-hosting base image (first run ~10 min; subsequent: seconds from Docker cache) …")
@@ -150,7 +150,7 @@ func TestWorkspaceSourceFidelity(t *testing.T) {
 	// ── 5. Build the kernel cmdline with workspace-mount specs ───────────────
 	//
 	// The Linux kernel passes tokens after "--" directly to PID 1 as os.Args.
-	// nexus3-agent (PID 1) parses --workspace-mount=<dev>:<target>:<fs>:<ro>
+	// nexus-agent (PID 1) parses --workspace-mount=<dev>:<target>:<fs>:<ro>
 	// and calls agent.MountWorkspace before opening the vsock listener.
 	const guestPath = "/workspace/fixture"
 	guestMounts := []agent.GuestMount{

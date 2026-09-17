@@ -111,8 +111,8 @@ func TestHerdrProcessesCheck_SingleServer_OK(t *testing.T) {
 }
 
 func TestHerdrProcessesCheck_DuplicateClientAgent_WarnsOlder(t *testing.T) {
-	older := HerdrProc{PID: 10, Start: time.Unix(100, 0), Kind: Nexus3ClientAgent}
-	newer := HerdrProc{PID: 20, Start: time.Unix(200, 0), Kind: Nexus3ClientAgent}
+	older := HerdrProc{PID: 10, Start: time.Unix(100, 0), Kind: NexusClientAgent}
+	newer := HerdrProc{PID: 20, Start: time.Unix(200, 0), Kind: NexusClientAgent}
 	lister := func(_ context.Context) ([]HerdrProc, error) {
 		return []HerdrProc{older, newer}, nil
 	}
@@ -120,7 +120,7 @@ func TestHerdrProcessesCheck_DuplicateClientAgent_WarnsOlder(t *testing.T) {
 	cr := checkHerdrProcesses(context.Background(), lister)
 
 	if cr.OK {
-		t.Error("expected WARN (OK=false) for duplicate nexus3-client-agent")
+		t.Error("expected WARN (OK=false) for duplicate nexus-client-agent")
 	}
 	if !strings.Contains(cr.Remediation, "10") {
 		t.Errorf("remediation must name stale pid 10; got: %s", cr.Remediation)
@@ -132,8 +132,8 @@ func TestHerdrProcessesCheck_DuplicateClientAgent_WarnsOlder(t *testing.T) {
 
 func TestHerdrProcessesCheck_InDoctorJSON(t *testing.T) {
 	fixture := []HerdrProc{
-		{PID: 10, Start: time.Unix(100, 0), Kind: Nexus3ClientAgent},
-		{PID: 20, Start: time.Unix(200, 0), Kind: Nexus3ClientAgent},
+		{PID: 10, Start: time.Unix(100, 0), Kind: NexusClientAgent},
+		{PID: 20, Start: time.Unix(200, 0), Kind: NexusClientAgent},
 	}
 	p := probes{
 		goos:           "darwin",

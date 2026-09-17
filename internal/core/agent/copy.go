@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
-	"github.com/IniZio/nexus3/internal/core/agent/wire"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/agent/wire"
 )
 
 // CopyOptions configures a [Client.Copy] call.

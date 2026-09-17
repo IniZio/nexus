@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // herdrAdoptGetter is the subset of *service.Service herdrSpaceResolveOrAdopt
@@ -24,13 +24,13 @@ type herdrAdoptGetter interface {
 // svc.List unfiltered, so every sandbox shows up however it was created. But
 // every ACTION — open-pane, pause, resume, remove — went through
 // herdrSpaceResolve and dead-ended with "binding not found" for any sandbox
-// created outside herdr. A sandbox made with `nexus3 sandbox create` was
+// created outside herdr. A sandbox made with `nexus sandbox create` was
 // therefore visible and inert, which is the worst of both: it looks
 // controllable and is not.
 //
 // Adoption is deliberately LAZY rather than eager. Binding at create time
 // would mint a herdr workspace for every sandbox, including the throwaway ones
-// that `nexus3 run` and the test suites produce, and would make core create
+// that `nexus run` and the test suites produce, and would make core create
 // depend on an external UI being installed. Doing it at first use costs
 // nothing until someone actually asks herdr to act on the sandbox, and by
 // definition herdr is running at that moment.
@@ -120,6 +120,6 @@ func herdrSpaceEnsureWorkspace(
 // a binding never appears out of nowhere. stderr, not stdout, because several
 // of these subcommands have machine-readable stdout.
 func herdrAdoptNotice(b HerdrSpaceBinding) {
-	fmt.Fprintf(os.Stderr, "nexus3: adopted sandbox %s into herdr as %s\n",
+	fmt.Fprintf(os.Stderr, "nexus: adopted sandbox %s into herdr as %s\n",
 		b.SandboxHandle, b.SpaceLabel)
 }

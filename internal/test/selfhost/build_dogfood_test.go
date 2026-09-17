@@ -3,7 +3,7 @@
 // Package selfhost — MBH-S2 in-guest build+test dogfood.
 //
 // Proves end-to-end that the enlarged agent base image (MBH-S1) ships a
-// buildable, testable nexus3 source tree inside the guest VM.
+// buildable, testable nexus source tree inside the guest VM.
 //
 // Definition of done (docs/site/index.md — concepts/index.md not yet written):
 //  1. `go build ./...` exits 0 from /workspace inside the guest.
@@ -38,15 +38,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // testBatchSize controls how many packages are tested per in-guest Exec call.
@@ -129,9 +129,9 @@ func TestBuildDogfood(t *testing.T) {
 
 	// ── 5. Boot sandbox ───────────────────────────────────────────────────────
 	// MemoryMiB=8192: `go test -p 1 ./...` runs packages sequentially but still
-	// keeps compiled test binaries in memory across packages.  On the full nexus3
+	// keeps compiled test binaries in memory across packages.  On the full nexus
 	// tree the Go compiler + linker peak exceeds 4 GiB on cold runs.  8 GiB gives
-	// comfortable headroom without risking guest OOM (which kills the nexus3-agent
+	// comfortable headroom without risking guest OOM (which kills the nexus-agent
 	// vsock connection mid-exec, producing a cryptic EOF error).
 	var bootDrv *cloudhypervisor.CHDriver
 	factory := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
@@ -253,7 +253,7 @@ func TestBuildDogfood(t *testing.T) {
 	// tests (agent_dogfood_test.go, motive_dogfood_test.go, this file itself).
 	//
 	// WHY BATCHED: a single `go test ./...` keeps compiled test binaries in
-	// memory across all packages.  On the full nexus3 tree cumulative host
+	// memory across all packages.  On the full nexus tree cumulative host
 	// memory pressure (host swap backing the 8 GiB guest) crests around
 	// package 21 and kills the vsock connection with an EOF.  Splitting the
 	// run into small Exec calls lets the OS reclaim each batch's memory before

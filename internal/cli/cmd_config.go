@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/IniZio/nexus3/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/config"
 )
 
 func init() {

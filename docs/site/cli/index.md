@@ -1,21 +1,21 @@
 ---
 title: "CLI Reference"
-description: "nexus3 command surface: invocation, global flags, and verb index"
+description: "nexus command surface: invocation, global flags, and verb index"
 ---
 
 # CLI Reference
 
 > One binary, one MCP server — both thin adapters over a single service layer.
 
-nexus3 exposes one binary (`nexus3`) and one MCP server (`nexus3 mcp`). Every operation reachable from the CLI is backed by `internal/core/service`; CLI and MCP share the same service layer, so capabilities are identical.
+nexus exposes one binary (`nexus`) and one MCP server (`nexus mcp`). Every operation reachable from the CLI is backed by `internal/core/service`; CLI and MCP share the same service layer, so capabilities are identical.
 
 ::: warning Help <Badge type="warning" text="partial" />
 The target is help on every verb and group, on stdout, exiting zero.
-Today: running `nexus3` with no arguments lists all commands with one-line descriptions, and verbs that parse flags with Go's `flag` package (`exec`, `attach`, `ssh`, …) respond to `--help`. Three things fall short:
+Today: running `nexus` with no arguments lists all commands with one-line descriptions, and verbs that parse flags with Go's `flag` package (`exec`, `attach`, `ssh`, …) respond to `--help`. Three things fall short:
 
-- `nexus3 --help`, `nexus3 help` and `nexus3 -h` are all rejected as unknown (they still print the command list, but exit non-zero).
-- Commands with hand-rolled parsing have no help: the groups `sandbox`, `snapshot`, `image`, `auth` (at any depth — including `create --help`, `ps --help`), and the leaf verbs `fork`, `restore`, `forward`. `nexus3 mcp --help` starts the stdio server instead of printing anything.
-- The command list goes to **stderr** and exits **2**, so `nexus3 | less` shows nothing.
+- `nexus --help`, `nexus help` and `nexus -h` are all rejected as unknown (they still print the command list, but exit non-zero).
+- Commands with hand-rolled parsing have no help: the groups `sandbox`, `snapshot`, `image`, `auth` (at any depth — including `create --help`, `ps --help`), and the leaf verbs `fork`, `restore`, `forward`. `nexus mcp --help` starts the stdio server instead of printing anything.
+- The command list goes to **stderr** and exits **2**, so `nexus | less` shows nothing.
 
 For per-flag detail, generate the extractor inventory: `scripts/docs/extract-surface.sh`.
 :::
@@ -23,7 +23,7 @@ For per-flag detail, generate the extractor inventory: `scripts/docs/extract-sur
 ## Invocation
 
 ```
-nexus3 [global-flags] <verb> [verb-flags] [args...]
+nexus [global-flags] <verb> [verb-flags] [args...]
 ```
 
 Global flags precede the verb:
@@ -54,7 +54,7 @@ Global flags precede the verb:
 | `secret` <Badge type="danger" text="not built" /> | [Auth, MCP and reap](/cli/auth-mcp-reap) | Named secret store: `set`, `ls`, `rm` |
 | `mcp` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Run an MCP server over stdio |
 | `reap` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Report (and optionally delete) orphaned host resources |
-| `disk usage` | [Auth, MCP and reap](/cli/auth-mcp-reap#nexus3-disk-usage) | Report host disk usage by category, reclaimable space, and free space vs the builder floor |
+| `disk usage` | [Auth, MCP and reap](/cli/auth-mcp-reap#nexus-disk-usage) | Report host disk usage by category, reclaimable space, and free space vs the builder floor |
 | `recover` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Reconcile persisted sandbox records against the live substrate |
 | `doctor` | [Auth, MCP and reap](/cli/auth-mcp-reap) | Report substrate availability and capability checks |
 | `version` | — | Print version and build information |
@@ -108,6 +108,6 @@ Eleven things are deliberately excluded from the target:
 - **`create --workspace <host-path>`** — working-tree capture superseded by named volumes. Use `--mount-named` to attach a named volume into the sandbox instead.
 - **`create --capture-max <size>`** — capture size limit; removed alongside `--workspace`.
 - **`shell`** — built today, retired in the target. `exec` subsumes it: without a trailing command, or when stdin is a terminal, `exec` opens an interactive PTY session automatically.
-- **Reserved-label convention and git-driven branch naming** — nexus3 is git-unaware. `--label` carries arbitrary key-value metadata only; no label key has special semantics, and branch names are chosen by the user or orchestrator, not by nexus3.
-- **Bundle-export and host-side push by nexus3** — removed. In-guest `git push` via the MITM GitHub credential path (placeholder-swap + per-repo allowlist) is the supported flow; the host user pushes from the host with their own tools.
-- **Preview-release publisher** — building and distributing release artifacts is outside the nexus3 target surface.
+- **Reserved-label convention and git-driven branch naming** — nexus is git-unaware. `--label` carries arbitrary key-value metadata only; no label key has special semantics, and branch names are chosen by the user or orchestrator, not by nexus.
+- **Bundle-export and host-side push by nexus** — removed. In-guest `git push` via the MITM GitHub credential path (placeholder-swap + per-repo allowlist) is the supported flow; the host user pushes from the host with their own tools.
+- **Preview-release publisher** — building and distributing release artifacts is outside the nexus target surface.

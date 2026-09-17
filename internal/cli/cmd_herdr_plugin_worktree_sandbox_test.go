@@ -17,10 +17,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // ── herdrWorktreeSandboxHandle ────────────────────────────────────────────────
@@ -218,7 +218,7 @@ func callHerdrWorktreeSandbox(
 func seedBinding(t *testing.T, storeRoot, workspaceID, sandboxHandle string) {
 	t.Helper()
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + sandboxHandle,
+		SpaceLabel:       "nexus:" + sandboxHandle,
 		HerdrWorkspaceID: workspaceID,
 		SandboxHandle:    sandboxHandle,
 		SandboxID:        "sb-seed",
@@ -322,7 +322,7 @@ func TestHerdrWorktreeSandbox_listError_failSafe(t *testing.T) {
 // ── conditional (source check) ────────────────────────────────────────────────
 
 func TestHerdrWorktreeSandbox_conditional_sourceNotBound_staysHost(t *testing.T) {
-	// When conditional=true and the source workspace has no nexus3 binding,
+	// When conditional=true and the source workspace has no nexus binding,
 	// the workspace must stay a host shell (no sandbox created, no binding).
 	//
 	// MUTATION PROOF: remove the conditional branch.
@@ -346,7 +346,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceNotBound_staysHost(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if createCalled {
-		t.Error("createSandbox must not be called when source workspace is not nexus3-bound")
+		t.Error("createSandbox must not be called when source workspace is not nexus-bound")
 	}
 	all, _ := herdrSpaceReadAll(root)
 	if len(all) != 0 {
@@ -355,7 +355,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceNotBound_staysHost(t *testing.T)
 }
 
 func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
-	// When conditional=true and the source workspace IS nexus3-bound, the
+	// When conditional=true and the source workspace IS nexus-bound, the
 	// function must create a sandbox and write a binding.
 	//
 	// MUTATION PROOF: invert the herdrSpaceResolve condition (always skip).
@@ -404,8 +404,8 @@ func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
 	if found == nil {
 		t.Fatalf("expected binding for workspace w-new; got none (bindings: %v)", all)
 	}
-	if found.SpaceLabel != "nexus3:"+wantHandle {
-		t.Errorf("binding.SpaceLabel = %q; want %q", found.SpaceLabel, "nexus3:"+wantHandle)
+	if found.SpaceLabel != "nexus:"+wantHandle {
+		t.Errorf("binding.SpaceLabel = %q; want %q", found.SpaceLabel, "nexus:"+wantHandle)
 	}
 	if found.SandboxHandle != wantHandle {
 		t.Errorf("binding.SandboxHandle = %q; want %q", found.SandboxHandle, wantHandle)
@@ -445,7 +445,7 @@ func TestHerdrWorktreeSandbox_conditional_sourceUnknown_failSafe(t *testing.T) {
 
 func TestHerdrWorktreeSandbox_explicit_noSourceCheck(t *testing.T) {
 	// When conditional=false (explicit action), the source workspace check is
-	// skipped: even a worktree from a non-nexus3 source gets sandboxed.
+	// skipped: even a worktree from a non-nexus source gets sandboxed.
 	//
 	// MUTATION PROOF: run the conditional block unconditionally.
 	// Source "w-plain" not in store → skips. No binding written.
@@ -505,7 +505,7 @@ func TestHerdrWorktreeSandbox_createFails_noBinding(t *testing.T) {
 
 func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	// A successful explicit bind must write a binding with:
-	//   SpaceLabel       = "nexus3:repo/worktree-silver-forest-225f"
+	//   SpaceLabel       = "nexus:repo/worktree-silver-forest-225f"
 	//   HerdrWorkspaceID = "w-new"
 	//   SandboxHandle    = "repo/worktree-silver-forest-225f"
 	//   WorktreeManaged  = true
@@ -513,7 +513,7 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	// No RepoKey in linkedWorktreeInfo → repoName fallback "repo".
 	//
 	// MUTATION PROOF: write empty SpaceLabel.
-	// RED: "SpaceLabel = ''; want 'nexus3:repo/worktree-silver-forest-225f'".
+	// RED: "SpaceLabel = ''; want 'nexus:repo/worktree-silver-forest-225f'".
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfo("w-new", "w-src", "worktree/silver-forest-225f", "/checkout/sf225f"),
@@ -548,7 +548,7 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	if found == nil {
 		t.Fatalf("binding for workspace w-new not written")
 	}
-	const wantLabel = "nexus3:repo/worktree-silver-forest-225f"
+	const wantLabel = "nexus:repo/worktree-silver-forest-225f"
 	const wantHandle = "repo/worktree-silver-forest-225f"
 	if found.SpaceLabel != wantLabel {
 		t.Errorf("SpaceLabel = %q; want %q", found.SpaceLabel, wantLabel)
@@ -672,7 +672,7 @@ func TestHerdrDockerDiskVolumeName(t *testing.T) {
 // gated on --file: every worktree agent runs `go build`/`go test` against this
 // repo regardless of image mode, and Go defaults GOCACHE/GOPATH/GOMODCACHE
 // under /root, which otherwise sits entirely on the ungrowable 4 GiB root disk
-// (ticket: cmd/nexus3-agent/resize_disks.go diskIndexFromDevice rejects any
+// (ticket: cmd/nexus-agent/resize_disks.go diskIndexFromDevice rejects any
 // device letter below 'b', so /dev/vda has no ExtraDisks index and the disk
 // governor can never see or grow it).
 //
@@ -723,7 +723,7 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksAlwaysAttached(t *testing
 // them) → numNamedDisks drops from 3 to 0 for an --image build → the assertion
 // on ResizableDiskIndices goes RED (missing indices 0, 1, and 2).
 func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices(t *testing.T) {
-	t.Setenv("NEXUS3_DEDICATED_CRED_STORE", "/fake/creds.json")
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "/fake/creds.json")
 
 	args := herdrWorktreeSandboxCreateArgs("example-app/EX-871", "/wt:/workspace", "--image", herdrDefaultImage, nil, nil, "", nil, false)
 
@@ -756,7 +756,7 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices
 		2048, 2,
 		"/disks/sb.raw",
 		[]string{"/disks/agentcfg.raw", "/disks/gocache.raw", "/disks/gopath.raw", "/disks/ws.raw"},
-		"root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0",
+		"root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0",
 		"/usr/bin/cloud-hypervisor", "/tmp/sockets",
 		true,          // hasWorkspace
 		0,             // workspaceDiskIndex
@@ -853,7 +853,7 @@ func TestHerdrWorktreeSandboxCreateArgs_containsAgentOpenEgress(t *testing.T) {
 
 // TestHerdrWorktreeSandboxCreateArgs_isBootableShaped asserts that the argv
 // produced by herdrWorktreeSandboxCreateArgs contains exactly one of --image,
-// --rootfs, or --file, so that `nexus3 sandbox create` never sees --mount
+// --rootfs, or --file, so that `nexus sandbox create` never sees --mount
 // without a bootable flag and rejects with exit 2.
 //
 // MUTATION PROOF: remove imageFlag/imageVal from herdrWorktreeSandboxCreateArgs.
@@ -864,7 +864,7 @@ func TestHerdrWorktreeSandboxCreateArgs_isBootableShaped(t *testing.T) {
 		imageFlag string
 		imageVal  string
 	}{
-		{"image flag", "--image", "nexus3-agent-base"},
+		{"image flag", "--image", "nexus-agent-base"},
 		{"file flag", "--file", "/some/checkout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -960,7 +960,7 @@ func TestHerdrListWorktreeForWorkspace_parsesResponse(t *testing.T) {
 	// The caller (herdrWorktreeSandbox) would skip the workspace.
 	// Tested separately here to isolate the parser from the orchestrator.
 	raw := `{"id":"x","result":{` +
-		`"source":{"source_workspace_id":"w8","repo_name":"nexus3","repo_root":"/repo","source_checkout_path":"/repo","repo_key":"/repo/.git"},` +
+		`"source":{"source_workspace_id":"w8","repo_name":"nexus","repo_root":"/repo","source_checkout_path":"/repo","repo_key":"/repo/.git"},` +
 		`"type":"worktree_list",` +
 		`"worktrees":[` +
 		`{"branch":"work","is_linked_worktree":false,"open_workspace_id":"w8","path":"/repo"},` +
@@ -1014,10 +1014,10 @@ func TestHerdrListWorktreeForWorkspace_malformedJSON(t *testing.T) {
 	}
 }
 
-// ── dispatch: nexus3 herdr worktree-sandbox routes to herdrWorktreeSandbox ────
+// ── dispatch: nexus herdr worktree-sandbox routes to herdrWorktreeSandbox ────
 
 func TestHerdrGroup_worktreeSandbox_dispatch(t *testing.T) {
-	// Confirm that `nexus3 herdr worktree-sandbox <id>` dispatches through
+	// Confirm that `nexus herdr worktree-sandbox <id>` dispatches through
 	// runHerdrGroup → herdrWorktreeSandbox (not to an "unknown subcommand" error).
 	//
 	// MUTATION PROOF: drop the "worktree-sandbox" case from runHerdrGroup →
@@ -1194,16 +1194,16 @@ func TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding(t *testing
 	// block → createErr path returns nil without writing a binding →
 	// HerdrSpaceGetByHandle finds nothing → t.Fatalf fires → RED.
 	root := t.TempDir()
-	wantHandle := "nexus3/worktree-quiet-stone-1e35"
+	wantHandle := "nexus/worktree-quiet-stone-1e35"
 	wantWorkspaceID := "w7B"
 
 	// linkedWorktreeInfoAuto sets RepoKey so the handle derives correctly:
-	// RepoKey="/srv/repos/nexus3/.git" → repoName="nexus3"
+	// RepoKey="/srv/repos/nexus/.git" → repoName="nexus"
 	// branch="worktree/quiet-stone-1e35" → slug="worktree-quiet-stone-1e35"
-	// handle = "nexus3/worktree-quiet-stone-1e35" ✓
+	// handle = "nexus/worktree-quiet-stone-1e35" ✓
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto(wantWorkspaceID, "worktree/quiet-stone-1e35",
-			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
+			"/srv/repos/nexus", "/srv/repos/nexus/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1216,7 +1216,7 @@ func TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding(t *testing
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "/srv/repos/nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/nexus", GuestPath: "/workspace"},
 		},
 	}
 	wantSandboxID := existingSB.ID.String() // record for assertion below
@@ -1266,7 +1266,7 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_explicitReturnsError(t
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-mismatch-exp", "worktree/quiet-stone-1e35",
-			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
+			"/srv/repos/nexus", "/srv/repos/nexus/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1275,7 +1275,7 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_explicitReturnsError(t
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "/srv/repos/OLD-nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/OLD-nexus", GuestPath: "/workspace"},
 		},
 	}
 	err := callHerdrWorktreeSandbox(t, "w-mismatch-exp", root, false /*conditional*/, false, /*auto*/
@@ -1297,10 +1297,10 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_autoReturnsNil(t *test
 	// is written → the "expected no binding" check fires → RED.
 	root := t.TempDir()
 	// Seed repo-root binding so the auto repo check passes.
-	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "/srv/repos/nexus3")
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus/main", "/srv/repos/nexus")
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-mismatch-auto", "worktree/quiet-stone-1e35",
-			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
+			"/srv/repos/nexus", "/srv/repos/nexus/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1308,7 +1308,7 @@ func TestHerdrWorktreeSandbox_reconcile_workspaceMismatch_autoReturnsNil(t *test
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "/srv/repos/OLD-nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/OLD-nexus", GuestPath: "/workspace"},
 		},
 	}
 	err := callHerdrWorktreeSandbox(t, "w-mismatch-auto", root, false /*conditional*/, true, /*auto*/
@@ -1340,10 +1340,10 @@ func TestHerdrWorktreeSandbox_reconcile_trailingSlashPath_adopts(t *testing.T) {
 	// → the "binding not found" Fatalf fires → RED.
 	root := t.TempDir()
 	// Seed a repo-root binding so the auto-mode repo check passes.
-	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "/srv/repos/nexus3")
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus/main", "/srv/repos/nexus")
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-trailing", "worktree/quiet-stone-1e35",
-			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
+			"/srv/repos/nexus", "/srv/repos/nexus/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1353,7 +1353,7 @@ func TestHerdrWorktreeSandbox_reconcile_trailingSlashPath_adopts(t *testing.T) {
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "/srv/repos/nexus3/", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/nexus/", GuestPath: "/workspace"},
 		},
 	}
 	err := callHerdrWorktreeSandbox(t, "w-trailing", root, false /*conditional*/, true, /*auto*/
@@ -1385,10 +1385,10 @@ func TestHerdrWorktreeSandbox_reconcile_badState_failSafe(t *testing.T) {
 	// MUTATION PROOF: remove the state/RemovalMarker gate → sandbox is adopted →
 	// binding is written → "expected no binding" fires → RED.
 	root := t.TempDir()
-	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "/srv/repos/nexus3")
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus/main", "/srv/repos/nexus")
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-badstate", "worktree/quiet-stone-1e35",
-			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
+			"/srv/repos/nexus", "/srv/repos/nexus/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1397,7 +1397,7 @@ func TestHerdrWorktreeSandbox_reconcile_badState_failSafe(t *testing.T) {
 		ID:    domain.NewSandboxID(),
 		State: domain.Created, // not Running or Stopped — unsafe to adopt
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "/srv/repos/nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/nexus", GuestPath: "/workspace"},
 		},
 	}
 	err := callHerdrWorktreeSandbox(t, "w-badstate", root, false /*conditional*/, true, /*auto*/
@@ -1419,18 +1419,18 @@ func TestHerdrWorktreeSandbox_reconcile_badState_failSafe(t *testing.T) {
 
 func TestHerdrWorktreeSandbox_reconcile_auto_siblingBound_writesBinding(t *testing.T) {
 	// Regression guard for the auto (--auto) path: when auto=true and a sibling
-	// workspace in the same repo is nexus3-bound, a reconcile (createFn fails but
+	// workspace in the same repo is nexus-bound, a reconcile (createFn fails but
 	// getFn succeeds with a matching /workspace) must write a binding.
 	//
 	// MUTATION PROOF: delete the reconcile getFn probe inside createErr block →
 	// createErr path returns nil without a binding → "expected binding" fires → RED.
 	root := t.TempDir()
 	// Seed a repo-root binding so the auto repo check passes.
-	seedBindingWithRepoRoot(t, root, "w-main", "nexus3/main", "/srv/repos/nexus3")
+	seedBindingWithRepoRoot(t, root, "w-main", "nexus/main", "/srv/repos/nexus")
 
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto("w-auto-reconcile", "worktree/quiet-stone-1e35",
-			"/srv/repos/nexus3", "/srv/repos/nexus3/.git"),
+			"/srv/repos/nexus", "/srv/repos/nexus/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1438,7 +1438,7 @@ func TestHerdrWorktreeSandbox_reconcile_auto_siblingBound_writesBinding(t *testi
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "/srv/repos/nexus3", GuestPath: "/workspace"},
+			{HostPath: "/srv/repos/nexus", GuestPath: "/workspace"},
 		},
 	}
 	wantID := existingSB.ID.String()
@@ -1659,7 +1659,7 @@ func TestHerdrWorktreeSandbox_conditionalMode_paneError_returnsError(t *testing.
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
-	// Make the source workspace nexus3-bound so step 5 passes and step 9 runs.
+	// Make the source workspace nexus-bound so step 5 passes and step 9 runs.
 	seedBindingWithRepoRoot(t, root, "w-src", "repo/src-sandbox", "/repo")
 
 	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
@@ -1675,7 +1675,7 @@ func TestHerdrWorktreeSandbox_conditionalMode_paneError_returnsError(t *testing.
 
 	// Guard against the vacuity that hid the old assertion: if step 5 short-
 	// circuited we are not testing step 9 at all, whatever the verdict.
-	if strings.Contains(w.String(), "not nexus3-bound, skipping") {
+	if strings.Contains(w.String(), "not nexus-bound, skipping") {
 		t.Fatalf("step 5 short-circuited — step 9 never ran, so this test proves nothing:\n%s", w.String())
 	}
 	if err == nil {
@@ -1701,7 +1701,7 @@ func linkedWorktreeInfoAuto(workspaceID, branch, path, repoKey string) herdrWork
 func seedBindingWithRepoRoot(t *testing.T, storeRoot, workspaceID, sandboxHandle, repoRoot string) {
 	t.Helper()
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + sandboxHandle,
+		SpaceLabel:       "nexus:" + sandboxHandle,
 		HerdrWorkspaceID: workspaceID,
 		SandboxHandle:    sandboxHandle,
 		SandboxID:        "sb-seed",
@@ -1721,7 +1721,7 @@ func TestHerdrWorktreeSandbox_auto_siblingBound_binds(t *testing.T) {
 	root := t.TempDir()
 
 	// Seed a binding whose RepoRoot == "/repo" (parent of info.RepoKey="/repo/.git").
-	// This is the nexus3-created binding — its workspace ID ("w-src") is NOT
+	// This is the nexus-created binding — its workspace ID ("w-src") is NOT
 	// in the workspace IDs that open worktrees, matching the live disjoint scenario.
 	seedBindingWithRepoRoot(t, root, "w-src", "wt/src-sandbox", "/repo")
 
@@ -1748,7 +1748,7 @@ func TestHerdrWorktreeSandbox_auto_siblingBound_binds(t *testing.T) {
 }
 
 func TestHerdrWorktreeSandbox_auto_noRepoBound_staysHost(t *testing.T) {
-	// When auto=true but no sibling workspace is nexus3-bound, the function
+	// When auto=true but no sibling workspace is nexus-bound, the function
 	// must leave the workspace unbound (fail safe).
 	//
 	// MUTATION PROOF: remove repo check (always proceed) → createSandbox is

@@ -16,7 +16,7 @@ type HerdrProcKind int
 const (
 	HerdrServer HerdrProcKind = iota
 	HerdrRemoteClientBridge
-	Nexus3ClientAgent
+	NexusClientAgent
 	HerdrOther
 )
 
@@ -130,8 +130,8 @@ func OSSocketFinder(ctx context.Context, goos string) SocketFinder {
 }
 
 func classifyProc(argv string) (HerdrProcKind, bool) {
-	if strings.Contains(argv, "nexus3-client") && strings.Contains(argv, "herdr") && strings.Contains(argv, "local-agent-startup") {
-		return Nexus3ClientAgent, true
+	if strings.Contains(argv, "nexus-client") && strings.Contains(argv, "herdr") && strings.Contains(argv, "local-agent-startup") {
+		return NexusClientAgent, true
 	}
 	fields := strings.Fields(argv)
 	if len(fields) == 0 {

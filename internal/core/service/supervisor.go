@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // SetSupervisor persists the detached supervisor's PID and Unix-socket path

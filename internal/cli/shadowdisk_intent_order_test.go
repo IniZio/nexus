@@ -5,7 +5,7 @@ package cli
 //
 // The test does not inspect source or assert that a call appears. It runs a
 // REAL reaper (service.Reap with apply=true) from inside the disk-creation
-// callback — i.e. at the exact instant a concurrent `nexus3 reap --apply`
+// callback — i.e. at the exact instant a concurrent `nexus reap --apply`
 // would observe the half-finished create — and checks that the disks survive.
 
 import (
@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // reapNow runs a real reap in apply mode over stateRoot with an empty record

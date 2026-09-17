@@ -25,7 +25,7 @@ var (
 
 func initHerdrLiveEnv() {
 	herdrLiveRealHome = os.Getenv("HOME")
-	if os.Getenv("NEXUS3_TEST_SIGHUP_CHILD") == "1" {
+	if os.Getenv("NEXUS_TEST_SIGHUP_CHILD") == "1" {
 		return
 	}
 
@@ -46,7 +46,7 @@ func initHerdrLiveEnv() {
 		}
 	}
 
-	isolatedHome, err := os.MkdirTemp("/tmp", "nexus3-henv-")
+	isolatedHome, err := os.MkdirTemp("/tmp", "nexus-henv-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "herdr_live: create isolated home: %v\n", err)
 		os.Exit(1)
@@ -194,7 +194,7 @@ func startIsolatedHerdr(t *testing.T) (probeHome, sessionName string) {
 	herdrLiveProbeHomes = append(herdrLiveProbeHomes, probeHome)
 	herdrLiveProbeHomesMu.Unlock()
 
-	sessionName = fmt.Sprintf("nexus3-test-%s", randHexN(8))
+	sessionName = fmt.Sprintf("nexus-test-%s", randHexN(8))
 
 	if isRealConfigRoot(probeHome, herdrLiveRealHome) {
 		t.Fatalf("REFUSAL: probeHome %q collides with real herdr config root", probeHome)

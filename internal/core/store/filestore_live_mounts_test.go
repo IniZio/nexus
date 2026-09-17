@@ -19,8 +19,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func TestLiveMounts_FilestoreRoundTrip(t *testing.T) {

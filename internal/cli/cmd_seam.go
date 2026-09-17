@@ -5,15 +5,15 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // vsockProbe is the shared vsock back-off probe used by all boot paths
-// (sandbox create, MCP create/run, and nexus3 run).
+// (sandbox create, MCP create/run, and nexus run).
 // Poll with 300 ms back-off: CH's vsock multiplexer returns EOF while the
 // virtio-vsock device is still being negotiated by the guest.
 func vsockProbe(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {

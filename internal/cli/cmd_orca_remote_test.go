@@ -41,8 +41,8 @@ func TestParseSSHTarget(t *testing.T) {
 func TestResolveOrcaRemote_StripsFlag(t *testing.T) {
 	// Isolate from any ambient env that could cause resolveOrcaRemote to pick
 	// up a real remote even when the test expects remote==nil.
-	t.Setenv("NEXUS3_REMOTE", "")
-	t.Setenv("NEXUS3_ORCA_REMOTE_INNER", "")
+	t.Setenv("NEXUS_REMOTE", "")
+	t.Setenv("NEXUS_ORCA_REMOTE_INNER", "")
 
 	// Space form: --remote user@host create
 	remote, rest, err := resolveOrcaRemote([]string{"--remote", "user@host", "create"})
@@ -83,27 +83,27 @@ func TestResolveOrcaRemote_StripsFlag(t *testing.T) {
 		t.Errorf("rest: got %v", rest3)
 	}
 
-	// Empty-string NEXUS3_REMOTE (e.g. exported but blank) → remote==nil.
-	t.Setenv("NEXUS3_REMOTE", "   ")
+	// Empty-string NEXUS_REMOTE (e.g. exported but blank) → remote==nil.
+	t.Setenv("NEXUS_REMOTE", "   ")
 	remote4, _, err4 := resolveOrcaRemote([]string{"create"})
 	if err4 != nil {
 		t.Fatalf("unexpected error: %v", err4)
 	}
 	if remote4 != nil {
-		t.Errorf("whitespace NEXUS3_REMOTE: expected nil remote, got %v", remote4)
+		t.Errorf("whitespace NEXUS_REMOTE: expected nil remote, got %v", remote4)
 	}
-	t.Setenv("NEXUS3_REMOTE", "") // reset for subsequent sub-tests
+	t.Setenv("NEXUS_REMOTE", "") // reset for subsequent sub-tests
 }
 
 func TestResolveOrcaRemote_EnvAndInnerGuard(t *testing.T) {
 	// Clear ambient env before any sub-test sets it explicitly.
-	t.Setenv("NEXUS3_REMOTE", "")
-	t.Setenv("NEXUS3_ORCA_REMOTE_INNER", "")
+	t.Setenv("NEXUS_REMOTE", "")
+	t.Setenv("NEXUS_ORCA_REMOTE_INNER", "")
 
-	// NEXUS3_REMOTE set → remote != nil.
+	// NEXUS_REMOTE set → remote != nil.
 	t.Run("env set", func(t *testing.T) {
-		t.Setenv("NEXUS3_ORCA_REMOTE_INNER", "")
-		t.Setenv("NEXUS3_REMOTE", "user@host")
+		t.Setenv("NEXUS_ORCA_REMOTE_INNER", "")
+		t.Setenv("NEXUS_REMOTE", "user@host")
 		remote, rest, err := resolveOrcaRemote([]string{"create"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -116,10 +116,10 @@ func TestResolveOrcaRemote_EnvAndInnerGuard(t *testing.T) {
 		}
 	})
 
-	// NEXUS3_ORCA_REMOTE_INNER=1 + NEXUS3_REMOTE → forced local (remote==nil).
+	// NEXUS_ORCA_REMOTE_INNER=1 + NEXUS_REMOTE → forced local (remote==nil).
 	t.Run("inner guard", func(t *testing.T) {
-		t.Setenv("NEXUS3_REMOTE", "user@host") // must be overridden by inner guard
-		t.Setenv("NEXUS3_ORCA_REMOTE_INNER", "1")
+		t.Setenv("NEXUS_REMOTE", "user@host") // must be overridden by inner guard
+		t.Setenv("NEXUS_ORCA_REMOTE_INNER", "1")
 		remote, rest, err := resolveOrcaRemote([]string{"create"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -156,10 +156,10 @@ func TestShellQuote(t *testing.T) {
 
 func TestBuildRemoteCmd(t *testing.T) {
 	got := buildRemoteCmd(
-		[]string{"ORCA_X=1", "NEXUS3_IMAGE=img"},
-		"/bin/nexus3", "orca", "create",
+		[]string{"ORCA_X=1", "NEXUS_IMAGE=img"},
+		"/bin/nexus", "orca", "create",
 	)
-	want := "env 'ORCA_X=1' 'NEXUS3_IMAGE=img' '/bin/nexus3' 'orca' 'create'"
+	want := "env 'ORCA_X=1' 'NEXUS_IMAGE=img' '/bin/nexus' 'orca' 'create'"
 	if got != want {
 		t.Errorf("got:  %q\nwant: %q", got, want)
 	}

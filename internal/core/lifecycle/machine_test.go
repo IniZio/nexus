@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
 )
 
 // ── Guard: state count ───────────────────────────────────────────────────────

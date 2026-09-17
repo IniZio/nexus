@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // recordingPreflight returns a DiskPreflight stub that records what it was
@@ -217,14 +217,14 @@ func TestProjectCreateBytes_RootfsProjectsNothing(t *testing.T) {
 
 // TestCheckDiskSpaceBytes_FreshHostDoesNotRefuse is a regression test for a
 // defect the TBD-PD-26 wiring exposed: the old code fell back exactly ONE
-// level when diskDir did not exist. On a machine that has never run nexus3
+// level when diskDir did not exist. On a machine that has never run nexus
 // neither <root>/disks nor <root> exists, so statfs ran against a missing
 // directory, the check failed closed, and every first-ever create was refused
 // with "cannot stat free space". The fix walks up to the nearest existing
 // ancestor, which reports the same filesystem.
 func TestCheckDiskSpaceBytes_FreshHostDoesNotRefuse(t *testing.T) {
 	// Three levels deep, none of which exist — the fresh-host shape.
-	missing := filepath.Join(t.TempDir(), "nexus3", "state", "disks")
+	missing := filepath.Join(t.TempDir(), "nexus", "state", "disks")
 
 	r, err := CheckDiskSpaceBytes(missing, 1024, "1 KiB")
 	if err != nil {

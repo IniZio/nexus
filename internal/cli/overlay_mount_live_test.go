@@ -60,22 +60,22 @@ func sha256Dir(root string) (map[string]string, error) {
 }
 
 func TestOverlayOnVirtiofs(t *testing.T) {
-	if os.Getenv("NEXUS3_LIVE_REQUIRED") == "" {
-		t.Skip("set NEXUS3_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
+	if os.Getenv("NEXUS_LIVE_REQUIRED") == "" {
+		t.Skip("set NEXUS_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
 	}
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		liveSkip(t, "overlay: /dev/kvm not available: %v", err)
 	}
-	if os.Getenv("NEXUS3_KERNEL_PATH") == "" {
-		liveSkip(t, "overlay: NEXUS3_KERNEL_PATH is not set; set it to a vmlinux image to run this test")
+	if os.Getenv("NEXUS_KERNEL_PATH") == "" {
+		liveSkip(t, "overlay: NEXUS_KERNEL_PATH is not set; set it to a vmlinux image to run this test")
 	}
 
 	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "nexus3-overlay")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
+	binary := filepath.Join(binDir, "nexus-overlay")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus")
 	build.Dir = filepath.Join("..", "..")
 	if out, err := build.CombinedOutput(); err != nil {
-		liveSkip(t, "overlay: nexus3 binary cannot be built: %v\n%s", err, out)
+		liveSkip(t, "overlay: nexus binary cannot be built: %v\n%s", err, out)
 	}
 
 	curatedDir := t.TempDir()
@@ -97,7 +97,7 @@ func TestOverlayOnVirtiofs(t *testing.T) {
 	}
 
 	// --- 3. Create sandbox. ---
-	image := os.Getenv("NEXUS3_OVERLAY_IMAGE")
+	image := os.Getenv("NEXUS_OVERLAY_IMAGE")
 	if image == "" {
 		image = herdrDefaultImage
 	}
@@ -109,9 +109,9 @@ func TestOverlayOnVirtiofs(t *testing.T) {
 	t.Cleanup(func() {
 		rmOut, rmErr := overlayCmd(binary, "rm", handle).CombinedOutput()
 		if rmErr != nil {
-			t.Logf("cleanup: nexus3 rm %s: %v\n%s", handle, rmErr, rmOut)
+			t.Logf("cleanup: nexus rm %s: %v\n%s", handle, rmErr, rmOut)
 		} else {
-			t.Logf("cleanup: nexus3 rm %s: %s", handle, rmOut)
+			t.Logf("cleanup: nexus rm %s: %s", handle, rmOut)
 		}
 	})
 
@@ -127,9 +127,9 @@ func TestOverlayOnVirtiofs(t *testing.T) {
 		if strings.Contains(s, "below the") && strings.Contains(s, "floor") {
 			liveSkip(t, "overlay: insufficient free disk space to create sandbox: %s", s[strings.LastIndex(s, "error:"):])
 		}
-		t.Fatalf("nexus3 create: %v\n%s\n(check NEXUS3_KERNEL_PATH and that %q is a cached image)", err, createOut, image)
+		t.Fatalf("nexus create: %v\n%s\n(check NEXUS_KERNEL_PATH and that %q is a cached image)", err, createOut, image)
 	}
-	t.Logf("nexus3 create: %s", createOut)
+	t.Logf("nexus create: %s", createOut)
 
 	script := `
 set -euo pipefail
@@ -183,9 +183,9 @@ echo "LOWER_CONTENT:${LOWER_CONTENT}"
 	execOut, err := overlayCmd(binary, "exec", "--cwd", "/root", handle,
 		"/bin/bash", "-c", script,
 	).CombinedOutput()
-	t.Logf("nexus3 exec output:\n%s", execOut)
+	t.Logf("nexus exec output:\n%s", execOut)
 	if err != nil {
-		t.Fatalf("nexus3 exec script failed: %v\n%s", err, execOut)
+		t.Fatalf("nexus exec script failed: %v\n%s", err, execOut)
 	}
 
 	// --- 5. Assert success token and lower content. ---

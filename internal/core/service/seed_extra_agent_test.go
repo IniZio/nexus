@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func TestSeedGuestAgentForProfiles_ExtraPlaceholderRegistered(t *testing.T) {

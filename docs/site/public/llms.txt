@@ -1,9 +1,9 @@
-# nexus3 documentation index
+# nexus documentation index
 # Generated for LLM consumption. One entry per page.
 # Format: title | path | description
 
-nexus3 | / | Landing page: what nexus3 is, key capabilities, and where to start.
-Quickstart | /quickstart | Install nexus3 and run your first sandbox in minutes; full create → exec → forward → stop round trip.
+nexus | / | Landing page: what nexus is, key capabilities, and where to start.
+Quickstart | /quickstart | Install nexus and run your first sandbox in minutes; full create → exec → forward → stop round trip.
 AI Agents | /ai-agents | MCP server integration, per-task sandbox orchestration, and the herdr plugin launch path.
 
 ## Sandboxes
@@ -29,7 +29,7 @@ Configuration | /cli/configuration | --context / --file flag, .nexus/Containerfi
 ## Recipes
 
 Building images | /recipes/building-images | Custom guest images from a Containerfile; layer caching and shadow disks.
-Docker in a sandbox | /recipes/docker-in-sandbox | Running Docker Compose stacks inside a nexus3 sandbox with nested buildkitd.
+Docker in a sandbox | /recipes/docker-in-sandbox | Running Docker Compose stacks inside a nexus sandbox with nested buildkitd.
 Mounts and worktrees | /recipes/mounts-and-worktrees | Mounting host directories and git worktrees into sandboxes with -v; git identity notes.
 Parallel development flow | /recipes/parallel-dev-flow | Fan N sandboxes out, work in parallel, and integrate results; worktree-per-task pattern.
 

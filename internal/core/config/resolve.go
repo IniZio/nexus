@@ -121,7 +121,7 @@ func Resolve(f Flags, cfg Config, d Defaults) Resolved {
 // Derive it with ProjectDir(cfgPath).
 //
 // This must use configDir, not the process working directory: a user running
-// nexus3 from a sub-directory of their repo expects ".:/work" to refer to the
+// nexus from a sub-directory of their repo expects ".:/work" to refer to the
 // repo root where the config lives, not to whatever directory they happen to
 // be in at the time.
 //

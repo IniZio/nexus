@@ -7,10 +7,10 @@ package builder_test
 // Unlike TestBuildkitBaseBuild, this test:
 //   - Uses a unique Containerfile (RUN echo + timestamp) so buildkitd cannot
 //     return a content-store cache hit — the tar export MUST execute.
-//   - Stores the image cache in a fixed directory (/tmp/nexus3-w29-live-cache)
+//   - Stores the image cache in a fixed directory (/tmp/nexus-w29-live-cache)
 //     so the ext4 artifact persists after the test for debugfs inspection.
-//   - Emits the path and size of the nexus3-agent binary inside the ext4 so
-//     the caller can run `debugfs -R 'stat /sbin/nexus3-agent' <ext4>` to
+//   - Emits the path and size of the nexus-agent binary inside the ext4 so
+//     the caller can run `debugfs -R 'stat /sbin/nexus-agent' <ext4>` to
 //     verify no 32 MiB truncation occurred.
 //
 // Self-skip: the test skips when BUILDKIT_HOST is not set and the default
@@ -28,9 +28,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // w29LiveEndpoint returns the buildkitd address and true if buildkitd is
@@ -60,14 +60,14 @@ func w29RepoRoot(t *testing.T) string {
 	return filepath.Dir(mod)
 }
 
-// w29BuildNexus3Agent compiles cmd/nexus3-agent as a static Linux/amd64
+// w29BuildNexusAgent compiles cmd/nexus-agent as a static Linux/amd64
 // binary and returns its path in a temp dir cleaned up when t ends.
-func w29BuildNexus3Agent(t *testing.T) string {
+func w29BuildNexusAgent(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "nexus3-agent")
+	bin := filepath.Join(dir, "nexus-agent")
 	cmd := exec.Command("go", "build", "-o", bin,
-		"github.com/IniZio/nexus3/cmd/nexus3-agent")
+		"github.com/IniZio/nexus/cmd/nexus-agent")
 	cmd.Dir = w29RepoRoot(t)
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
@@ -75,7 +75,7 @@ func w29BuildNexus3Agent(t *testing.T) string {
 		"GOARCH=amd64",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build nexus3-agent: %s\n%v", out, err)
+		t.Fatalf("go build nexus-agent: %s\n%v", out, err)
 	}
 	return bin
 }
@@ -98,15 +98,15 @@ func TestBuildkitTarExportLive(t *testing.T) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	})
 
-	agentBin := w29BuildNexus3Agent(t)
+	agentBin := w29BuildNexusAgent(t)
 	agentStat, err := os.Stat(agentBin)
 	if err != nil {
 		t.Fatalf("stat agent binary: %v", err)
 	}
-	t.Logf("source nexus3-agent size: %d bytes (%.1f MiB)", agentStat.Size(), float64(agentStat.Size())/(1<<20))
+	t.Logf("source nexus-agent size: %d bytes (%.1f MiB)", agentStat.Size(), float64(agentStat.Size())/(1<<20))
 
 	// Fixed (persistent) cache dir so the ext4 survives test teardown.
-	cacheDir := "/tmp/nexus3-w29-live-cache"
+	cacheDir := "/tmp/nexus-w29-live-cache"
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatalf("mkdir cache: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestBuildkitTarExportLive(t *testing.T) {
 	}
 	// Timestamp in the RUN command changes the image fingerprint, forcing a
 	// new buildkitd solve. The probe file is visible in debugfs.
-	probe := fmt.Sprintf("RUN echo %d > /.nexus3-w29-probe", time.Now().UnixNano())
+	probe := fmt.Sprintf("RUN echo %d > /.nexus-w29-probe", time.Now().UnixNano())
 	cf := "FROM alpine:latest\n" + probe + "\n"
 	t.Logf("Containerfile:\n%s", cf)
 	if err := os.WriteFile(filepath.Join(workspace, ".nexus", "Containerfile"), []byte(cf), 0o644); err != nil {
@@ -185,15 +185,15 @@ func TestBuildkitTarExportLive(t *testing.T) {
 	}
 	t.Logf("ext4 artifact: path=%s size=%d bytes (%.1f MiB)", ext4Path, ext4Stat.Size(), float64(ext4Stat.Size())/(1<<20))
 
-	// debugfs: stat /sbin/nexus3-agent inside the ext4.
-	debugfsOut, err := exec.Command("debugfs", "-R", "stat /sbin/nexus3-agent", ext4Path).CombinedOutput()
+	// debugfs: stat /sbin/nexus-agent inside the ext4.
+	debugfsOut, err := exec.Command("debugfs", "-R", "stat /sbin/nexus-agent", ext4Path).CombinedOutput()
 	if err != nil {
 		t.Logf("debugfs not available or failed: %v\n%s", err, debugfsOut)
 	} else {
-		t.Logf("debugfs stat /sbin/nexus3-agent:\n%s", debugfsOut)
+		t.Logf("debugfs stat /sbin/nexus-agent:\n%s", debugfsOut)
 	}
 
-	// debugfs: stat /.nexus3-w29-probe (proves unique Containerfile was built).
-	probeOut, _ := exec.Command("debugfs", "-R", "stat /.nexus3-w29-probe", ext4Path).CombinedOutput()
-	t.Logf("debugfs stat /.nexus3-w29-probe:\n%s", probeOut)
+	// debugfs: stat /.nexus-w29-probe (proves unique Containerfile was built).
+	probeOut, _ := exec.Command("debugfs", "-R", "stat /.nexus-w29-probe", ext4Path).CombinedOutput()
+	t.Logf("debugfs stat /.nexus-w29-probe:\n%s", probeOut)
 }

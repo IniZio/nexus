@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 const (
@@ -239,7 +239,7 @@ func TestPruneCandidates(t *testing.T) {
 	var digests []domain.Digest
 	for _, content := range []string{"one", "two", "three"} {
 		img, r := makeImage([]byte(content))
-		img.Ref = "nexus3-test:" + content
+		img.Ref = "nexus-test:" + content
 		if err := c.Put(ctx, img, r); err != nil {
 			t.Fatalf("Put %s: %v", content, err)
 		}

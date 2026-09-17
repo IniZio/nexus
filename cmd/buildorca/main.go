@@ -1,5 +1,5 @@
-// buildorca — one-shot driver: builds the nexus3 agent base image and registers
-// it in the nexus3 image cache as "nexus3-orca:latest".
+// buildorca — one-shot driver: builds the nexus agent base image and registers
+// it in the nexus image cache as "nexus-orca:latest".
 //
 // NOT committed. Scratch build tool for demo/ops use.
 // Usage: TMPDIR=/tmp go run ./cmd/buildorca  (from repo root)
@@ -13,11 +13,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/test/selfhost"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/test/selfhost"
 )
 
 func main() {
@@ -74,7 +74,7 @@ func run() error {
 	}
 	fmt.Fprintf(os.Stderr, "buildorca: built image ref=%q digest=%s size=%d\n", img.Ref, img.Digest, img.Size)
 
-	// Patch meta.json to change the Ref to nexus3-orca:latest.
+	// Patch meta.json to change the Ref to nexus-orca:latest.
 	metaPath := filepath.Join(cacheRoot, img.Digest.Algo(), img.Digest.Hex(), "meta.json")
 
 	raw, err := os.ReadFile(metaPath)
@@ -88,7 +88,7 @@ func run() error {
 	}
 
 	oldRef := rec.Ref
-	rec.Ref = "nexus3-orca:latest"
+	rec.Ref = "nexus-orca:latest"
 
 	patched, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
@@ -126,15 +126,15 @@ func run() error {
 	found := false
 	for _, im := range imgs {
 		fmt.Fprintf(os.Stderr, "  ref=%-30s digest=%s size=%d\n", im.Ref, im.Digest, im.Size)
-		if im.Ref == "nexus3-orca:latest" {
+		if im.Ref == "nexus-orca:latest" {
 			found = true
 		}
 	}
 	if !found {
-		return fmt.Errorf("nexus3-orca:latest not found in cache after patch")
+		return fmt.Errorf("nexus-orca:latest not found in cache after patch")
 	}
 
 	artifactPath := filepath.Join(cacheRoot, img.Digest.Algo(), img.Digest.Hex(), "artifact")
-	fmt.Printf("nexus3-orca:latest digest=%s path=%s\n", img.Digest, artifactPath)
+	fmt.Printf("nexus-orca:latest digest=%s path=%s\n", img.Digest, artifactPath)
 	return nil
 }

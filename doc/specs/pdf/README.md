@@ -2,7 +2,7 @@
 id: C-PDF
 type: concept
 title: Parallel-dev flow
-parent: C-NEXUS3
+parent: C-NEXUS
 summary: "Requirements for the N-sandbox parallel development flow ending in GitHub PRs and a downloadable built-output preview artifact."
 ---
 

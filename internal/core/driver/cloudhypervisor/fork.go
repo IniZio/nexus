@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/artifact"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // vmRestoreRequest is the JSON body for PUT /api/v1/vm.restore.
@@ -402,7 +402,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	// ── Netns path (snapshot has a net device) ──────────────────────────────
 	// Launch the child VMM inside an isolated user+network namespace with the
 	// child's own TAP bridge. The re-exec'd child (RunNetnsChild) detects the
-	// NEXUS3_NETNS_RESTORE_URL env var and calls vm.restore before tapPump,
+	// NEXUS_NETNS_RESTORE_URL env var and calls vm.restore before tapPump,
 	// so the VM reaches Running inside the netns without any parent API call.
 	if parentGuestTap != "" {
 		rt, err := StartNetnsRuntime(ctx, d.cfg, childID, socketPath, sourceURL)
@@ -543,7 +543,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	d.mu.Unlock()
 
 	// Persist the IID sidecar so Observe can reconstruct InstanceID after a
-	// nexus3 restart. Non-fatal: a write failure leaves the IID empty on
+	// nexus restart. Non-fatal: a write failure leaves the IID empty on
 	// restart but does not affect the running VM.
 	_ = d.writeInstanceID(childID, iid)
 

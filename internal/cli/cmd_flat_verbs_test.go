@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // The manual has documented the flat spelling since D-PD-57, and 53 fenced
 // invocations across docs/site use it. None of them worked: the binary only
-// had `nexus3 sandbox create`, so an operator following the quickstart hit
+// had `nexus sandbox create`, so an operator following the quickstart hit
 // "unknown command: create" on its first line.
 //
 // This asserts every documented flat verb is registered. It is the cheapest
@@ -44,7 +44,7 @@ func TestFlatVerbs_DelegateToSandboxGroup(t *testing.T) {
 	out, _, errBuf := newTestOutput(false)
 	err := cmd.Run(t.Context(), []string{}, out)
 	if err == nil {
-		t.Fatal("`nexus3 rm` with no args should be a usage error")
+		t.Fatal("`nexus rm` with no args should be a usage error")
 	}
 	// The usage text must come from runSandboxRm, proving delegation.
 	msg := err.Error() + errBuf.String()
@@ -86,7 +86,7 @@ func TestFlatVerbs_TargetsAreRealSubcommands(t *testing.T) {
 	}
 }
 
-// `nexus3 ps` used to print only "N sandbox(es)". The rows existed — they went
+// `nexus ps` used to print only "N sandbox(es)". The rows existed — they went
 // into the JSON envelope — but human mode never rendered them, so the primary
 // listing command told the operator how many sandboxes there were and nothing
 // about any of them.

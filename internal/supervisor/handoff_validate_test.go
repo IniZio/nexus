@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/supervisor/handoff"
+	"github.com/IniZio/nexus/internal/supervisor/handoff"
 )
 
 // TestHandoff_IncompletePayload_Refuses proves that performHandoff refuses

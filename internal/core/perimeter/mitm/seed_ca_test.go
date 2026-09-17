@@ -1,7 +1,7 @@
 package mitm
 
 // seed_ca_test.go proves the CA-seeding path added for the hot-swap handoff
-// (motive nexus3-host-supervisor-hotswap, ticket 08): a replacement
+// (motive nexus-host-supervisor-hotswap, ticket 08): a replacement
 // supervisor must continue signing leaf certificates with the SAME CA the
 // guest already trusts, not a freshly minted one, or every HTTPS connection
 // through the proxy fails certificate validation after an adopt.

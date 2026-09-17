@@ -19,7 +19,7 @@ import (
 //
 // It found five real omissions when written: --mount and --mount-named (both
 // flagship features, live host mounts and named volumes), --egress and
-// --allow-host (egress control), and --repo — which nexus3's OWN error message
+// --allow-host (egress control), and --repo — which nexus's OWN error message
 // instructs the operator to pass:
 //
 //	GitHub credential would be unbounded (D-PD-36): pass --repo owner/name …
@@ -68,7 +68,7 @@ func TestSandboxCreateUsage_ListsEveryAcceptedFlag(t *testing.T) {
 
 	// internalFlags lists flags that are intentionally omitted from the
 	// human-facing usage string because they are subprocess-only channels
-	// consumed exclusively by the nexus3 worktree create path, not by operators.
+	// consumed exclusively by the nexus worktree create path, not by operators.
 	internalFlags := map[string]bool{
 		"--egress-policy-json": true, // conveyed by herdrWorktreeSandboxCreateArgs; not for human use
 	}

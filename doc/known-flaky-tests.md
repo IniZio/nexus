@@ -23,7 +23,7 @@ the test genuinely executed rather than being skipped.
 
 2. The characterisation of this flake as "unrelated" to the current motive
    is **unproven**. The process-global pin registry the test depends on was
-   introduced by motive `nexus3-host-supervisor-hotswap` in commit
+   introduced by motive `nexus-host-supervisor-hotswap` in commit
    `dae7ebf`. Related-but-intermittent and unrelated-and-intermittent are
    different findings, and only the former has evidence. Do not record this
    as definitively unrelated until the race is isolated.

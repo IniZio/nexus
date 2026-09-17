@@ -366,11 +366,11 @@ UNKNOWN for exact truncation field spellings.]
 
 Read `github.com/superradcompany/microsandbox-mcp/src/tools/sandbox_exec.ts` (or
 equivalent) to confirm exact truncation field names — that is the last UNKNOWN with
-practical impact on nexus3's MCP envelope design.
+practical impact on nexus's MCP envelope design.
 
 ---
 
-## Decision Notes for nexus3
+## Decision Notes for nexus
 
 **Q1 — Labels as `map[string]string` vs. single-purpose ID field:**
 microsandbox is the only reference with labels; it stores them as `map[string]string`.
@@ -384,7 +384,7 @@ and selecting.
 Zero of three reference projects ship batch exec. microsandbox — the richest reference
 with a full label+selector system — explicitly excludes `exec` from the fleet commands
 that accept `--label`. The verb list for `--label` fleet ops is: `ps`, `ls`, `start`,
-`stop`, `restart`, `ping`, `touch`, `rm`. Exec is not in it. nexus3's proposed
+`stop`, `restart`, `ping`, `touch`, `rm`. Exec is not in it. nexus's proposed
 `exec --label` would exceed the reference surface. The evidence is strong: retract
-batch exec to a wrapper layer, or if kept, document it as a deliberate nexus3
+batch exec to a wrapper layer, or if kept, document it as a deliberate nexus
 extension beyond what any reference provides.

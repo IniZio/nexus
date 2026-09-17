@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/portfwd"
 )
 
 func seedFocusBinding(t *testing.T, storeRoot, workspaceID, sandboxID string) {
 	t.Helper()
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + sandboxID,
+		SpaceLabel:       "nexus:" + sandboxID,
 		HerdrWorkspaceID: workspaceID,
 		SandboxHandle:    "test/" + sandboxID,
 		SandboxID:        sandboxID,

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // findNetTap
@@ -13,13 +13,13 @@ import (
 // TestFindNetTap_Present verifies that findNetTap returns the tap name of the
 // first net device when config.json contains a "net" array.
 func TestFindNetTap_Present(t *testing.T) {
-	cfg := buildNetConfig([]netSpec{{tap: "nx3g-aabbccddee", mac: "52:54:00:01:02:03", numQueues: 2}})
+	cfg := buildNetConfig([]netSpec{{tap: "nxg-aabbccddee", mac: "52:54:00:01:02:03", numQueues: 2}})
 	got, err := findNetTap(cfg)
 	if err != nil {
 		t.Fatalf("findNetTap: %v", err)
 	}
-	if got != "nx3g-aabbccddee" {
-		t.Errorf("findNetTap: got %q, want %q", got, "nx3g-aabbccddee")
+	if got != "nxg-aabbccddee" {
+		t.Errorf("findNetTap: got %q, want %q", got, "nxg-aabbccddee")
 	}
 }
 
@@ -47,14 +47,14 @@ func TestFindNetTap_EmptyArray(t *testing.T) {
 // the first net entry when multiple entries are present.
 func TestFindNetTap_MultipleEntries(t *testing.T) {
 	cfg := buildNetConfig([]netSpec{
-		{tap: "nx3g-first00000", mac: "52:54:00:01:02:03", numQueues: 2},
-		{tap: "nx3g-second0000", mac: "52:54:00:04:05:06", numQueues: 2},
+		{tap: "nxg-first00000", mac: "52:54:00:01:02:03", numQueues: 2},
+		{tap: "nxg-second0000", mac: "52:54:00:04:05:06", numQueues: 2},
 	})
 	got, err := findNetTap(cfg)
 	if err != nil {
 		t.Fatalf("findNetTap: %v", err)
 	}
-	if got != "nx3g-first00000" {
+	if got != "nxg-first00000" {
 		t.Errorf("findNetTap (multi-net): got %q, want first entry", got)
 	}
 }
@@ -64,8 +64,8 @@ func TestFindNetTap_MultipleEntries(t *testing.T) {
 // TestRewriteConfigNetTap_SingleEntry verifies that rewriteConfigNetTap
 // rewrites the tap field of the matching net entry, preserving all other fields.
 func TestRewriteConfigNetTap_SingleEntry(t *testing.T) {
-	cfg := buildNetConfig([]netSpec{{tap: "nx3g-parent0000", mac: "52:54:00:aa:bb:cc", numQueues: 2}})
-	got, err := rewriteConfigNetTap(cfg, "nx3g-parent0000", "nx3g-child00000")
+	cfg := buildNetConfig([]netSpec{{tap: "nxg-parent0000", mac: "52:54:00:aa:bb:cc", numQueues: 2}})
+	got, err := rewriteConfigNetTap(cfg, "nxg-parent0000", "nxg-child00000")
 	if err != nil {
 		t.Fatalf("rewriteConfigNetTap: %v", err)
 	}
@@ -75,8 +75,8 @@ func TestRewriteConfigNetTap_SingleEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findNetTap on rewritten config: %v", err)
 	}
-	if tap != "nx3g-child00000" {
-		t.Errorf("tap after rewrite: got %q, want %q", tap, "nx3g-child00000")
+	if tap != "nxg-child00000" {
+		t.Errorf("tap after rewrite: got %q, want %q", tap, "nxg-child00000")
 	}
 
 	// Verify other fields are preserved.
@@ -96,10 +96,10 @@ func TestRewriteConfigNetTap_SingleEntry(t *testing.T) {
 // is rewritten; other entries are left unchanged.
 func TestRewriteConfigNetTap_MultipleEntries(t *testing.T) {
 	cfg := buildNetConfig([]netSpec{
-		{tap: "nx3g-parent0000", mac: "52:54:00:01:02:03", numQueues: 2},
-		{tap: "nx3g-other00000", mac: "52:54:00:04:05:06", numQueues: 4},
+		{tap: "nxg-parent0000", mac: "52:54:00:01:02:03", numQueues: 2},
+		{tap: "nxg-other00000", mac: "52:54:00:04:05:06", numQueues: 4},
 	})
-	got, err := rewriteConfigNetTap(cfg, "nx3g-parent0000", "nx3g-child00000")
+	got, err := rewriteConfigNetTap(cfg, "nxg-parent0000", "nxg-child00000")
 	if err != nil {
 		t.Fatalf("rewriteConfigNetTap: %v", err)
 	}
@@ -109,11 +109,11 @@ func TestRewriteConfigNetTap_MultipleEntries(t *testing.T) {
 		t.Fatalf("net count: got %d, want 2", len(nets))
 	}
 	// First entry: tap rewritten.
-	if tap := mustNetField(t, nets[0], "tap"); tap != "nx3g-child00000" {
-		t.Errorf("nets[0].tap: got %q, want %q", tap, "nx3g-child00000")
+	if tap := mustNetField(t, nets[0], "tap"); tap != "nxg-child00000" {
+		t.Errorf("nets[0].tap: got %q, want %q", tap, "nxg-child00000")
 	}
 	// Second entry: unchanged.
-	if tap := mustNetField(t, nets[1], "tap"); tap != "nx3g-other00000" {
+	if tap := mustNetField(t, nets[1], "tap"); tap != "nxg-other00000" {
 		t.Errorf("nets[1].tap: got %q (unchanged expected)", tap)
 	}
 }
@@ -121,8 +121,8 @@ func TestRewriteConfigNetTap_MultipleEntries(t *testing.T) {
 // TestRewriteConfigNetTap_NoMatch verifies that rewriteConfigNetTap returns an
 // error when no net entry has the specified oldTap.
 func TestRewriteConfigNetTap_NoMatch(t *testing.T) {
-	cfg := buildNetConfig([]netSpec{{tap: "nx3g-parent0000", mac: "52:54:00:aa:bb:cc", numQueues: 2}})
-	_, err := rewriteConfigNetTap(cfg, "nx3g-doesnotexist", "nx3g-child00000")
+	cfg := buildNetConfig([]netSpec{{tap: "nxg-parent0000", mac: "52:54:00:aa:bb:cc", numQueues: 2}})
+	_, err := rewriteConfigNetTap(cfg, "nxg-doesnotexist", "nxg-child00000")
 	if err == nil {
 		t.Fatal("rewriteConfigNetTap with no match: expected error, got nil")
 	}
@@ -134,9 +134,9 @@ func TestRewriteConfigNetTap_PreservesTopLevelFields(t *testing.T) {
 	// Build a config with both disk and net fields.
 	cfg := buildFullConfig(
 		[]diskSpec{{path: "/vm/parent.raw", imageType: "Raw"}},
-		[]netSpec{{tap: "nx3g-parent0000", mac: "52:54:00:aa:bb:cc", numQueues: 2}},
+		[]netSpec{{tap: "nxg-parent0000", mac: "52:54:00:aa:bb:cc", numQueues: 2}},
 	)
-	got, err := rewriteConfigNetTap(cfg, "nx3g-parent0000", "nx3g-child00000")
+	got, err := rewriteConfigNetTap(cfg, "nxg-parent0000", "nxg-child00000")
 	if err != nil {
 		t.Fatalf("rewriteConfigNetTap: %v", err)
 	}

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // ── TBD-PD-33: herdrShellCwd ─────────────────────────────────────────────────
@@ -67,11 +67,11 @@ func TestHerdrShellCwd_ServiceErrorFallsToRoot(t *testing.T) {
 func TestHerdrSpaceResolve_ByLabel(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wX", SandboxHandle: "orca/demo", SandboxID: "sb-1"}
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:demo", HerdrWorkspaceID: "wX", SandboxHandle: "orca/demo", SandboxID: "sb-1"}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	got, err := herdrSpaceResolve(ctx, root, "nexus3:demo")
+	got, err := herdrSpaceResolve(ctx, root, "nexus:demo")
 	if err != nil || got != b {
 		t.Errorf("ByLabel: got %+v err %v, want %+v", got, err, b)
 	}
@@ -82,7 +82,7 @@ func TestHerdrSpaceResolve_ByLabel(t *testing.T) {
 func TestHerdrSpaceResolve_ByHandle(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wX", SandboxHandle: "orca/demo", SandboxID: "sb-1"}
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:demo", HerdrWorkspaceID: "wX", SandboxHandle: "orca/demo", SandboxID: "sb-1"}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -93,12 +93,12 @@ func TestHerdrSpaceResolve_ByHandle(t *testing.T) {
 }
 
 // TestHerdrSpaceResolve_ByDerivedLabel verifies resolution by the label that
-// space-create derives from the ref: herdrSpaceLabelForRef("orca/demo") → "nexus3:orca/demo".
+// space-create derives from the ref: herdrSpaceLabelForRef("orca/demo") → "nexus:orca/demo".
 func TestHerdrSpaceResolve_ByDerivedLabel(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 	// Binding uses the DERIVED label (as space-create would store it).
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:orca/demo", HerdrWorkspaceID: "wX", SandboxHandle: "orca/demo", SandboxID: "sb-1"}
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:orca/demo", HerdrWorkspaceID: "wX", SandboxHandle: "orca/demo", SandboxID: "sb-1"}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestHerdrSpaceResolve_ByDerivedLabel(t *testing.T) {
 func TestHerdrSpaceResolve_ByWorkspaceID(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wXYZ", SandboxHandle: "orca/demo", SandboxID: "sb-1"}
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:demo", HerdrWorkspaceID: "wXYZ", SandboxHandle: "orca/demo", SandboxID: "sb-1"}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestHerdrWorkspaceClose_SuccessIsNil(t *testing.T) {
 func TestHerdrSpaceResolve_MutationGuard_HandleRouting(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	b := HerdrSpaceBinding{SpaceLabel: "nexus3:orca-demo", HerdrWorkspaceID: "wM", SandboxHandle: "orca/demo", SandboxID: "sb-m"}
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:orca-demo", HerdrWorkspaceID: "wM", SandboxHandle: "orca/demo", SandboxID: "sb-m"}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
 		t.Fatalf("Put: %v", err)
 	}

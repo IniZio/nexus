@@ -20,22 +20,22 @@ import (
 	"github.com/tonistiigi/fsutil"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/IniZio/nexus3/internal/core/bootspec"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/bootspec"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // agentContextFilenamePrefix is the reserved name prefix used for the
-// nexus3-agent binary inside the buildkit "nexus3agent" named context. Using a
+// nexus-agent binary inside the buildkit "nexusagent" named context. Using a
 // leading underscore avoids collisions with typical workspace filenames.
-const agentContextFilenamePrefix = "_nexus3-agent"
+const agentContextFilenamePrefix = "_nexus-agent"
 
 // newAgentContextFilename returns a per-Solve unique name for the agent binary
-// inside the "nexus3agent" named build context.
+// inside the "nexusagent" named build context.
 //
 // # Why the name must be unique per Solve
 //
 // buildkitd caches the RESULT SNAPSHOT of the final
-// `COPY --from=nexus3agent` under a cache key derived from the copied file's
+// `COPY --from=nexusagent` under a cache key derived from the copied file's
 // contenthash (buildkit cache/contenthash/filehash.go NewFromStat → tarsum v1,
 // which excludes mtime). The agent binary's path, size, mode and content are
 // identical from one build to the next, so that key is STABLE across builds —
@@ -43,11 +43,11 @@ const agentContextFilenamePrefix = "_nexus3-agent"
 // therefore returned forever.
 //
 // That is not hypothetical. On cache-disk slot 0
-// (~/.local/state/nexus3/caches/buildkit.ext4), snapshot 61 held a zero-byte
-// /usr/sbin/nexus3-agent written at 15:05 on 2026-08-29. Every later build of
+// (~/.local/state/nexus/caches/buildkit.ext4), snapshot 61 held a zero-byte
+// /usr/sbin/nexus-agent written at 15:05 on 2026-08-29. Every later build of
 // the same Containerfile cache-hit that snapshot, finished the whole solve in
 // ~7 s without re-executing a single layer, and then failed the
-// verifyAgentIntegrity canary with "/sbin/nexus3-agent is 0 bytes, expected
+// verifyAgentIntegrity canary with "/sbin/nexus-agent is 0 bytes, expected
 // 36329665". The canary is fail-closed, so the poisoned layer never shipped —
 // but it also never healed: the only escape was deleting the operator's warm
 // cache disk. sizeVerifiedFS (sizedfs.go) cannot help here, because it guards
@@ -107,7 +107,7 @@ func stageAgentContext(agentDir, agentPath string) (string, error) {
 //     layer. This is safer than the alternative: scanning for the install path
 //     would produce false positives (a comment referencing the path) that
 //     silently suppress the recipe and leave the binary absent.
-const containerfileRecipeSkipDirective = "nexus3:recipe-skip"
+const containerfileRecipeSkipDirective = "nexus:recipe-skip"
 
 // containerfileOptsOutOfRecipe reports whether containerfileBytes contains
 // the [containerfileRecipeSkipDirective], signalling that the operator has
@@ -150,7 +150,7 @@ func renderRecipeIfNeeded(containerfileBytes []byte, recipe cred.ToolRecipe, arc
 //
 //	<user Containerfile>        ← cache-hits on every build for unchanged content
 //	[recipe layer]              ← deterministic; cache-hits on same recipe+arch
-//	# Final layer: nexus3-agent ← always a cache MISS (agentFile carries a nonce)
+//	# Final layer: nexus-agent ← always a cache MISS (agentFile carries a nonce)
 //
 // agentFile must come from [newAgentContextFilename] — the per-Solve nonce makes
 // the agent layer's buildkit cache key unique per build, preventing a corrupted
@@ -169,7 +169,7 @@ func synthesizeDockerfile(containerfileBytes, recipeLayerBytes []byte, agentFile
 		out = append(out, recipeLayerBytes...)
 	}
 	finalLayer := fmt.Sprintf(
-		"\n\n# Final layer: bake the nexus3-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexus3agent %s %s\nCOPY --chmod=0755 --from=nexus3agent %s %s\n",
+		"\n\n# Final layer: bake the nexus-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexusagent %s %s\nCOPY --chmod=0755 --from=nexusagent %s %s\n",
 		installPath, agentFile, installPath, runcShimFile, RuncShimInstallPath,
 	)
 	return append(out, []byte(finalLayer)...)
@@ -187,11 +187,11 @@ type SolveRequest struct {
 	// applied on top of BaseRef.
 	ContainerfileBytes []byte
 
-	// AgentPath is the host filesystem path to the nexus3-agent binary.
+	// AgentPath is the host filesystem path to the nexus-agent binary.
 	AgentPath string
 
 	// AgentInstallPath is the absolute in-guest path where the agent binary is
-	// placed as the final layer. Always "/sbin/nexus3-agent" in production.
+	// placed as the final layer. Always "/sbin/nexus-agent" in production.
 	AgentInstallPath string
 
 	// WorkspaceDir is the absolute host path to the project workspace root.
@@ -203,7 +203,7 @@ type SolveRequest struct {
 	// When Packages is non-empty and ContainerfileBytes does not opt out via
 	// [containerfileRecipeSkipDirective], [RenderRecipeLayer] is called with
 	// TargetArch and the output is injected between ContainerfileBytes and the
-	// nexus3-agent COPY layer. A zero ToolRecipe (no packages) is silently
+	// nexus-agent COPY layer. A zero ToolRecipe (no packages) is silently
 	// ignored — no recipe layer is emitted.
 	ToolRecipe cred.ToolRecipe
 
@@ -251,7 +251,7 @@ type BuildkitClient interface {
 // Calling Solve requires a running buildkitd reachable at c.addr. The
 // intended runtime topology is:
 //
-//  1. nexus3 host calls driver.Start with the builder VM image
+//  1. nexus host calls driver.Start with the builder VM image
 //     (images/builder/Containerfile — stock moby/buildkit) and waits for
 //     the VM to report Running.
 //  2. The host dials buildkitd's gRPC socket via driver.GuestDialer (vsock
@@ -364,7 +364,7 @@ func NewBuildkitClient(addr string) (BuildkitClient, error) {
 
 // buildLocalMounts constructs the three LocalMounts entries used by every
 // Solve call, wrapping EVERY FS with the supplied sizeVerifiedSet so that a
-// truncated read on any mount — including the nexus3agent binary (the artifact
+// truncated read on any mount — including the nexusagent binary (the artifact
 // class that triggered the 32 MiB production truncation) — immediately cancels
 // the Solve context.
 //
@@ -373,9 +373,9 @@ func NewBuildkitClient(addr string) (BuildkitClient, error) {
 // TestBuildLocalMounts_AllWrapped in plain `go test`, without a live buildkitd.
 func buildLocalMounts(set *sizeVerifiedSet, ctxFS, dfFS, agentFS fsutil.FS) map[string]fsutil.FS {
 	return map[string]fsutil.FS{
-		"context":     set.Wrap(ctxFS),
-		"dockerfile":  set.Wrap(dfFS),
-		"nexus3agent": set.Wrap(agentFS),
+		"context":    set.Wrap(ctxFS),
+		"dockerfile": set.Wrap(dfFS),
+		"nexusagent": set.Wrap(agentFS),
 	}
 }
 
@@ -390,9 +390,9 @@ func buildLocalMounts(set *sizeVerifiedSet, ctxFS, dfFS, agentFS fsutil.FS) map[
 //
 //	<content of req.ContainerfileBytes>
 //
-//	# Final layer: bake the nexus3-agent (boot contract: init=/sbin/nexus3-agent)
-//	COPY --chmod=0755 --from=nexus3agent _nexus3-agent-<nonce> <req.AgentInstallPath>
-//	COPY --chmod=0755 --from=nexus3agent nexus3-runc /usr/local/sbin/runc
+//	# Final layer: bake the nexus-agent (boot contract: init=/sbin/nexus-agent)
+//	COPY --chmod=0755 --from=nexusagent _nexus-agent-<nonce> <req.AgentInstallPath>
+//	COPY --chmod=0755 --from=nexusagent nexus-runc /usr/local/sbin/runc
 //
 // Placing the agent COPY last means an agent version bump only invalidates
 // that single layer; all Containerfile layers above are cache-hits in buildkitd.
@@ -412,9 +412,9 @@ func buildLocalMounts(set *sizeVerifiedSet, ctxFS, dfFS, agentFS fsutil.FS) map[
 //   - "context":        req.WorkspaceDir (passed to buildkitd directly, no
 //     intermediate copy; buildkitd's fsutil handles symlinks and large trees).
 //   - "dockerfile":     a small temp dir containing only the synthetic Dockerfile.
-//   - "nexus3agent":   a small temp dir containing only the agent binary,
+//   - "nexusagent":   a small temp dir containing only the agent binary,
 //     referenced via the buildkitd named-context feature so the workspace
-//     directory never needs to be polluted with nexus3 internals.
+//     directory never needs to be polluted with nexus internals.
 func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir string) error {
 	// Connect to buildkitd (one connection per Solve; acceptable for the
 	// current slice — a connection pool is an optimisation for later).
@@ -425,13 +425,13 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	defer bk.Close()
 
 	// Synthesise a combined Dockerfile: user instructions + agent final layer.
-	// The agent COPY uses a named build context (nexus3agent) so the agent
+	// The agent COPY uses a named build context (nexusagent) so the agent
 	// binary does not need to reside in the workspace context. The source
 	// filename carries a per-Solve nonce so the agent layer is never served
 	// from a stale buildkitd result snapshot — see [newAgentContextFilename].
-	// Small temp dir for the agent binary, used as the "nexus3agent" named
-	// build context. This avoids writing nexus3 internals into the workspace.
-	agentDir, err := os.MkdirTemp("", "nexus3-bkagent-*")
+	// Small temp dir for the agent binary, used as the "nexusagent" named
+	// build context. This avoids writing nexus internals into the workspace.
+	agentDir, err := os.MkdirTemp("", "nexus-bkagent-*")
 	if err != nil {
 		return fmt.Errorf("buildkit: create agent dir: %w", err)
 	}
@@ -451,7 +451,7 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 	synthDF := synthesizeDockerfile(req.ContainerfileBytes, recipeLayerBytes, agentFile, req.AgentInstallPath, runcShimFile)
 
 	// Small temp dir for the synthetic Dockerfile only.
-	dfDir, err := os.MkdirTemp("", "nexus3-bkdf-*")
+	dfDir, err := os.MkdirTemp("", "nexus-bkdf-*")
 	if err != nil {
 		return fmt.Errorf("buildkit: create dockerfile dir: %w", err)
 	}
@@ -513,7 +513,7 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 		// three local mounts so bk.Solve tears down within seconds (sizedfs.go
 		// explains why the default deadline-wait behaviour masks the fault as a
 		// flaky timeout).  All three mounts share one sizeVerifiedSet so a
-		// truncated read on the nexus3agent binary (the artifact class that
+		// truncated read on the nexusagent binary (the artifact class that
 		// triggered the 32 MiB production truncation) is caught as quickly as
 		// a violation on the build context.
 		solveCtx, cancelCause := context.WithCancelCause(egCtx)
@@ -525,8 +525,8 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 				// Tell the Dockerfile frontend which file to use.
 				"filename": "Dockerfile",
 				// Register the agent binary dir as a named build context so
-				// the final-layer COPY --from=nexus3agent resolves correctly.
-				"context:nexus3agent": "local:nexus3agent",
+				// the final-layer COPY --from=nexusagent resolves correctly.
+				"context:nexusagent": "local:nexusagent",
 			},
 			Frontend: "dockerfile.v0",
 			Exports: []bkclient.ExportEntry{
@@ -593,7 +593,7 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 
 // captureBootSpecFromContainerfile parses containerfileBytes (the raw content of
 // the user's .nexus/Containerfile) and, when an ENTRYPOINT or CMD is declared,
-// writes a boot.json into the exported rootfs at <outDir>/etc/nexus3/boot.json.
+// writes a boot.json into the exported rootfs at <outDir>/etc/nexus/boot.json.
 //
 // # Mechanism
 //
@@ -614,8 +614,8 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 //
 // Only instructions DECLARED IN THE USER'S .nexus/Containerfile are captured —
 // config inherited from the base image (FROM) is NOT included. This is
-// intentional for nexus3: the operator is expected to re-declare any base-image
-// ENTRYPOINT/CMD they want the nexus3 boot contract to honour. Incidental base
+// intentional for nexus: the operator is expected to re-declare any base-image
+// ENTRYPOINT/CMD they want the nexus boot contract to honour. Incidental base
 // defaults (e.g. ubuntu's CMD ["bash"]) are silently ignored, which is correct.
 //
 // # Edge case: shell-form ENTRYPOINT with CMD

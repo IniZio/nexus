@@ -1,5 +1,5 @@
 // Package store provides durable, crash-safe persistence for sandbox records.
-// It is the single source of persistence in nexus3, which has no central daemon;
+// It is the single source of persistence in nexus, which has no central daemon;
 // any CLI invocation reads and writes directly, and multiple may run concurrently.
 //
 // # Platform support

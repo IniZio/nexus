@@ -14,9 +14,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // BuildFingerprint computes a stable hex SHA-256 fingerprint over the seven
@@ -25,7 +25,7 @@ import (
 //  1. containerfileBytes — raw bytes of the Containerfile (or Dockerfile).
 //  2. baseImageRef — the FROM image reference extracted from the Containerfile
 //     (literal string, not resolved OCI digest; see tradeoff note below).
-//  3. agentBytes — raw bytes of the nexus3-agent binary baked into the image.
+//  3. agentBytes — raw bytes of the nexus-agent binary baked into the image.
 //  4. contextDir — filesystem path of the build-context directory; hashed as
 //     sorted (relpath, size, mtime-unix-ns) tuples after .dockerignore
 //     filtering (see tradeoff note below) — but ONLY when the Containerfile

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Test: build.sh non-Linux branch downloads nexus3-client from NEXUS3_RELEASE_BASE_URL.
+# Test: build.sh non-Linux branch downloads nexus-client from NEXUS_RELEASE_BASE_URL.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,10 +14,10 @@ fail() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
 
 make_fake_release() {
     _fr_dir="$1" _fr_ver="$2" _fr_os="$3" _fr_arch="$4"
-    _fr_asset="nexus3-client-${_fr_os}-${_fr_arch}"
+    _fr_asset="nexus-client-${_fr_os}-${_fr_arch}"
     _fr_vdir="$_fr_dir/$_fr_ver"
     mkdir -p "$_fr_vdir"
-    printf '#!/bin/sh\ncase "$*" in\n"herdr abi") echo "%s" ;;\n"version") echo "nexus3-client %s (go1.26.6)" ;;\n*) exit 1 ;;\nesac\n' \
+    printf '#!/bin/sh\ncase "$*" in\n"herdr abi") echo "%s" ;;\n"version") echo "nexus-client %s (go1.26.6)" ;;\n*) exit 1 ;;\nesac\n' \
         "$ABI" "$_fr_ver" > "$_fr_vdir/$_fr_asset"
     chmod +x "$_fr_vdir/$_fr_asset"
     (
@@ -49,7 +49,7 @@ run_build() {
     mkdir -p "$_rb_install" "$_rb_shim" "$_rb_release" "$_rb_uname" "$_rb_plugin"
 
     cp "$SCRIPT_DIR/abi" "$_rb_plugin/abi"
-    echo "$_rb_ver" > "$_rb_plugin/nexus3-version"
+    echo "$_rb_ver" > "$_rb_plugin/nexus-version"
 
     _rb_goos="$(echo "$_rb_os" | tr '[:upper:]' '[:lower:]')"
     if [ "$_rb_arch" = "arm64" ] || [ "$_rb_arch" = "aarch64" ]; then
@@ -66,9 +66,9 @@ run_build() {
         PATH="$_rb_uname:$PATH" \
         HERDR_PLUGIN_ROOT="$_rb_plugin" \
         INSTALL_DIR="$_rb_install" \
-        NEXUS3_SHIM_DIR="$_rb_shim" \
-        NEXUS3_RELEASE_BASE_URL="file://${_rb_release}" \
-        NEXUS3_FORCE_DOWNLOAD=1 \
+        NEXUS_SHIM_DIR="$_rb_shim" \
+        NEXUS_RELEASE_BASE_URL="file://${_rb_release}" \
+        NEXUS_FORCE_DOWNLOAD=1 \
         $_rb_extra_env \
         sh "$BUILD_SH" >/dev/null 2>&1 || _rb_result=$?
 
@@ -80,26 +80,26 @@ run_build() {
     fi
 
     _rb_ok="ok"
-    [ -x "$_rb_install/nexus3-client" ] || { echo "  nexus3-client not installed" >&2; _rb_ok="fail:no-client"; }
-    [ -x "$_rb_shim/nexus3-shim.sh" ]  || { echo "  shim not written" >&2; _rb_ok="fail:no-shim"; }
+    [ -x "$_rb_install/nexus-client" ] || { echo "  nexus-client not installed" >&2; _rb_ok="fail:no-client"; }
+    [ -x "$_rb_shim/nexus-shim.sh" ]  || { echo "  shim not written" >&2; _rb_ok="fail:no-shim"; }
 
     rm -rf "$_rb_work"
     echo "$_rb_ok"
 }
 
 _r="$(run_build "Darwin" "arm64" "v0.1.1" "")"
-[ "$_r" = "ok" ] && ok "Darwin/arm64 downloads, verifies, installs nexus3-client, writes shim" \
+[ "$_r" = "ok" ] && ok "Darwin/arm64 downloads, verifies, installs nexus-client, writes shim" \
     || fail "Darwin/arm64 failed ($_r)"
 
 _r="$(run_build "Darwin" "x86_64" "v0.1.1" "")"
-[ "$_r" = "ok" ] && ok "Darwin/amd64 downloads, verifies, installs nexus3-client, writes shim" \
+[ "$_r" = "ok" ] && ok "Darwin/amd64 downloads, verifies, installs nexus-client, writes shim" \
     || fail "Darwin/amd64 failed ($_r)"
 
 _w3="$(mktemp -d)"
-_c3="$_w3/nexus3-client"; _shim3="$_w3/shim"; _plug3="$_w3/plugin"; _uname3="$_w3/bin"
+_c3="$_w3/nexus-client"; _shim3="$_w3/shim"; _plug3="$_w3/plugin"; _uname3="$_w3/bin"
 mkdir -p "$_shim3" "$_plug3"
 cp "$SCRIPT_DIR/abi" "$_plug3/abi"
-echo "v0.1.1" > "$_plug3/nexus3-version"
+echo "v0.1.1" > "$_plug3/nexus-version"
 make_uname_stub "$_uname3" "Darwin" "arm64"
 printf '#!/bin/sh\ncase "$*" in\n"herdr abi") echo "%s" ;;\n*) exit 0 ;;\nesac\n' "$ABI" > "$_c3"
 chmod +x "$_c3"
@@ -108,14 +108,14 @@ env \
     PATH="$_uname3:$PATH" \
     HERDR_PLUGIN_ROOT="$_plug3" \
     INSTALL_DIR="$_w3/install" \
-    NEXUS3_SHIM_DIR="$_shim3" \
-    NEXUS3_LOCAL=1 \
-    NEXUS3_CLIENT="$_c3" \
+    NEXUS_SHIM_DIR="$_shim3" \
+    NEXUS_LOCAL=1 \
+    NEXUS_CLIENT="$_c3" \
     sh "$BUILD_SH" >/dev/null 2>&1 || _r3=$?
-if [ "$_r3" = "0" ] && [ -x "$_shim3/nexus3-shim.sh" ]; then
-    ok "NEXUS3_LOCAL=1 uses NEXUS3_CLIENT, skips download"
+if [ "$_r3" = "0" ] && [ -x "$_shim3/nexus-shim.sh" ]; then
+    ok "NEXUS_LOCAL=1 uses NEXUS_CLIENT, skips download"
 else
-    fail "NEXUS3_LOCAL=1 fallback failed (exit=$_r3)"
+    fail "NEXUS_LOCAL=1 fallback failed (exit=$_r3)"
 fi
 rm -rf "$_w3"
 
@@ -123,7 +123,7 @@ _w4="$(mktemp -d)"
 _plug4="$_w4/plugin"; _shim4="$_w4/shim"; _uname4="$_w4/bin"
 mkdir -p "$_plug4" "$_shim4"
 cp "$SCRIPT_DIR/abi" "$_plug4/abi"
-_c4="$_w4/nexus3-client"
+_c4="$_w4/nexus-client"
 make_uname_stub "$_uname4" "Darwin" "arm64"
 printf '#!/bin/sh\ncase "$*" in\n"herdr abi") echo "%s" ;;\n*) exit 0 ;;\nesac\n' "$ABI" > "$_c4"
 chmod +x "$_c4"
@@ -132,12 +132,12 @@ env \
     PATH="$_uname4:$(dirname "$_c4"):$PATH" \
     HERDR_PLUGIN_ROOT="$_plug4" \
     INSTALL_DIR="$_w4/install" \
-    NEXUS3_SHIM_DIR="$_shim4" \
+    NEXUS_SHIM_DIR="$_shim4" \
     sh "$BUILD_SH" >/dev/null 2>&1 || _r4=$?
-if [ "$_r4" = "0" ] && [ -x "$_shim4/nexus3-shim.sh" ]; then
-    ok "Absent nexus3-version falls back to PATH nexus3-client"
+if [ "$_r4" = "0" ] && [ -x "$_shim4/nexus-shim.sh" ]; then
+    ok "Absent nexus-version falls back to PATH nexus-client"
 else
-    fail "Absent nexus3-version fallback failed (exit=$_r4)"
+    fail "Absent nexus-version fallback failed (exit=$_r4)"
 fi
 rm -rf "$_w4"
 
@@ -145,15 +145,15 @@ _w5="$(mktemp -d)"
 _plug5="$_w5/plugin"; _shim5="$_w5/shim"; _uname5="$_w5/bin"
 mkdir -p "$_plug5" "$_shim5"
 cp "$SCRIPT_DIR/abi" "$_plug5/abi"
-echo "v0.1.1" > "$_plug5/nexus3-version"
+echo "v0.1.1" > "$_plug5/nexus-version"
 make_uname_stub "$_uname5" "Darwin" "s390x"
 _r5=0
 env \
     PATH="$_uname5:$PATH" \
     HERDR_PLUGIN_ROOT="$_plug5" \
     INSTALL_DIR="$_w5/install" \
-    NEXUS3_SHIM_DIR="$_shim5" \
-    NEXUS3_RELEASE_BASE_URL="file:///nonexistent" \
+    NEXUS_SHIM_DIR="$_shim5" \
+    NEXUS_RELEASE_BASE_URL="file:///nonexistent" \
     sh "$BUILD_SH" >/dev/null 2>&1 || _r5=$?
 if [ "$_r5" = "1" ]; then
     ok "Unsupported triple (Darwin/s390x) exits 1"
@@ -163,14 +163,14 @@ fi
 rm -rf "$_w5"
 
 
-make_fake_nexus3() {
+make_fake_nexus() {
     _fn_path="$1"
     printf '%s\n' \
         '#!/bin/sh' \
-        'printf "%s\n" "$*" >> "${FAKE_NEXUS3_LOG:-/dev/null}"' \
+        'printf "%s\n" "$*" >> "${FAKE_NEXUS_LOG:-/dev/null}"' \
         'case "$*" in' \
         '    "--version") exit 1 ;;' \
-        '    "version") echo "nexus3 ${FAKE_NEXUS3_VER:-v0.1.1} (go1.26.6)" ;;' \
+        '    "version") echo "nexus ${FAKE_NEXUS_VER:-v0.1.1} (go1.26.6)" ;;' \
         '    "herdr abi") cat "$HERDR_PLUGIN_ROOT/abi" ;;' \
         '    "herdr version-check"*) exit "${FAKE_VC_EXIT:-0}" ;;' \
         '    "herdr install-default-shell"*) exit "${FAKE_IDS_EXIT:-0}" ;;' \
@@ -185,8 +185,8 @@ make_fake_linux_release() {
     _flr_dir="$1" _flr_ver="${2:-v0.2.0}"
     _flv="$_flr_dir/$_flr_ver"
     mkdir -p "$_flv"
-    make_fake_nexus3 "$_flv/nexus3-linux-amd64"
-    (cd "$_flv" && sha256sum nexus3-linux-amd64 > SHA256SUMS)
+    make_fake_nexus "$_flv/nexus-linux-amd64"
+    (cd "$_flv" && sha256sum nexus-linux-amd64 > SHA256SUMS)
 }
 
 run_linux_build() {
@@ -194,20 +194,20 @@ run_linux_build() {
     _lwork="$(mktemp -d)"
     _lplug="$_lwork/plugin" _linst="$_lwork/install"
     _lshim="$_lwork/shim"  _lrel="$_lwork/release"
-    _llog="$_lwork/nexus3.log"
+    _llog="$_lwork/nexus.log"
     mkdir -p "$_lplug" "$_linst" "$_lshim" "$_lrel"
     cp "$SCRIPT_DIR/abi" "$_lplug/abi"
-    echo "v0.2.0" > "$_lplug/nexus3-version"
-    make_fake_nexus3 "$_linst/nexus3"
+    echo "v0.2.0" > "$_lplug/nexus-version"
+    make_fake_nexus "$_linst/nexus"
     [ "$_ldown" = "1" ] && make_fake_linux_release "$_lrel"
     _lexit=0
     env \
         HERDR_PLUGIN_ROOT="$_lplug" \
         INSTALL_DIR="$_linst" \
-        NEXUS3_SHIM_DIR="$_lshim" \
-        NEXUS3_RELEASE_BASE_URL="file://${_lrel}" \
-        FAKE_NEXUS3_LOG="$_llog" \
-        FAKE_NEXUS3_VER="$_lver" \
+        NEXUS_SHIM_DIR="$_lshim" \
+        NEXUS_RELEASE_BASE_URL="file://${_lrel}" \
+        FAKE_NEXUS_LOG="$_llog" \
+        FAKE_NEXUS_VER="$_lver" \
         FAKE_VC_EXIT="$_lvc" \
         FAKE_IDS_EXIT="$_lids" \
         FAKE_KI_EXIT="$_lki" \
@@ -260,12 +260,12 @@ grep -q "^doctor" "$_ll" 2>/dev/null || { echo "  doctor not in log" >&2; _l4ok=
     || fail "Linux: pin-newer download test failed"
 rm -rf "$_lw"
 
-_lr="$(run_linux_build 0 "v0.2.0" 0 0 0 "NEXUS3_FORCE_DOWNLOAD=1" 1)"
+_lr="$(run_linux_build 0 "v0.2.0" 0 0 0 "NEXUS_FORCE_DOWNLOAD=1" 1)"
 _lw="${_lr%%:*}"; _lt="${_lr#*:}"; _le="${_lt%%:*}"; _ll="${_lt#*:}"
 if [ "$_le" = "0" ] && grep -q "^kernel install" "$_ll" 2>/dev/null; then
-    ok "Linux: NEXUS3_FORCE_DOWNLOAD=1 always downloads"
+    ok "Linux: NEXUS_FORCE_DOWNLOAD=1 always downloads"
 else
-    fail "Linux: NEXUS3_FORCE_DOWNLOAD=1 test failed (exit=$_le)"
+    fail "Linux: NEXUS_FORCE_DOWNLOAD=1 test failed (exit=$_le)"
 fi
 rm -rf "$_lw"
 
@@ -291,14 +291,14 @@ _lb_work="$(mktemp -d)"
 _lb_plug="$_lb_work/plugin" _lb_inst="$_lb_work/install" _lb_shim="$_lb_work/shim"
 mkdir -p "$_lb_plug" "$_lb_inst" "$_lb_shim"
 cp "$SCRIPT_DIR/abi" "$_lb_plug/abi"
-echo "v0.2.0" > "$_lb_plug/nexus3-version"
-make_fake_nexus3 "$_lb_inst/nexus3"
+echo "v0.2.0" > "$_lb_plug/nexus-version"
+make_fake_nexus "$_lb_inst/nexus"
 _lb_out=0
 _lb_stdout="$(env \
     HERDR_PLUGIN_ROOT="$_lb_plug" \
     INSTALL_DIR="$_lb_inst" \
-    NEXUS3_SHIM_DIR="$_lb_shim" \
-    FAKE_NEXUS3_VER="v0.2.0" \
+    NEXUS_SHIM_DIR="$_lb_shim" \
+    FAKE_NEXUS_VER="v0.2.0" \
     FAKE_VC_EXIT=0 \
     FAKE_IDS_EXIT=0 \
     FAKE_KI_EXIT=0 \
@@ -334,16 +334,16 @@ _ac3u_plug="$_ac3u_work/plugin" _ac3u_inst="$_ac3u_work/install"
 _ac3u_shim="$_ac3u_work/shim"  _ac3u_rel="$_ac3u_work/release"
 mkdir -p "$_ac3u_plug" "$_ac3u_inst" "$_ac3u_shim" "$_ac3u_rel"
 cp "$SCRIPT_DIR/abi" "$_ac3u_plug/abi"
-echo "v0.2.0" > "$_ac3u_plug/nexus3-version"
-make_fake_nexus3 "$_ac3u_inst/nexus3"
+echo "v0.2.0" > "$_ac3u_plug/nexus-version"
+make_fake_nexus "$_ac3u_inst/nexus"
 make_fake_linux_release "$_ac3u_rel" "v0.2.0"
 _ac3u_exit=0
 _ac3u_out="$(env \
     HERDR_PLUGIN_ROOT="$_ac3u_plug" \
     INSTALL_DIR="$_ac3u_inst" \
-    NEXUS3_SHIM_DIR="$_ac3u_shim" \
-    NEXUS3_RELEASE_BASE_URL="file://${_ac3u_rel}" \
-    FAKE_NEXUS3_VER="v0.1.5" \
+    NEXUS_SHIM_DIR="$_ac3u_shim" \
+    NEXUS_RELEASE_BASE_URL="file://${_ac3u_rel}" \
+    FAKE_NEXUS_VER="v0.1.5" \
     FAKE_VC_EXIT=10 \
     FAKE_IDS_EXIT=0 FAKE_KI_EXIT=0 FAKE_DOCTOR_EXIT=0 \
     sh "$BUILD_SH" 2>/dev/null)" || _ac3u_exit=$?
@@ -359,15 +359,15 @@ _ac3f_plug="$_ac3f_work/plugin" _ac3f_inst="$_ac3f_work/install"
 _ac3f_shim="$_ac3f_work/shim"  _ac3f_rel="$_ac3f_work/release"
 mkdir -p "$_ac3f_plug" "$_ac3f_inst" "$_ac3f_shim" "$_ac3f_rel"
 cp "$SCRIPT_DIR/abi" "$_ac3f_plug/abi"
-echo "v0.2.0" > "$_ac3f_plug/nexus3-version"
+echo "v0.2.0" > "$_ac3f_plug/nexus-version"
 make_fake_linux_release "$_ac3f_rel" "v0.2.0"
 _ac3f_exit=0
 _ac3f_out="$(env \
     HERDR_PLUGIN_ROOT="$_ac3f_plug" \
     INSTALL_DIR="$_ac3f_inst" \
-    NEXUS3_SHIM_DIR="$_ac3f_shim" \
-    NEXUS3_RELEASE_BASE_URL="file://${_ac3f_rel}" \
-    FAKE_NEXUS3_VER="v0.2.0" \
+    NEXUS_SHIM_DIR="$_ac3f_shim" \
+    NEXUS_RELEASE_BASE_URL="file://${_ac3f_rel}" \
+    FAKE_NEXUS_VER="v0.2.0" \
     FAKE_IDS_EXIT=0 FAKE_KI_EXIT=0 FAKE_DOCTOR_EXIT=0 \
     sh "$BUILD_SH" 2>/dev/null)" || _ac3f_exit=$?
 if [ "$_ac3f_exit" = "0" ] && echo "$_ac3f_out" | grep -q 'installed '; then

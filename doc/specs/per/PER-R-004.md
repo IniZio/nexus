@@ -12,5 +12,5 @@ The supervisor **shall** wire a `cred.Refresher` (loaded from `service.DefaultDe
 
 - **Why** — `StaticCredentialSource` does not rotate; a long-lived sandbox whose short-lived access token expires loses egress auth. Without the CA seed the guest rejects the MITM proxy's TLS certificate, breaking HTTPS egress immediately on boot.
 - **Fit criterion** — `TestSupervisorS4PlaceholderInGuest`: after the supervisor seeds the guest, `CLAUDE_CODE_OAUTH_TOKEN` inside the VM holds a placeholder value (not a raw credential), the broker maps that placeholder to the refreshed real token, and the MITM CA is present at `GuestCACertPath`.
-- **Verification** automated · **Criticality** must · **Source** nexus3-persistent-perimeter#D-PP-03
+- **Verification** automated · **Criticality** must · **Source** nexus-persistent-perimeter#D-PP-03
 - **Code** `internal/supervisor/supervisor.go:355` (`cred.NewBroker`), `:369-373` (`cred.NewRefresher` loop), `:566-580` (seed MITM CA + agent placeholder = "5d"), `internal/test/selfhost/supervisor_s4_test.go:194` (`TestSupervisorS4PlaceholderInGuest`)

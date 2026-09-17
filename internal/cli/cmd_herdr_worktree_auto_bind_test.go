@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/config"
 )
 
-// TestHerdrWorktreeAutoBindDecision pins the --auto predicate: nexus3-
+// TestHerdrWorktreeAutoBindDecision pins the --auto predicate: nexus-
 // onboarded checkout binds even with no sibling workspace (FRICTION-1).
 // MUTATION PROOF: drop hasConfig arm → "config only" RED; force true → "neither" RED.
 func TestHerdrWorktreeAutoBindDecision(t *testing.T) {
@@ -35,14 +35,14 @@ func TestHerdrWorktreeAutoBindDecision(t *testing.T) {
 	}
 }
 
-func TestHerdrRepoHasNexus3Config(t *testing.T) {
+func TestHerdrRepoHasNexusConfig(t *testing.T) {
 	t.Run("empty dir", func(t *testing.T) {
-		if herdrRepoHasNexus3Config(t.TempDir()) {
+		if herdrRepoHasNexusConfig(t.TempDir()) {
 			t.Fatal("bare checkout reported as onboarded")
 		}
 	})
 	t.Run("empty path", func(t *testing.T) {
-		if herdrRepoHasNexus3Config("") {
+		if herdrRepoHasNexusConfig("") {
 			t.Fatal("empty path reported as onboarded")
 		}
 	})
@@ -54,16 +54,16 @@ func TestHerdrRepoHasNexus3Config(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, config.ConfigRelPath), []byte("image: x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if !herdrRepoHasNexus3Config(dir) {
+		if !herdrRepoHasNexusConfig(dir) {
 			t.Fatal(".nexus/config.yaml not detected")
 		}
 	})
 	t.Run("root-level legacy config file only is NOT config (hard cutover)", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "nexus3"+".yaml"), []byte("image: x\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "nexus"+".yaml"), []byte("image: x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if herdrRepoHasNexus3Config(dir) {
+		if herdrRepoHasNexusConfig(dir) {
 			t.Fatal("legacy root-level config reported as onboarded")
 		}
 	})
@@ -75,7 +75,7 @@ func TestHerdrRepoHasNexus3Config(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, ".nexus", "Containerfile"), []byte("FROM x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if !herdrRepoHasNexus3Config(dir) {
+		if !herdrRepoHasNexusConfig(dir) {
 			t.Fatal(".nexus/Containerfile not detected")
 		}
 	})
@@ -84,7 +84,7 @@ func TestHerdrRepoHasNexus3Config(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, config.ConfigRelPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if herdrRepoHasNexus3Config(dir) {
+		if herdrRepoHasNexusConfig(dir) {
 			t.Fatal("directory named .nexus/config.yaml reported as config")
 		}
 	})

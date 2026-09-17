@@ -6,16 +6,16 @@ import (
 	"sort"
 	"syscall"
 
-	"github.com/IniZio/nexus3/internal/core/diskfloor"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/diskfloor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // DefaultGCFreeSpaceFloorGiB is the minimum free disk space (in GiB) required
-// on the filesystem backing the nexus3 state directory before a build is allowed
+// on the filesystem backing the nexus state directory before a build is allowed
 // to start. When free space falls below this floor, automatic GC runs first.
 // Configurable via ImageGCConfig.FreeSpaceFloorGiB in .nexus/config.yaml or
-// ~/.config/nexus3/config.yaml. The value lives in diskfloor so volumestore
+// ~/.config/nexus/config.yaml. The value lives in diskfloor so volumestore
 // (which service imports) can share it without a cycle.
 const DefaultGCFreeSpaceFloorGiB = diskfloor.DefaultFreeSpaceFloorGiB
 
@@ -48,7 +48,7 @@ func SetFreeSpaceFuncForTest(fn func(string) (uint64, error)) func() {
 // DefaultPinnedBaseRefs are base-image refs retained by GC even when no
 // sandbox references them: the ref the herdr/orca flows boot by default and
 // the `image build --base` default.
-var DefaultPinnedBaseRefs = []string{"nexus3-agent-base", "debian:bookworm-slim"}
+var DefaultPinnedBaseRefs = []string{"nexus-agent-base", "debian:bookworm-slim"}
 
 // ReferencedDigests returns the set of image digests that must be preserved
 // during GC. The returned set includes:

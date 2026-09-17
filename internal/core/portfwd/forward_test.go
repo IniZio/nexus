@@ -265,7 +265,7 @@ func TestF18AC2_CloseEOFWithin100ms(t *testing.T) {
 
 func TestF18AC3_PresentOwnPidIsOurs(t *testing.T) {
 	myPID := os.Getpid()
-	ssOut := fmt.Sprintf("LISTEN 0 128 127.0.0.1:9900 0.0.0.0:* users:((\"nexus3\",pid=%d,fd=7))\n", myPID)
+	ssOut := fmt.Sprintf("LISTEN 0 128 127.0.0.1:9900 0.0.0.0:* users:((\"nexus\",pid=%d,fd=7))\n", myPID)
 	f := &Forwarder{ControlPath: testSock, SSHHost: testHost,
 		Run: seqRun(nil, []runResp{{stdout: ssOut, code: 0}})}
 	p, err := f.Present(context.Background(), 9900)

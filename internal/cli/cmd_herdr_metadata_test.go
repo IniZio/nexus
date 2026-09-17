@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/portfwd"
 )
 
 func fakeHerdrSocket(t *testing.T) (sockPath string, received <-chan []byte) {
@@ -44,7 +44,7 @@ func fakeHerdrSocket(t *testing.T) (sockPath string, received <-chan []byte) {
 func seedMetadataBinding(t *testing.T, storeRoot, workspaceID, sandboxHandle, sandboxID string) {
 	t.Helper()
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + sandboxID,
+		SpaceLabel:       "nexus:" + sandboxID,
 		HerdrWorkspaceID: workspaceID,
 		SandboxHandle:    sandboxHandle,
 		SandboxID:        sandboxID,
@@ -84,8 +84,8 @@ func TestReportForwardStatus_PortsPresent_SendsSortedList(t *testing.T) {
 			t.Errorf("method = %v, want workspace.report_metadata", req["method"])
 		}
 		params, _ := req["params"].(map[string]interface{})
-		if params["source"] != "plugin:nexus3" {
-			t.Errorf("source = %v, want plugin:nexus3", params["source"])
+		if params["source"] != "plugin:nexus" {
+			t.Errorf("source = %v, want plugin:nexus", params["source"])
 		}
 		tokens, _ := params["tokens"].(map[string]interface{})
 		if tokens["port_forward_status"] != "3000,5173" {
@@ -126,8 +126,8 @@ func TestFocusChanged_BoundWorkspace_SendsReportMetadataBeforeReturn(t *testing.
 			t.Errorf("method = %v, want workspace.report_metadata", req["method"])
 		}
 		params, _ := req["params"].(map[string]any)
-		if params["source"] != "plugin:nexus3" {
-			t.Errorf("source = %v, want plugin:nexus3", params["source"])
+		if params["source"] != "plugin:nexus" {
+			t.Errorf("source = %v, want plugin:nexus", params["source"])
 		}
 		tokens, _ := params["tokens"].(map[string]any)
 		if tokens["port_forward_status"] != "8080" {

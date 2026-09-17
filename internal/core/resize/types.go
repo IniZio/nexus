@@ -5,7 +5,7 @@
 // [TelemetryVsockPort] constant, and a [Bounds] config type.
 //
 // Dependency rule: this package imports NOTHING from
-// internal/core/driver/..., cmd/nexus3-agent/..., internal/supervisor/...,
+// internal/core/driver/..., cmd/nexus-agent/..., internal/supervisor/...,
 // or internal/core/service/... . The isolation is what prevents import cycles
 // when the driver, the guest agent, and the supervisor all depend here.
 //
@@ -24,7 +24,7 @@ import (
 
 // TelemetryVsockPort is the vsock port the guest agent serves telemetry on.
 //
-// D-DC-11: 3002, adjacent to nexus3's existing port-forward mux port 3001
+// D-DC-11: 3002, adjacent to nexus's existing port-forward mux port 3001
 // (internal/core/service/forward_ops.go:13). Differs deliberately from
 // OLD-nexus's 10799 (cmd/nexus-guest-agent/memory_stats.go:19) to avoid
 // importing a foreign port-numbering convention.
@@ -54,11 +54,11 @@ type DiskSample struct {
 //
 // Field names mirror OLD-nexus workspace.MemoryStatsSample
 // (internal/core/workspace types), extended with disk and vCPU fields that
-// nexus3 adds because it manages all three axes from a single governor.
+// nexus adds because it manages all three axes from a single governor.
 //
 // Disk fields (DiskUsed/TotalBytes) are populated from statfs of the
 // workspace mount (AR-GA-AC1). OLD-nexus polled disk usage via DiskResizer
-// (driver exec); nexus3 carries it here because the telemetry poll already
+// (driver exec); nexus carries it here because the telemetry poll already
 // visits the guest — a separate exec round-trip is unnecessary.
 //
 // VCPUOnline is the guest's view of currently online CPUs. The host governor
@@ -85,7 +85,7 @@ type Sample struct {
 	//
 	// MemPSISupported is false when CONFIG_PSI is absent or psi=0 is on the
 	// cmdline. When false the governor falls back to the MemAvailable ratio
-	// alone. nexus3's kernel has CONFIG_PSI=y with PSI_DEFAULT_DISABLED unset
+	// alone. nexus's kernel has CONFIG_PSI=y with PSI_DEFAULT_DISABLED unset
 	// (config-6.12.76:146-147), so this field will always be true in production.
 	MemPSISomeAvg10 float64 `json:"mem_psi_some_avg10"`
 	MemPSIFullAvg10 float64 `json:"mem_psi_full_avg10"`
@@ -189,7 +189,7 @@ type Bounds struct {
 // MemoryResizer resizes guest RAM at runtime for backends that support it.
 //
 // Mirrors OLD internal/core/runtime/capabilities.go:31-39, adapted for
-// nexus3's single-tenant governor (D-DC-12): no workspaceID parameter.
+// nexus's single-tenant governor (D-DC-12): no workspaceID parameter.
 // The driver's ResizeMemory implementation calls CH PUT /api/v1/vm.resize
 // with desired_ram (client.go:487).
 type MemoryResizer interface {
@@ -204,7 +204,7 @@ type MemoryResizer interface {
 // CPUResizer hot-plugs or unplugs guest vCPUs at runtime.
 //
 // Mirrors OLD internal/core/runtime/capabilities.go:41-49, adapted for
-// nexus3's single-tenant governor. The driver calls CH PUT /api/v1/vm.resize
+// nexus's single-tenant governor. The driver calls CH PUT /api/v1/vm.resize
 // with desired_vcpus (client.go:487).
 type CPUResizer interface {
 	// ResizeCPU sets the desired online vCPU count and returns the new count.
@@ -216,9 +216,9 @@ type CPUResizer interface {
 
 // DiskResizer grows the guest's workspace disk at runtime.
 //
-// nexus3 departs from OLD here in two ways: (1) it is single-tenant so there
+// nexus departs from OLD here in two ways: (1) it is single-tenant so there
 // is no workspaceID, and (2) the interface takes a diskIndex rather than an
-// implicit device path. This is necessary because nexus3 attaches N ExtraDisks
+// implicit device path. This is necessary because nexus attaches N ExtraDisks
 // and appends the workspace disk LAST (internal/core/service/create.go:383);
 // the CH disk ID and guest device path must be derived from the index, not
 // hardcoded. Half A already produced a /dev/vdb hardcode bug of exactly this
@@ -226,7 +226,7 @@ type CPUResizer interface {
 //
 // Disk usage for the grow decision comes from Sample.DiskUsed/TotalBytes,
 // not from a DiskUsage method on this interface. OLD needed DiskUsage because
-// it polled via driver exec; nexus3's telemetry poll already reaches the guest
+// it polled via driver exec; nexus's telemetry poll already reaches the guest
 // so disk stats ride the same round-trip for free.
 type DiskResizer interface {
 	// GrowDisk expands the host backing file for the disk at diskIndex in

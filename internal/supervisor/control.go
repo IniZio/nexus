@@ -83,7 +83,7 @@ func roundtripEgressAllow(req EgressAllowRequest) (EgressAllowRequest, error) {
 //     yet ready), or
 //   - the response cannot be decoded.
 //
-// T6's "nexus3 egress allow" CLI calls this after resolving the sandbox's
+// T6's "nexus egress allow" CLI calls this after resolving the sandbox's
 // supervisor sock path via supervisor.SockPath(stateDir).
 func RequestEgressAllow(ctx context.Context, sockPath string, host string) error {
 	client := &http.Client{

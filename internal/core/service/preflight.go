@@ -113,7 +113,7 @@ func estimatePerSandbox(diskDir string) int64 {
 // The per-sandbox estimate is derived from existing workspace disks in diskDir
 // using stat(2).Blocks * 512 (allocated bytes). Apparent file sizes — as
 // reported by os.Stat().Size() or du --apparent-size — are never used.
-// Nexus3 workspace disks are created with os.Truncate + mke2fs -E nodiscard
+// Nexus workspace disks are created with os.Truncate + mke2fs -E nodiscard
 // (sparse ext4), so their apparent size is wildly larger than their actual
 // footprint. A real audit measured 101 GiB apparent versus 11.2 GiB actually
 // allocated. Using apparent size would either refuse valid creates (false
@@ -174,7 +174,7 @@ func CheckDiskSpaceBytes(diskDir string, projected int64, detail string) (*DiskP
 	if projected > free {
 		return r, fmt.Errorf(
 			"%w: %s = %.2f GiB projected, only %.2f GiB free on %s"+
-				"; remove unused sandboxes (nexus3 reap --apply) or pass --force to override",
+				"; remove unused sandboxes (nexus reap --apply) or pass --force to override",
 			ErrInsufficientDisk,
 			detail,
 			float64(projected)/(1<<30),
@@ -189,7 +189,7 @@ func CheckDiskSpaceBytes(diskDir string, projected int64, detail string) (*DiskP
 // and returns that. statfs reports the containing filesystem, so any existing
 // ancestor answers the free-space question for a path that does not exist yet.
 //
-// Walking up ONE level is not enough. On a machine that has never run nexus3,
+// Walking up ONE level is not enough. On a machine that has never run nexus,
 // neither <root>/disks nor <root> itself exists, so a single-level fallback
 // statfs'd a missing directory, failed closed, and refused the create — the
 // preflight would have blocked every first-ever create on a fresh host. The

@@ -52,7 +52,7 @@ func WriteSandboxState(dir, sandboxID string, entries []Entry, now time.Time) er
 	if err := os.MkdirAll(filepath.Join(dir, perSandboxDirName), 0o750); err != nil {
 		return fmt.Errorf("portfwd state dir: %w", err)
 	}
-	st := State{WrittenBy: "nexus3/" + sandboxID, UpdatedAt: now.UTC(), Forwards: entries}
+	st := State{WrittenBy: "nexus/" + sandboxID, UpdatedAt: now.UTC(), Forwards: entries}
 	if err := writeJSONAtomic(perSandboxFile(dir, sandboxID), st); err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func merge(dir string, now time.Time, excludeSandbox string) (State, error) {
 			consider(e, prev.UpdatedAt)
 		}
 	}
-	merged := State{WrittenBy: "nexus3/merge", UpdatedAt: now.UTC(), Forwards: make([]Entry, 0, len(best))}
+	merged := State{WrittenBy: "nexus/merge", UpdatedAt: now.UTC(), Forwards: make([]Entry, 0, len(best))}
 	for _, c := range best {
 		merged.Forwards = append(merged.Forwards, c.entry)
 	}

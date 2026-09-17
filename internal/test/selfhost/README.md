@@ -4,16 +4,16 @@ Self-hosting base ext4 image harness (Run 5, slice S1).
 
 ## What it does
 
-`BuildSelfHostBaseImage` produces the ext4 rootfs that a nexus3 workspace boots
-from so that nexus3 can be developed entirely in-workspace:
+`BuildSelfHostBaseImage` produces the ext4 rootfs that a nexus workspace boots
+from so that nexus can be developed entirely in-workspace:
 
 | Layer | Contents |
 |-------|----------|
 | OS | Debian bookworm-slim (glibc ≥ 2.28) |
 | Toolchain | Upstream Go 1.26.5 at `/usr/local/go` |
 | Runtime deps | git, ca-certificates (no gcc — `CGO_ENABLED=0` throughout) |
-| Agent | `nexus3-agent` static binary at `/sbin/nexus3-agent` (VM init) |
-| Module cache | nexus3's Go deps pre-seeded at `/usr/local/gopath/pkg/mod` |
+| Agent | `nexus-agent` static binary at `/sbin/nexus-agent` (VM init) |
+| Module cache | nexus's Go deps pre-seeded at `/usr/local/gopath/pkg/mod` |
 
 The seeded module cache means an in-workspace `go build ./...` resolves all
 dependencies without network access. Prototype 28 measured: cold build 32 s,
@@ -21,7 +21,7 @@ incremental 11 s, per-package test 2 s.
 
 ## Go version rationale
 
-Debian bookworm ships Go 1.19, which is too old (nexus3 `go.mod` requires
+Debian bookworm ships Go 1.19, which is too old (nexus `go.mod` requires
 `go 1.25.0`). The Containerfile fetches upstream **Go 1.26.5** from
 `dl.google.com`, the latest stable release as of 2026-08-07
 (SHA-256 `5c2c3b16…` verified against `go.dev/dl/?mode=json`).

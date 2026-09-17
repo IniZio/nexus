@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // ── D2b: service else-branch (kind=dir / ro-disk) must hold lock across store.Create ──

@@ -7,7 +7,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/agent/wire"
+	"github.com/IniZio/nexus/internal/core/agent/wire"
 )
 
 // roundTrip encodes one frame with write and immediately decodes it from the
@@ -188,7 +188,7 @@ func TestData_ExactMaxPayloadAccepted(t *testing.T) {
 //     at that byte offset, matching the replay semantics from doc 04.
 //
 // The guest-side simulation keeps the output ring inline; in production the
-// ring lives in cmd/nexus3-agent.
+// ring lives in cmd/nexus-agent.
 func TestNetPipe_HandshakeAndReattach(t *testing.T) {
 	const sessionID = "test-session-pipe-1"
 	guestOutput := []byte("line one\nline two\nline three\n")

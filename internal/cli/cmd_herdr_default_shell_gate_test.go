@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // markerWriter records everything written and creates markerPath the first
@@ -52,7 +52,7 @@ func (m *markerWriter) String() string {
 func stubWinnerCreate(t *testing.T, storeRoot, wsID, logPath, markerPath string) {
 	t.Helper()
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:repo/gate",
+		SpaceLabel:       "nexus:repo/gate",
 		HerdrWorkspaceID: wsID,
 		SandboxHandle:    "repo/gate",
 		SandboxID:        "sb-GATE",
@@ -152,7 +152,7 @@ func TestHerdrDefaultShell_FirstTabStreamsProvisioningLogThenEntersGuest(t *test
 	}
 	got := strings.Join(*childArgv, " ")
 	if !strings.Contains(got, "exec --pty --cwd /workspace repo/gate /bin/bash --login") {
-		t.Errorf("guest exec argv = %q, want nexus3 exec --pty --cwd /workspace repo/gate", got)
+		t.Errorf("guest exec argv = %q, want nexus exec --pty --cwd /workspace repo/gate", got)
 	}
 }
 
@@ -207,14 +207,14 @@ func TestHerdrDefaultShell_PaneScriptWritesCreateLogAtGoPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	shim := "#!/bin/sh\necho \"shim: $*\"\necho \"worktree-sandbox: build step from shim\"\nexit ${SHIM_EXIT:-0}\n"
-	if err := os.WriteFile(filepath.Join(dir, "nexus3-shim.sh"), []byte(shim), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "nexus-shim.sh"), []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	stateHome := filepath.Join(dir, "state")
 	const wsID = "w9"
 	run := func(shimExit string) (string, int) {
 		cmd := osexec.Command("sh", filepath.Join(dir, "bin", "pane.sh"), "worktree-sandbox")
-		cmd.Env = append(os.Environ(), "HERDR_WORKSPACE_ID="+wsID, "XDG_STATE_HOME="+stateHome, "NEXUS3_WORKTREE_AUTO=1", "SHIM_EXIT="+shimExit)
+		cmd.Env = append(os.Environ(), "HERDR_WORKSPACE_ID="+wsID, "XDG_STATE_HOME="+stateHome, "NEXUS_WORKTREE_AUTO=1", "SHIM_EXIT="+shimExit)
 		cmd.Stdin = strings.NewReader("\n")
 		out, runErr := cmd.CombinedOutput()
 		code := 0
@@ -230,7 +230,7 @@ func TestHerdrDefaultShell_PaneScriptWritesCreateLogAtGoPath(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d, want 0:\n%s", code, out)
 	}
-	logPath := herdrWtCreateLogPath(filepath.Join(stateHome, "nexus3"), wsID)
+	logPath := herdrWtCreateLogPath(filepath.Join(stateHome, "nexus"), wsID)
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("provisioning log not at the Go-side path %s: %v\npane output:\n%s", logPath, err, out)

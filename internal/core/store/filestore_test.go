@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // newStore creates a FileStore rooted at a fresh temporary directory.
@@ -465,7 +465,7 @@ func TestSchemaVersionFutureRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on future schema version, got nil")
 	}
-	// The error message must mention the version and upgrading nexus3.
+	// The error message must mention the version and upgrading nexus.
 	msg := err.Error()
 	if msg == "" {
 		t.Error("error message must not be empty")
@@ -861,7 +861,7 @@ func TestLegacyMotiveIDMigration(t *testing.T) {
 	}
 
 	// Write a raw JSON record that carries motive_id but no labels field —
-	// exactly what an old nexus3 binary would have written to disk.
+	// exactly what an old nexus binary would have written to disk.
 	legacyID := domain.NewSandboxID()
 	legacyJSON := `{
 		"schema_version": 1,

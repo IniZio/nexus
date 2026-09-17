@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/portfwd"
 )
 
 type HerdrMachine struct {
@@ -28,10 +28,10 @@ type HerdrMachine struct {
 
 func StateDir() string {
 	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
-		return filepath.Join(d, "nexus3", "portfwd-client")
+		return filepath.Join(d, "nexus", "portfwd-client")
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "nexus3", "portfwd-client")
+	return filepath.Join(home, ".local", "state", "nexus", "portfwd-client")
 }
 
 func ResolveHerdrBin() (string, error) {
@@ -216,17 +216,17 @@ type RemoteCombinedState struct {
 }
 
 func remoteFocusStateFileShell() string {
-	return "${XDG_STATE_HOME:-$HOME/.local/state}/nexus3/portfwd/focus.state"
+	return "${XDG_STATE_HOME:-$HOME/.local/state}/nexus/portfwd/focus.state"
 }
 
 // RemoteStateReadCommand returns the single remote command string.
 // ONE argv element on purpose: ssh joins args with spaces, so a split
 // {"sh","-c","cat <file>"} becomes `sh -c cat <file>` — cat reads stdin
 // instead of the file (live bug 2026-09-15, engine-03 ↔ macOS herdr client).
-// Sections are separated by a line containing exactly ---nexus3-focus--- so the
+// Sections are separated by a line containing exactly ---nexus-focus--- so the
 // parser can split them without ambiguity.
 func RemoteStateReadCommand() string {
-	return "cat " + portfwd.RemoteStateFileShell() + " 2>/dev/null || echo '{\"forwards\":[]}'; echo; echo ---nexus3-focus---; cat " + remoteFocusStateFileShell() + " 2>/dev/null; true"
+	return "cat " + portfwd.RemoteStateFileShell() + " 2>/dev/null || echo '{\"forwards\":[]}'; echo; echo ---nexus-focus---; cat " + remoteFocusStateFileShell() + " 2>/dev/null; true"
 }
 
 func ReadRemoteCombinedState(ctx context.Context, ctlPath, target string) (*RemoteCombinedState, error) {
@@ -246,7 +246,7 @@ func readRemoteCombinedStateWithRunner(ctx context.Context, ctlPath, target stri
 }
 
 func parseRemoteCombinedState(output string) (*RemoteCombinedState, error) {
-	const sep = "\n---nexus3-focus---\n"
+	const sep = "\n---nexus-focus---\n"
 	idx := strings.Index(output, sep)
 	var forwardsPart, focusPart string
 	if idx < 0 {

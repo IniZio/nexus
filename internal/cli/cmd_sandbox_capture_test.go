@@ -1,6 +1,6 @@
 package cli
 
-// Tests for the build-context capture mechanism used by "nexus3 sandbox
+// Tests for the build-context capture mechanism used by "nexus sandbox
 // create --file" (D-DC-08, S-SANDBOX-CLI-CAPTURE).
 //
 // These tests call builder.WorktreeToDisk — the function that cmd_sandbox.go
@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder"
 )
 
 // skipUnlessCaptureDeps skips t if mke2fs or debugfs are unavailable. Both

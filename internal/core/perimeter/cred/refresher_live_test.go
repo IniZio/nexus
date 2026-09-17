@@ -25,8 +25,8 @@ package cred
 // deletes — the credential chain becomes unrecoverable (creds.json holds a
 // consumed token; the dedicated session's .credentials.json is already stale).
 // Recovery: re-bootstrap with a fresh
-// `CLAUDE_CONFIG_DIR=~/.config/nexus3/claude-dedicated claude auth login` followed by
-// `nexus3 auth login --force`.
+// `CLAUDE_CONFIG_DIR=~/.config/nexus/claude-dedicated claude auth login` followed by
+// `nexus auth login --force`.
 
 import (
 	"context"
@@ -41,14 +41,14 @@ import (
 // liveCredStorePath replicates the logic of service.DefaultDedicatedCredStorePath
 // without importing the service package (which imports cred, causing a cycle).
 func liveCredStorePath() string {
-	if p := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); p != "" {
+	if p := os.Getenv("NEXUS_DEDICATED_CRED_STORE"); p != "" {
 		return p
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "nexus3", "creds.json")
+	return filepath.Join(home, ".config", "nexus", "creds.json")
 }
 
 func TestRefresherLiveRefreshGrant(t *testing.T) {
@@ -61,7 +61,7 @@ func TestRefresherLiveRefreshGrant(t *testing.T) {
 	realStore, err := LoadStore(realPath)
 	if err != nil {
 		if errors.Is(err, ErrStoreAbsent) {
-			t.Skipf("no cred store at %s; run nexus3 auth login (TBD-P5-3 live proof)", realPath)
+			t.Skipf("no cred store at %s; run nexus auth login (TBD-P5-3 live proof)", realPath)
 		}
 		t.Fatalf("LoadStore(%s): %v", realPath, err)
 	}

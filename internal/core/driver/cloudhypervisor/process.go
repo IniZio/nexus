@@ -181,12 +181,12 @@ type managedProcess struct {
 	// newManagedProcess.
 	deathCh chan struct{}
 	// PID alone is unsafe as a process identity across reuse. If the VMM
-	// crashes and the OS recycles its PID before nexus3 restarts, a different
+	// crashes and the OS recycles its PID before nexus restarts, a different
 	// process could appear as the old VMM. The established pattern in this
 	// project is PID + process start time (available from /proc/<pid>/stat
 	// field 22 on Linux). This implementation records only the PID — start
 	// time tracking is a documented gap. The gap is safe in practice because
-	// nexus3 rebuilds its view of running VMs through Observe() after a
+	// nexus rebuilds its view of running VMs through Observe() after a
 	// restart; it does not rely on the in-memory proc table across restarts.
 }
 

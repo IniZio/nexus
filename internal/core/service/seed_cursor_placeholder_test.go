@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // ac3SentinelRealToken is the operator's distinctive real cursor JWT sentinel.

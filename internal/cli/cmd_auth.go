@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 func init() {
@@ -52,7 +52,7 @@ func runAuth(ctx context.Context, args []string, out *Output) error {
 	}
 }
 
-// runAuthLogin implements `nexus3 auth login` (D-MAC-14).
+// runAuthLogin implements `nexus auth login` (D-MAC-14).
 func runAuthLogin(_ context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("auth login", flag.ContinueOnError)
 	fromPath := fs.String("from", "", "source credential file path (default: agent-specific)")
@@ -77,7 +77,7 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 
 	// claude-code now uses live virtiofs mount (D-MAC-01)
 	if *agentName == "" {
-		fmt.Fprintf(out.Stdout(), "nexus3 auth login for claude-code is no longer needed.\n\n"+
+		fmt.Fprintf(out.Stdout(), "nexus auth login for claude-code is no longer needed.\n\n"+
 			"Credentials are now managed via a live virtiofs mount of the host's\n"+
 			"~/.claude directory into every claude-code sandbox.\n\n"+
 			"To authenticate on the host, run:\n    claude login\n\n"+
@@ -95,7 +95,7 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 
 	// Registry-driven dispatch (OAuthImportReg)
 	if profile.Capabilities.CredDirLiveMount {
-		fmt.Fprintf(out.Stdout(), "nexus3 auth login for %s is no longer needed.\n\n"+
+		fmt.Fprintf(out.Stdout(), "nexus auth login for %s is no longer needed.\n\n"+
 			"Credentials are now managed via a live virtiofs mount of the host's\n"+
 			"~/.claude directory into every %s sandbox.\n\n"+
 			"To authenticate on the host, run:\n    claude login\n\n"+
@@ -128,7 +128,7 @@ func runAuthLoginImport(importFn func(string) (*cred.DedicatedCredStore, error),
 			return fmt.Errorf(
 				"auth login: source credentials file not found: %s\n"+
 					"Establish a dedicated session first:\n"+
-					"  CLAUDE_CONFIG_DIR=~/.config/nexus3/claude-dedicated claude auth login",
+					"  CLAUDE_CONFIG_DIR=~/.config/nexus/claude-dedicated claude auth login",
 				fromPath,
 			)
 		}

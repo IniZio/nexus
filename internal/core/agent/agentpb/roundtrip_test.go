@@ -5,7 +5,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
 )
 
 // TestExecRequestRoundTrip marshals an ExecRequest to bytes and unmarshals it

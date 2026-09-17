@@ -1,7 +1,7 @@
 // Package acceptance — owner ruling tests.
 //
 // Each test encodes one of the nine explicit design rulings made by the project
-// owner. They are the authoritative executable specification for nexus3's
+// owner. They are the authoritative executable specification for nexus's
 // lifecycle and recovery behaviour. If a test fails, either the implementation
 // violates the ruling, or the ruling changed and that change MUST be recorded
 // upstream before this test is updated. Do not weaken these tests to make them
@@ -18,13 +18,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/recovery"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/recovery"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── Ruling 1 ─────────────────────────────────────────────────────────────────
@@ -630,7 +630,7 @@ func TestRuling9_PausedSandboxMemoryGoneResolvesToStopped(t *testing.T) {
 // is the named regression for the predecessor system's bug: a sandbox whose
 // record claimed a stale/transient state matched neither the adoption gate nor
 // the reaper gate, so a working VM was relabelled error and destroyed.
-// This test asserts that behaviour is impossible in nexus3.
+// This test asserts that behaviour is impossible in nexus.
 func TestOldNexusRegression_HealthyVMWithStaleRecordNeverRelabelledErrorNeverDestroyed(t *testing.T) {
 	t.Parallel()
 

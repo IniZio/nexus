@@ -48,14 +48,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // Guest helper binary sources
 // All helpers are compiled as static linux/amd64 binaries and included in the
-// test rootfs alongside nexus3-agent. They are invoked via agent.Exec over
+// test rootfs alongside nexus-agent. They are invoked via agent.Exec over
 // vsock, so there is no dependency on a shell or libc in the guest.
 
 // mdMountSrc mounts /dev/vdb at /mnt/vdb and /dev/vdc at /mnt/vdc (ext4),
@@ -104,7 +104,7 @@ func must(op string, err error) {
 func main() {
 	must("mkdir /mnt/vdb", os.MkdirAll("/mnt/vdb", 0o755))
 	must("mount vdb", syscall.Mount("/dev/vdb", "/mnt/vdb", "ext4", 0, ""))
-	must("write marker", os.WriteFile("/mnt/vdb/marker", []byte("nexus3-alive"), 0o644))
+	must("write marker", os.WriteFile("/mnt/vdb/marker", []byte("nexus-alive"), 0o644))
 	syscall.Sync()
 	fmt.Println("WRITTEN_WITH_SYNC")
 }
@@ -129,7 +129,7 @@ func must(op string, err error) {
 func main() {
 	must("mkdir /mnt/vdb", os.MkdirAll("/mnt/vdb", 0o755))
 	must("mount vdb", syscall.Mount("/dev/vdb", "/mnt/vdb", "ext4", 0, ""))
-	must("write marker", os.WriteFile("/mnt/vdb/marker", []byte("nexus3-alive"), 0o644))
+	must("write marker", os.WriteFile("/mnt/vdb/marker", []byte("nexus-alive"), 0o644))
 	// Intentionally NO syscall.Sync() — negative control for D-BVM-11.
 	fmt.Println("WRITTEN_NO_SYNC")
 }
@@ -188,10 +188,10 @@ func buildMultidiskHelper(t *testing.T, src, name string) string {
 	return binFile
 }
 
-// buildMultidiskRootfs assembles a rootfs directory containing nexus3-agent
+// buildMultidiskRootfs assembles a rootfs directory containing nexus-agent
 // as PID-1 plus one or more helper binaries under /bin/<name>.
 //
-//	agentBin   — path to the static nexus3-agent binary (becomes /sbin/nexus3-agent)
+//	agentBin   — path to the static nexus-agent binary (becomes /sbin/nexus-agent)
 //	helpers    — map of guest path (e.g. "/bin/mdmount") → host binary path
 func buildMultidiskRootfs(t *testing.T, agentBin string, helpers map[string]string) string {
 	t.Helper()
@@ -203,8 +203,8 @@ func buildMultidiskRootfs(t *testing.T, agentBin string, helpers map[string]stri
 		}
 	}
 
-	// nexus3-agent as init (PID-1).
-	dst := filepath.Join(rootfs, "sbin", "nexus3-agent")
+	// nexus-agent as init (PID-1).
+	dst := filepath.Join(rootfs, "sbin", "nexus-agent")
 	src, err := os.ReadFile(agentBin)
 	if err != nil {
 		t.Fatalf("read agent bin: %v", err)
@@ -270,7 +270,7 @@ func buildEmptyExt4(t *testing.T, sizeMiB int) string {
 // Multi-disk boot helper
 
 // multidiskVM boots a VM with rootfs vda + extra disks vdb and vdc using
-// nexus3-agent as PID-1. It waits for the agent to be reachable via vsock
+// nexus-agent as PID-1. It waits for the agent to be reachable via vsock
 // and returns the driver, sandbox ID, and a cleanup function.
 //
 // The caller is responsible for calling stop() exactly once (either explicitly
@@ -297,7 +297,7 @@ func multidiskVM(
 		ExtraDisks:       []ExtraDisk{{Path: vdbPath}, {Path: vdcPath}},
 		SerialOutputPath: serialPath,
 		// Leave Cmdline empty so the driver uses the disk-boot default:
-		//   root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0
+		//   root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0
 		VCPUs:        1,
 		MemoryMiB:    256,
 		StartTimeout: 30 * time.Second,
@@ -338,9 +338,9 @@ func multidiskVM(
 	drv.mu.Unlock()
 
 	// Wait for guest agent to be reachable via vsock — same pattern as waitForAgentReady.
-	t.Log("waiting for nexus3-agent vsock...")
+	t.Log("waiting for nexus-agent vsock...")
 	waitForAgentReady(t, drv, id, 30*time.Second)
-	t.Log("nexus3-agent vsock reachable")
+	t.Log("nexus-agent vsock reachable")
 
 	stop = func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -407,10 +407,10 @@ func TestMultiDisk(t *testing.T) {
 
 	// TestMultiDisk/Connectivity
 	// Diagnostic sub-test: boot with the exact same rootfs as TestDiskBoot
-	// (nexus3-agent + hello) but add ExtraDisks (vdb + vdc). Verifies that
+	// (nexus-agent + hello) but add ExtraDisks (vdb + vdc). Verifies that
 	// ExtraDisks do not interfere with vsock/gRPC connectivity.
 	t.Run("Connectivity", func(t *testing.T) {
-		agentBin := buildNexus3Agent(t)
+		agentBin := buildNexusAgent(t)
 		helloBin := buildHelloBinForDisk(t)
 		rootfsDir := buildRootfsForDisk(t, agentBin, helloBin)
 		rootfsDisk := buildExt4Image(t, rootfsDir)
@@ -480,8 +480,8 @@ func TestMultiDisk(t *testing.T) {
 	})
 
 	// compile shared binaries once
-	// nexus3-agent is the PID-1 init; the helpers are Exec'd via vsock.
-	agentBin := buildNexus3Agent(t)
+	// nexus-agent is the PID-1 init; the helpers are Exec'd via vsock.
+	agentBin := buildNexusAgent(t)
 	mountBin := buildMultidiskHelper(t, mdMountSrc, "mdmount")
 	writeWithSyncBin := buildMultidiskHelper(t, mdWriteWithSyncSrc, "mdwrite-sync")
 	writeNoSyncBin := buildMultidiskHelper(t, mdWriteNoSyncSrc, "mdwrite-nosync")

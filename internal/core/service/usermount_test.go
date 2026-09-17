@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // minimalRecipe returns a claude-code-shaped ToolRecipe for testing.
@@ -143,7 +143,7 @@ func TestBuildUserMountManifest_CuratedPATHDir(t *testing.T) {
 	if m.Overlay {
 		t.Error("Curated and Overlay must be mutually exclusive; Overlay=true")
 	}
-	const wantStaging = "/run/nexus3/usermount/bin-bin"
+	const wantStaging = "/run/nexus/usermount/bin-bin"
 	if m.StagingGuestPath != wantStaging {
 		t.Errorf("StagingGuestPath = %q, want %q", m.StagingGuestPath, wantStaging)
 	}
@@ -268,7 +268,7 @@ func TestBuildUserMountManifest_ContainmentMatch(t *testing.T) {
 	if m.Overlay {
 		t.Error("Curated and Overlay must be mutually exclusive")
 	}
-	const wantStaging = "/run/nexus3/usermount/bin-mise"
+	const wantStaging = "/run/nexus/usermount/bin-mise"
 	if m.StagingGuestPath != wantStaging {
 		t.Errorf("StagingGuestPath = %q, want %q", m.StagingGuestPath, wantStaging)
 	}
@@ -304,13 +304,13 @@ func TestWriteUserMountManifest_RoundTrip(t *testing.T) {
 				GuestPath:        "/root/.local/bin",
 				Overlay:          false,
 				Curated:          true,
-				StagingGuestPath: "/run/nexus3/usermount/bin-bin",
+				StagingGuestPath: "/run/nexus/usermount/bin-bin",
 			},
 			{
 				HostPath:         "/home/alice/.claude/plugins",
 				GuestPath:        "/root/.claude/plugins",
 				Overlay:          true,
-				StagingGuestPath: "/run/nexus3/usermount/plugins",
+				StagingGuestPath: "/run/nexus/usermount/plugins",
 			},
 		},
 	}

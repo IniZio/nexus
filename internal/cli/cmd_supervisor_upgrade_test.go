@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // newSupervisorUpgradeTestSandbox creates a sandbox record in an isolated
@@ -163,7 +163,7 @@ func setCompleteNetnsIdentity(t *testing.T, sb domain.Sandbox) {
 		rec.NetnsChildPID = 4242
 		rec.NetnsChildPGID = 4242
 		rec.NetnsChildStartTime = 123456
-		rec.GuestTapName = "nx3g-test"
+		rec.GuestTapName = "nxg-test"
 		rec.CHAPISocket = "/tmp/fake.sock"
 		return nil
 	}); err != nil {
@@ -376,24 +376,24 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 		{"only PID", func(rec *domain.Sandbox) { rec.NetnsChildPID = 4242 }},
 		{"only PGID", func(rec *domain.Sandbox) { rec.NetnsChildPGID = 4242 }},
 		{"only StartTime", func(rec *domain.Sandbox) { rec.NetnsChildStartTime = 123456 }},
-		{"only GuestTapName", func(rec *domain.Sandbox) { rec.GuestTapName = "nx3g-test" }},
+		{"only GuestTapName", func(rec *domain.Sandbox) { rec.GuestTapName = "nxg-test" }},
 		{"only CHAPISocket", func(rec *domain.Sandbox) { rec.CHAPISocket = "/tmp/fake.sock" }},
 		{"missing only PID", func(rec *domain.Sandbox) {
 			rec.NetnsChildPGID = 4242
 			rec.NetnsChildStartTime = 123456
-			rec.GuestTapName = "nx3g-test"
+			rec.GuestTapName = "nxg-test"
 			rec.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only PGID", func(rec *domain.Sandbox) {
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildStartTime = 123456
-			rec.GuestTapName = "nx3g-test"
+			rec.GuestTapName = "nxg-test"
 			rec.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only StartTime", func(rec *domain.Sandbox) {
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildPGID = 4242
-			rec.GuestTapName = "nx3g-test"
+			rec.GuestTapName = "nxg-test"
 			rec.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only GuestTapName", func(rec *domain.Sandbox) {
@@ -406,7 +406,7 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildPGID = 4242
 			rec.NetnsChildStartTime = 123456
-			rec.GuestTapName = "nx3g-test"
+			rec.GuestTapName = "nxg-test"
 		}},
 	}
 	for _, tc := range cases {

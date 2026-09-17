@@ -14,14 +14,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -216,7 +216,7 @@ func TestSandboxCreate_WithImage_CallsStartAndRecordsRunning(t *testing.T) {
 // Together these two assertions prove the full flag-parse→Config wiring
 // without requiring a real VM.
 func TestSandboxCreate_Memory_VCPUs_FlagParsing(t *testing.T) {
-	args := []string{"p/n", "--image", "nexus3-base:latest", "--memory", "2048", "--vcpus", "2"}
+	args := []string{"p/n", "--image", "nexus-base:latest", "--memory", "2048", "--vcpus", "2"}
 	f, err := parseSandboxCreateArgs(args)
 	if err != nil {
 		t.Fatalf("parseSandboxCreateArgs: %v", err)
@@ -227,8 +227,8 @@ func TestSandboxCreate_Memory_VCPUs_FlagParsing(t *testing.T) {
 	if f.vcpus != 2 {
 		t.Errorf("vcpus: want 2, got %d", f.vcpus)
 	}
-	if f.imageRef != "nexus3-base:latest" {
-		t.Errorf("imageRef: want %q, got %q", "nexus3-base:latest", f.imageRef)
+	if f.imageRef != "nexus-base:latest" {
+		t.Errorf("imageRef: want %q, got %q", "nexus-base:latest", f.imageRef)
 	}
 	if len(f.positionals) != 1 || f.positionals[0] != "p/n" {
 		t.Errorf("positionals: want [p/n], got %v", f.positionals)
@@ -281,7 +281,7 @@ func TestSandboxCreate_Memory_VCPUs_InvalidFlag(t *testing.T) {
 // (unassociated, preserving existing behaviour).
 func TestSandboxCreate_Label_FlagParsing(t *testing.T) {
 	// With --label motive=<id>: Labels["motive"] populated.
-	args := []string{"p/n", "--image", "nexus3-base:latest", "--label", "motive=m-abc-123"}
+	args := []string{"p/n", "--image", "nexus-base:latest", "--label", "motive=m-abc-123"}
 	f, err := parseSandboxCreateArgs(args)
 	if err != nil {
 		t.Fatalf("parseSandboxCreateArgs: %v", err)
@@ -289,8 +289,8 @@ func TestSandboxCreate_Label_FlagParsing(t *testing.T) {
 	if f.labels["motive"] != "m-abc-123" {
 		t.Errorf("labels[motive]: want %q, got %q", "m-abc-123", f.labels["motive"])
 	}
-	if f.imageRef != "nexus3-base:latest" {
-		t.Errorf("imageRef: want %q, got %q", "nexus3-base:latest", f.imageRef)
+	if f.imageRef != "nexus-base:latest" {
+		t.Errorf("imageRef: want %q, got %q", "nexus-base:latest", f.imageRef)
 	}
 
 	// Multiple --label flags: all keys collected.
@@ -303,7 +303,7 @@ func TestSandboxCreate_Label_FlagParsing(t *testing.T) {
 	}
 
 	// Without --label: Labels stays nil (backwards-compatible default).
-	f2, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest"})
+	f2, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus-base:latest"})
 	if err != nil {
 		t.Fatalf("parseSandboxCreateArgs (no label): %v", err)
 	}
@@ -318,7 +318,7 @@ func TestSandboxCreate_Label_FlagParsing(t *testing.T) {
 func TestSandboxCreate_CaptureMax_FlagParsing(t *testing.T) {
 	// --capture-max 8GiB → 8589934592
 	const want8GiB int64 = 8 * 1024 * 1024 * 1024
-	f, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest", "--capture-max", "8GiB"})
+	f, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus-base:latest", "--capture-max", "8GiB"})
 	if err != nil {
 		t.Fatalf("parseSandboxCreateArgs: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestSandboxCreate_CaptureMax_FlagParsing(t *testing.T) {
 	}
 
 	// 500MB → 500_000_000 (decimal SI)
-	f2, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest", "--capture-max", "500MB"})
+	f2, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus-base:latest", "--capture-max", "500MB"})
 	if err != nil {
 		t.Fatalf("parseSandboxCreateArgs (500MB): %v", err)
 	}
@@ -337,7 +337,7 @@ func TestSandboxCreate_CaptureMax_FlagParsing(t *testing.T) {
 	}
 
 	// Omitting --capture-max → 0 (auto)
-	f3, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest"})
+	f3, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus-base:latest"})
 	if err != nil {
 		t.Fatalf("parseSandboxCreateArgs (no flag): %v", err)
 	}
@@ -434,7 +434,7 @@ func TestSandboxCreate_CaptureMax_WorkspacePath(t *testing.T) {
 	dir := t.TempDir() // --workspace requires a real directory that exists
 	f, err := parseSandboxCreateArgs([]string{
 		"p/n",
-		"--image", "nexus3-base:latest",
+		"--image", "nexus-base:latest",
 		"--workspace", dir,
 		"--capture-max", "8GiB",
 	})
@@ -534,18 +534,18 @@ func TestSandboxCreate_WorkspaceEntryPoint_WorkspaceSpec(t *testing.T) {
 		t.Skip("mke2fs not found on PATH — skipping entry-point workspace test (install e2fsprogs)")
 	}
 
-	// Redirect the nexus3 store to a temp dir so shadow disks do not touch
+	// Redirect the nexus store to a temp dir so shadow disks do not touch
 	// the user's real state directory.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	// Kernel preflight (added 2026-08-15) runs before shadow disk creation.
-	// Point NEXUS3_KERNEL_PATH at a placeholder file so the preflight passes
+	// Point NEXUS_KERNEL_PATH at a placeholder file so the preflight passes
 	// and execution reaches the workspace block where testWorkspaceSpecHook fires.
 	kernelFile := filepath.Join(t.TempDir(), "vmlinux-x86_64")
 	if err := os.WriteFile(kernelFile, []byte("fake-kernel"), 0o600); err != nil {
 		t.Fatalf("write fake kernel: %v", err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+	t.Setenv("NEXUS_KERNEL_PATH", kernelFile)
 
 	const want8GiB int64 = 8 * 1024 * 1024 * 1024
 
@@ -756,7 +756,7 @@ func TestD36_NonGitHubSecretNoRepo_OK(t *testing.T) {
 // Mutation evidence: remove the "--repo" case from parseSandboxCreateArgs →
 // this test fails because allowedRepo is empty. Restore → passes.
 func TestD36_RepoFlagParsed(t *testing.T) {
-	args := []string{"p/n", "--image", "nexus3-base:latest",
+	args := []string{"p/n", "--image", "nexus-base:latest",
 		"--egress", "closed", "--repo", "acme/myrepo"}
 	f, err := parseSandboxCreateArgs(args)
 	if err != nil {
@@ -780,7 +780,7 @@ func TestD36_RepoFlagParsed(t *testing.T) {
 // from parseSandboxCreateArgs → this test fails because no error is returned.
 // Restore → test passes.
 func TestD36_EgressClosedWithoutRepo_RefusedAtParse(t *testing.T) {
-	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest",
+	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus-base:latest",
 		"--egress", "closed"})
 	if err == nil {
 		t.Fatal("want error for --egress closed without --repo, got nil")
@@ -792,7 +792,7 @@ func TestD36_EgressClosedWithoutRepo_RefusedAtParse(t *testing.T) {
 
 // TestD36_RepoMalformedFlag verifies that --repo without a slash is rejected.
 func TestD36_RepoMalformedFlag(t *testing.T) {
-	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest",
+	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus-base:latest",
 		"--egress", "closed", "--repo", "notaslash"})
 	if err == nil {
 		t.Fatal("want error for --repo without slash, got nil")
@@ -801,7 +801,7 @@ func TestD36_RepoMalformedFlag(t *testing.T) {
 
 // TestD36_RepoFlagMissingValue verifies that --repo with no argument is rejected.
 func TestD36_RepoFlagMissingValue(t *testing.T) {
-	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest",
+	_, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus-base:latest",
 		"--egress", "closed", "--repo"})
 	if err == nil {
 		t.Fatal("want error for --repo with no value, got nil")
@@ -812,7 +812,7 @@ func TestD36_RepoFlagMissingValue(t *testing.T) {
 // (--egress open, the default) does NOT require --repo. Open-egress sandboxes
 // use AllowAll and are human-interactive; path restriction is not applicable.
 func TestD36_OpenEgressNoRepo_Allowed(t *testing.T) {
-	f, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus3-base:latest"})
+	f, err := parseSandboxCreateArgs([]string{"p/n", "--image", "nexus-base:latest"})
 	if err != nil {
 		t.Fatalf("parseSandboxCreateArgs: %v", err)
 	}
@@ -1339,7 +1339,7 @@ func TestSandboxCreate_CredPreflight_NoTokenLeak(t *testing.T) {
 
 // bootPathEnv sets the two env vars needed to get past the boot-path
 // preflights that precede credPreflightCheck (line 1943 in cmd_sandbox.go):
-//   - NEXUS3_KERNEL_PATH → a placeholder file (resolveKernelPath at line 1339)
+//   - NEXUS_KERNEL_PATH → a placeholder file (resolveKernelPath at line 1339)
 //   - XDG_STATE_HOME     → a temp dir        (store.DefaultRoot  at line 1344)
 //
 // Call this from every boot-path cred test so that execution reaches
@@ -1350,7 +1350,7 @@ func bootPathEnv(t *testing.T) {
 	if err := os.WriteFile(kernelFile, []byte("fake-kernel"), 0o600); err != nil {
 		t.Fatalf("write fake kernel: %v", err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+	t.Setenv("NEXUS_KERNEL_PATH", kernelFile)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 }
 

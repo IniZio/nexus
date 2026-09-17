@@ -27,7 +27,7 @@ type ConcurrencyPhaseConfig struct {
 	// supervisor.pid" race observed when 3 VMs start simultaneously.
 	StaggerDelay time.Duration
 	// Runner is the build runner. Nil uses RunBuild (production default).
-	// Set to a fake in tests to avoid real nexus3/VM invocations.
+	// Set to a fake in tests to avoid real nexus/VM invocations.
 	Runner BuildRunner
 	// MemChecker returns the current MemAvailable in MiB. Nil uses readMemAvailableMiB.
 	// Set to a fake in tests to bypass the pre-wave memory gate.
@@ -262,16 +262,16 @@ func RunConcurrencyPhase(ctx context.Context, cfg ConcurrencyPhaseConfig) ([]Run
 }
 
 // preserveTruncationEvidence copies the buildkit cache disk to a timestamped
-// directory in ~/nexus3-truncation-evidence/ for post-mortem analysis.
+// directory in ~/nexus-truncation-evidence/ for post-mortem analysis.
 func preserveTruncationEvidence() {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Printf("[concurrency] WARN: cannot determine home dir for evidence: %v\n", err)
 		return
 	}
-	stateDir := os.Getenv("NEXUS3_STATE_DIR")
+	stateDir := os.Getenv("NEXUS_STATE_DIR")
 	if stateDir == "" {
-		stateDir = filepath.Join(home, ".local", "state", "nexus3")
+		stateDir = filepath.Join(home, ".local", "state", "nexus")
 	}
 	src := filepath.Join(stateDir, "caches", "buildkit.ext4")
 	if _, err := os.Stat(src); err != nil {
@@ -279,7 +279,7 @@ func preserveTruncationEvidence() {
 		return
 	}
 	ts := time.Now().Format("20060102-150405")
-	dstDir := filepath.Join(home, "nexus3-truncation-evidence", ts+"-cachedisk")
+	dstDir := filepath.Join(home, "nexus-truncation-evidence", ts+"-cachedisk")
 	if err := os.MkdirAll(dstDir, 0755); err != nil {
 		fmt.Printf("[concurrency] evidence: mkdir %s: %v\n", dstDir, err)
 		return

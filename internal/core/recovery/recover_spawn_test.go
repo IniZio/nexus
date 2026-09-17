@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 var errSpawnRefused = errors.New("spawn refused: netns child did not answer")
@@ -32,7 +32,7 @@ func newDeadSupervisorSandbox(t *testing.T, withControlSocket bool) (store.Store
 		State:         domain.Running,
 		SupervisorPID: 424242,
 		NetnsChildPID: 4242, NetnsChildPGID: 4242, NetnsChildStartTime: 987654,
-		GuestTapName: "nx3h-0102030405", CHAPISocket: "/tmp/x.sock",
+		GuestTapName: "nxh-0102030405", CHAPISocket: "/tmp/x.sock",
 	}
 	if withControlSocket {
 		sb.NetnsControlSocket = "/tmp/netns-control/x.sock"

@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // deterministicUUID is a fixed ext4 filesystem UUID used on every build so
@@ -78,7 +78,7 @@ func exportAndCache(ctx context.Context, srcDir, ref string, kind domain.ImageKi
 
 	// Allocate the image file as a sparse file; mke2fs reads the file size
 	// and formats it without a separate blocks-count argument.
-	tmpDir, err := os.MkdirTemp("", "nexus3-ext4-*")
+	tmpDir, err := os.MkdirTemp("", "nexus-ext4-*")
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("ext4: create temp dir: %w", err)
 	}

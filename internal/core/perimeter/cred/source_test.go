@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func TestS0_ProfileStoreToken(t *testing.T) {
@@ -18,13 +18,13 @@ func TestS0_ProfileStoreToken(t *testing.T) {
 
 	expiry := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
-	storePath := filepath.Join(dir, "nexus3_cred.json")
+	storePath := filepath.Join(dir, "nexus_cred.json")
 	payload := `{
 		"access_token":   "real-token-s0",
 		"refresh_token":  "real-refresh-s0",
 		"expires_at":     "2027-06-01T00:00:00Z",
 		"token_type":     "Bearer",
-		"client_id":      "nexus3-client",
+		"client_id":      "nexus-client",
 		"token_endpoint": "https://auth.anthropic.com/oauth/token"
 	}`
 	if err := os.WriteFile(storePath, []byte(payload), 0600); err != nil {

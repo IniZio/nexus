@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        (unknown)
-// source: nexus3/agent/v1/agent.proto
+// source: nexus/agent/v1/agent.proto
 
 package agentpb
 
@@ -55,11 +55,11 @@ func (x SessionState) String() string {
 }
 
 func (SessionState) Descriptor() protoreflect.EnumDescriptor {
-	return file_nexus3_agent_v1_agent_proto_enumTypes[0].Descriptor()
+	return file_nexus_agent_v1_agent_proto_enumTypes[0].Descriptor()
 }
 
 func (SessionState) Type() protoreflect.EnumType {
-	return &file_nexus3_agent_v1_agent_proto_enumTypes[0]
+	return &file_nexus_agent_v1_agent_proto_enumTypes[0]
 }
 
 func (x SessionState) Number() protoreflect.EnumNumber {
@@ -68,7 +68,7 @@ func (x SessionState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SessionState.Descriptor instead.
 func (SessionState) EnumDescriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{0}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{0}
 }
 
 // CopyDirection controls the transfer direction.
@@ -107,11 +107,11 @@ func (x CopyDirection) String() string {
 }
 
 func (CopyDirection) Descriptor() protoreflect.EnumDescriptor {
-	return file_nexus3_agent_v1_agent_proto_enumTypes[1].Descriptor()
+	return file_nexus_agent_v1_agent_proto_enumTypes[1].Descriptor()
 }
 
 func (CopyDirection) Type() protoreflect.EnumType {
-	return &file_nexus3_agent_v1_agent_proto_enumTypes[1]
+	return &file_nexus_agent_v1_agent_proto_enumTypes[1]
 }
 
 func (x CopyDirection) Number() protoreflect.EnumNumber {
@@ -120,7 +120,7 @@ func (x CopyDirection) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CopyDirection.Descriptor instead.
 func (CopyDirection) EnumDescriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{1}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{1}
 }
 
 // WinSize describes terminal dimensions.
@@ -139,7 +139,7 @@ type WinSize struct {
 
 func (x *WinSize) Reset() {
 	*x = WinSize{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[0]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -151,7 +151,7 @@ func (x *WinSize) String() string {
 func (*WinSize) ProtoMessage() {}
 
 func (x *WinSize) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[0]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -164,7 +164,7 @@ func (x *WinSize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WinSize.ProtoReflect.Descriptor instead.
 func (*WinSize) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{0}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *WinSize) GetRows() uint32 {
@@ -208,7 +208,7 @@ type PtyOptions struct {
 
 func (x *PtyOptions) Reset() {
 	*x = PtyOptions{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[1]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -220,7 +220,7 @@ func (x *PtyOptions) String() string {
 func (*PtyOptions) ProtoMessage() {}
 
 func (x *PtyOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[1]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -233,7 +233,7 @@ func (x *PtyOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PtyOptions.ProtoReflect.Descriptor instead.
 func (*PtyOptions) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{1}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *PtyOptions) GetTerm() string {
@@ -274,7 +274,7 @@ type ExecRequest struct {
 
 func (x *ExecRequest) Reset() {
 	*x = ExecRequest{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[2]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -286,7 +286,7 @@ func (x *ExecRequest) String() string {
 func (*ExecRequest) ProtoMessage() {}
 
 func (x *ExecRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[2]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -299,7 +299,7 @@ func (x *ExecRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecRequest.ProtoReflect.Descriptor instead.
 func (*ExecRequest) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{2}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ExecRequest) GetSessionId() string {
@@ -348,7 +348,7 @@ type ExecResponse struct {
 
 func (x *ExecResponse) Reset() {
 	*x = ExecResponse{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[3]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -360,7 +360,7 @@ func (x *ExecResponse) String() string {
 func (*ExecResponse) ProtoMessage() {}
 
 func (x *ExecResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[3]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -373,7 +373,7 @@ func (x *ExecResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecResponse.ProtoReflect.Descriptor instead.
 func (*ExecResponse) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{3}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ExecResponse) GetPid() int32 {
@@ -395,7 +395,7 @@ type SignalRequest struct {
 
 func (x *SignalRequest) Reset() {
 	*x = SignalRequest{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[4]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -407,7 +407,7 @@ func (x *SignalRequest) String() string {
 func (*SignalRequest) ProtoMessage() {}
 
 func (x *SignalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[4]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -420,7 +420,7 @@ func (x *SignalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalRequest.ProtoReflect.Descriptor instead.
 func (*SignalRequest) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{4}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SignalRequest) GetSessionId() string {
@@ -445,7 +445,7 @@ type SignalResponse struct {
 
 func (x *SignalResponse) Reset() {
 	*x = SignalResponse{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[5]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -457,7 +457,7 @@ func (x *SignalResponse) String() string {
 func (*SignalResponse) ProtoMessage() {}
 
 func (x *SignalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[5]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -470,7 +470,7 @@ func (x *SignalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalResponse.ProtoReflect.Descriptor instead.
 func (*SignalResponse) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{5}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{5}
 }
 
 // SessionInfo carries read-only status for one session.
@@ -479,7 +479,7 @@ func (*SignalResponse) Descriptor() ([]byte, []int) {
 type SessionInfo struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	State     SessionState           `protobuf:"varint,2,opt,name=state,proto3,enum=nexus3.agent.v1.SessionState" json:"state,omitempty"`
+	State     SessionState           `protobuf:"varint,2,opt,name=state,proto3,enum=nexus.agent.v1.SessionState" json:"state,omitempty"`
 	// Guest-side PID (0 when state is EXITED and PID has been reaped).
 	Pid int32 `protobuf:"varint,3,opt,name=pid,proto3" json:"pid,omitempty"`
 	// Exit code of the process; meaningful only when state == SESSION_STATE_EXITED.
@@ -490,7 +490,7 @@ type SessionInfo struct {
 
 func (x *SessionInfo) Reset() {
 	*x = SessionInfo{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[6]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -502,7 +502,7 @@ func (x *SessionInfo) String() string {
 func (*SessionInfo) ProtoMessage() {}
 
 func (x *SessionInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[6]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -515,7 +515,7 @@ func (x *SessionInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionInfo.ProtoReflect.Descriptor instead.
 func (*SessionInfo) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{6}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *SessionInfo) GetSessionId() string {
@@ -555,7 +555,7 @@ type SessionStatusRequest struct {
 
 func (x *SessionStatusRequest) Reset() {
 	*x = SessionStatusRequest{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[7]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -567,7 +567,7 @@ func (x *SessionStatusRequest) String() string {
 func (*SessionStatusRequest) ProtoMessage() {}
 
 func (x *SessionStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[7]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -580,7 +580,7 @@ func (x *SessionStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionStatusRequest.ProtoReflect.Descriptor instead.
 func (*SessionStatusRequest) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{7}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SessionStatusRequest) GetSessionId() string {
@@ -599,7 +599,7 @@ type SessionStatusResponse struct {
 
 func (x *SessionStatusResponse) Reset() {
 	*x = SessionStatusResponse{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[8]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -611,7 +611,7 @@ func (x *SessionStatusResponse) String() string {
 func (*SessionStatusResponse) ProtoMessage() {}
 
 func (x *SessionStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[8]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -624,7 +624,7 @@ func (x *SessionStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionStatusResponse.ProtoReflect.Descriptor instead.
 func (*SessionStatusResponse) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{8}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SessionStatusResponse) GetInfo() *SessionInfo {
@@ -642,7 +642,7 @@ type ListSessionsRequest struct {
 
 func (x *ListSessionsRequest) Reset() {
 	*x = ListSessionsRequest{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[9]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -654,7 +654,7 @@ func (x *ListSessionsRequest) String() string {
 func (*ListSessionsRequest) ProtoMessage() {}
 
 func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[9]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -667,7 +667,7 @@ func (x *ListSessionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsRequest.ProtoReflect.Descriptor instead.
 func (*ListSessionsRequest) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{9}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{9}
 }
 
 type ListSessionsResponse struct {
@@ -679,7 +679,7 @@ type ListSessionsResponse struct {
 
 func (x *ListSessionsResponse) Reset() {
 	*x = ListSessionsResponse{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[10]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -691,7 +691,7 @@ func (x *ListSessionsResponse) String() string {
 func (*ListSessionsResponse) ProtoMessage() {}
 
 func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[10]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -704,7 +704,7 @@ func (x *ListSessionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSessionsResponse.ProtoReflect.Descriptor instead.
 func (*ListSessionsResponse) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{10}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListSessionsResponse) GetSessions() []*SessionInfo {
@@ -723,7 +723,7 @@ func (x *ListSessionsResponse) GetSessions() []*SessionInfo {
 type CopyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Direction of the transfer.
-	Direction CopyDirection `protobuf:"varint,1,opt,name=direction,proto3,enum=nexus3.agent.v1.CopyDirection" json:"direction,omitempty"`
+	Direction CopyDirection `protobuf:"varint,1,opt,name=direction,proto3,enum=nexus.agent.v1.CopyDirection" json:"direction,omitempty"`
 	// Absolute path inside the guest.
 	GuestPath string `protobuf:"bytes,2,opt,name=guest_path,json=guestPath,proto3" json:"guest_path,omitempty"`
 	// When true the agent archives the directory tree before transfer.
@@ -741,7 +741,7 @@ type CopyRequest struct {
 
 func (x *CopyRequest) Reset() {
 	*x = CopyRequest{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[11]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -753,7 +753,7 @@ func (x *CopyRequest) String() string {
 func (*CopyRequest) ProtoMessage() {}
 
 func (x *CopyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[11]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -766,7 +766,7 @@ func (x *CopyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CopyRequest.ProtoReflect.Descriptor instead.
 func (*CopyRequest) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{11}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CopyRequest) GetDirection() CopyDirection {
@@ -820,7 +820,7 @@ type CopyResponse struct {
 
 func (x *CopyResponse) Reset() {
 	*x = CopyResponse{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[12]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -832,7 +832,7 @@ func (x *CopyResponse) String() string {
 func (*CopyResponse) ProtoMessage() {}
 
 func (x *CopyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[12]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -845,7 +845,7 @@ func (x *CopyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CopyResponse.ProtoReflect.Descriptor instead.
 func (*CopyResponse) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{12}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CopyResponse) GetTransferId() string {
@@ -870,7 +870,7 @@ type AgentInfoRequest struct {
 
 func (x *AgentInfoRequest) Reset() {
 	*x = AgentInfoRequest{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[13]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -882,7 +882,7 @@ func (x *AgentInfoRequest) String() string {
 func (*AgentInfoRequest) ProtoMessage() {}
 
 func (x *AgentInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[13]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -895,11 +895,11 @@ func (x *AgentInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentInfoRequest.ProtoReflect.Descriptor instead.
 func (*AgentInfoRequest) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{13}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{13}
 }
 
 // AgentInfoResponse carries the agent's build tag (the ldflags-stamped
-// value of agentBuildTag in cmd/nexus3-agent/main.go).
+// value of agentBuildTag in cmd/nexus-agent/main.go).
 type AgentInfoResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// build_tag is the value stamped by -ldflags "-X main.agentBuildTag=…"
@@ -911,7 +911,7 @@ type AgentInfoResponse struct {
 
 func (x *AgentInfoResponse) Reset() {
 	*x = AgentInfoResponse{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[14]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -923,7 +923,7 @@ func (x *AgentInfoResponse) String() string {
 func (*AgentInfoResponse) ProtoMessage() {}
 
 func (x *AgentInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[14]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -936,7 +936,7 @@ func (x *AgentInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentInfoResponse.ProtoReflect.Descriptor instead.
 func (*AgentInfoResponse) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{14}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AgentInfoResponse) GetBuildTag() string {
@@ -951,7 +951,7 @@ func (x *AgentInfoResponse) GetBuildTag() string {
 // The host must have already pushed the replacement binary to staged_path
 // (via the Copy RPC with ExpectedBytes set) before calling RestartAgent.
 // The guest verifies the on-disk size of staged_path against expected_bytes,
-// renames it atomically over /sbin/nexus3-agent, then calls syscall.Exec to
+// renames it atomically over /sbin/nexus-agent, then calls syscall.Exec to
 // replace PID 1's process image with the new binary.
 //
 // The vsock listeners (control port 1024 and data port 1025) are created with
@@ -987,7 +987,7 @@ type RestartAgentRequest struct {
 
 func (x *RestartAgentRequest) Reset() {
 	*x = RestartAgentRequest{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[15]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -999,7 +999,7 @@ func (x *RestartAgentRequest) String() string {
 func (*RestartAgentRequest) ProtoMessage() {}
 
 func (x *RestartAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[15]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1012,7 +1012,7 @@ func (x *RestartAgentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartAgentRequest.ProtoReflect.Descriptor instead.
 func (*RestartAgentRequest) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{15}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RestartAgentRequest) GetStagedPath() string {
@@ -1048,7 +1048,7 @@ type RestartAgentResponse struct {
 
 func (x *RestartAgentResponse) Reset() {
 	*x = RestartAgentResponse{}
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[16]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1060,7 +1060,7 @@ func (x *RestartAgentResponse) String() string {
 func (*RestartAgentResponse) ProtoMessage() {}
 
 func (x *RestartAgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nexus3_agent_v1_agent_proto_msgTypes[16]
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1073,30 +1073,30 @@ func (x *RestartAgentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartAgentResponse.ProtoReflect.Descriptor instead.
 func (*RestartAgentResponse) Descriptor() ([]byte, []int) {
-	return file_nexus3_agent_v1_agent_proto_rawDescGZIP(), []int{16}
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
-var File_nexus3_agent_v1_agent_proto protoreflect.FileDescriptor
+var File_nexus_agent_v1_agent_proto protoreflect.FileDescriptor
 
-const file_nexus3_agent_v1_agent_proto_rawDesc = "" +
+const file_nexus_agent_v1_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x1bnexus3/agent/v1/agent.proto\x12\x0fnexus3.agent.v1\"g\n" +
+	"\x1anexus/agent/v1/agent.proto\x12\x0enexus.agent.v1\"g\n" +
 	"\aWinSize\x12\x12\n" +
 	"\x04rows\x18\x01 \x01(\rR\x04rows\x12\x12\n" +
 	"\x04cols\x18\x02 \x01(\rR\x04cols\x12\x19\n" +
 	"\bx_pixels\x18\x03 \x01(\rR\axPixels\x12\x19\n" +
-	"\by_pixels\x18\x04 \x01(\rR\ayPixels\"]\n" +
+	"\by_pixels\x18\x04 \x01(\rR\ayPixels\"\\\n" +
 	"\n" +
 	"PtyOptions\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\tR\x04term\x12;\n" +
-	"\finitial_size\x18\x02 \x01(\v2\x18.nexus3.agent.v1.WinSizeR\vinitialSize\"\xf2\x01\n" +
+	"\x04term\x18\x01 \x01(\tR\x04term\x12:\n" +
+	"\finitial_size\x18\x02 \x01(\v2\x17.nexus.agent.v1.WinSizeR\vinitialSize\"\xf0\x01\n" +
 	"\vExecRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x12\n" +
-	"\x04argv\x18\x02 \x03(\tR\x04argv\x127\n" +
-	"\x03env\x18\x03 \x03(\v2%.nexus3.agent.v1.ExecRequest.EnvEntryR\x03env\x12\x10\n" +
-	"\x03cwd\x18\x04 \x01(\tR\x03cwd\x12-\n" +
-	"\x03pty\x18\x05 \x01(\v2\x1b.nexus3.agent.v1.PtyOptionsR\x03pty\x1a6\n" +
+	"\x04argv\x18\x02 \x03(\tR\x04argv\x126\n" +
+	"\x03env\x18\x03 \x03(\v2$.nexus.agent.v1.ExecRequest.EnvEntryR\x03env\x12\x10\n" +
+	"\x03cwd\x18\x04 \x01(\tR\x03cwd\x12,\n" +
+	"\x03pty\x18\x05 \x01(\v2\x1a.nexus.agent.v1.PtyOptionsR\x03pty\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\" \n" +
@@ -1106,23 +1106,23 @@ const file_nexus3_agent_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
 	"\x06signum\x18\x02 \x01(\x05R\x06signum\"\x10\n" +
-	"\x0eSignalResponse\"\x90\x01\n" +
+	"\x0eSignalResponse\"\x8f\x01\n" +
 	"\vSessionInfo\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\x123\n" +
-	"\x05state\x18\x02 \x01(\x0e2\x1d.nexus3.agent.v1.SessionStateR\x05state\x12\x10\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x122\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x1c.nexus.agent.v1.SessionStateR\x05state\x12\x10\n" +
 	"\x03pid\x18\x03 \x01(\x05R\x03pid\x12\x1b\n" +
 	"\texit_code\x18\x04 \x01(\x05R\bexitCode\"5\n" +
 	"\x14SessionStatusRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"I\n" +
-	"\x15SessionStatusResponse\x120\n" +
-	"\x04info\x18\x01 \x01(\v2\x1c.nexus3.agent.v1.SessionInfoR\x04info\"\x15\n" +
-	"\x13ListSessionsRequest\"P\n" +
-	"\x14ListSessionsResponse\x128\n" +
-	"\bsessions\x18\x01 \x03(\v2\x1c.nexus3.agent.v1.SessionInfoR\bsessions\"\xcc\x01\n" +
-	"\vCopyRequest\x12<\n" +
-	"\tdirection\x18\x01 \x01(\x0e2\x1e.nexus3.agent.v1.CopyDirectionR\tdirection\x12\x1d\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"H\n" +
+	"\x15SessionStatusResponse\x12/\n" +
+	"\x04info\x18\x01 \x01(\v2\x1b.nexus.agent.v1.SessionInfoR\x04info\"\x15\n" +
+	"\x13ListSessionsRequest\"O\n" +
+	"\x14ListSessionsResponse\x127\n" +
+	"\bsessions\x18\x01 \x03(\v2\x1b.nexus.agent.v1.SessionInfoR\bsessions\"\xcb\x01\n" +
+	"\vCopyRequest\x12;\n" +
+	"\tdirection\x18\x01 \x01(\x0e2\x1d.nexus.agent.v1.CopyDirectionR\tdirection\x12\x1d\n" +
 	"\n" +
 	"guest_path\x18\x02 \x01(\tR\tguestPath\x12!\n" +
 	"\fis_directory\x18\x03 \x01(\bR\visDirectory\x12*\n" +
@@ -1149,74 +1149,74 @@ const file_nexus3_agent_v1_agent_proto_rawDesc = "" +
 	"\rCopyDirection\x12\x1e\n" +
 	"\x1aCOPY_DIRECTION_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13COPY_DIRECTION_PUSH\x10\x01\x12\x17\n" +
-	"\x13COPY_DIRECTION_PULL\x10\x022\xd1\x04\n" +
-	"\fAgentService\x12C\n" +
-	"\x04Exec\x12\x1c.nexus3.agent.v1.ExecRequest\x1a\x1d.nexus3.agent.v1.ExecResponse\x12I\n" +
-	"\x06Signal\x12\x1e.nexus3.agent.v1.SignalRequest\x1a\x1f.nexus3.agent.v1.SignalResponse\x12^\n" +
-	"\rSessionStatus\x12%.nexus3.agent.v1.SessionStatusRequest\x1a&.nexus3.agent.v1.SessionStatusResponse\x12[\n" +
-	"\fListSessions\x12$.nexus3.agent.v1.ListSessionsRequest\x1a%.nexus3.agent.v1.ListSessionsResponse\x12C\n" +
-	"\x04Copy\x12\x1c.nexus3.agent.v1.CopyRequest\x1a\x1d.nexus3.agent.v1.CopyResponse\x12R\n" +
-	"\tAgentInfo\x12!.nexus3.agent.v1.AgentInfoRequest\x1a\".nexus3.agent.v1.AgentInfoResponse\x12[\n" +
-	"\fRestartAgent\x12$.nexus3.agent.v1.RestartAgentRequest\x1a%.nexus3.agent.v1.RestartAgentResponseB>Z<github.com/IniZio/nexus3/internal/core/agent/agentpb;agentpbb\x06proto3"
+	"\x13COPY_DIRECTION_PULL\x10\x022\xc3\x04\n" +
+	"\fAgentService\x12A\n" +
+	"\x04Exec\x12\x1b.nexus.agent.v1.ExecRequest\x1a\x1c.nexus.agent.v1.ExecResponse\x12G\n" +
+	"\x06Signal\x12\x1d.nexus.agent.v1.SignalRequest\x1a\x1e.nexus.agent.v1.SignalResponse\x12\\\n" +
+	"\rSessionStatus\x12$.nexus.agent.v1.SessionStatusRequest\x1a%.nexus.agent.v1.SessionStatusResponse\x12Y\n" +
+	"\fListSessions\x12#.nexus.agent.v1.ListSessionsRequest\x1a$.nexus.agent.v1.ListSessionsResponse\x12A\n" +
+	"\x04Copy\x12\x1b.nexus.agent.v1.CopyRequest\x1a\x1c.nexus.agent.v1.CopyResponse\x12P\n" +
+	"\tAgentInfo\x12 .nexus.agent.v1.AgentInfoRequest\x1a!.nexus.agent.v1.AgentInfoResponse\x12Y\n" +
+	"\fRestartAgent\x12#.nexus.agent.v1.RestartAgentRequest\x1a$.nexus.agent.v1.RestartAgentResponseB=Z;github.com/IniZio/nexus/internal/core/agent/agentpb;agentpbb\x06proto3"
 
 var (
-	file_nexus3_agent_v1_agent_proto_rawDescOnce sync.Once
-	file_nexus3_agent_v1_agent_proto_rawDescData []byte
+	file_nexus_agent_v1_agent_proto_rawDescOnce sync.Once
+	file_nexus_agent_v1_agent_proto_rawDescData []byte
 )
 
-func file_nexus3_agent_v1_agent_proto_rawDescGZIP() []byte {
-	file_nexus3_agent_v1_agent_proto_rawDescOnce.Do(func() {
-		file_nexus3_agent_v1_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_nexus3_agent_v1_agent_proto_rawDesc), len(file_nexus3_agent_v1_agent_proto_rawDesc)))
+func file_nexus_agent_v1_agent_proto_rawDescGZIP() []byte {
+	file_nexus_agent_v1_agent_proto_rawDescOnce.Do(func() {
+		file_nexus_agent_v1_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_nexus_agent_v1_agent_proto_rawDesc), len(file_nexus_agent_v1_agent_proto_rawDesc)))
 	})
-	return file_nexus3_agent_v1_agent_proto_rawDescData
+	return file_nexus_agent_v1_agent_proto_rawDescData
 }
 
-var file_nexus3_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_nexus3_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
-var file_nexus3_agent_v1_agent_proto_goTypes = []any{
-	(SessionState)(0),             // 0: nexus3.agent.v1.SessionState
-	(CopyDirection)(0),            // 1: nexus3.agent.v1.CopyDirection
-	(*WinSize)(nil),               // 2: nexus3.agent.v1.WinSize
-	(*PtyOptions)(nil),            // 3: nexus3.agent.v1.PtyOptions
-	(*ExecRequest)(nil),           // 4: nexus3.agent.v1.ExecRequest
-	(*ExecResponse)(nil),          // 5: nexus3.agent.v1.ExecResponse
-	(*SignalRequest)(nil),         // 6: nexus3.agent.v1.SignalRequest
-	(*SignalResponse)(nil),        // 7: nexus3.agent.v1.SignalResponse
-	(*SessionInfo)(nil),           // 8: nexus3.agent.v1.SessionInfo
-	(*SessionStatusRequest)(nil),  // 9: nexus3.agent.v1.SessionStatusRequest
-	(*SessionStatusResponse)(nil), // 10: nexus3.agent.v1.SessionStatusResponse
-	(*ListSessionsRequest)(nil),   // 11: nexus3.agent.v1.ListSessionsRequest
-	(*ListSessionsResponse)(nil),  // 12: nexus3.agent.v1.ListSessionsResponse
-	(*CopyRequest)(nil),           // 13: nexus3.agent.v1.CopyRequest
-	(*CopyResponse)(nil),          // 14: nexus3.agent.v1.CopyResponse
-	(*AgentInfoRequest)(nil),      // 15: nexus3.agent.v1.AgentInfoRequest
-	(*AgentInfoResponse)(nil),     // 16: nexus3.agent.v1.AgentInfoResponse
-	(*RestartAgentRequest)(nil),   // 17: nexus3.agent.v1.RestartAgentRequest
-	(*RestartAgentResponse)(nil),  // 18: nexus3.agent.v1.RestartAgentResponse
-	nil,                           // 19: nexus3.agent.v1.ExecRequest.EnvEntry
+var file_nexus_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_nexus_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_nexus_agent_v1_agent_proto_goTypes = []any{
+	(SessionState)(0),             // 0: nexus.agent.v1.SessionState
+	(CopyDirection)(0),            // 1: nexus.agent.v1.CopyDirection
+	(*WinSize)(nil),               // 2: nexus.agent.v1.WinSize
+	(*PtyOptions)(nil),            // 3: nexus.agent.v1.PtyOptions
+	(*ExecRequest)(nil),           // 4: nexus.agent.v1.ExecRequest
+	(*ExecResponse)(nil),          // 5: nexus.agent.v1.ExecResponse
+	(*SignalRequest)(nil),         // 6: nexus.agent.v1.SignalRequest
+	(*SignalResponse)(nil),        // 7: nexus.agent.v1.SignalResponse
+	(*SessionInfo)(nil),           // 8: nexus.agent.v1.SessionInfo
+	(*SessionStatusRequest)(nil),  // 9: nexus.agent.v1.SessionStatusRequest
+	(*SessionStatusResponse)(nil), // 10: nexus.agent.v1.SessionStatusResponse
+	(*ListSessionsRequest)(nil),   // 11: nexus.agent.v1.ListSessionsRequest
+	(*ListSessionsResponse)(nil),  // 12: nexus.agent.v1.ListSessionsResponse
+	(*CopyRequest)(nil),           // 13: nexus.agent.v1.CopyRequest
+	(*CopyResponse)(nil),          // 14: nexus.agent.v1.CopyResponse
+	(*AgentInfoRequest)(nil),      // 15: nexus.agent.v1.AgentInfoRequest
+	(*AgentInfoResponse)(nil),     // 16: nexus.agent.v1.AgentInfoResponse
+	(*RestartAgentRequest)(nil),   // 17: nexus.agent.v1.RestartAgentRequest
+	(*RestartAgentResponse)(nil),  // 18: nexus.agent.v1.RestartAgentResponse
+	nil,                           // 19: nexus.agent.v1.ExecRequest.EnvEntry
 }
-var file_nexus3_agent_v1_agent_proto_depIdxs = []int32{
-	2,  // 0: nexus3.agent.v1.PtyOptions.initial_size:type_name -> nexus3.agent.v1.WinSize
-	19, // 1: nexus3.agent.v1.ExecRequest.env:type_name -> nexus3.agent.v1.ExecRequest.EnvEntry
-	3,  // 2: nexus3.agent.v1.ExecRequest.pty:type_name -> nexus3.agent.v1.PtyOptions
-	0,  // 3: nexus3.agent.v1.SessionInfo.state:type_name -> nexus3.agent.v1.SessionState
-	8,  // 4: nexus3.agent.v1.SessionStatusResponse.info:type_name -> nexus3.agent.v1.SessionInfo
-	8,  // 5: nexus3.agent.v1.ListSessionsResponse.sessions:type_name -> nexus3.agent.v1.SessionInfo
-	1,  // 6: nexus3.agent.v1.CopyRequest.direction:type_name -> nexus3.agent.v1.CopyDirection
-	4,  // 7: nexus3.agent.v1.AgentService.Exec:input_type -> nexus3.agent.v1.ExecRequest
-	6,  // 8: nexus3.agent.v1.AgentService.Signal:input_type -> nexus3.agent.v1.SignalRequest
-	9,  // 9: nexus3.agent.v1.AgentService.SessionStatus:input_type -> nexus3.agent.v1.SessionStatusRequest
-	11, // 10: nexus3.agent.v1.AgentService.ListSessions:input_type -> nexus3.agent.v1.ListSessionsRequest
-	13, // 11: nexus3.agent.v1.AgentService.Copy:input_type -> nexus3.agent.v1.CopyRequest
-	15, // 12: nexus3.agent.v1.AgentService.AgentInfo:input_type -> nexus3.agent.v1.AgentInfoRequest
-	17, // 13: nexus3.agent.v1.AgentService.RestartAgent:input_type -> nexus3.agent.v1.RestartAgentRequest
-	5,  // 14: nexus3.agent.v1.AgentService.Exec:output_type -> nexus3.agent.v1.ExecResponse
-	7,  // 15: nexus3.agent.v1.AgentService.Signal:output_type -> nexus3.agent.v1.SignalResponse
-	10, // 16: nexus3.agent.v1.AgentService.SessionStatus:output_type -> nexus3.agent.v1.SessionStatusResponse
-	12, // 17: nexus3.agent.v1.AgentService.ListSessions:output_type -> nexus3.agent.v1.ListSessionsResponse
-	14, // 18: nexus3.agent.v1.AgentService.Copy:output_type -> nexus3.agent.v1.CopyResponse
-	16, // 19: nexus3.agent.v1.AgentService.AgentInfo:output_type -> nexus3.agent.v1.AgentInfoResponse
-	18, // 20: nexus3.agent.v1.AgentService.RestartAgent:output_type -> nexus3.agent.v1.RestartAgentResponse
+var file_nexus_agent_v1_agent_proto_depIdxs = []int32{
+	2,  // 0: nexus.agent.v1.PtyOptions.initial_size:type_name -> nexus.agent.v1.WinSize
+	19, // 1: nexus.agent.v1.ExecRequest.env:type_name -> nexus.agent.v1.ExecRequest.EnvEntry
+	3,  // 2: nexus.agent.v1.ExecRequest.pty:type_name -> nexus.agent.v1.PtyOptions
+	0,  // 3: nexus.agent.v1.SessionInfo.state:type_name -> nexus.agent.v1.SessionState
+	8,  // 4: nexus.agent.v1.SessionStatusResponse.info:type_name -> nexus.agent.v1.SessionInfo
+	8,  // 5: nexus.agent.v1.ListSessionsResponse.sessions:type_name -> nexus.agent.v1.SessionInfo
+	1,  // 6: nexus.agent.v1.CopyRequest.direction:type_name -> nexus.agent.v1.CopyDirection
+	4,  // 7: nexus.agent.v1.AgentService.Exec:input_type -> nexus.agent.v1.ExecRequest
+	6,  // 8: nexus.agent.v1.AgentService.Signal:input_type -> nexus.agent.v1.SignalRequest
+	9,  // 9: nexus.agent.v1.AgentService.SessionStatus:input_type -> nexus.agent.v1.SessionStatusRequest
+	11, // 10: nexus.agent.v1.AgentService.ListSessions:input_type -> nexus.agent.v1.ListSessionsRequest
+	13, // 11: nexus.agent.v1.AgentService.Copy:input_type -> nexus.agent.v1.CopyRequest
+	15, // 12: nexus.agent.v1.AgentService.AgentInfo:input_type -> nexus.agent.v1.AgentInfoRequest
+	17, // 13: nexus.agent.v1.AgentService.RestartAgent:input_type -> nexus.agent.v1.RestartAgentRequest
+	5,  // 14: nexus.agent.v1.AgentService.Exec:output_type -> nexus.agent.v1.ExecResponse
+	7,  // 15: nexus.agent.v1.AgentService.Signal:output_type -> nexus.agent.v1.SignalResponse
+	10, // 16: nexus.agent.v1.AgentService.SessionStatus:output_type -> nexus.agent.v1.SessionStatusResponse
+	12, // 17: nexus.agent.v1.AgentService.ListSessions:output_type -> nexus.agent.v1.ListSessionsResponse
+	14, // 18: nexus.agent.v1.AgentService.Copy:output_type -> nexus.agent.v1.CopyResponse
+	16, // 19: nexus.agent.v1.AgentService.AgentInfo:output_type -> nexus.agent.v1.AgentInfoResponse
+	18, // 20: nexus.agent.v1.AgentService.RestartAgent:output_type -> nexus.agent.v1.RestartAgentResponse
 	14, // [14:21] is the sub-list for method output_type
 	7,  // [7:14] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
@@ -1224,29 +1224,29 @@ var file_nexus3_agent_v1_agent_proto_depIdxs = []int32{
 	0,  // [0:7] is the sub-list for field type_name
 }
 
-func init() { file_nexus3_agent_v1_agent_proto_init() }
-func file_nexus3_agent_v1_agent_proto_init() {
-	if File_nexus3_agent_v1_agent_proto != nil {
+func init() { file_nexus_agent_v1_agent_proto_init() }
+func file_nexus_agent_v1_agent_proto_init() {
+	if File_nexus_agent_v1_agent_proto != nil {
 		return
 	}
-	file_nexus3_agent_v1_agent_proto_msgTypes[11].OneofWrappers = []any{}
-	file_nexus3_agent_v1_agent_proto_msgTypes[12].OneofWrappers = []any{}
+	file_nexus_agent_v1_agent_proto_msgTypes[11].OneofWrappers = []any{}
+	file_nexus_agent_v1_agent_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_nexus3_agent_v1_agent_proto_rawDesc), len(file_nexus3_agent_v1_agent_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_nexus_agent_v1_agent_proto_rawDesc), len(file_nexus_agent_v1_agent_proto_rawDesc)),
 			NumEnums:      2,
 			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_nexus3_agent_v1_agent_proto_goTypes,
-		DependencyIndexes: file_nexus3_agent_v1_agent_proto_depIdxs,
-		EnumInfos:         file_nexus3_agent_v1_agent_proto_enumTypes,
-		MessageInfos:      file_nexus3_agent_v1_agent_proto_msgTypes,
+		GoTypes:           file_nexus_agent_v1_agent_proto_goTypes,
+		DependencyIndexes: file_nexus_agent_v1_agent_proto_depIdxs,
+		EnumInfos:         file_nexus_agent_v1_agent_proto_enumTypes,
+		MessageInfos:      file_nexus_agent_v1_agent_proto_msgTypes,
 	}.Build()
-	File_nexus3_agent_v1_agent_proto = out.File
-	file_nexus3_agent_v1_agent_proto_goTypes = nil
-	file_nexus3_agent_v1_agent_proto_depIdxs = nil
+	File_nexus_agent_v1_agent_proto = out.File
+	file_nexus_agent_v1_agent_proto_goTypes = nil
+	file_nexus_agent_v1_agent_proto_depIdxs = nil
 }

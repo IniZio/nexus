@@ -9,7 +9,7 @@ import (
 )
 
 // TestSpawnReacquireDetached_ClearsStaleCAOutcome drives the REAL spawn entry
-// point `nexus3 recover` uses and asserts it does not leave a previous
+// point `nexus recover` uses and asserts it does not leave a previous
 // recovery's CA outcome in place for this run to read.
 //
 // /bin/true stands in for the supervisor binary — it exits without writing a

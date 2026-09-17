@@ -9,34 +9,34 @@ import (
 	"strings"
 )
 
-// nexus3AgentInstallPath is the in-rootfs path for the nexus3-agent binary.
+// nexusAgentInstallPath is the in-rootfs path for the nexus-agent binary.
 // The agent runs as PID 1 inside the builder VM via the builder-init shim.
-const nexus3AgentInstallPath = "/usr/local/bin/nexus3-agent"
+const nexusAgentInstallPath = "/usr/local/bin/nexus-agent"
 
 // builderInitScriptInstallPath is the in-rootfs path for the builder-init shim.
 const builderInitScriptInstallPath = "/usr/local/bin/builder-init.sh"
 
 // builderInitScript is the PID-1 shim executed inside the builder VM.
 // It sets a minimal PATH, marks the environment as a builder VM, and
-// execs nexus3-agent which then starts buildkitd and handles agent RPC.
+// execs nexus-agent which then starts buildkitd and handles agent RPC.
 const builderInitScript = `#!/bin/sh
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export NEXUS_VMBUILDER=1
-exec ` + nexus3AgentInstallPath + "\n"
+exec ` + nexusAgentInstallPath + "\n"
 
 // addBootLayers adds VM-boot infrastructure to the extracted rootfs staging
 // directory so that the moby/buildkit container image can boot as a
-// cloud-hypervisor VM rootfs under nexus3.
+// cloud-hypervisor VM rootfs under nexus.
 //
 // It injects:
-//  1. builder-init.sh — the PID-1 shim that execs nexus3-agent.
+//  1. builder-init.sh — the PID-1 shim that execs nexus-agent.
 //  2. /sbin/init — a one-liner that delegates to builder-init.sh.
 //  3. /etc/securetty — appended with "ttyS0" so the serial console works.
 //  4. /workspace — ext4 virtio-blk disk mount point (virtiofs measured and
 //     rejected ~17× metadata penalty; see docs/design/virtiofs-vs-ext4.md).
 //  5. /run/buildkit — buildkitd socket directory.
 //  6. /var/lib/buildkit — scratch block device mount point.
-//  7. nexus3-agent binary at nexus3AgentInstallPath.
+//  7. nexus-agent binary at nexusAgentInstallPath.
 //  8. /etc/resolv.conf — seeded with public DNS; guest agent overwrites later.
 func addBootLayers(stagingDir string, agentBytes []byte) error {
 	if len(agentBytes) == 0 {
@@ -94,26 +94,26 @@ func addBootLayers(stagingDir string, agentBytes []byte) error {
 		return fmt.Errorf("mkdir /var/lib/buildkit: %w", err)
 	}
 
-	// 7. nexus3-agent binary.
-	agentDst := filepath.Join(stagingDir, filepath.FromSlash(nexus3AgentInstallPath[1:]))
+	// 7. nexus-agent binary.
+	agentDst := filepath.Join(stagingDir, filepath.FromSlash(nexusAgentInstallPath[1:]))
 	if err := os.MkdirAll(filepath.Dir(agentDst), 0o755); err != nil {
-		return fmt.Errorf("mkdir for nexus3-agent: %w", err)
+		return fmt.Errorf("mkdir for nexus-agent: %w", err)
 	}
 	_ = os.Remove(agentDst)
 	if err := os.WriteFile(agentDst, agentBytes, 0o755); err != nil {
-		return fmt.Errorf("write nexus3-agent into rootfs: %w", err)
+		return fmt.Errorf("write nexus-agent into rootfs: %w", err)
 	}
 
-	// 7b. /sbin/nexus3-agent — second copy of the agent binary.
-	// The default cloud-hypervisor disk-boot cmdline is "init=/sbin/nexus3-agent"
-	// and vmbuilder.guestBuild execs "/sbin/nexus3-agent --builder-role". The
+	// 7b. /sbin/nexus-agent — second copy of the agent binary.
+	// The default cloud-hypervisor disk-boot cmdline is "init=/sbin/nexus-agent"
+	// and vmbuilder.guestBuild execs "/sbin/nexus-agent --builder-role". The
 	// builder rootfs places the primary agent at /usr/local/bin; writing a second
 	// copy to /sbin avoids any symlink-resolution ambiguity at kernel exec time
 	// (the Linux kernel does NOT follow symlinks for init=).
-	sbinAgent := filepath.Join(stagingDir, "sbin", "nexus3-agent")
+	sbinAgent := filepath.Join(stagingDir, "sbin", "nexus-agent")
 	_ = os.Remove(sbinAgent)
 	if err := os.WriteFile(sbinAgent, agentBytes, 0o755); err != nil {
-		return fmt.Errorf("write /sbin/nexus3-agent into rootfs: %w", err)
+		return fmt.Errorf("write /sbin/nexus-agent into rootfs: %w", err)
 	}
 
 	// 8. /etc/resolv.conf — ensure it is a real file (not a symlink).
@@ -124,7 +124,7 @@ func addBootLayers(stagingDir string, agentBytes []byte) error {
 	}
 	resolvConfDst := filepath.Join(etcDir, "resolv.conf")
 	_ = os.Remove(resolvConfDst) // remove any pre-existing symlink from base image
-	const resolvContents = "# seeded by nexus3 builderimage — agent overwrites after boot\nnameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+	const resolvContents = "# seeded by nexus builderimage — agent overwrites after boot\nnameserver 8.8.8.8\nnameserver 1.1.1.1\n"
 	if err := os.WriteFile(resolvConfDst, []byte(resolvContents), 0o644); err != nil {
 		return fmt.Errorf("write /etc/resolv.conf: %w", err)
 	}

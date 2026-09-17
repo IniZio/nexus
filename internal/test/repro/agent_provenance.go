@@ -49,12 +49,12 @@ func AgentSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// PopulateProvenance fills the provenance fields of r from agentBinPath and nexus3BinPath.
+// PopulateProvenance fills the provenance fields of r from agentBinPath and nexusBinPath.
 // If agentBinPath is non-empty: reads sha256, linkage; if linkage is "dynamic",
 // appends a HIF probe "precondition.agent_dynamic" to r.Probes.
-// If nexus3BinPath is non-empty: reads sha256.
+// If nexusBinPath is non-empty: reads sha256.
 // Does NOT return an error — failures are recorded as empty strings in r.
-func PopulateProvenance(r *RunResult, agentBinPath, nexus3BinPath string) {
+func PopulateProvenance(r *RunResult, agentBinPath, nexusBinPath string) {
 	r.AgentBinPath = agentBinPath
 	if agentBinPath != "" {
 		if sum, err := AgentSHA256(agentBinPath); err == nil {
@@ -66,10 +66,10 @@ func PopulateProvenance(r *RunResult, agentBinPath, nexus3BinPath string) {
 				fmt.Sprintf("agent binary %s is dynamically linked — bricks every builder boot", filepath.Base(agentBinPath))))
 		}
 	}
-	r.Nexus3BinPath = nexus3BinPath
-	if nexus3BinPath != "" {
-		if sum, err := AgentSHA256(nexus3BinPath); err == nil {
-			r.Nexus3SHA256 = sum
+	r.NexusBinPath = nexusBinPath
+	if nexusBinPath != "" {
+		if sum, err := AgentSHA256(nexusBinPath); err == nil {
+			r.NexusSHA256 = sum
 		}
 	}
 }

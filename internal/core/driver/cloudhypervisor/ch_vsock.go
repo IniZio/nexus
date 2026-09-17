@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 const guestCID uint64 = 3 // vsock CID assigned to every sandbox VM

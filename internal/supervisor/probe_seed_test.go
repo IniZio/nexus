@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 type alwaysFailProber struct{ err error }
@@ -175,7 +175,7 @@ func TestProbeAndSeedGuest_UserMountsSeeded(t *testing.T) {
 				HostPath:         "/home/alice/.claude/plugins",
 				GuestPath:        "/root/.claude/plugins",
 				Overlay:          true,
-				StagingGuestPath: "/run/nexus3/usermount/plugins",
+				StagingGuestPath: "/run/nexus/usermount/plugins",
 			},
 		},
 	}
@@ -218,7 +218,7 @@ func TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount(t *testing.T) {
 	t.Cleanup(func() { seedOverlayClaudeConfigFn = oldOvl })
 
 	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
-		AgentCfgLowerGuestPath: "/run/nexus3/agentcfg-lower",
+		AgentCfgLowerGuestPath: "/run/nexus/agentcfg-lower",
 		HasClaudeRWMount:       true,
 	})
 	if err != nil {

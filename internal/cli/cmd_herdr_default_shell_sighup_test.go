@@ -3,7 +3,7 @@ package cli
 // Regression test: parent SIGHUP absorber must NOT propagate SIG_IGN to child.
 //
 // Contract: when herdr closes a pane it sends SIGHUP to the process group.
-// The parent (nexus3-guest-shell) must survive; the child (nexus3 exec /
+// The parent (nexus-guest-shell) must survive; the child (nexus exec /
 // guest shell) must die, so cmd.Wait() returns and teardown can run.
 //
 // Signal.Ignore installs SIG_IGN which is inherited across execve — the child
@@ -24,14 +24,14 @@ import (
 )
 
 // TestSighupChildMode is the re-exec child entry point.  When the test binary
-// is re-exec'd with NEXUS3_TEST_SIGHUP_CHILD=1 and -test.run=TestSighupChildMode
-// this function mimics nexus3 exec's signal setup, then blocks until a signal
+// is re-exec'd with NEXUS_TEST_SIGHUP_CHILD=1 and -test.run=TestSighupChildMode
+// this function mimics nexus exec's signal setup, then blocks until a signal
 // kills it (or the parent kills it after 5 s in the error path).
 func TestSighupChildMode(t *testing.T) {
-	if os.Getenv("NEXUS3_TEST_SIGHUP_CHILD") != "1" {
+	if os.Getenv("NEXUS_TEST_SIGHUP_CHILD") != "1" {
 		t.Skip("not a re-exec child")
 	}
-	// Mimic nexus3 exec / root.go: Notify SIGINT+SIGTERM only.  SIGHUP
+	// Mimic nexus exec / root.go: Notify SIGINT+SIGTERM only.  SIGHUP
 	// disposition is inherited from the parent — SIG_DFL with the fix,
 	// SIG_IGN with the bug.
 	sigCh := make(chan os.Signal, 1)
@@ -53,7 +53,7 @@ func TestSighupChildDiesOnPaneClose(t *testing.T) {
 		t.Fatalf("os.Executable: %v", err)
 	}
 	cmd := exec.Command(self, "-test.run=TestSighupChildMode", "-test.v")
-	cmd.Env = append(os.Environ(), "NEXUS3_TEST_SIGHUP_CHILD=1")
+	cmd.Env = append(os.Environ(), "NEXUS_TEST_SIGHUP_CHILD=1")
 	cmd.Stdin = nil
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

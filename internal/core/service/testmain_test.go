@@ -12,14 +12,14 @@ func TestMain(m *testing.M) {
 	// helper for the volume guard concurrency tests (volume_guard_xproc_test.go).
 	// This must be checked BEFORE the in-VM skip below, so helpers run inside
 	// guest VMs without being silently discarded.
-	if helper := os.Getenv("NEXUS3_VOL_GUARD_HELPER"); helper != "" {
+	if helper := os.Getenv("NEXUS_VOL_GUARD_HELPER"); helper != "" {
 		runSubprocessHelper(helper)
 		panic("unreachable — runSubprocessHelper calls os.Exit")
 	}
 
 	if proc1comm, err := os.ReadFile("/proc/1/comm"); err == nil {
-		if strings.TrimSpace(string(proc1comm)) == "nexus3-agent" {
-			fmt.Fprintln(os.Stderr, "service: skipping tests — running inside nexus3 guest VM (host-side package)")
+		if strings.TrimSpace(string(proc1comm)) == "nexus-agent" {
+			fmt.Fprintln(os.Stderr, "service: skipping tests — running inside nexus guest VM (host-side package)")
 			os.Exit(0)
 		}
 	}
@@ -28,9 +28,9 @@ func TestMain(m *testing.M) {
 	//
 	// Several CreateAndBoot tests leave CreateAndBootOptions.DiskDir empty, which
 	// falls back to defaultDiskDir() -> store.DefaultRoot()/disks. Unset, that is
-	// the OPERATOR's real ~/.local/state/nexus3/disks, and each run deposited a
+	// the OPERATOR's real ~/.local/state/nexus/disks, and each run deposited a
 	// 16-byte "fake-ext4-rootfs" stub there. The cost is not disk space: every
-	// stub is reported by `nexus3 reap` as an ORPHAN, so the reaper's output
+	// stub is reported by `nexus reap` as an ORPHAN, so the reaper's output
 	// stops being readable as a clean-teardown signal for real work. Measured
 	// 2026-08-19: 118 files in the operator's disks dir, ALL of them test stubs,
 	// zero real disks (TBD-PD-29).
@@ -43,7 +43,7 @@ func TestMain(m *testing.M) {
 	// Set BEFORE the subprocess-helper branch would matter only if the helper
 	// re-entered here; it does not — helpers inherit this value from the parent
 	// process environment, which is what we want.
-	stateRoot, err := os.MkdirTemp("", "nexus3-service-state-")
+	stateRoot, err := os.MkdirTemp("", "nexus-service-state-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "service: create temp state root: %v\n", err)
 		os.Exit(1)

@@ -1,14 +1,14 @@
 ---
-id: C-NEXUS3
+id: C-NEXUS
 type: concept
-title: nexus3
+title: nexus
 parent: null
-summary: "Requirement graph for the nexus3 microVM sandbox runtime, covering the parallel-dev-flow, resource-lifecycle, and surface-contract milestones."
+summary: "Requirement graph for the nexus microVM sandbox runtime, covering the parallel-dev-flow, resource-lifecycle, and surface-contract milestones."
 ---
 
-# nexus3
+# nexus
 
-nexus3 is a microVM-grade sandbox runtime for coding agents. This requirement graph covers the `nexus3-parallel-dev-pr-flow` milestone.
+nexus is a microVM-grade sandbox runtime for coding agents. This requirement graph covers the `nexus-parallel-dev-pr-flow` milestone.
 
 Three sub-areas map to the charter's trace annotations:
 

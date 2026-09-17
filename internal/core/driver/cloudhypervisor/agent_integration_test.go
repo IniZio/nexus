@@ -2,10 +2,10 @@
 
 package cloudhypervisor
 
-// agent_integration_test.go verifies that nexus3-agent (cmd/nexus3-agent) can
+// agent_integration_test.go verifies that nexus-agent (cmd/nexus-agent) can
 // run as the guest init process and serve the control/data planes over vsock.
 //
-// The tests build a static nexus3-agent binary at test time, splice it into
+// The tests build a static nexus-agent binary at test time, splice it into
 // the Alpine-derived initramfs artifact (replacing its /init), boot a VM, then
 // exercise Exec, PTY, and snapshot+reattach via the agent.Client host API.
 //
@@ -35,10 +35,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -51,10 +51,10 @@ func skipUnlessTool(t *testing.T, name string) {
 	}
 }
 
-// buildNexus3Agent compiles cmd/nexus3-agent as a static Linux/amd64 binary
+// buildNexusAgent compiles cmd/nexus-agent as a static Linux/amd64 binary
 // and returns the path to the binary. The binary is placed in a temp directory
 // that is cleaned up when t completes.
-func buildNexus3Agent(t *testing.T) string {
+func buildNexusAgent(t *testing.T) string {
 	t.Helper()
 
 	// Locate the repo root: go list -m outputs the module path; we need the
@@ -70,10 +70,10 @@ func buildNexus3Agent(t *testing.T) string {
 	repoRoot := filepath.Dir(goMod)
 
 	dir := t.TempDir()
-	agentBin := filepath.Join(dir, "nexus3-agent")
+	agentBin := filepath.Join(dir, "nexus-agent")
 
 	cmd := exec.Command("go", "build", "-o", agentBin,
-		"github.com/IniZio/nexus3/cmd/nexus3-agent")
+		"github.com/IniZio/nexus/cmd/nexus-agent")
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
@@ -81,14 +81,14 @@ func buildNexus3Agent(t *testing.T) string {
 		"GOARCH=amd64",
 	)
 	if buildOut, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build nexus3-agent:\n%s\n%v", buildOut, err)
+		t.Fatalf("go build nexus-agent:\n%s\n%v", buildOut, err)
 	}
 
 	return agentBin
 }
 
 // buildAgentInitramfs creates a cpio.gz initramfs that is based on the
-// Alpine initramfs artifact but with /init replaced by the nexus3-agent
+// Alpine initramfs artifact but with /init replaced by the nexus-agent
 // binary. Returns the path to the new initramfs file.
 //
 // Requires: gzip, cpio tools.
@@ -130,7 +130,7 @@ func buildAgentInitramfs(t *testing.T, agentBin, baseInitramfs string) string {
 		t.Fatalf("cpio wait: %v", err)
 	}
 
-	// Replace /init with the nexus3-agent binary.
+	// Replace /init with the nexus-agent binary.
 	initDst := filepath.Join(stageDir, "init")
 	if err := os.Remove(initDst); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("remove existing /init: %v", err)
@@ -144,11 +144,11 @@ func buildAgentInitramfs(t *testing.T, agentBin, baseInitramfs string) string {
 		t.Fatalf("write /init: %v", err)
 	}
 
-	// Also install nexus3-agent as /nexus3-agent for exec tests (the agent
+	// Also install nexus-agent as /nexus-agent for exec tests (the agent
 	// binary needs a shell; Alpine's busybox provides /bin/sh).
-	agentDst := filepath.Join(stageDir, "nexus3-agent")
+	agentDst := filepath.Join(stageDir, "nexus-agent")
 	if err := os.WriteFile(agentDst, data, 0o755); err != nil {
-		t.Fatalf("write /nexus3-agent: %v", err)
+		t.Fatalf("write /nexus-agent: %v", err)
 	}
 
 	// Pack the staging directory into a new cpio.gz.
@@ -203,7 +203,7 @@ func buildAgentInitramfs(t *testing.T, agentBin, baseInitramfs string) string {
 	return newInitramfs
 }
 
-// bootAgentVM starts a Cloud Hypervisor VM with nexus3-agent as init.
+// bootAgentVM starts a Cloud Hypervisor VM with nexus-agent as init.
 // Returns the driver, socket dir, and the sandbox ID. Cleanup is registered
 // automatically via t.Cleanup.
 func bootAgentVM(t *testing.T, chBin, kernelPath, initramfsPath string) (*CHDriver, domain.SandboxID) {
@@ -214,7 +214,7 @@ func bootAgentVM(t *testing.T, chBin, kernelPath, initramfsPath string) (*CHDriv
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 
-	// Capture the guest serial port (ttyS0) to a file so that nexus3-agent's
+	// Capture the guest serial port (ttyS0) to a file so that nexus-agent's
 	// diagnostic output is visible in t.Logf on test failure.
 	serialPath := filepath.Join(socketDir, "serial.log")
 
@@ -269,7 +269,7 @@ func bootAgentVM(t *testing.T, chBin, kernelPath, initramfsPath string) (*CHDriv
 	}
 	drv.mu.Unlock()
 
-	// Give nexus3-agent time to initialise its vsock listeners.
+	// Give nexus-agent time to initialise its vsock listeners.
 	// In practice it binds within 200-500 ms of the kernel entering userspace.
 	//
 	// This fixed budget is also the regression guard for the boot-critical-path
@@ -285,7 +285,7 @@ func bootAgentVM(t *testing.T, chBin, kernelPath, initramfsPath string) (*CHDriv
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-// TestAgentExec boots a VM with nexus3-agent as init, executes a command via
+// TestAgentExec boots a VM with nexus-agent as init, executes a command via
 // the host agent.Client, and asserts the output arrives over the data plane.
 func TestAgentExec(t *testing.T) {
 	skipUnlessKVM(t)
@@ -295,7 +295,7 @@ func TestAgentExec(t *testing.T) {
 	skipUnlessTool(t, "cpio")
 	skipUnlessTool(t, "gzip")
 
-	agentBin := buildNexus3Agent(t)
+	agentBin := buildNexusAgent(t)
 	initramfsPath := buildAgentInitramfs(t, agentBin, baseInitramfs)
 
 	drv, id := bootAgentVM(t, chBin, kernelPath, initramfsPath)
@@ -307,7 +307,7 @@ func TestAgentExec(t *testing.T) {
 	defer cancel()
 
 	exitCode, err := c.Exec(ctx, agent.ExecOptions{
-		Argv:   []string{"/bin/sh", "-c", "echo hello-nexus3"},
+		Argv:   []string{"/bin/sh", "-c", "echo hello-nexus"},
 		Stdout: &stdout,
 		Stderr: os.Stderr,
 	})
@@ -317,12 +317,12 @@ func TestAgentExec(t *testing.T) {
 	if exitCode != 0 {
 		t.Errorf("exit code: got %d, want 0", exitCode)
 	}
-	if !strings.Contains(stdout.String(), "hello-nexus3") {
-		t.Errorf("expected 'hello-nexus3' in output, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "hello-nexus") {
+		t.Errorf("expected 'hello-nexus' in output, got %q", stdout.String())
 	}
 }
 
-// TestAgentPTY boots a VM with nexus3-agent as init, opens a PTY session via
+// TestAgentPTY boots a VM with nexus-agent as init, opens a PTY session via
 // the host agent.Client, and verifies interactive output arrives.
 func TestAgentPTY(t *testing.T) {
 	skipUnlessKVM(t)
@@ -332,7 +332,7 @@ func TestAgentPTY(t *testing.T) {
 	skipUnlessTool(t, "cpio")
 	skipUnlessTool(t, "gzip")
 
-	agentBin := buildNexus3Agent(t)
+	agentBin := buildNexusAgent(t)
 	initramfsPath := buildAgentInitramfs(t, agentBin, baseInitramfs)
 
 	drv, id := bootAgentVM(t, chBin, kernelPath, initramfsPath)
@@ -395,7 +395,7 @@ func TestAgentSnapshotReattach(t *testing.T) {
 	skipUnlessTool(t, "cpio")
 	skipUnlessTool(t, "gzip")
 
-	agentBin := buildNexus3Agent(t)
+	agentBin := buildNexusAgent(t)
 	initramfsPath := buildAgentInitramfs(t, agentBin, baseInitramfs)
 
 	drv, id := bootAgentVM(t, chBin, kernelPath, initramfsPath)
@@ -409,7 +409,7 @@ func TestAgentSnapshotReattach(t *testing.T) {
 	sessionID := fmt.Sprintf("snap-reattach-%d", os.Getpid())
 
 	// Exec a command that prints "NEXUS", sleeps 3 s, then prints "3".
-	// Total ring content will be "NEXUS3" (6 bytes).
+	// Total ring content will be "NEXUS" (6 bytes).
 	var part1 syncBuf
 	execErrCh := make(chan error, 1)
 	go func() {
@@ -447,7 +447,7 @@ func TestAgentSnapshotReattach(t *testing.T) {
 	time.Sleep(500 * time.Millisecond) // let agent re-bind vsock listeners
 
 	// Open a second data-plane connection from offset 5.
-	// The guest ring has "NEXUS3"; bytes[5:] == "3".
+	// The guest ring has "NEXUS"; bytes[5:] == "3".
 	var reattachOut bytes.Buffer
 	attachCtx, attachCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer attachCancel()

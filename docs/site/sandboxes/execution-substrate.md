@@ -5,17 +5,17 @@ description: "Cloud Hypervisor, the vsock transport, networking, and resource li
 
 # Execution substrate
 
-> nexus3 owns zero VMM code — it drives Cloud Hypervisor over a REST-on-unix-socket API.
+> nexus owns zero VMM code — it drives Cloud Hypervisor over a REST-on-unix-socket API.
 
 Workloads run in Cloud Hypervisor (CH) microVMs on Linux. All substrate-specific code lives behind the `driver` seam; nothing above it knows which VMM is in use.
 
 ```sh
-nexus3 doctor   # report substrate availability and capability check results
+nexus doctor   # report substrate availability and capability check results
 ```
 
 ## The `driver` seam
 
-`internal/core/driver` is the single abstraction point between the nexus3 core and the VMM.
+`internal/core/driver` is the single abstraction point between the nexus core and the VMM.
 
 | Method | Description |
 |--------|-------------|
@@ -33,17 +33,17 @@ nexus3 doctor   # report substrate availability and capability check results
 
 ### macOS
 
-A macOS driver (`nexus3-vzd`, Swift, using Apple's Virtualization.framework) <Badge type="info" text="backlogged" />. The seam exists to keep it re-addable without touching the core. All capabilities described here are Linux/CH. See [Snapshots and fork](snapshots-and-fork.md) for platform cost differences.
+A macOS driver (`nexus-vzd`, Swift, using Apple's Virtualization.framework) <Badge type="info" text="backlogged" />. The seam exists to keep it re-addable without touching the core. All capabilities described here are Linux/CH. See [Snapshots and fork](snapshots-and-fork.md) for platform cost differences.
 
 Validated findings for when this backlog item is scheduled:
 
 - **Entitlement:** exactly one key — `com.apple.security.virtualization`. Ad-hoc signing is sufficient.
 - **VZ fork tier:** Virtualization.framework save/restore costs provisioned-size, not working-set. The bar (seconds, 2–3 branches) holds on macOS but the cost is higher.
-- **Data path:** SCM_RIGHTS fd-passing from `nexus3-vzd` to the host process; dup-after-receive is required.
+- **Data path:** SCM_RIGHTS fd-passing from `nexus-vzd` to the host process; dup-after-receive is required.
 - **Guest kernel:** PCIe-virtio (not MMIO) required for Virtualization.framework.
 - **Egress:** tun device in the VZ guest; same policy contract as Linux, different hook implementation.
 - **Listener survival:** a guest vsock `LISTEN` socket survives a cross-process VZ save/restore. The agent must not rebuild its guest listeners on reattach — this rule applies on Linux too.
-- **Supervision:** one `nexus3-vzd` process per sandbox VM, tied to the daemon process lifetime.
+- **Supervision:** one `nexus-vzd` process per sandbox VM, tied to the daemon process lifetime.
 
 ## Cloud Hypervisor (Linux)
 
@@ -62,7 +62,7 @@ Each sandbox VM is created with:
 
 CH snapshots a **paused** VM by writing memory to disk:
 
-- **CH copies snapshot memory into per-VM anonymous memory.** There is no page-sharing between sibling VMs. Each `nexus3 fork` call creates one independent copy, consuming its own host RAM.
+- **CH copies snapshot memory into per-VM anonymous memory.** There is no page-sharing between sibling VMs. Each `nexus fork` call creates one independent copy, consuming its own host RAM.
 - **Restore uses daemon-mode restore**, not the `--restore` CLI flag.
 - **Concurrent restores are supported** by CH.
 
@@ -70,11 +70,11 @@ CH snapshots a **paused** VM by writing memory to disk:
 
 CH has no integrity check. A truncated `memory-ranges` file is indistinguishable from a sparse file, so CH restore silently zeroes missing RAM and returns success.
 
-nexus3 owns integrity: a commit marker is written after the snapshot is complete, and a length assertion is checked before restore. See [Snapshots and fork](snapshots-and-fork.md).
+nexus owns integrity: a commit marker is written after the snapshot is complete, and a length assertion is checked before restore. See [Snapshots and fork](snapshots-and-fork.md).
 
 ## Guest kernel
 
-The guest kernel is a custom Linux build shipped per-arch alongside the nexus3 binary. Key enabled features:
+The guest kernel is a custom Linux build shipped per-arch alongside the nexus binary. Key enabled features:
 
 - `CONFIG_BRIDGE` + netfilter — required for Docker networking inside the guest.
 - `CONFIG_VIRTIO_*` — virtio-blk (disks), virtio-net (network), virtio-balloon (memory resize).
@@ -109,4 +109,4 @@ The driver exposes a **network hook** that intercepts guest egress at the TAP le
 
 ## Resource limits
 
-Resource limits (RAM, vCPU, disk) are set at creation time via `--memory`, `--vcpus`, `--memory-max`, `--vcpus-max`, and `--disk-max` on `nexus3 create`, and adjusted at runtime by the [resource governor](lifecycle-states.md#resource-governor). <Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+Resource limits (RAM, vCPU, disk) are set at creation time via `--memory`, `--vcpus`, `--memory-max`, `--vcpus-max`, and `--disk-max` on `nexus create`, and adjusted at runtime by the [resource governor](lifecycle-states.md#resource-governor). <Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.

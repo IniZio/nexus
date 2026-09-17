@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/govern"
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/govern"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // testAllResizer is a minimal stub that satisfies resize.MemoryResizer,
@@ -208,14 +208,14 @@ func TestBuildSupervisorArgv_GovBoundsForwarded(t *testing.T) {
 	// autoResizePID1Args. Auto-resize is unconditional; the only PID-1 token it
 	// appends is --mem-ceiling=<bytes>. If either helper changes its output, this
 	// constant must change too (the test asserts passthrough, not construction).
-	const wantCmdline = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0 -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:true --mem-ceiling=4294967296"
+	const wantCmdline = "root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0 -- --workspace-mount=/dev/vdb:/workspace/repo:ext4:false:true --mem-ceiling=4294967296"
 	cfg := SpawnConfig{
 		Config: Config{
 			SandboxRef: "abc123",
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			GovBounds: resize.Bounds{
@@ -448,7 +448,7 @@ func TestBuildSupervisorArgv_EphemeralForwarded(t *testing.T) {
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			Ephemeral:  true,
@@ -470,7 +470,7 @@ func TestBuildSupervisorArgv_NotEphemeralOmitsFlag(t *testing.T) {
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			// Ephemeral: false (zero value) — default long-lived mode.
@@ -493,7 +493,7 @@ func TestBuildSupervisorArgv_ParentPipeFDForwarded(t *testing.T) {
 			StoreRoot:    "/store",
 			StateDir:     "/state",
 			CHBin:        "/usr/bin/cloud-hypervisor",
-			SocketDir:    "/run/nexus3",
+			SocketDir:    "/run/nexus",
 			KernelPath:   "/boot/vmlinux",
 			DiskPath:     "/data/sb.raw",
 			Ephemeral:    true,
@@ -527,7 +527,7 @@ func TestBuildSupervisorArgv_ZeroParentPipeFDOmitsFlag(t *testing.T) {
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			// ParentPipeFD: 0 (zero value) — no watchdog.
@@ -551,7 +551,7 @@ func TestBuildSupervisorArgv_MemoryForwarded(t *testing.T) {
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			MemoryMiB:  8192,
@@ -585,7 +585,7 @@ func TestBuildSupervisorArgv_ZeroMemoryOmitsFlag(t *testing.T) {
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			// MemoryMiB: 0 (zero value) — supervisor default applies.
@@ -607,7 +607,7 @@ func TestBuildSupervisorArgv_ZeroBoundsNoGovFlags(t *testing.T) {
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			// GovBounds: zero — passive mode.
@@ -711,7 +711,7 @@ func TestBuildSupervisorDriverConfig_FreePageReportingEnabled(t *testing.T) {
 // guard for the S1-durable-console slice. It asserts that the cloudhypervisor
 // driver config produced by buildSupervisorDriverConfig carries ConsoleLogPath
 // set to <stateDir>/console.log so the netns child receives
-// NEXUS3_NETNS_CONSOLE_LOG and persists guest virtio-console output next to
+// NEXUS_NETNS_CONSOLE_LOG and persists guest virtio-console output next to
 // supervisor.log.
 //
 // MUTATION PROOF: remove ConsoleLogPath from buildSupervisorDriverConfig and
@@ -733,7 +733,7 @@ func TestBuildSupervisorDriverConfig_WiresConsoleLogPath(t *testing.T) {
 	if got.ConsoleLogPath != want {
 		t.Errorf("ConsoleLogPath = %q, want %q\n"+
 			"Without this the netns child never opens console.log and every line "+
-			"the in-guest nexus3-agent writes via consoleLog(...) is lost.",
+			"the in-guest nexus-agent writes via consoleLog(...) is lost.",
 			got.ConsoleLogPath, want)
 	}
 }
@@ -792,7 +792,7 @@ func TestBuildSupervisorArgv_NestedVirtForwarded(t *testing.T) {
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			NestedVirt: true,
@@ -818,7 +818,7 @@ func TestBuildSupervisorArgv_NotNestedOmitsFlag(t *testing.T) {
 			StoreRoot:  "/store",
 			StateDir:   "/state",
 			CHBin:      "/usr/bin/cloud-hypervisor",
-			SocketDir:  "/run/nexus3",
+			SocketDir:  "/run/nexus",
 			KernelPath: "/boot/vmlinux",
 			DiskPath:   "/data/sb.raw",
 			NestedVirt: false,

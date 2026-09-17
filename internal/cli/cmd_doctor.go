@@ -36,7 +36,7 @@ type doctorDataJSON struct {
 
 // ── runDoctor ─────────────────────────────────────────────────────────────────
 
-// runDoctor is the implementation of the `nexus3 doctor` subcommand.
+// runDoctor is the implementation of the `nexus doctor` subcommand.
 //
 // Doctor always exits 0 — reporting "here is what is broken" is success.
 // It never calls EmitError; it always calls EmitSuccess (possibly with
@@ -51,7 +51,7 @@ func runDoctor(_ context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: err.Error()}
 	}
 
-	envVal := os.Getenv("NEXUS3_SUBSTRATE")
+	envVal := os.Getenv("NEXUS_SUBSTRATE")
 
 	// Handle overrides that bypass capability checks.
 	switch envVal {
@@ -60,11 +60,11 @@ func runDoctor(_ context.Context, args []string, out *Output) error {
 			Substrate:     "none",
 			Selected:      false,
 			OverrideValue: "none",
-			OverrideMsg:   "substrate disabled by NEXUS3_SUBSTRATE=none",
+			OverrideMsg:   "substrate disabled by NEXUS_SUBSTRATE=none",
 			Checks:        []doctorCheckJSON{},
 		}
 		out.EmitSuccess("doctor", data,
-			"substrate: none (disabled by NEXUS3_SUBSTRATE=none)\nNo substrate selected.")
+			"substrate: none (disabled by NEXUS_SUBSTRATE=none)\nNo substrate selected.")
 		return nil
 
 	case "", "cloudhypervisor":
@@ -76,12 +76,12 @@ func runDoctor(_ context.Context, args []string, out *Output) error {
 			Selected:      false,
 			OverrideValue: envVal,
 			OverrideMsg: fmt.Sprintf(
-				"NEXUS3_SUBSTRATE=%q is not a recognised value; accepted values: cloudhypervisor, none",
+				"NEXUS_SUBSTRATE=%q is not a recognised value; accepted values: cloudhypervisor, none",
 				envVal,
 			),
 			Checks: []doctorCheckJSON{},
 		}
-		msg := fmt.Sprintf("error: NEXUS3_SUBSTRATE=%q is not a recognised value\n"+
+		msg := fmt.Sprintf("error: NEXUS_SUBSTRATE=%q is not a recognised value\n"+
 			"accepted values: cloudhypervisor, none\n"+
 			"tip: \"fake\" is not accepted outside Go tests — inject it directly in Go test code.", envVal)
 		out.EmitSuccess("doctor", data, msg)

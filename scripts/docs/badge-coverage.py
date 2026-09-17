@@ -15,9 +15,9 @@ Reports:
   • breakdown by badge type (danger / warning / info)
   • per-file table
   • classification of every undetected badge into one of three buckets:
-      no-manifest-entry    — section has nexus3 code but no manifest expectation
+      no-manifest-entry    — section has nexus code but no manifest expectation
       redundant-in-section — another badge of same type remains in the section
-      prose-only           — section contains no nexus3 invocation at all
+      prose-only           — section contains no nexus invocation at all
 
 Stdlib only (Python ≥ 3.11 for tomllib).
 """
@@ -37,17 +37,17 @@ from typing import NamedTuple
 # ── Paths (honour the same env vars as the validator) ────────────────────────
 _script_dir = Path(__file__).parent.resolve()
 _repo_root = Path(
-    os.environ.get("NEXUS3_REPO_ROOT", str(_script_dir / ".." / ".."))
+    os.environ.get("NEXUS_REPO_ROOT", str(_script_dir / ".." / ".."))
 ).resolve()
 
 DOCS_DIR = Path(
-    os.environ.get("NEXUS3_DOCS_DIR", str(_repo_root / "docs" / "site"))
+    os.environ.get("NEXUS_DOCS_DIR", str(_repo_root / "docs" / "site"))
 )
 CLI_DIR = Path(
-    os.environ.get("NEXUS3_CLI_DIR", str(_repo_root / "internal" / "cli"))
+    os.environ.get("NEXUS_CLI_DIR", str(_repo_root / "internal" / "cli"))
 )
 SURFACE_MANIFEST = Path(
-    os.environ.get("NEXUS3_SURFACE_MANIFEST", str(DOCS_DIR / "cli-surface.toml"))
+    os.environ.get("NEXUS_SURFACE_MANIFEST", str(DOCS_DIR / "cli-surface.toml"))
 )
 VALIDATOR = _script_dir / "validate-cli-examples.py"
 
@@ -93,9 +93,9 @@ def run_validator(tmp_docs: Path) -> bool:
     """Return True if validator exits 0 (clean)."""
     env = {
         **os.environ,
-        "NEXUS3_DOCS_DIR": str(tmp_docs),
-        "NEXUS3_CLI_DIR": str(CLI_DIR),
-        "NEXUS3_SURFACE_MANIFEST": str(tmp_docs / "cli-surface.toml"),
+        "NEXUS_DOCS_DIR": str(tmp_docs),
+        "NEXUS_CLI_DIR": str(CLI_DIR),
+        "NEXUS_SURFACE_MANIFEST": str(tmp_docs / "cli-surface.toml"),
     }
     result = subprocess.run(
         [sys.executable, str(VALIDATOR)],
@@ -125,14 +125,14 @@ def section_of_line(lines: list[str], target: int) -> tuple[int, int]:
     return headings[-1], n
 
 
-def section_has_nexus3(lines: list[str], start: int, end: int) -> bool:
-    """Does the section [start, end) have a nexus3 invocation inside a code fence?"""
+def section_has_nexus(lines: list[str], start: int, end: int) -> bool:
+    """Does the section [start, end) have a nexus invocation inside a code fence?"""
     in_block = False
     for line in lines[start:end]:
         stripped = line.strip()
         if stripped.startswith("```") or stripped.startswith("~~~"):
             in_block = not in_block
-        elif in_block and stripped.startswith("nexus3 "):
+        elif in_block and stripped.startswith("nexus "):
             return True
     return False
 
@@ -157,7 +157,7 @@ def classify(badge: Badge, content: str) -> str:
     zero_line = badge.line - 1  # convert to 0-indexed
     start, end = section_of_line(lines, zero_line)
 
-    if not section_has_nexus3(lines, start, end):
+    if not section_has_nexus(lines, start, end):
         return "prose-only"
     if section_has_other_badge(lines, start, end, badge.type, zero_line):
         return "redundant-in-section"
@@ -257,11 +257,11 @@ def report(badges: list[Badge], detected: list[Badge], undetected: list[Badge], 
     print("UNDETECTED BADGE CLASSIFICATION")
     print(SEP)
     print(f"  {'no-manifest-entry':<22}: {len(buckets['no-manifest-entry']):3d}"
-          "  (section has nexus3 code but validator has no expectation)")
+          "  (section has nexus code but validator has no expectation)")
     print(f"  {'redundant-in-section':<22}: {len(buckets['redundant-in-section']):3d}"
           "  (another badge of same type remains in same section)")
     print(f"  {'prose-only':<22}: {len(buckets['prose-only']):3d}"
-          "  (section has no nexus3 invocation — requires godog coverage)")
+          "  (section has no nexus invocation — requires godog coverage)")
     print(f"  {'TOTAL':<22}: {len(undetected):3d}")
 
     print(f"\nDetected badges (load-bearing):")

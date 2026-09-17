@@ -14,9 +14,9 @@ import (
 func TestStateDir_IgnoresHerdrPluginStateDir(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdg)
-	t.Setenv("HERDR_PLUGIN_STATE_DIR", filepath.Join(t.TempDir(), "herdr", "plugins", "nexus3"))
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", filepath.Join(t.TempDir(), "herdr", "plugins", "nexus"))
 
-	want := filepath.Join(xdg, "nexus3", "portfwd")
+	want := filepath.Join(xdg, "nexus", "portfwd")
 	if got := StateDir(); got != want {
 		t.Fatalf("StateDir() = %q, want %q (HERDR_PLUGIN_STATE_DIR must be ignored)", got, want)
 	}
@@ -31,7 +31,7 @@ func TestStateDir_FallsBackToHomeLocalState(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", "/should/be/ignored")
 
-	want := filepath.Join(home, ".local", "state", "nexus3", "portfwd")
+	want := filepath.Join(home, ".local", "state", "nexus", "portfwd")
 	if got := StateDir(); got != want {
 		t.Fatalf("StateDir() = %q, want %q", got, want)
 	}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 func TestSeedGuestShellProfile_ScriptActuallySourcesCredEnv(t *testing.T) {
@@ -20,7 +20,7 @@ func TestSeedGuestShellProfile_ScriptActuallySourcesCredEnv(t *testing.T) {
 	}
 
 	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, credEnv)
-	profile := filepath.Join(dir, "nexus3-cred.sh")
+	profile := filepath.Join(dir, "nexus-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestSeedGuestShellProfile_NoCredEnvIsHarmless(t *testing.T) {
 	dir := t.TempDir()
 	absent := filepath.Join(dir, "does-not-exist.env")
 	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, absent)
-	profile := filepath.Join(dir, "nexus3-cred.sh")
+	profile := filepath.Join(dir, "nexus-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSeedGuestShellProfile_IsSandboxExported(t *testing.T) {
 	dir := t.TempDir()
 	absent := filepath.Join(dir, "does-not-exist.env")
 	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, absent)
-	profile := filepath.Join(dir, "nexus3-cred.sh")
+	profile := filepath.Join(dir, "nexus-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func buildProfileForTest(t *testing.T, dir string) string {
 	t.Helper()
 	absent := filepath.Join(dir, "does-not-exist.env")
 	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, absent)
-	profile := filepath.Join(dir, "nexus3-cred.sh")
+	profile := filepath.Join(dir, "nexus-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}

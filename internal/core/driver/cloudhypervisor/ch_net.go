@@ -4,9 +4,9 @@
 //
 // For each sandbox, three kernel interfaces are created:
 //
-//	GuestTAP (nx3g-<id>)  — owned by CH after vm.boot (TUNSETIFF)
-//	HostTAP  (nx3h-<id>)  — owned by nexus3; pump goroutines bridge it to gvproxy
-//	Bridge   (nx3b-<id>)  — unrouted L2 bridge connecting GuestTAP ↔ HostTAP
+//	GuestTAP (nxg-<id>)  — owned by CH after vm.boot (TUNSETIFF)
+//	HostTAP  (nxh-<id>)  — owned by nexus; pump goroutines bridge it to gvproxy
+//	Bridge   (nxb-<id>)  — unrouted L2 bridge connecting GuestTAP ↔ HostTAP
 //
 // The pump goroutines copy raw Ethernet frames (one read = one frame) between
 // the HostTAP fd and one end of an AF_UNIX SOCK_DGRAM socketpair. The other
@@ -38,8 +38,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // sysctlWrite is the function used to write sysctl values.
@@ -60,12 +60,12 @@ const (
 // tapIfNames returns deterministic Linux interface names (≤15 chars, IFNAMSIZ-1)
 // for a sandbox. All three names are distinct (different prefixes, same suffix).
 //
-//   - guestTap: "nx3g-" + 10 hex chars  — CH will TUNSETIFF this at vm.boot
-//   - hostTap:  "nx3h-" + 10 hex chars  — nexus3 holds the fd; bridged by pump
-//   - bridge:   "nx3b-" + 10 hex chars  — unrouted L2 bridge; no IP assigned
+//   - guestTap: "nxg-" + 10 hex chars  — CH will TUNSETIFF this at vm.boot
+//   - hostTap:  "nxh-" + 10 hex chars  — nexus holds the fd; bridged by pump
+//   - bridge:   "nxb-" + 10 hex chars  — unrouted L2 bridge; no IP assigned
 func tapIfNames(id domain.SandboxID) (guestTap, hostTap, bridge string) {
 	suffix := fmt.Sprintf("%x", id[:5]) // 10 lowercase hex chars
-	return "nx3g-" + suffix, "nx3h-" + suffix, "nx3b-" + suffix
+	return "nxg-" + suffix, "nxh-" + suffix, "nxb-" + suffix
 }
 
 // sandboxMac derives a stable locally-administered unicast MAC from the sandbox ID.
@@ -87,7 +87,7 @@ type vmNetConfig struct {
 // vmConfigWithNet extends vmConfig with vsock, net, and virtiofs-fs devices.
 // All three device classes are collapsed into this one type (not split across
 // vmConfigWithNet + vmConfigWithFsAndNet) so that a single PUT /vm.create
-// payload covers every device nexus3 attaches at boot.
+// payload covers every device nexus attaches at boot.
 type vmConfigWithNet struct {
 	vmConfig
 	Vsock *vmVsockConfig `json:"vsock,omitempty"`
@@ -362,7 +362,7 @@ func applySandboxNetSysctls(guestTap, hostTap, bridge string) error {
 // Order of operations:
 //  1. Create bridge interface
 //  2. Create guestTap (CH will TUNSETIFF this at vm.boot)
-//  3. Create hostTap (nexus3 opens this via openHostTap)
+//  3. Create hostTap (nexus opens this via openHostTap)
 //  4. Apply sysctls BEFORE bringing interfaces up (forwarding hard-fail; disable_ipv6 best-effort)
 //  5. Enslave both taps to the bridge
 //  6. Bring all three interfaces up
@@ -453,7 +453,7 @@ func deleteTapBridge(guestTap, hostTap, bridge string) {
 // grandchild), waits for exit, and closes PerimConn. Idempotent. Must NOT be
 // called while d.mu is held (teardown acquires d.mu internally to remove the
 // entry). Kernel auto-reclaims the user+network namespace and all interfaces
-// (nx3g-*, nx3h-*, nx3b-*) when the last process in the netns exits.
+// (nxg-*, nxh-*, nxb-*) when the last process in the netns exits.
 func (d *CHDriver) teardownSandboxNet(id domain.SandboxID) {
 	d.mu.Lock()
 	ns, ok := d.nets[id]

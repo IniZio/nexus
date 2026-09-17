@@ -13,8 +13,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // capturingBuilderStore keeps every record as it was CREATED. The real flow
@@ -55,7 +55,7 @@ func (c *capturingBuilderStore) first(t *testing.T) domain.Sandbox {
 // supervisor built a DEFAULT-DENY perimeter for the builder VM. buildkitd
 // could resolve registry-1.docker.io (DNS is answered by the netstack itself)
 // but every TCP connection to it was refused, so no base image could ever be
-// pulled and `nexus3 sandbox create --file` failed for every Containerfile
+// pulled and `nexus sandbox create --file` failed for every Containerfile
 // with a FROM line.
 //
 // Since D-PD-33 an empty AllowedHosts no longer implies allow-all, so the

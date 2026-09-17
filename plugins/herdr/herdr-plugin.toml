@@ -1,10 +1,10 @@
-id = "nexus3"
-name = "nexus3"
+id = "nexus"
+name = "nexus"
 version = "0.1.1"
 min_herdr_version = "0.9.0"
-description = "Attach to nexus3 microVM workspaces, list them, and create them without leaving Herdr."
-# Linux/x86_64 is the nexus3 host (full binary, VMs, panes). macOS is a
-# remote client only: build.sh wires the shim to nexus3-client, and the only
+description = "Attach to nexus microVM workspaces, list them, and create them without leaving Herdr."
+# Linux/x86_64 is the nexus host (full binary, VMs, panes). macOS is a
+# remote client only: build.sh wires the shim to nexus-client, and the only
 # entry that runs there is the [[startup]] hook below.
 platforms = ["linux", "macos"]
 
@@ -17,60 +17,60 @@ command = ["sh", "build.sh"]
 # keeps guest TCP ports forwarded to 127.0.0.1:P on the laptop.
 # version-check runs first (non-fatal) and prints a skew notice to stderr
 # when the pinned release is newer than the installed binary.
-command = ["sh", "-c", '"$HERDR_PLUGIN_ROOT/nexus3-shim.sh" herdr version-check || true; exec "$HERDR_PLUGIN_ROOT/nexus3-shim.sh" herdr local-agent-startup']
+command = ["sh", "-c", '"$HERDR_PLUGIN_ROOT/nexus-shim.sh" herdr version-check || true; exec "$HERDR_PLUGIN_ROOT/nexus-shim.sh" herdr local-agent-startup']
 platforms = ["linux", "macos"]
 
 [[panes]]
 id = "attach"
-title = "nexus3 attach"
+title = "nexus attach"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "attach"]
 
 [[panes]]
 id = "shell"
-title = "nexus3 guest shell"
+title = "nexus guest shell"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "shell"]
 
 [[panes]]
 id = "workspaces"
-title = "nexus3 workspaces"
+title = "nexus workspaces"
 placement = "overlay"
 command = ["sh", "bin/pane.sh", "workspaces"]
 
 [[panes]]
 id = "create"
-title = "nexus3 create"
+title = "nexus create"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "create"]
 
 [[panes]]
 id = "create-space"
-title = "nexus3 create sandbox space"
+title = "nexus create sandbox space"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "create-space"]
 
 [[panes]]
 id = "logs"
-title = "nexus3 logs"
+title = "nexus logs"
 placement = "split"
 command = ["sh", "bin/pane.sh", "logs"]
 
 [[panes]]
 id = "doctor"
-title = "nexus3 doctor"
+title = "nexus doctor"
 placement = "split"
 command = ["sh", "bin/pane.sh", "doctor"]
 
 [[panes]]
 id = "launch"
-title = "nexus3 launch"
+title = "nexus launch"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "launch"]
 
 [[panes]]
 id = "space-agent"
-title = "nexus3 launch agent in sandbox"
+title = "nexus launch agent in sandbox"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "space-agent"]
 
@@ -88,103 +88,103 @@ command = ["sh", "bin/pane.sh", "space-agent"]
 # open shell pane: exit status 1", with the VM already built and running.
 [[panes]]
 id = "worktree-sandbox"
-title = "nexus3 sandbox this worktree"
+title = "nexus sandbox this worktree"
 placement = "tab"
 command = ["sh", "bin/pane.sh", "worktree-sandbox"]
 
 [[actions]]
 id = "workspaces"
-title = "nexus3: list sandboxes"
+title = "nexus: list sandboxes"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "workspaces", "overlay"]
 
 [[actions]]
 id = "create"
-title = "nexus3: create a sandbox"
+title = "nexus: create a sandbox"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "create", "tab"]
 
 [[actions]]
 id = "attach"
-title = "nexus3: attach to a workspace"
+title = "nexus: attach to a workspace"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "attach", "tab"]
 
 [[actions]]
 id = "create-space"
-title = "nexus3: create sandbox space (from local Containerfile)"
+title = "nexus: create sandbox space (from local Containerfile)"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "create-space", "tab"]
 
 [[actions]]
 id = "logs"
-title = "nexus3: workspace logs"
+title = "nexus: workspace logs"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "logs", "split"]
 
 [[actions]]
 id = "doctor"
-title = "nexus3: doctor"
+title = "nexus: doctor"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "doctor", "split"]
 
 [[actions]]
 id = "open-guest-pane"
-title = "nexus3: open guest pane"
+title = "nexus: open guest pane"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "space-open-pane"]
 
 [[actions]]
 id = "new-tab"
-title = "nexus3: new tab (guest pane in nexus3 spaces, host tab elsewhere)"
+title = "nexus: new tab (guest pane in nexus spaces, host tab elsewhere)"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "new-tab"]
 
 [[actions]]
 id = "space-pause"
-title = "nexus3: pause this sandbox"
+title = "nexus: pause this sandbox"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "space-pause"]
 
 [[actions]]
 id = "space-resume"
-title = "nexus3: resume this sandbox"
+title = "nexus: resume this sandbox"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "space-resume"]
 
 [[actions]]
 id = "space-remove"
-title = "nexus3: remove this sandbox and close the space"
+title = "nexus: remove this sandbox and close the space"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "space-remove"]
 
 [[actions]]
 id = "space-agent"
-title = "nexus3: launch Claude agent in sandbox"
+title = "nexus: launch Claude agent in sandbox"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "space-agent", "tab"]
 
 [[actions]]
 id = "worktree-sandbox"
-title = "nexus3: sandbox this worktree"
+title = "nexus: sandbox this worktree"
 contexts = ["workspace"]
 command = ["sh", "bin/open-pane.sh", "worktree-sandbox"]
 
 # worktree.removed — tear down the sandbox that was bound to the removed worktree.
-# Runs `nexus3 herdr prune --apply --workspace <id>` (id from HERDR_WORKSPACE_ID,
+# Runs `nexus herdr prune --apply --workspace <id>` (id from HERDR_WORKSPACE_ID,
 # jq fallback on the payload's workspace_id). Tears down ONLY that workspace's
 # bound sandbox; touches nothing else. Must NOT run the global `prune --apply` —
 # that verb reaps every binding whose workspace is absent from `herdr workspace list`
 # and destroyed two unrelated live sandboxes on 2026-09-16. A sandbox with no
 # binding row is not collectible here. A plain `git worktree remove` outside herdr
-# does not fire this hook; manual `nexus3 herdr prune` remains the backstop.
+# does not fire this hook; manual `nexus herdr prune` remains the backstop.
 [[events]]
 on = "worktree.removed"
 command = ["sh", "bin/on-worktree-removed.sh"]
 
 # worktree.created — auto-provision a sandbox for the new worktree workspace.
 # The --auto flag in herdrWorktreeSandbox applies the conditional rule: sandbox
-# is created only when the source (parent) workspace is already nexus3-bound.
+# is created only when the source (parent) workspace is already nexus-bound.
 [[events]]
 on = "worktree.created"
 command = ["sh", "bin/on-worktree-created.sh"]

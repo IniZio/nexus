@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 func init() {
@@ -37,10 +37,10 @@ type logLinesJSON struct {
 	SupervisorError string   `json:"supervisor_error,omitempty"`
 }
 
-// runLog is the registered Run function for "nexus3 log <ref> [-n N | --tail N] [-f | --follow]".
+// runLog is the registered Run function for "nexus log <ref> [-n N | --tail N] [-f | --follow]".
 //
 // The ref is documented (and expected, per the proof-it-works invocation
-// "nexus3 log loop/log-cmd -n 20") to come BEFORE the flags. Go's flag.Parse
+// "nexus log loop/log-cmd -n 20") to come BEFORE the flags. Go's flag.Parse
 // stops consuming at the first non-flag token, so a naive fs.Parse(args)
 // would treat "-n" and "20" as stray positionals once it hit the ref first.
 // logArgvFlagsFirst reorders args so every flag (and, for value-taking

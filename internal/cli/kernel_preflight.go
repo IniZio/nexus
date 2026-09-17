@@ -14,28 +14,28 @@ import (
 // caught immediately with a legible error.
 //
 // Search order:
-//  1. NEXUS3_KERNEL_PATH environment variable (always used if set; file must exist).
+//  1. NEXUS_KERNEL_PATH environment variable (always used if set; file must exist).
 //  2. <binary-dir>/images/kernel/vmlinux-x86_64  (installed binary layout).
-//  3. $XDG_DATA_HOME/nexus3/images/kernel/vmlinux-x86_64, default
-//     ~/.local/share/nexus3/images/kernel/vmlinux-x86_64 (`make install-kernel`).
+//  3. $XDG_DATA_HOME/nexus/images/kernel/vmlinux-x86_64, default
+//     ~/.local/share/nexus/images/kernel/vmlinux-x86_64 (`make install-kernel`).
 //     This is the path that works regardless of cwd: herdr plugin panes run
 //     from the plugin directory, and every guest-dialing verb (exec, shell,
 //     forward) goes through substrate selection, which requires the kernel.
-//  4. <cwd>/images/kernel/vmlinux-x86_64          ("go run ./cmd/nexus3" from repo root).
+//  4. <cwd>/images/kernel/vmlinux-x86_64          ("go run ./cmd/nexus" from repo root).
 //
-// If none resolve, the error names NEXUS3_KERNEL_PATH and lists every searched
+// If none resolve, the error names NEXUS_KERNEL_PATH and lists every searched
 // path so the operator can act without reading source.
 //
 // All sandbox-creation entry points must call this function before expensive
 // work. See AC4 note at the bottom of this file for enforceability limitations.
 func resolveKernelPath() (string, error) {
-	// Env override is always honoured but validated: a typo in NEXUS3_KERNEL_PATH
+	// Env override is always honoured but validated: a typo in NEXUS_KERNEL_PATH
 	// is caught here rather than after an expensive workspace capture.
-	if k := os.Getenv("NEXUS3_KERNEL_PATH"); k != "" {
+	if k := os.Getenv("NEXUS_KERNEL_PATH"); k != "" {
 		if _, err := os.Stat(k); err != nil {
 			return "", fmt.Errorf(
-				"kernel not found: NEXUS3_KERNEL_PATH=%q: no such file\n"+
-					"  Correct the path or unset NEXUS3_KERNEL_PATH to use the binary-relative default",
+				"kernel not found: NEXUS_KERNEL_PATH=%q: no such file\n"+
+					"  Correct the path or unset NEXUS_KERNEL_PATH to use the binary-relative default",
 				k)
 		}
 		return k, nil
@@ -43,7 +43,7 @@ func resolveKernelPath() (string, error) {
 
 	var searched []string
 
-	// Binary-relative: works when the nexus3 binary is installed alongside images/.
+	// Binary-relative: works when the nexus binary is installed alongside images/.
 	if exe, err := os.Executable(); err == nil {
 		p := filepath.Join(filepath.Dir(exe), "images", "kernel", "vmlinux-x86_64")
 		searched = append(searched, p)
@@ -60,7 +60,7 @@ func resolveKernelPath() (string, error) {
 		}
 	}
 
-	// CWD-relative: works for "go run ./cmd/nexus3" executed from the repo root,
+	// CWD-relative: works for "go run ./cmd/nexus" executed from the repo root,
 	// where images/kernel/vmlinux-x86_64 exists relative to the working directory.
 	if cwd, err := os.Getwd(); err == nil {
 		p := filepath.Join(cwd, "images", "kernel", "vmlinux-x86_64")
@@ -71,8 +71,8 @@ func resolveKernelPath() (string, error) {
 	}
 
 	return "", fmt.Errorf(
-		"kernel not found: set NEXUS3_KERNEL_PATH to the vmlinux image path\n"+
-			"  searched (NEXUS3_KERNEL_PATH not set):\n    %s",
+		"kernel not found: set NEXUS_KERNEL_PATH to the vmlinux image path\n"+
+			"  searched (NEXUS_KERNEL_PATH not set):\n    %s",
 		strings.Join(searched, "\n    "))
 }
 
@@ -87,26 +87,26 @@ func xdgKernelPath() string {
 		}
 		base = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(base, "nexus3", "images", "kernel", "vmlinux-x86_64")
+	return filepath.Join(base, "nexus", "images", "kernel", "vmlinux-x86_64")
 }
 
 // resolveVirtiofsdPath returns the absolute path to the virtiofsd 1.x binary.
 //
 // Search order:
-//  1. NEXUS3_VIRTIOFSD_PATH environment variable (always used if set; file must exist).
+//  1. NEXUS_VIRTIOFSD_PATH environment variable (always used if set; file must exist).
 //  2. exec.LookPath("virtiofsd") — honours the caller's PATH.
 //  3. Conventional system install locations: /usr/lib/virtiofsd, /usr/libexec/virtiofsd,
 //     /usr/local/bin/virtiofsd.
 //
-// Returns an error (naming NEXUS3_VIRTIOFSD_PATH) only when virtiofsd is not found.
+// Returns an error (naming NEXUS_VIRTIOFSD_PATH) only when virtiofsd is not found.
 // Called only when live mounts are configured; hosts without virtiofsd and without
 // --mount are unaffected.
 func resolveVirtiofsdPath() (string, error) {
-	if v := os.Getenv("NEXUS3_VIRTIOFSD_PATH"); v != "" {
+	if v := os.Getenv("NEXUS_VIRTIOFSD_PATH"); v != "" {
 		if _, err := os.Stat(v); err != nil {
 			return "", fmt.Errorf(
-				"virtiofsd not found: NEXUS3_VIRTIOFSD_PATH=%q: no such file\n"+
-					"  Correct the path or unset NEXUS3_VIRTIOFSD_PATH to use PATH-based resolution",
+				"virtiofsd not found: NEXUS_VIRTIOFSD_PATH=%q: no such file\n"+
+					"  Correct the path or unset NEXUS_VIRTIOFSD_PATH to use PATH-based resolution",
 				v)
 		}
 		return v, nil
@@ -129,7 +129,7 @@ func resolveVirtiofsdPath() (string, error) {
 	}
 
 	return "", fmt.Errorf(
-		"virtiofsd not found: set NEXUS3_VIRTIOFSD_PATH to the virtiofsd binary path\n" +
+		"virtiofsd not found: set NEXUS_VIRTIOFSD_PATH to the virtiofsd binary path\n" +
 			"  See https://gitlab.com/virtio-fs/virtiofsd for installation instructions\n" +
 			"  virtiofsd is required when --mount is used; sandboxes without --mount are unaffected")
 }

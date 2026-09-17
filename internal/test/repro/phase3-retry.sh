@@ -5,10 +5,10 @@
 # Sources helper functions from run.sh via its env — executed standalone.
 set -euo pipefail
 
-NEXUS3="${NEXUS3:-nexus3}"
+NEXUS="${NEXUS:-nexus}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$SCRIPT_DIR/workspace"
-IMAGE_STORE="${NEXUS3_STATE_DIR:-$HOME/.local/state/nexus3}/images/sha256"
+IMAGE_STORE="${NEXUS_STATE_DIR:-$HOME/.local/state/nexus}/images/sha256"
 BUILD_LOG_DIR="$SCRIPT_DIR/logs"
 VERIFY_TMPDIR="${TMPDIR:-/tmp}/repro-verify-p3retry-$$"
 BASH_BUILD_TIMEOUT=1800
@@ -17,7 +17,7 @@ REPRO_PROJECT="repro"
 log() { echo "[$(date +'%H:%M:%S')] $*"; }
 
 list_digests_sorted() {
-    "$NEXUS3" --json image ls 2>/dev/null \
+    "$NEXUS" --json image ls 2>/dev/null \
         | jq -r '.data.images[].digest' 2>/dev/null \
         | sort || true
 }
@@ -136,7 +136,7 @@ trap 'rm -rf "$VERIFY_TMPDIR"' EXIT
 
 log "=== Phase 3 retry: 3 concurrent builds ==="
 log "buildkit.ext4 state:"
-(debugfs -R "stats" ~/.local/state/nexus3/caches/buildkit.ext4 2>/dev/null \
+(debugfs -R "stats" ~/.local/state/nexus/caches/buildkit.ext4 2>/dev/null \
     | grep -E "Block count|Free blocks" | tr '\n' ' ') || true
 echo ""
 log "Host disk:"
@@ -157,7 +157,7 @@ for slot in A B C; do
     done
     write_pressure_containerfile "$pws" "$slot"
 
-    timeout "$BASH_BUILD_TIMEOUT" "$NEXUS3" create \
+    timeout "$BASH_BUILD_TIMEOUT" "$NEXUS" create \
         "${REPRO_PROJECT}/p3retry-${slot}" \
         --file "$pws" \
         --no-user-mounts \
@@ -200,10 +200,10 @@ for nd in $new_digests; do
         any_fail=1
     fi
     # Agent-size check
-    AGENT_BIN="$(command -v nexus3-agent 2>/dev/null || true)"
+    AGENT_BIN="$(command -v nexus-agent 2>/dev/null || true)"
     if [[ -n "$AGENT_BIN" ]]; then
         host_size=$(stat -c '%s' "$AGENT_BIN" 2>/dev/null || echo 0)
-        guest_size=$(debugfs_size "$img" "/sbin/nexus3-agent")
+        guest_size=$(debugfs_size "$img" "/sbin/nexus-agent")
         if [[ "$guest_size" == "$host_size" ]]; then
             log "  AgentSize: PASS(${guest_size}B)"
         else

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // captureScriptExecer returns a GuestExecer that records the bash -c script
@@ -69,18 +69,18 @@ func runBashScriptResult(t *testing.T, script string) (exitCode int, stderr stri
 // run unprivileged on the test host. It also stubs "mount -t overlay overlay"
 // with an echo so branch selection logic and filesystem side-effects (mkdir,
 // cp, rm) can be exercised without root. The substitution order is
-// most-specific first so that e.g. /var/lib/nexus3/agentcfg-upper is replaced
-// before /var/lib/nexus3/agentcfg, which is replaced before /var/lib/nexus3.
+// most-specific first so that e.g. /var/lib/nexus/agentcfg-upper is replaced
+// before /var/lib/nexus/agentcfg, which is replaced before /var/lib/nexus.
 // strings.NewReplacer applies the first matching pattern at each position.
 func substituteGuestPaths(script, baseDir string) string {
 	return strings.NewReplacer(
 		"mount -t overlay overlay", "echo WOULD_MOUNT",
-		"/var/lib/nexus3/agentcfg-upper", filepath.Join(baseDir, "agentcfg-upper"),
-		"/var/lib/nexus3/agentcfg/upper", filepath.Join(baseDir, "agentcfg", "upper"),
-		"/var/lib/nexus3/agentcfg/work", filepath.Join(baseDir, "agentcfg", "work"),
-		"/var/lib/nexus3/agentcfg-work", filepath.Join(baseDir, "agentcfg-work"),
-		"/var/lib/nexus3/agentcfg", filepath.Join(baseDir, "agentcfg"),
-		"/var/lib/nexus3", baseDir,
+		"/var/lib/nexus/agentcfg-upper", filepath.Join(baseDir, "agentcfg-upper"),
+		"/var/lib/nexus/agentcfg/upper", filepath.Join(baseDir, "agentcfg", "upper"),
+		"/var/lib/nexus/agentcfg/work", filepath.Join(baseDir, "agentcfg", "work"),
+		"/var/lib/nexus/agentcfg-work", filepath.Join(baseDir, "agentcfg-work"),
+		"/var/lib/nexus/agentcfg", filepath.Join(baseDir, "agentcfg"),
+		"/var/lib/nexus", baseDir,
 		"/root/.claude", filepath.Join(baseDir, "root-claude"),
 	).Replace(script)
 }
@@ -285,7 +285,7 @@ func TestSeedOverlayClaudeConfig_ScriptContainsMigration(t *testing.T) {
 		context.Background(), domain.SandboxID{}, "/lower",
 		captureScriptExecer(&script, 0),
 	)
-	const migrateMarker = "cp -a /var/lib/nexus3/agentcfg-upper/."
+	const migrateMarker = "cp -a /var/lib/nexus/agentcfg-upper/."
 	if !strings.Contains(script, migrateMarker) {
 		t.Errorf("seedOverlayClaudeConfig script missing migration block %q\n"+
 			"D-RAM-09 one-shot migration was removed — existing sandbox Claude\n"+

@@ -19,12 +19,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/statedir"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/statedir"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // shortTempDir returns a temp dir under /tmp rather than t.TempDir().
@@ -71,7 +71,7 @@ func TestRemove_DeletesSupervisorStateDir(t *testing.T) {
 	ctx := context.Background()
 	root := shortTempDir(t)
 	t.Setenv("XDG_STATE_HOME", root)
-	storeRoot := filepath.Join(root, "nexus3")
+	storeRoot := filepath.Join(root, "nexus")
 
 	st, err := store.NewFileStore(t.TempDir())
 	if err != nil {

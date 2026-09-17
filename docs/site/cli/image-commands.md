@@ -9,12 +9,12 @@ description: "Reference for image build, ls, and prune commands"
 
 Guest images are OCI-compatible root filesystem layers built by `buildkitd` inside the VM. The `image` group manages the local image store.
 
-## nexus3 image build
+## nexus image build
 
 Build a guest image from a Dockerfile context.
 
 ```
-nexus3 image build [flags]
+nexus image build [flags]
 ```
 
 | Flag | Type | Default | Description |
@@ -23,20 +23,20 @@ nexus3 image build [flags]
 | `--ref <ref>` | string | — | Output image reference (tag) |
 | `--base <ref>` | string | `debian:bookworm-slim` | Base image reference to build from |
 
-## nexus3 image ls
+## nexus image ls
 
 List available guest images in the local store.
 
 ```
-nexus3 image ls
+nexus image ls
 ```
 
-## nexus3 image prune
+## nexus image prune
 
 Remove unused guest images and stale builder templates from the local store, and report the bytes freed.
 
 ```
-nexus3 image prune [flags]
+nexus image prune [flags]
 ```
 
 | Flag | Type | Default | Description |
@@ -46,16 +46,16 @@ nexus3 image prune [flags]
 Two kinds of artifact are pruned:
 
 - **Unreferenced cache entries** — any image whose digest is not referenced by a sandbox record and whose ref is not in the pinned default base set. Base images outside that set are candidates like any other entry.
-- **Stale builder templates** — `nexus-builder-*.ext4` files in the image store that were produced by a previous `nexus3-agent` build. The current template is identified by the tag of the `nexus3-agent` binary on this host; when that binary cannot be found the template sweep is skipped and the command says so.
+- **Stale builder templates** — `nexus-builder-*.ext4` files in the image store that were produced by a previous `nexus-agent` build. The current template is identified by the tag of the `nexus-agent` binary on this host; when that binary cannot be found the template sweep is skipped and the command says so.
 
 Templates are kept, regardless of tag, when another process holds them open (a running builder VM) or when they were modified within the last 10 minutes (a build still streaming into the file).
 
 Dry-run output lists the candidates and the total that would be freed:
 
 ```
-$ nexus3 image prune --dry-run
+$ nexus image prune --dry-run
 DIGEST        REF                      KIND     SIZE
-e5a72e9c053e  nexus3-builder:20260901  builder  1.2 GiB
+e5a72e9c053e  nexus-builder:20260901  builder  1.2 GiB
 FILE                                          AGENT             SIZE
 nexus-builder-abc-agent0123456789abcdef.ext4  0123456789abcdef  2.0 GiB
 Would free ~3.2 GiB (1 images, 1 builder templates)

@@ -12,7 +12,7 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-const herdrUpdateRemedy = "run: herdr plugin install IniZio/nexus3/plugins/herdr"
+const herdrUpdateRemedy = "run: herdr plugin install IniZio/nexus/plugins/herdr"
 
 type versionCheckOutcome int
 
@@ -42,7 +42,7 @@ func herdrCheckVersionSkew(installed, pin string) versionCheckResult {
 			Outcome:   vcoDev,
 			Installed: installed,
 			Pin:       pin,
-			Message:   fmt.Sprintf("dev build %q — kept (set NEXUS3_FORCE_DOWNLOAD=1 to override)", installed),
+			Message:   fmt.Sprintf("dev build %q — kept (set NEXUS_FORCE_DOWNLOAD=1 to override)", installed),
 		}
 	}
 
@@ -78,7 +78,7 @@ func herdrCheckVersionSkew(installed, pin string) versionCheckResult {
 			Outcome:   vcoInstalledNewer,
 			Installed: installed,
 			Pin:       pin,
-			Message:   fmt.Sprintf("installed %s > pinned %s — kept (set NEXUS3_FORCE_DOWNLOAD=1 to override)", installed, pin),
+			Message:   fmt.Sprintf("installed %s > pinned %s — kept (set NEXUS_FORCE_DOWNLOAD=1 to override)", installed, pin),
 		}
 	default:
 		return versionCheckResult{
@@ -90,10 +90,10 @@ func herdrCheckVersionSkew(installed, pin string) versionCheckResult {
 	}
 }
 
-// herdrVersionCheck implements nexus3 herdr version-check (exit 0=same 1=unparsable 10=pin-newer 11=inst-newer 12=dev).
+// herdrVersionCheck implements nexus herdr version-check (exit 0=same 1=unparsable 10=pin-newer 11=inst-newer 12=dev).
 func herdrVersionCheck(ctx context.Context, args []string, w io.Writer) error {
 	fs := flag.NewFlagSet("herdr version-check", flag.ContinueOnError)
-	pinFile := fs.String("pin", "", "path to nexus3-version pin file")
+	pinFile := fs.String("pin", "", "path to nexus-version pin file")
 	abiFile := fs.String("abi", "", "path to abi file")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: err.Error()}
@@ -103,10 +103,10 @@ func herdrVersionCheck(ctx context.Context, args []string, w io.Writer) error {
 	resolvedPin := *pinFile
 	if resolvedPin == "" {
 		if pluginRoot == "" {
-			fmt.Fprintln(w, "version-check: HERDR_PLUGIN_ROOT unset; cannot locate nexus3-version")
+			fmt.Fprintln(w, "version-check: HERDR_PLUGIN_ROOT unset; cannot locate nexus-version")
 			return nil
 		}
-		resolvedPin = filepath.Join(pluginRoot, "nexus3-version")
+		resolvedPin = filepath.Join(pluginRoot, "nexus-version")
 	}
 
 	pinBytes, err := os.ReadFile(resolvedPin)

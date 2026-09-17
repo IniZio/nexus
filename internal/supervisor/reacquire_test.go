@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // completeReacquirableSandbox is a record that passes every preflight gate.
@@ -27,10 +27,10 @@ func completeReacquirableSandbox() domain.Sandbox {
 		NetnsChildPID:       4242,
 		NetnsChildPGID:      4242,
 		NetnsChildStartTime: 987654,
-		GuestTapName:        "nx3h-0102030405",
-		CHAPISocket:         "/tmp/nexus3/sock/x.sock",
-		NetnsControlSocket:  "/tmp/nexus3/sock/netns-control/x.sock",
-		NetnsControlToken:   "/tmp/nexus3/sock/netns-control/x.token",
+		GuestTapName:        "nxh-0102030405",
+		CHAPISocket:         "/tmp/nexus/sock/x.sock",
+		NetnsControlSocket:  "/tmp/nexus/sock/netns-control/x.sock",
+		NetnsControlToken:   "/tmp/nexus/sock/netns-control/x.token",
 	}
 }
 
@@ -120,8 +120,8 @@ func TestReacquirePerimeterForSandbox_RefusesBeforeContact(t *testing.T) {
 // exist still refuses cleanly, without reaching the driver.
 func TestReacquirePerimeterForSandbox_RefusesWhenChildAbsent(t *testing.T) {
 	sb := completeReacquirableSandbox()
-	sb.NetnsControlSocket = "/nonexistent/nexus3-test/control.sock"
-	sb.NetnsControlToken = "/nonexistent/nexus3-test/control.token"
+	sb.NetnsControlSocket = "/nonexistent/nexus-test/control.sock"
+	sb.NetnsControlToken = "/nonexistent/nexus-test/control.token"
 
 	adopter := &refusingAdopter{}
 	res, err := ReacquirePerimeterForSandbox(context.Background(), sb, adopter)
@@ -154,7 +154,7 @@ func TestRunReacquire_RefusesIncompleteIdentity(t *testing.T) {
 		ID: domain.NewSandboxID(), Name: "no-ctl", Project: "hsh",
 		State:         domain.Running,
 		NetnsChildPID: 4242, NetnsChildPGID: 4242, NetnsChildStartTime: 987654,
-		GuestTapName: "nx3h-0102030405", CHAPISocket: "/tmp/x.sock",
+		GuestTapName: "nxh-0102030405", CHAPISocket: "/tmp/x.sock",
 	}
 	if err := st.Create(ctx, sb); err != nil {
 		t.Fatalf("Create: %v", err)

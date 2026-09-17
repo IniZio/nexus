@@ -19,7 +19,7 @@ func init() {
 }
 
 // runForward is the registered Run function for
-// "nexus3 forward <ref> <hostPort>:<guestPort>".
+// "nexus forward <ref> <hostPort>:<guestPort>".
 // It listens on 127.0.0.1:<hostPort> and for each accepted connection dials
 // the guest-side port-forward multiplexer, asking it to splice to the
 // guest-local TCP service on <guestPort>.  Runs until the context is cancelled

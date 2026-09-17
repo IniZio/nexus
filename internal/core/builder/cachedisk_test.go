@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// skipIfInGuest skips the test when running inside a nexus3 KVM guest.
+// skipIfInGuest skips the test when running inside a nexus KVM guest.
 //
 // In-guest: the rootfs is a 5 GiB ext4 image with limited free space.
 // The cachedisk tests create 10 GiB sparse ext4 disks; each requires
@@ -21,7 +21,7 @@ import (
 // subsequent heavy compilations (e.g. the cloudhypervisor test binary).
 //
 // Detection: /dev/vda is the virtio-blk rootfs disk; it is present in every
-// nexus3 KVM guest and absent on the development host.
+// nexus KVM guest and absent on the development host.
 func skipIfInGuest(t *testing.T) {
 	t.Helper()
 	if _, err := os.Stat("/dev/vda"); err == nil {

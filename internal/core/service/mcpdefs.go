@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // SharedMCPServers is the sanitized, guest-safe MCP configuration derived from
@@ -209,7 +209,7 @@ func BuildSharedMCPServers(profile cred.AgentProfile, sourceDir string, mounts .
 }
 
 // remapStdioCommand decides what the guest sees for a stdio entry's command.
-// PATH-relative commands (npx, uvx, nexus3) return rawBytes verbatim. An
+// PATH-relative commands (npx, uvx, nexus) return rawBytes verbatim. An
 // absolute host path (after ~/$HOME expansion via expandHome, the same rule
 // user mounts use) is rewritten to its guest path when it lies under a user
 // mount's HostPath (longest match wins); otherwise the entry is dropped
@@ -389,7 +389,7 @@ func isCredentialHeader(name, value string) bool {
 }
 
 // syntheticMCPVar returns the synthetic env var name for a redacted literal
-// header value: NEXUS3_MCP_<SERVER>_<HEADER>, uppercased with non-alnum
+// header value: NEXUS_MCP_<SERVER>_<HEADER>, uppercased with non-alnum
 // chars mapped to underscore.
 func syntheticMCPVar(serverName, headerName string) string {
 	sanitize := func(s string) string {
@@ -404,5 +404,5 @@ func syntheticMCPVar(serverName, headerName string) string {
 		}
 		return b.String()
 	}
-	return "NEXUS3_MCP_" + sanitize(serverName) + "_" + sanitize(headerName)
+	return "NEXUS_MCP_" + sanitize(serverName) + "_" + sanitize(headerName)
 }

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // newLogTestSandbox builds a service whose store root is store.DefaultRoot()
@@ -243,11 +243,11 @@ func TestLog_TailShortFlag(t *testing.T) {
 }
 
 // TestLog_RefBeforeFlags is a regression test: the documented (and the task's
-// own proof-of-work) invocation shape is "nexus3 log <ref> -n <N>" — the ref
+// own proof-of-work) invocation shape is "nexus log <ref> -n <N>" — the ref
 // BEFORE the flags. A naive fs.Parse(args) stops consuming at the first
 // non-flag token, so it would treat "-n"/"20" as extra stray positionals once
 // the ref came first and fail with a usage error. This was caught by an
-// actual binary run (`/tmp/nexus3 log loop/log-cmd -n 20`), not by the
+// actual binary run (`/tmp/nexus log loop/log-cmd -n 20`), not by the
 // flags-first-only tests above.
 func TestLog_RefBeforeFlags(t *testing.T) {
 	_, sb, stateDir := newLogTestSandbox(t)

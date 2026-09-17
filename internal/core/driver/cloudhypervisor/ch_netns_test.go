@@ -2,7 +2,7 @@ package cloudhypervisor
 
 // ch_netns_test.go — tests for the netns-runtime mechanism (ch_netns.go).
 //
-// TestMain: re-exec dispatch — when NEXUS3_NETNS_RUN=1, runs RunNetnsChild()
+// TestMain: re-exec dispatch — when NEXUS_NETNS_RUN=1, runs RunNetnsChild()
 // so the test binary itself acts as the re-exec image for StartNetnsRuntime.
 //
 // Unit tests (always compiled, no build-tag guards):
@@ -19,7 +19,7 @@ package cloudhypervisor
 //
 // TestMain stays untagged on purpose: untagged files are compiled into the
 // integration build as well, so the test binary remains its own
-// NEXUS3_NETNS_RUN re-exec image for both runs.
+// NEXUS_NETNS_RUN re-exec image for both runs.
 
 import (
 	"os"
@@ -28,10 +28,10 @@ import (
 )
 
 // TestMain checks the netns re-exec sentinel before running tests.
-// When NEXUS3_NETNS_RUN=1 this process is the child inside the user+net ns;
+// When NEXUS_NETNS_RUN=1 this process is the child inside the user+net ns;
 // call RunNetnsChild() and exit — do not run any test functions.
 //
-// S1: wire this sentinel dispatch into cmd/nexus3/main.go
+// S1: wire this sentinel dispatch into cmd/nexus/main.go
 func TestMain(m *testing.M) {
 	if os.Getenv(NetnsRunEnv) == "1" {
 		RunNetnsChild()

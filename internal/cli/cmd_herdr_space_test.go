@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 func TestHerdrSpacePutGetListDelete(t *testing.T) {
@@ -13,13 +13,13 @@ func TestHerdrSpacePutGetListDelete(t *testing.T) {
 	ctx := context.Background()
 
 	b1 := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:demo-orca-01",
+		SpaceLabel:       "nexus:demo-orca-01",
 		HerdrWorkspaceID: "wB",
 		SandboxHandle:    "orca/demo-orca-01",
 		SandboxID:        "sb-aaa",
 	}
 	b2 := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:demo-orca-02",
+		SpaceLabel:       "nexus:demo-orca-02",
 		HerdrWorkspaceID: "wC",
 		SandboxHandle:    "orca/demo-orca-02",
 		SandboxID:        "sb-bbb",
@@ -85,13 +85,13 @@ func TestHerdrSpacePutNotFoundErrors(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 
-	if _, err := HerdrSpaceGetByLabel(ctx, root, "nexus3:nope"); !errors.Is(err, ErrHerdrSpaceNotFound) {
+	if _, err := HerdrSpaceGetByLabel(ctx, root, "nexus:nope"); !errors.Is(err, ErrHerdrSpaceNotFound) {
 		t.Errorf("GetByLabel on empty: want ErrHerdrSpaceNotFound, got %v", err)
 	}
 	if _, err := HerdrSpaceGetByHandle(ctx, root, "orca/nope"); !errors.Is(err, ErrHerdrSpaceNotFound) {
 		t.Errorf("GetByHandle on empty: want ErrHerdrSpaceNotFound, got %v", err)
 	}
-	if err := HerdrSpaceDelete(ctx, root, "nexus3:nope"); !errors.Is(err, ErrHerdrSpaceNotFound) {
+	if err := HerdrSpaceDelete(ctx, root, "nexus:nope"); !errors.Is(err, ErrHerdrSpaceNotFound) {
 		t.Errorf("Delete on empty: want ErrHerdrSpaceNotFound, got %v", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestHerdrSpacePut1to1InvariantLabel(t *testing.T) {
 	ctx := context.Background()
 
 	b1 := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:alpha",
+		SpaceLabel:       "nexus:alpha",
 		HerdrWorkspaceID: "wA",
 		SandboxHandle:    "orca/alpha",
 		SandboxID:        "sb-111",
@@ -112,7 +112,7 @@ func TestHerdrSpacePut1to1InvariantLabel(t *testing.T) {
 
 	// Re-bind the same label to a different sandbox — old entry must be replaced.
 	b2 := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:alpha",
+		SpaceLabel:       "nexus:alpha",
 		HerdrWorkspaceID: "wB",
 		SandboxHandle:    "orca/beta",
 		SandboxID:        "sb-222",
@@ -135,7 +135,7 @@ func TestHerdrSpacePut1to1InvariantHandle(t *testing.T) {
 	ctx := context.Background()
 
 	b1 := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:alpha",
+		SpaceLabel:       "nexus:alpha",
 		HerdrWorkspaceID: "wA",
 		SandboxHandle:    "orca/alpha",
 		SandboxID:        "sb-111",
@@ -146,7 +146,7 @@ func TestHerdrSpacePut1to1InvariantHandle(t *testing.T) {
 
 	// Re-bind the same sandbox handle under a different label.
 	b2 := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:gamma",
+		SpaceLabel:       "nexus:gamma",
 		HerdrWorkspaceID: "wC",
 		SandboxHandle:    "orca/alpha", // same handle
 		SandboxID:        "sb-111",
@@ -211,7 +211,7 @@ func TestHerdrSpaceBindingClearWorkspaceID(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:demo", HerdrWorkspaceID: "wSTALE",
+		SpaceLabel: "nexus:demo", HerdrWorkspaceID: "wSTALE",
 		SandboxHandle: "orca/demo", SandboxID: "sb-xxx",
 	}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {

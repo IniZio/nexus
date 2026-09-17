@@ -1,6 +1,6 @@
 package cli
 
-// herdr_txn.go — atomic transaction primitives for the herdr-space ↔ nexus3-sandbox lifecycle.
+// herdr_txn.go — atomic transaction primitives for the herdr-space ↔ nexus-sandbox lifecycle.
 //
 // Design contract (fail-safe philosophy):
 //   - A pre-existing/running sandbox is NEVER removed by a pane-open hiccup.
@@ -27,7 +27,7 @@ import (
 type createSpec struct {
 	// ref is the sandbox ref (handle, e.g. "orca/demo-01").
 	ref string
-	// label is the herdr workspace label derived from ref (e.g. "nexus3:orca/demo-01").
+	// label is the herdr workspace label derived from ref (e.g. "nexus:orca/demo-01").
 	label string
 	// hostCwd is the cwd hint passed to herdr workspace create.
 	hostCwd string

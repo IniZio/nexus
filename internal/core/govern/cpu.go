@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // CPU resize control law constants.

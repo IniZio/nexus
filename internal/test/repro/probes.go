@@ -131,7 +131,7 @@ func DebugfsDump(img, guestPath, tmpPath string) error {
 }
 
 // ParseManifestStageA parses the build log at logPath and returns one ProbeResult
-// per test file, plus run-produced-40m, docker-compose, and nexus3-agent.
+// per test file, plus run-produced-40m, docker-compose, and nexus-agent.
 // agentBinSize is the host binary size (0 = missing reference = HIF).
 // elfSize is the expected size for file_elf (0 = use actual file_elf entry if available, still HIF if absent).
 func ParseManifestStageA(logPath string, agentBinSize int64, elfSize int64) []ProbeResult {
@@ -252,20 +252,20 @@ func ParseManifestStageA(logPath string, agentBinSize int64, elfSize int64) []Pr
 		results = append(results, probeHIF("stageA.docker-compose", "manifest_absent"))
 	}
 
-	// Check nexus3-agent
+	// Check nexus-agent
 	if agentBinSize == 0 {
-		results = append(results, probeHIF("stageA.nexus3-agent", "no_host_ref"))
-	} else if size, ok := manifest["usr/sbin/nexus3-agent"]; ok {
-		results = append(results, classifySize("stageA.nexus3-agent", size, agentBinSize))
+		results = append(results, probeHIF("stageA.nexus-agent", "no_host_ref"))
+	} else if size, ok := manifest["usr/sbin/nexus-agent"]; ok {
+		results = append(results, classifySize("stageA.nexus-agent", size, agentBinSize))
 	} else {
-		results = append(results, probeHIF("stageA.nexus3-agent", "manifest_absent"))
+		results = append(results, probeHIF("stageA.nexus-agent", "manifest_absent"))
 	}
 
 	return results
 }
 
 // StageBSizeProbes probes all test files + run-produced-40m + docker-compose via debugfs stat.
-// agentBinSize: host binary size for /sbin/nexus3-agent (0 → HIF).
+// agentBinSize: host binary size for /sbin/nexus-agent (0 → HIF).
 // elfSize: expected size for file_elf (0 → only truncation-sentinel detection possible).
 func StageBSizeProbes(img string, agentBinSize int64, elfSize int64) []ProbeResult {
 	var results []ProbeResult
@@ -305,15 +305,15 @@ func StageBSizeProbes(img string, agentBinSize int64, elfSize int64) []ProbeResu
 		results = append(results, classifySize("stageB.docker-compose", size, 0))
 	}
 
-	// Probe nexus3-agent
+	// Probe nexus-agent
 	if agentBinSize == 0 {
-		results = append(results, probeHIF("stageB.nexus3-agent", "no_host_ref"))
+		results = append(results, probeHIF("stageB.nexus-agent", "no_host_ref"))
 	} else {
-		size, err := DebugfsSize(img, "/sbin/nexus3-agent")
+		size, err := DebugfsSize(img, "/sbin/nexus-agent")
 		if err != nil {
-			results = append(results, probeHIF("stageB.nexus3-agent", fmt.Sprintf("debugfs error: %v", err)))
+			results = append(results, probeHIF("stageB.nexus-agent", fmt.Sprintf("debugfs error: %v", err)))
 		} else {
-			results = append(results, classifySize("stageB.nexus3-agent", size, agentBinSize))
+			results = append(results, classifySize("stageB.nexus-agent", size, agentBinSize))
 		}
 	}
 
@@ -331,7 +331,7 @@ func StageBSizeProbes(img string, agentBinSize int64, elfSize int64) []ProbeResu
 func StageBHashProbes(img string, expectedHashes map[string]string) []ProbeResult {
 	var results []ProbeResult
 
-	tmpDir, err := os.MkdirTemp("/tmp", "nexus3-repro-")
+	tmpDir, err := os.MkdirTemp("/tmp", "nexus-repro-")
 	if err != nil {
 		return []ProbeResult{
 			probeHIF("stageB.hash", fmt.Sprintf("tmpdir failed: %v", err)),
@@ -401,7 +401,7 @@ func StageBRunIDProbe(img, expectedID string) ProbeResult {
 	if expectedID == "" {
 		return probeHIF("stageB.run_id", "no_expected_id: harness did not inject run-id")
 	}
-	tmpPath := filepath.Join(os.TempDir(), "nexus3-runid-"+expectedID)
+	tmpPath := filepath.Join(os.TempDir(), "nexus-runid-"+expectedID)
 	defer os.Remove(tmpPath)
 
 	if err := DebugfsDump(img, "/.repro-run-id", tmpPath); err != nil {

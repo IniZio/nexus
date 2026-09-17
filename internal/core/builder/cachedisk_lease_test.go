@@ -8,7 +8,7 @@ import (
 )
 
 // TestAcquireCacheDiskSlot_OwnPinDoesNotReadAsBusy is the own-pin-before-probe
-// guard (prior art: motive nexus3-builder-supervisor-spawn-race, b4489a5).
+// guard (prior art: motive nexus-builder-supervisor-spawn-race, b4489a5).
 //
 // flock belongs to the open file description, not to the process, so a second
 // open(2)+LOCK_EX|LOCK_NB of a file THIS process already holds fails with

@@ -1,6 +1,6 @@
 package cli
 
-// herdr_txn_test.go — unit tests for the herdr-space ↔ nexus3-sandbox
+// herdr_txn_test.go — unit tests for the herdr-space ↔ nexus-sandbox
 // transaction primitives in herdr_txn.go.
 //
 // AC mapping:
@@ -100,7 +100,7 @@ func TestHerdrSpaceCreateTxn_PutFail_LeavesNoWorkspace(t *testing.T) {
 	}
 
 	err := herdrSpaceCreateTxn(context.Background(),
-		createSpec{ref: "orca/demo", label: "nexus3:orca/demo"},
+		createSpec{ref: "orca/demo", label: "nexus:orca/demo"},
 		deps, "herdr-bin", root)
 
 	if err == nil {
@@ -115,7 +115,7 @@ func TestHerdrSpaceCreateTxn_PutFail_LeavesNoWorkspace(t *testing.T) {
 		t.Error("svcRemove not called on bindingPut failure when createdByUs=true")
 	}
 	// No binding must remain.
-	if _, gerr := HerdrSpaceGetByLabel(context.Background(), root, "nexus3:orca/demo"); !errors.Is(gerr, ErrHerdrSpaceNotFound) {
+	if _, gerr := HerdrSpaceGetByLabel(context.Background(), root, "nexus:orca/demo"); !errors.Is(gerr, ErrHerdrSpaceNotFound) {
 		t.Errorf("binding must not exist after Put-fail; got err=%v", gerr)
 	}
 }
@@ -135,7 +135,7 @@ func TestHerdrSpaceCreateTxn_PutFail_PreExistingSandboxNotRemoved(t *testing.T) 
 	}
 
 	_ = herdrSpaceCreateTxn(context.Background(),
-		createSpec{ref: "orca/old", label: "nexus3:orca/old"},
+		createSpec{ref: "orca/old", label: "nexus:orca/old"},
 		deps, "herdr-bin", root)
 
 	if len(h.sandboxRemoved) != 0 {
@@ -161,7 +161,7 @@ func TestHerdrSpaceCreateTxn_PostCommit_PreExistingSandboxNeverRemoved(t *testin
 	}
 
 	err := herdrSpaceCreateTxn(context.Background(),
-		createSpec{ref: "orca/pre", label: "nexus3:orca/pre"},
+		createSpec{ref: "orca/pre", label: "nexus:orca/pre"},
 		deps, "herdr-bin", root)
 
 	// Post-commit openPane failure must NOT propagate.
@@ -173,7 +173,7 @@ func TestHerdrSpaceCreateTxn_PostCommit_PreExistingSandboxNeverRemoved(t *testin
 		t.Errorf("svcRemove called post-commit for pre-existing sandbox: %v", h.sandboxRemoved)
 	}
 	// Binding must be retained.
-	if _, gerr := HerdrSpaceGetByLabel(context.Background(), root, "nexus3:orca/pre"); gerr != nil {
+	if _, gerr := HerdrSpaceGetByLabel(context.Background(), root, "nexus:orca/pre"); gerr != nil {
 		t.Errorf("binding must be retained after post-commit openPane failure; got %v", gerr)
 	}
 }
@@ -191,7 +191,7 @@ func TestHerdrSpaceTeardown_CloseFail_BindingRetained(t *testing.T) {
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:demo",
+		SpaceLabel:       "nexus:demo",
 		HerdrWorkspaceID: "wTEST",
 		SandboxHandle:    "orca/demo",
 		SandboxID:        "sb-123",
@@ -210,7 +210,7 @@ func TestHerdrSpaceTeardown_CloseFail_BindingRetained(t *testing.T) {
 		t.Errorf("teardown must return nil on close failure; got %v", err)
 	}
 	// Binding must still be present.
-	got, gerr := HerdrSpaceGetByLabel(ctx, root, "nexus3:demo")
+	got, gerr := HerdrSpaceGetByLabel(ctx, root, "nexus:demo")
 	if gerr != nil || got.SpaceLabel != b.SpaceLabel {
 		t.Errorf("binding must be retained after close failure; gerr=%v got=%+v", gerr, got)
 	}
@@ -230,7 +230,7 @@ func TestHerdrSpaceTeardown_SvcRemoveNotFound_ToleratedAndDeletes(t *testing.T) 
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:gone",
+		SpaceLabel:       "nexus:gone",
 		HerdrWorkspaceID: "", // no workspace: close is a no-op success
 		SandboxHandle:    "orca/gone",
 		SandboxID:        "sb-g",
@@ -267,7 +267,7 @@ func TestHerdrSpaceTeardown_DoubleTeardown_IdempotentNoPanic(t *testing.T) {
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:demo2",
+		SpaceLabel:       "nexus:demo2",
 		HerdrWorkspaceID: "wTEST2",
 		SandboxHandle:    "orca/demo2",
 		SandboxID:        "sb-456",
@@ -308,7 +308,7 @@ func TestHerdrSpaceEnsureWorkspaceTxn_PutFail_ClosesWorkspace(t *testing.T) {
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:    "nexus3:no-ws",
+		SpaceLabel:    "nexus:no-ws",
 		SandboxHandle: "orca/no-ws",
 		SandboxID:     "sb-789",
 		// HerdrWorkspaceID intentionally empty.
@@ -343,7 +343,7 @@ func TestHerdrSpaceTeardown_SandboxIDMismatch_Refuses(t *testing.T) {
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:xyz",
+		SpaceLabel:       "nexus:xyz",
 		HerdrWorkspaceID: "wXYZ",
 		SandboxHandle:    "orca/xyz",
 		SandboxID:        "sb-REAL",
@@ -364,7 +364,7 @@ func TestHerdrSpaceTeardown_SandboxIDMismatch_Refuses(t *testing.T) {
 		t.Error("expected error when SandboxID mismatches; teardown must refuse")
 	}
 	// Binding must still exist.
-	if _, gerr := HerdrSpaceGetByLabel(ctx, root, "nexus3:xyz"); gerr != nil {
+	if _, gerr := HerdrSpaceGetByLabel(ctx, root, "nexus:xyz"); gerr != nil {
 		t.Errorf("binding must be retained after SandboxID mismatch refusal; gerr=%v", gerr)
 	}
 }
@@ -379,7 +379,7 @@ func TestHerdrSpaceTeardown_SandboxIDMismatch_FailOpen_ReturnsNil(t *testing.T) 
 	ctx := context.Background()
 
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:myrepo/fo",
+		SpaceLabel:       "nexus:myrepo/fo",
 		HerdrWorkspaceID: "wFO",
 		SandboxHandle:    "myrepo/fo",
 		SandboxID:        "sb-FO",

@@ -44,11 +44,11 @@ type RunResult struct {
 	Elapsed         time.Duration
 	HostDiskFreeGiB float64      // available GiB on host at build-start; 0 if unavailable
 	StateBackend    StateBackend // buildkit state backend detected from guest log; Unknown if not yet probed
-	AgentBinPath    string       // path to nexus3-agent binary; empty if not found
+	AgentBinPath    string       // path to nexus-agent binary; empty if not found
 	AgentBinSHA256  string       // hex SHA256 of the agent binary; empty if not available
 	AgentLinkage    string       // "static", "dynamic", or "unknown"
-	Nexus3BinPath   string       // path to nexus3 binary used for this run
-	Nexus3SHA256    string       // hex SHA256 of the nexus3 binary; empty if not available
+	NexusBinPath    string       // path to nexus binary used for this run
+	NexusSHA256     string       // hex SHA256 of the nexus binary; empty if not available
 	RunID           string       // out-of-band run identifier injected into Containerfile
 }
 

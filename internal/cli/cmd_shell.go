@@ -5,7 +5,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
 	"golang.org/x/term"
 )
 
@@ -17,18 +17,18 @@ func init() {
 	})
 }
 
-// defaultShellArgv is the command executed by "nexus3 shell" when no trailing
+// defaultShellArgv is the command executed by "nexus shell" when no trailing
 // command is supplied. Guest images are expected to have bash.
 var defaultShellArgv = []string{"/bin/bash", "--login"}
 
 // shellArgv builds the command argv from the post-ref positional arguments.
 // A single leading "--" is stripped so that
 //
-//	nexus3 shell <ref> -- /bin/bash -lc '...'
+//	nexus shell <ref> -- /bin/bash -lc '...'
 //
 // behaves identically to
 //
-//	nexus3 shell <ref> /bin/bash -lc '...'
+//	nexus shell <ref> /bin/bash -lc '...'
 //
 // When no arguments remain after the optional strip, defaultShellArgv is
 // returned so the default-shell behavior is preserved.
@@ -66,8 +66,8 @@ func runShell(ctx context.Context, args []string, out *Output) error {
 	// Build the argv from everything after the sandbox ref.  flag.Parse stops
 	// at the first non-flag positional argument, so it does NOT consume a "--"
 	// separator — the "--" lands verbatim in fs.Args().  shellArgv strips it so
-	// that "nexus3 shell <ref> -- /bin/bash -lc '...'" is identical to
-	// "nexus3 shell <ref> /bin/bash -lc '...'".
+	// that "nexus shell <ref> -- /bin/bash -lc '...'" is identical to
+	// "nexus shell <ref> /bin/bash -lc '...'".
 	argv := shellArgv(positional[1:])
 
 	// Auto-detect the controlling terminal size. term.GetSize returns

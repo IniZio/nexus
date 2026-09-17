@@ -2,7 +2,7 @@ package supervisor
 
 // TestDetachStopDistinction_* pins the hard constraint that /supervisor/stop
 // and /supervisor/detach must never be conflated (motive
-// nexus3-host-supervisor-hotswap, slice 04, ticket 04). Stop means "tear the
+// nexus-host-supervisor-hotswap, slice 04, ticket 04). Stop means "tear the
 // VM down"; detach means "exit without touching the VM". A regression that
 // wires both HTTP paths to the same channel — or that has one handler
 // accidentally trip the other — must turn these tests RED.
@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/supervisor/handoff"
+	"github.com/IniZio/nexus/internal/supervisor/handoff"
 )
 
 // serveTestIPCFull starts an IPC server on a temporary Unix socket with the

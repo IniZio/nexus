@@ -9,8 +9,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
 )
 
 // fakeCpService captures the CopyOptions passed to it and returns no error.
@@ -225,7 +225,7 @@ func TestRunCpWithSvc_PushDir_TarEntries(t *testing.T) {
 //   - rec.got.ExpectedBytes == nil; the assertion fails.
 func TestRunCpWithSvc_PushFile_TarNotUsed(t *testing.T) {
 	tmp := t.TempDir()
-	localFile := makeFile(t, tmp, "f.txt", "nexus3")
+	localFile := makeFile(t, tmp, "f.txt", "nexus")
 
 	rec := &recordingCpService{}
 	out, _, _ := capture(false)
@@ -246,7 +246,7 @@ func TestRunCpWithSvc_PushFile_TarNotUsed(t *testing.T) {
 	if rec.got.ExpectedBytes == nil {
 		t.Fatal("ExpectedBytes is nil for single-file push; guard would be bypassed")
 	}
-	if *rec.got.ExpectedBytes != 6 { // len("nexus3")
+	if *rec.got.ExpectedBytes != 6 { // len("nexus")
 		t.Errorf("ExpectedBytes = %d, want 6", *rec.got.ExpectedBytes)
 	}
 	// Src must be non-nil and readable as plain bytes (not tar).

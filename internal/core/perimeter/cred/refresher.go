@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 	"golang.org/x/oauth2"
 )
 
@@ -78,8 +78,8 @@ type credStoreMeta struct {
 }
 
 // Refresher is a [CredentialSource] that maintains a live OAuth access token
-// for nexus3's dedicated credential store. It is the SOLE refresher for
-// nexus3's dedicated OAuth credential: when the access token rotates, it
+// for nexus's dedicated credential store. It is the SOLE refresher for
+// nexus's dedicated OAuth credential: when the access token rotates, it
 // pushes the new real token into the broker for every registered sandbox so
 // the guest-side agent never self-refreshes.
 //

@@ -121,13 +121,13 @@ type recipe struct {
 
 func TestRecipe(t *testing.T) {
 	pd := pluginDir(t)
-	data, err := os.ReadFile(filepath.Join(pd, "recipes", "nexus3.json"))
+	data, err := os.ReadFile(filepath.Join(pd, "recipes", "nexus.json"))
 	if err != nil {
-		t.Fatalf("read recipes/nexus3.json: %v", err)
+		t.Fatalf("read recipes/nexus.json: %v", err)
 	}
 	var r recipe
 	if err := json.Unmarshal(data, &r); err != nil {
-		t.Fatalf("parse recipes/nexus3.json: %v", err)
+		t.Fatalf("parse recipes/nexus.json: %v", err)
 	}
 
 	if r.SchemaVersion != 1 {

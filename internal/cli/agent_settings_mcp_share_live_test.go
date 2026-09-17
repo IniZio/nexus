@@ -5,7 +5,7 @@
 //
 // # What is under test
 //
-// When `nexus3 create --agent claude-code` is called with a host ~/.claude.json
+// When `nexus create --agent claude-code` is called with a host ~/.claude.json
 // that contains a top-level mcpServers entry, the create path:
 //  1. Reads the entry via BuildSharedMCPServers (gated on MCPConfigFormatClaudeJSON).
 //  2. Writes it to stageDir/mcp-servers.json alongside the curated A-MOUNT overlay.
@@ -17,27 +17,27 @@
 //
 // Acceptance criteria:
 //
-//  1. /root/.claude.json mcpServers contains key "nexus3-probe" with command "cat"
+//  1. /root/.claude.json mcpServers contains key "nexus-probe" with command "cat"
 //     and env.PROBE_TOKEN == "${PROBE_TOKEN}" (verbatim ref, NOT the secret value).
-//  2. /run/nexus3/cred.env contains PROBE_TOKEN=probe-secret-value (stdio plaintext).
-//  3. claude mcp list (via login shell) lists "nexus3-probe" (definition reached Claude).
+//  2. /run/nexus/cred.env contains PROBE_TOKEN=probe-secret-value (stdio plaintext).
+//  3. claude mcp list (via login shell) lists "nexus-probe" (definition reached Claude).
 //  4. .credentials.json is NOT present in /root/.claude (hard-deny intact).
-//  5. --no-share-settings prevents injection: nexus3-probe absent from /root/.claude.json.
+//  5. --no-share-settings prevents injection: nexus-probe absent from /root/.claude.json.
 //
 // Mutation guard: assertions 1–3 fail if the mcp-servers.json write or
 // SeedGuestMCPServers call is removed from the create / supervisor path.
 //
 // Run:
 //
-//	TMPDIR=/tmp NEXUS3_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
-//	  NEXUS3_LIVE_REQUIRED=1 \
+//	TMPDIR=/tmp NEXUS_KERNEL_PATH=$(pwd)/images/kernel/vmlinux-x86_64 \
+//	  NEXUS_LIVE_REQUIRED=1 \
 //	  go test -tags herdr_live ./internal/cli/ -run TestAgentSettingsMCPShareLive \
 //	  -v -count=1
 //
 // Prerequisites:
 //   - /dev/kvm must be available
-//   - NEXUS3_KERNEL_PATH must be set to a vmlinux image
-//   - nexus3-agent-base image must be locally cached (or set NEXUS3_SHARE_IMAGE)
+//   - NEXUS_KERNEL_PATH must be set to a vmlinux image
+//   - nexus-agent-base image must be locally cached (or set NEXUS_SHARE_IMAGE)
 package cli_test
 
 import (
@@ -52,33 +52,33 @@ import (
 )
 
 func TestAgentSettingsMCPShareLive(t *testing.T) {
-	if os.Getenv("NEXUS3_LIVE_REQUIRED") == "" {
-		t.Skip("set NEXUS3_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
+	if os.Getenv("NEXUS_LIVE_REQUIRED") == "" {
+		t.Skip("set NEXUS_LIVE_REQUIRED=1 to run live tests (requires KVM + built images)")
 	}
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skipf("mcp-share: /dev/kvm not available: %v", err)
 	}
-	if os.Getenv("NEXUS3_KERNEL_PATH") == "" {
-		t.Skip("mcp-share: NEXUS3_KERNEL_PATH is not set; set it to a vmlinux image to run this test")
+	if os.Getenv("NEXUS_KERNEL_PATH") == "" {
+		t.Skip("mcp-share: NEXUS_KERNEL_PATH is not set; set it to a vmlinux image to run this test")
 	}
 
-	// Build the nexus3 binary (same pattern as agent_settings_share_live_test.go).
+	// Build the nexus binary (same pattern as agent_settings_share_live_test.go).
 	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "nexus3-mcpshare")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
+	binary := filepath.Join(binDir, "nexus-mcpshare")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus")
 	build.Dir = filepath.Join("..", "..")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("mcp-share: nexus3 binary cannot be built: %v\n%s", err, out)
+		t.Skipf("mcp-share: nexus binary cannot be built: %v\n%s", err, out)
 	}
 
-	image := os.Getenv("NEXUS3_SHARE_IMAGE")
+	image := os.Getenv("NEXUS_SHARE_IMAGE")
 	if image == "" {
-		image = "nexus3-agent-base"
+		image = "nexus-agent-base"
 	}
 
 	// --- Prepare fake HOME with fixture files. ---
 	//
-	// ~/.claude.json  — top-level mcpServers with nexus3-probe (stdio, uses ${PROBE_TOKEN}).
+	// ~/.claude.json  — top-level mcpServers with nexus-probe (stdio, uses ${PROBE_TOKEN}).
 	// ~/.claude/CLAUDE.md, settings.json, skills/demo/SKILL.md — overlay marker content
 	//   (MountAllowlist must be non-empty to trigger the A-MOUNT gate).
 	// ~/.claude/.credentials.json — must be excluded by the allowlist (AC-4).
@@ -90,13 +90,13 @@ func TestAgentSettingsMCPShareLive(t *testing.T) {
 
 	// ~/.claude.json: the authoritative MCP source that BuildSharedMCPServers reads.
 	//
-	// nexus3-probe is a NETWORK-FREE stdio server (command=cat) with a ${PROBE_TOKEN}
+	// nexus-probe is a NETWORK-FREE stdio server (command=cat) with a ${PROBE_TOKEN}
 	// env var reference. The verbatim ref must appear in the guest; the resolved value
 	// must appear in cred.env instead (D-PP-04 stdio relaxation).
-	// Two servers: nexus3-probe (has env), noenv-probe (no env field at all).
+	// Two servers: nexus-probe (has env), noenv-probe (no env field at all).
 	// The verbatim-passthrough fix must preserve the absence of "env" in noenv-probe —
 	// re-marshal would emit "env":null which Claude Code rejects.
-	claudeJSON := `{"mcpServers":{"nexus3-probe":{"type":"stdio","command":"cat","args":[],"env":{"PROBE_TOKEN":"${PROBE_TOKEN}"}},"noenv-probe":{"command":"cat","args":[]}}}`
+	claudeJSON := `{"mcpServers":{"nexus-probe":{"type":"stdio","command":"cat","args":[],"env":{"PROBE_TOKEN":"${PROBE_TOKEN}"}},"noenv-probe":{"command":"cat","args":[]}}}`
 	if err := os.WriteFile(filepath.Join(fakeHome, ".claude.json"), []byte(claudeJSON+"\n"), 0o600); err != nil {
 		t.Fatalf("write fake .claude.json: %v", err)
 	}
@@ -129,9 +129,9 @@ func TestAgentSettingsMCPShareLive(t *testing.T) {
 	t.Cleanup(func() {
 		rmOut, rmErr := shareCmd(binary, "rm", handle).CombinedOutput()
 		if rmErr != nil {
-			t.Logf("cleanup: nexus3 rm %s: %v\n%s", handle, rmErr, rmOut)
+			t.Logf("cleanup: nexus rm %s: %v\n%s", handle, rmErr, rmOut)
 		} else {
-			t.Logf("cleanup: nexus3 rm %s: %s", handle, rmOut)
+			t.Logf("cleanup: nexus rm %s: %s", handle, rmOut)
 		}
 	})
 
@@ -161,9 +161,9 @@ func TestAgentSettingsMCPShareLive(t *testing.T) {
 
 	createOut, createErr := createCmd.CombinedOutput()
 	if createErr != nil {
-		t.Fatalf("nexus3 create: %v\n%s\n(check NEXUS3_KERNEL_PATH and that %q is cached)", createErr, createOut, image)
+		t.Fatalf("nexus create: %v\n%s\n(check NEXUS_KERNEL_PATH and that %q is cached)", createErr, createOut, image)
 	}
-	t.Logf("nexus3 create:\n%s", createOut)
+	t.Logf("nexus create:\n%s", createOut)
 
 	// --- In-guest verification script. ---
 	//
@@ -172,7 +172,7 @@ func TestAgentSettingsMCPShareLive(t *testing.T) {
 	// assertions have been exercised (regardless of individual results).
 	const tracerToken = "MCP_SHARE_TRACER_OK"
 	script := `
-# AC-1: /root/.claude.json must contain nexus3-probe with command=cat
+# AC-1: /root/.claude.json must contain nexus-probe with command=cat
 #        and env.PROBE_TOKEN == "${PROBE_TOKEN}" (verbatim ref, NOT the resolved value).
 ac1_result=$(node -e '
 const fs = require("fs");
@@ -183,9 +183,9 @@ try {
   process.stdout.write("FAIL AC-1: cannot read /root/.claude.json: " + e.message + "\n");
   process.exit(0);
 }
-const srv = cfg.mcpServers && cfg.mcpServers["nexus3-probe"];
+const srv = cfg.mcpServers && cfg.mcpServers["nexus-probe"];
 if (!srv) {
-  process.stdout.write("FAIL AC-1: nexus3-probe absent from /root/.claude.json mcpServers; actual: " + JSON.stringify(cfg.mcpServers) + "\n");
+  process.stdout.write("FAIL AC-1: nexus-probe absent from /root/.claude.json mcpServers; actual: " + JSON.stringify(cfg.mcpServers) + "\n");
   process.exit(0);
 }
 if (srv.command !== "cat") {
@@ -201,21 +201,21 @@ process.stdout.write("AC1_OK\n");
 ' 2>&1)
 echo "$ac1_result"
 
-# AC-2: /run/nexus3/cred.env must contain PROBE_TOKEN=probe-secret-value.
-if grep -qF 'PROBE_TOKEN=probe-secret-value' /run/nexus3/cred.env 2>/dev/null; then
+# AC-2: /run/nexus/cred.env must contain PROBE_TOKEN=probe-secret-value.
+if grep -qF 'PROBE_TOKEN=probe-secret-value' /run/nexus/cred.env 2>/dev/null; then
   echo "AC2_OK"
 else
   echo "FAIL AC-2: PROBE_TOKEN=probe-secret-value absent from cred.env"
-  echo "  cred.env keys: $(grep -oP '^[A-Z_]+(?==)' /run/nexus3/cred.env 2>/dev/null | tr '\n' ' ')"
+  echo "  cred.env keys: $(grep -oP '^[A-Z_]+(?==)' /run/nexus/cred.env 2>/dev/null | tr '\n' ' ')"
 fi
 
-# AC-3: claude mcp list (login shell so cred.env is sourced) must list nexus3-probe and noenv-probe.
+# AC-3: claude mcp list (login shell so cred.env is sourced) must list nexus-probe and noenv-probe.
 # Does not require PROBE_TOKEN in cred.env: listing reads /root/.claude.json, not the env.
 mcp_list_out=$(bash -lc 'claude mcp list 2>&1' || true)
-if echo "$mcp_list_out" | grep -q 'nexus3-probe'; then
+if echo "$mcp_list_out" | grep -q 'nexus-probe'; then
   echo "AC3_OK"
 else
-  echo "FAIL AC-3: nexus3-probe not listed by claude mcp list"
+  echo "FAIL AC-3: nexus-probe not listed by claude mcp list"
   echo "  claude mcp list output: $mcp_list_out"
 fi
 if echo "$mcp_list_out" | grep -q 'noenv-probe'; then
@@ -263,20 +263,20 @@ echo ` + tracerToken + `
 	execOut, execErr := shareCmd(binary, "exec", handle, "--", "/bin/bash", "-c", script).CombinedOutput()
 	t.Logf("exec output:\n%s", execOut)
 	if execErr != nil {
-		t.Fatalf("nexus3 exec: %v\n%s", execErr, execOut)
+		t.Fatalf("nexus exec: %v\n%s", execErr, execOut)
 	}
 
 	if !bytes.Contains(execOut, []byte(tracerToken)) {
 		t.Errorf("tracer token %q absent — exec never completed\n%s", tracerToken, execOut)
 	}
 	if !bytes.Contains(execOut, []byte("AC1_OK")) {
-		t.Errorf("AC-1 FAIL: nexus3-probe definition not merged into /root/.claude.json mcpServers\n%s", execOut)
+		t.Errorf("AC-1 FAIL: nexus-probe definition not merged into /root/.claude.json mcpServers\n%s", execOut)
 	}
 	if !bytes.Contains(execOut, []byte("AC2_OK")) {
 		t.Errorf("AC-2 FAIL: PROBE_TOKEN=probe-secret-value absent from cred.env\n%s", execOut)
 	}
 	if !bytes.Contains(execOut, []byte("AC3_OK")) {
-		t.Errorf("AC-3 FAIL: nexus3-probe not listed by claude mcp list\n%s", execOut)
+		t.Errorf("AC-3 FAIL: nexus-probe not listed by claude mcp list\n%s", execOut)
 	}
 	if !bytes.Contains(execOut, []byte("AC3_NOENV_OK")) {
 		t.Errorf("AC-3-noenv FAIL: noenv-probe not listed by claude mcp list\n%s", execOut)
@@ -293,9 +293,9 @@ echo ` + tracerToken + `
 	t.Cleanup(func() {
 		rmOut, rmErr := shareCmd(binary, "rm", noShareHandle).CombinedOutput()
 		if rmErr != nil {
-			t.Logf("cleanup: nexus3 rm %s: %v\n%s", noShareHandle, rmErr, rmOut)
+			t.Logf("cleanup: nexus rm %s: %v\n%s", noShareHandle, rmErr, rmOut)
 		} else {
-			t.Logf("cleanup: nexus3 rm %s: %s", noShareHandle, rmOut)
+			t.Logf("cleanup: nexus rm %s: %s", noShareHandle, rmOut)
 		}
 	})
 
@@ -318,16 +318,16 @@ echo ` + tracerToken + `
 
 	noShareOut, noShareErr := noShareCmd.CombinedOutput()
 	if noShareErr != nil {
-		t.Fatalf("nexus3 create (no-share): %v\n%s", noShareErr, noShareOut)
+		t.Fatalf("nexus create (no-share): %v\n%s", noShareErr, noShareOut)
 	}
-	t.Logf("nexus3 create (no-share):\n%s", noShareOut)
+	t.Logf("nexus create (no-share):\n%s", noShareOut)
 
 	checkNoMCP := `set -euo pipefail
 node -e '
 let cfg = {};
 try { cfg = JSON.parse(require("fs").readFileSync("/root/.claude.json","utf8")); } catch(e) {}
-if (cfg.mcpServers && cfg.mcpServers["nexus3-probe"]) {
-  process.stderr.write("FAIL AC-5: nexus3-probe present in --no-share-settings sandbox\n");
+if (cfg.mcpServers && cfg.mcpServers["nexus-probe"]) {
+  process.stderr.write("FAIL AC-5: nexus-probe present in --no-share-settings sandbox\n");
   process.exit(1);
 }
 console.log("AC5_NO_MCP_OK");
@@ -336,9 +336,9 @@ console.log("AC5_NO_MCP_OK");
 	nsOut, nsErr := shareCmd(binary, "exec", noShareHandle, "--", "/bin/bash", "-c", checkNoMCP).CombinedOutput()
 	t.Logf("no-share exec: %s", nsOut)
 	if nsErr != nil {
-		t.Fatalf("nexus3 exec (no-share): %v\n%s", nsErr, nsOut)
+		t.Fatalf("nexus exec (no-share): %v\n%s", nsErr, nsOut)
 	}
 	if !bytes.Contains(nsOut, []byte("AC5_NO_MCP_OK")) {
-		t.Errorf("--no-share-settings sandbox unexpectedly has nexus3-probe in mcpServers\n%s", nsOut)
+		t.Errorf("--no-share-settings sandbox unexpectedly has nexus-probe in mcpServers\n%s", nsOut)
 	}
 }

@@ -16,17 +16,17 @@ import (
 // is baked into the image rather than seeded after boot.
 const RuncShimInstallPath = "/usr/local/sbin/runc"
 
-// runcShimContextFilename is the shim's filename inside the "nexus3agent"
+// runcShimContextFilename is the shim's filename inside the "nexusagent"
 // named build context.
-const runcShimContextFilename = "nexus3-runc"
+const runcShimContextFilename = "nexus-runc"
 
 // runcShimScript is the shim source. It is a fingerprint input
 // ([BuildFingerprint]) so a shim change rebuilds cached images.
 //
-//go:embed nexus3-runc.sh
+//go:embed nexus-runc.sh
 var runcShimScript []byte
 
-// stageRuncShim writes the shim into agentDir (the "nexus3agent" build
+// stageRuncShim writes the shim into agentDir (the "nexusagent" build
 // context) and returns its context-relative filename.
 func stageRuncShim(agentDir string) (string, error) {
 	if err := os.WriteFile(filepath.Join(agentDir, runcShimContextFilename), runcShimScript, 0755); err != nil {

@@ -1,7 +1,7 @@
 // netns_backfill.go — verified reconstruction of the netns identity fields
 // (NetnsChildPID, NetnsChildPGID, NetnsChildStartTime, GuestTapName,
 // CHAPISocket) for a sandbox that was already running before slice 04 landed
-// (ticket 11, nexus3-host-supervisor-hotswap).
+// (ticket 11, nexus-host-supervisor-hotswap).
 //
 // # Why reconstruction, not supervisor self-registration
 //
@@ -32,7 +32,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 )
 
 // NetnsIdentity is a verified netns child identity, ready to persist onto

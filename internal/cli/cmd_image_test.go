@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -443,7 +443,7 @@ func TestImageBuild_JSON_FakeBuilder(t *testing.T) {
 	d, _ := fakeDigest("built rootfs content")
 	fakeImg := domain.Image{
 		Digest: d,
-		Ref:    "nexus3-base:test",
+		Ref:    "nexus-base:test",
 		Kind:   domain.KindBase,
 		Size:   42,
 	}
@@ -451,7 +451,7 @@ func TestImageBuild_JSON_FakeBuilder(t *testing.T) {
 
 	out, stdout, _ := capture(true)
 	if err := runImageWithService(context.Background(),
-		[]string{"build", "--base", "debian:bookworm-slim", "--workspace", t.TempDir(), "--ref", "nexus3-base:test"},
+		[]string{"build", "--base", "debian:bookworm-slim", "--workspace", t.TempDir(), "--ref", "nexus-base:test"},
 		out, svc); err != nil {
 		t.Fatalf("image build: %v", err)
 	}
@@ -472,8 +472,8 @@ func TestImageBuild_JSON_FakeBuilder(t *testing.T) {
 	if data["digest"] != d.String() {
 		t.Errorf("digest: got %v, want %s", data["digest"], d)
 	}
-	if data["ref"] != "nexus3-base:test" {
-		t.Errorf("ref: got %v, want nexus3-base:test", data["ref"])
+	if data["ref"] != "nexus-base:test" {
+		t.Errorf("ref: got %v, want nexus-base:test", data["ref"])
 	}
 	if data["size"] != float64(42) {
 		t.Errorf("size: got %v, want 42", data["size"])

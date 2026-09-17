@@ -1,4 +1,4 @@
-// Package agent provides the host-side agent client for nexus3.
+// Package agent provides the host-side agent client for nexus.
 //
 // The client dials a guest VM through the [driver.GuestDialer] interface and
 // speaks two independent protocols:
@@ -13,7 +13,7 @@
 //
 // The host-side buffer maintained by this package is only a transient
 // repaint/fan-out cache; the authoritative output history lives in the
-// in-guest ring (cmd/nexus3-agent, a later slice).
+// in-guest ring (cmd/nexus-agent, a later slice).
 package agent
 
 import (
@@ -28,10 +28,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
-	"github.com/IniZio/nexus3/internal/core/agent/wire"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/agent/wire"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // Client is the host-side agent client. It dials the guest agent over a
@@ -54,10 +54,10 @@ func NewClient(d driver.GuestDialer, id domain.SandboxID) *Client {
 // [agentpb.AgentServiceClient]. The caller must close the returned
 // [*grpc.ClientConn] when done.
 func (c *Client) controlClient(ctx context.Context) (agentpb.AgentServiceClient, *grpc.ClientConn, error) {
-	// "passthrough:///nexus3-agent" bypasses the DNS resolver and makes grpc
+	// "passthrough:///nexus-agent" bypasses the DNS resolver and makes grpc
 	// use the WithContextDialer exclusively, which is what we need for vsock.
 	cc, err := grpc.NewClient(
-		"passthrough:///nexus3-agent",
+		"passthrough:///nexus-agent",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return c.dialer.DialGuest(ctx, c.id, driver.AgentControlPort)
 		}),
@@ -101,7 +101,7 @@ func (c *Client) AgentInfo(ctx context.Context) (string, error) {
 
 // AgentUpgradeOptions configures [Client.AgentUpgrade].
 type AgentUpgradeOptions struct {
-	// LocalBinaryPath is the path on the host to the replacement nexus3-agent
+	// LocalBinaryPath is the path on the host to the replacement nexus-agent
 	// binary.  It is pushed to the guest via Copy, then RestartAgent is called.
 	LocalBinaryPath string
 	// Force bypasses the active-sessions guard in the guest.
@@ -112,7 +112,7 @@ type AgentUpgradeOptions struct {
 // sandbox.  It:
 //  1. Reads the local binary and records its byte count.
 //  2. Pushes it to a staging path on the SAME filesystem as the install path
-//     (/sbin/.nexus3-agent.upgrade) to avoid EXDEV on os.Rename.
+//     (/sbin/.nexus-agent.upgrade) to avoid EXDEV on os.Rename.
 //  3. Calls RestartAgent{staged_path, expected_bytes, force}.
 //  4. Waits (via Ping) until the new agent is reachable.
 //  5. Calls AgentInfo to return the new build tag.
@@ -140,7 +140,7 @@ func (c *Client) AgentUpgrade(ctx context.Context, opts AgentUpgradeOptions) (ne
 
 	// ── Step 2: push to staging path on same filesystem as install path ────
 	// The staging path MUST be on the rootfs ext4 partition (same device as
-	// /sbin/nexus3-agent).  Using /tmp would cross the tmpfs→ext4 boundary
+	// /sbin/nexus-agent).  Using /tmp would cross the tmpfs→ext4 boundary
 	// and cause EXDEV on os.Rename inside the guest.
 	f, err := os.Open(opts.LocalBinaryPath)
 	if err != nil {
@@ -148,10 +148,10 @@ func (c *Client) AgentUpgrade(ctx context.Context, opts AgentUpgradeOptions) (ne
 	}
 	defer f.Close()
 
-	// agentStagingPath must match agentStagingPath in cmd/nexus3-agent/swap_linux.go.
+	// agentStagingPath must match agentStagingPath in cmd/nexus-agent/swap_linux.go.
 	// It is hardcoded here (not exported from the agent package) because it is a
 	// guest-internal path that the host specifies in the RPC request.
-	const stagedPath = "/sbin/.nexus3-agent.upgrade"
+	const stagedPath = "/sbin/.nexus-agent.upgrade"
 	if err := c.Copy(ctx, CopyOptions{
 		Direction:     agentpb.CopyDirection_COPY_DIRECTION_PUSH,
 		GuestPath:     stagedPath,

@@ -5,8 +5,8 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func init() {
@@ -40,7 +40,7 @@ type reapReportJSON struct {
 	// reclaim a live netns-child orphan (no file was deleted for these).
 	KilledPIDs []int `json:"killed_pids"`
 	// ZombieProcesses is the count of zombie processes encountered during the
-	// netns sweep. The dominant source is unwaited virtiofsd/nexus3 children.
+	// netns sweep. The dominant source is unwaited virtiofsd/nexus children.
 	// Does not affect exit code.
 	ZombieProcesses int `json:"zombie_processes"`
 	// UninspectableProcesses is the count of non-zombie processes skipped
@@ -53,9 +53,9 @@ type reapReportJSON struct {
 
 // runReap is the registered Run function for the "reap" command.
 //
-// Usage: nexus3 reap [--apply]
+// Usage: nexus reap [--apply]
 //
-// Enumerates all nexus3 host resources by scanning the filesystem directly
+// Enumerates all nexus host resources by scanning the filesystem directly
 // (never the record store). Classifies each as orphaned (no record, no live
 // process) or owned/live (keep). Defaults to dry-run; --apply is required to
 // delete anything.
@@ -71,7 +71,7 @@ func runReap(ctx context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: "reap: " + err.Error()}
 	}
 	if fs.NArg() > 0 {
-		return &UsageError{Msg: fmt.Sprintf("reap: unexpected argument %q; usage: nexus3 reap [--apply]", fs.Arg(0))}
+		return &UsageError{Msg: fmt.Sprintf("reap: unexpected argument %q; usage: nexus reap [--apply]", fs.Arg(0))}
 	}
 	return runReapWith(ctx, *applyFlag, out)
 }
@@ -184,12 +184,12 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 	// be the LOUD path, not indistinguishable from a clean report.
 	if orphans == 0 && suspects == 0 {
 		fmt.Fprintln(out.w, "No orphaned resources found.")
-		// Separate counts keep the virtiofsd/nexus3 Wait() leak visible while
+		// Separate counts keep the virtiofsd/nexus Wait() leak visible while
 		// clearly distinguishing it from inaccessible-dumpable processes.
 		// Neither count affects the exit code — mutation proof in
 		// TestRunReapFull_UninspectableExitsZero.
 		if report.ZombieProcesses > 0 {
-			fmt.Fprintf(out.w, "%d zombie process(es) encountered (unwaited virtiofsd/nexus3 children; not orphans).\n", report.ZombieProcesses)
+			fmt.Fprintf(out.w, "%d zombie process(es) encountered (unwaited virtiofsd/nexus children; not orphans).\n", report.ZombieProcesses)
 		}
 		if report.UninspectableProcesses > 0 {
 			fmt.Fprintf(out.w, "%d process(es) inaccessible (cleared dumpable flag or vanished; not orphans).\n", report.UninspectableProcesses)
@@ -232,7 +232,7 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 	}
 
 	if report.ZombieProcesses > 0 {
-		fmt.Fprintf(out.w, "\n%d zombie process(es) encountered (unwaited virtiofsd/nexus3 children; not orphans).\n", report.ZombieProcesses)
+		fmt.Fprintf(out.w, "\n%d zombie process(es) encountered (unwaited virtiofsd/nexus children; not orphans).\n", report.ZombieProcesses)
 	}
 	if report.UninspectableProcesses > 0 {
 		fmt.Fprintf(out.w, "\n%d process(es) inaccessible (cleared dumpable flag or vanished; not orphans).\n", report.UninspectableProcesses)
@@ -251,7 +251,7 @@ func runReapFull(ctx context.Context, st store.Store, idx *service.ResourceIndex
 		for _, f := range report.Failed {
 			fmt.Fprintf(out.Stderr(), "  %s\n          %s\n", f.Path, f.Reason)
 		}
-		fmt.Fprintf(out.Stderr(), "Re-run `nexus3 reap --apply`; if a path fails twice, inspect it by hand.\n")
+		fmt.Fprintf(out.Stderr(), "Re-run `nexus reap --apply`; if a path fails twice, inspect it by hand.\n")
 		return &ExitCodeError{Code: 1}
 	}
 

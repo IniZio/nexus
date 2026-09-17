@@ -37,11 +37,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // cacheDiskHelperAcquiredFile is where the re-execed "supervisor" records the
@@ -63,7 +63,7 @@ const cacheDiskHelperLeaseFDFile = "leasefds.txt"
 // writes the pid of a netns-SHAPED grandchild it spawns after taking its
 // leases. SpawnDetached sets no environment of its own, so the subprocess
 // inherits this from the test process.
-const cacheDiskHelperNetnsChildEnv = "NEXUS3_TEST_CACHEDISK_NETNS_CHILD_PIDFILE"
+const cacheDiskHelperNetnsChildEnv = "NEXUS_TEST_CACHEDISK_NETNS_CHILD_PIDFILE"
 
 // spawnNetnsShapedGrandchild reproduces, inside the helper "supervisor", the
 // second execve that ch_netns.go performs: exec.Cmd with a single pipe in
@@ -476,7 +476,7 @@ func TestServeAdoptedSupervisor_RefusesWhenRecordedSlotIsHeld(t *testing.T) {
 // so without the FD_CLOEXEC set in builder.AdoptCacheDiskLeaseFD the flock
 // survives into the grandchild — and a supervisor SIGKILL leaves the slot
 // LOCKED by a process that is not a supervisor at all, wedging both
-// `nexus3 recover` and `supervisor-upgrade` of a builder VM.
+// `nexus recover` and `supervisor-upgrade` of a builder VM.
 //
 // The assertion is on the LOCK STATE (a real LOCK_EX|LOCK_NB probe after the
 // supervisor is gone and while the grandchild is provably still alive), not on
@@ -553,7 +553,7 @@ func TestCacheDiskLease_DiesWithTheSupervisorNotWithTheNetnsGrandchild(t *testin
 		t.Fatal("supervisor survived SIGKILL")
 	}
 
-	// ── 5. The slot must be reclaimable — this is what `nexus3 recover` and
+	// ── 5. The slot must be reclaimable — this is what `nexus recover` and
 	//       `supervisor-upgrade` do next ───────────────────────────────────
 	deadline := time.Now().Add(10 * time.Second)
 	var reclaimed *builder.CacheDiskLease
@@ -571,7 +571,7 @@ func TestCacheDiskLease_DiesWithTheSupervisorNotWithTheNetnsGrandchild(t *testin
 	}
 	if reclaimed == nil {
 		t.Fatalf("slot on fd %d is STILL LOCKED after the supervisor died, while the netns grandchild "+
-			"(pid %d) is alive: the lease was inherited across the second execve — `nexus3 recover` and "+
+			"(pid %d) is alive: the lease was inherited across the second execve — `nexus recover` and "+
 			"`supervisor-upgrade` of a builder VM both block here", leaseFD, grandPid)
 	}
 	reclaimed.Release()

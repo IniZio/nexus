@@ -27,9 +27,9 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
-	"github.com/IniZio/nexus3/internal/core/bootspec"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/bootspec"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // pullAmd64RemoteImage is a var so tests can override it without hitting the network.
@@ -58,8 +58,8 @@ var pullAmd64RemoteImage = func(ctx context.Context, ociRef string) (v1.Image, e
 // converts it to a bootable ext4 rootfs by:
 //
 //  1. extracting all layers (OCI whiteout semantics),
-//  2. injecting the nexus3-agent binary as /sbin/nexus3-agent (kernel init= path)
-//     and /usr/local/bin/nexus3-agent, plus /etc/nexus3/boot.json derived from
+//  2. injecting the nexus-agent binary as /sbin/nexus-agent (kernel init= path)
+//     and /usr/local/bin/nexus-agent, plus /etc/nexus/boot.json derived from
 //     the image's OCI config (Entrypoint/Cmd/WorkingDir/Env),
 //  3. building a raw ext4 image via mke2fs,
 //  4. storing the result in the image cache keyed by the SHA-256 of the ext4
@@ -68,8 +68,8 @@ var pullAmd64RemoteImage = func(ctx context.Context, ociRef string) (v1.Image, e
 // A subsequent call with the same ociRef skips the pull and returns the cached
 // digest immediately (ref-based hit).
 //
-// agentBytes must be the raw bytes of the nexus3-agent binary. The caller is
-// responsible for locating it (e.g. exec.LookPath("nexus3-agent") + os.ReadFile).
+// agentBytes must be the raw bytes of the nexus-agent binary. The caller is
+// responsible for locating it (e.g. exec.LookPath("nexus-agent") + os.ReadFile).
 //
 // TODO(auth): pass credentials for private-registry pulls via remote.WithAuth.
 func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBytes []byte) (digest string, err error) {
@@ -95,7 +95,7 @@ func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBy
 		return "", fmt.Errorf("ocirun: pull %q: %w", ociRef, err)
 	}
 
-	stagingDir, err := os.MkdirTemp("", "nexus3-ocirun-rootfs-*")
+	stagingDir, err := os.MkdirTemp("", "nexus-ocirun-rootfs-*")
 	if err != nil {
 		return "", fmt.Errorf("ocirun: staging dir: %w", err)
 	}
@@ -112,7 +112,7 @@ func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBy
 	}
 
 	// Build ext4 to a temp file; compute its SHA-256; commit to cache.
-	tmpExt4, err := os.CreateTemp("", "nexus3-ocirun-*.ext4")
+	tmpExt4, err := os.CreateTemp("", "nexus-ocirun-*.ext4")
 	if err != nil {
 		return "", fmt.Errorf("ocirun: temp ext4: %w", err)
 	}
@@ -151,24 +151,24 @@ func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBy
 }
 
 // addUserRunLayers injects the minimal files needed to boot a user-run OCI image
-// as a nexus3 VM rootfs. It is intentionally a strict subset of addBootLayers —
+// as a nexus VM rootfs. It is intentionally a strict subset of addBootLayers —
 // specifically it does NOT inject builder-specific files (/run/buildkit,
 // /var/lib/buildkit, builder-init.sh, NEXUS_VMBUILDER=1 env) which are only
 // needed by the builder VM (moby/buildkit).
 //
 // What it injects:
 //
-//  1. /sbin/nexus3-agent  — PID-1 via kernel cmdline "init=/sbin/nexus3-agent"
+//  1. /sbin/nexus-agent  — PID-1 via kernel cmdline "init=/sbin/nexus-agent"
 //     (the kernel does NOT follow symlinks for init=, so a physical copy is required)
-//  2. /usr/local/bin/nexus3-agent  — conventional PATH location
-//  3. /etc/nexus3/boot.json  — derived from the OCI image config (Entrypoint/Cmd/
+//  2. /usr/local/bin/nexus-agent  — conventional PATH location
+//  3. /etc/nexus/boot.json  — derived from the OCI image config (Entrypoint/Cmd/
 //     WorkingDir/Env) via bootspec.FromOCIImageConfig; omitted when the image has
 //     no declared process (pure dev-workspace case, matching devcontainers behaviour)
 //  4. /etc/securetty — ttyS0 appended for serial console login
 //  5. /etc/resolv.conf — seeded with public DNS; guest agent overwrites after boot
 func addUserRunLayers(stagingDir string, agentBytes []byte, img v1.Image) error {
-	// nexus3-agent binary at /sbin/ and /usr/local/bin/.
-	for _, rel := range []string{"sbin/nexus3-agent", "usr/local/bin/nexus3-agent"} {
+	// nexus-agent binary at /sbin/ and /usr/local/bin/.
+	for _, rel := range []string{"sbin/nexus-agent", "usr/local/bin/nexus-agent"} {
 		dst := filepath.Join(stagingDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("mkdir for %s: %w", rel, err)
@@ -179,7 +179,7 @@ func addUserRunLayers(stagingDir string, agentBytes []byte, img v1.Image) error 
 		}
 	}
 
-	// /etc/nexus3/boot.json from the OCI image config.
+	// /etc/nexus/boot.json from the OCI image config.
 	cf, err := img.ConfigFile()
 	if err != nil {
 		return fmt.Errorf("read OCI config file: %w", err)
@@ -191,16 +191,16 @@ func addUserRunLayers(stagingDir string, agentBytes []byte, img v1.Image) error 
 		Env:        cf.Config.Env,
 	})
 	if len(spec.Tasks) > 0 {
-		bootDir := filepath.Join(stagingDir, "etc", "nexus3")
+		bootDir := filepath.Join(stagingDir, "etc", "nexus")
 		if err := os.MkdirAll(bootDir, 0o755); err != nil {
-			return fmt.Errorf("mkdir /etc/nexus3: %w", err)
+			return fmt.Errorf("mkdir /etc/nexus: %w", err)
 		}
 		data, err := json.Marshal(spec)
 		if err != nil {
 			return fmt.Errorf("marshal boot.json: %w", err)
 		}
 		if err := os.WriteFile(filepath.Join(bootDir, "boot.json"), data, 0o644); err != nil {
-			return fmt.Errorf("write /etc/nexus3/boot.json: %w", err)
+			return fmt.Errorf("write /etc/nexus/boot.json: %w", err)
 		}
 	}
 
@@ -233,7 +233,7 @@ func addUserRunLayers(stagingDir string, agentBytes []byte, img v1.Image) error 
 	}
 	resolvDst := filepath.Join(etcDir, "resolv.conf")
 	_ = os.Remove(resolvDst) // remove any pre-existing symlink
-	const resolvContents = "# seeded by nexus3 ocirun — agent overwrites after boot\nnameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+	const resolvContents = "# seeded by nexus ocirun — agent overwrites after boot\nnameserver 8.8.8.8\nnameserver 1.1.1.1\n"
 	if err := os.WriteFile(resolvDst, []byte(resolvContents), 0o644); err != nil {
 		return fmt.Errorf("write /etc/resolv.conf: %w", err)
 	}

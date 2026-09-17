@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
-	mcpsrv "github.com/IniZio/nexus3/internal/mcp"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vmcfg"
+	mcpsrv "github.com/IniZio/nexus/internal/mcp"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -44,7 +44,7 @@ type mcpService struct {
 // cache_root as a parameter).
 func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, opts service.CreateAndBootOptions) (domain.Sandbox, error) {
 	// Preflight: validate the kernel path before image-cache or driver setup so
-	// that a missing/misconfigured NEXUS3_KERNEL_PATH surfaces immediately with
+	// that a missing/misconfigured NEXUS_KERNEL_PATH surfaces immediately with
 	// an actionable error rather than after expensive work inside CreateAndBoot.
 	kernelPath, err := resolveKernelPath()
 	if err != nil {

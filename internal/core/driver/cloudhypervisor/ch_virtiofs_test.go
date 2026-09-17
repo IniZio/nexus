@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // fakeVirtiofsd writes a shell script to a temp dir that, when executed,
@@ -270,7 +270,7 @@ func TestSpawnVirtiofsdForMounts_RealBinary(t *testing.T) {
 
 // TestVmFsConfig_Marshal verifies vmFsConfig serialises to CH's FsConfig shape.
 func TestVmFsConfig_Marshal(t *testing.T) {
-	fs := vmFsConfig{Tag: "nx3fs0", Socket: "/run/nexus3/id.vfs0"}
+	fs := vmFsConfig{Tag: "nx3fs0", Socket: "/run/nexus/id.vfs0"}
 	b, err := json.Marshal(fs)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)

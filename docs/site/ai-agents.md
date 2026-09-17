@@ -1,16 +1,16 @@
 ---
 title: "AI Agents"
-description: "Drive nexus3 sandboxes from an AI agent via MCP or the herdr plugin launch path"
+description: "Drive nexus sandboxes from an AI agent via MCP or the herdr plugin launch path"
 ---
 
 # AI Agents
 
 > One sandbox per task — isolated Linux VMs driven by a single MCP call.
 
-nexus3 exposes its full sandbox lifecycle over an MCP server. Any MCP-compatible agent can create, start, exec, and remove sandboxes without shelling out to the CLI. The CLI and MCP server share the same underlying service — capabilities are identical.
+nexus exposes its full sandbox lifecycle over an MCP server. Any MCP-compatible agent can create, start, exec, and remove sandboxes without shelling out to the CLI. The CLI and MCP server share the same underlying service — capabilities are identical.
 
 ```bash
-claude mcp add --transport stdio nexus3 -- nexus3 mcp
+claude mcp add --transport stdio nexus -- nexus mcp
 ```
 
 ---
@@ -20,21 +20,21 @@ claude mcp add --transport stdio nexus3 -- nexus3 mcp
 Start the server manually to verify it is working:
 
 ```
-nexus3 mcp
+nexus mcp
 ```
 
 Register it with Claude Code once; it persists across sessions:
 
 ```bash
-claude mcp add --transport stdio nexus3 -- nexus3 mcp
+claude mcp add --transport stdio nexus -- nexus mcp
 ```
 
 Or install the Claude Code plugin, which registers the MCP server together with
-the `nexus3` skill and commands:
+the `nexus` skill and commands:
 
 ```bash
-claude plugin marketplace add IniZio/nexus3
-claude plugin install nexus3@nexus3
+claude plugin marketplace add IniZio/nexus
+claude plugin install nexus@nexus
 ```
 
 ### Tools <Badge type="tip" text="built" />
@@ -73,19 +73,19 @@ The canonical pattern: one sandbox per task, labelled for fleet selection and te
 
 ```
 # create a dedicated sandbox for this task
-nexus3 create myproject/task-42 \
-  --image nexus3-base:20260807 \
+nexus create myproject/task-42 \
+  --image nexus-base:20260807 \
   --label task-id=42 \
   --memory 4096
 
 # run the agent inside it
-nexus3 exec myproject/task-42 -- /usr/local/bin/claude --task "fix the flaky test"
+nexus exec myproject/task-42 -- /usr/local/bin/claude --task "fix the flaky test"
 
 # tear down when done
-nexus3 rm myproject/task-42
+nexus rm myproject/task-42
 ```
 
-<Badge type="tip" text="built" /> — the flat verbs shown above are the real CLI surface; `nexus3 sandbox create` remains an equivalent alias. See [CLI sandbox commands](/cli/sandbox-commands). <!-- cli-spelling-exempt -->
+<Badge type="tip" text="built" /> — the flat verbs shown above are the real CLI surface; `nexus sandbox create` remains an equivalent alias. See [CLI sandbox commands](/cli/sandbox-commands). <!-- cli-spelling-exempt -->
 
 For higher throughput, the herdr plugin's `launch` path (below) boots the sandbox and execs the agent in a single call, and wires the credential mount automatically.
 
@@ -93,13 +93,13 @@ For higher throughput, the herdr plugin's `launch` path (below) boots the sandbo
 
 ## Choosing an agent: `--agent` <Badge type="tip" text="built" />
 
-`nexus3 create --agent <name>` records which agent profile a sandbox is for. The profile is not a label — it decides the credential delivery, the egress allowlist, and the guest environment the sandbox gets:
+`nexus create --agent <name>` records which agent profile a sandbox is for. The profile is not a label — it decides the credential delivery, the egress allowlist, and the guest environment the sandbox gets:
 
 ```sh
-nexus3 create myproject/task-42 --agent claude-code --image nexus3-agent-base
+nexus create myproject/task-42 --agent claude-code --image nexus-agent-base
 ```
 
-The chosen name is persisted on the record and shown in the `AGENT` column of `nexus3 ps` and the herdr overlay, so a sandbox never disagrees with itself about which agent is running inside it.
+The chosen name is persisted on the record and shown in the `AGENT` column of `nexus ps` and the herdr overlay, so a sandbox never disagrees with itself about which agent is running inside it.
 
 ### Registered profiles
 
@@ -136,16 +136,16 @@ The `claudeReadyMatch` detector that drives `delegate_agent_dispatch` is calibra
 
 ## herdr plugin launch path
 
-`herdr` is the plugin-private command group between nexus3 and the herdr workspace plugin. The `launch` subcommand is the primary path for booting an agent sandbox from an orchestrator:
+`herdr` is the plugin-private command group between nexus and the herdr workspace plugin. The `launch` subcommand is the primary path for booting an agent sandbox from an orchestrator:
 
 ```
-nexus3 herdr launch --agent-egress \
-  nexus3-base:20260807 \
+nexus herdr launch --agent-egress \
+  nexus-base:20260807 \
   /usr/local/bin/claude
 ```
 
 - `<command>` must be an absolute path (e.g. `/usr/local/bin/claude`).
-- `--agent-egress` hands the booted VM to a detached perimeter supervisor (`nexus3 __supervisor`, ephemeral mode) which owns the egress allowlist (`api.anthropic.com`, `platform.claude.com`), the MITM proxy, the CA seed, and the credential guardian. For claude-code, the credential guardian monitors `~/.claude/.credentials.json` and proactively refreshes it; the guest reads the file directly from the live mount.
+- `--agent-egress` hands the booted VM to a detached perimeter supervisor (`nexus __supervisor`, ephemeral mode) which owns the egress allowlist (`api.anthropic.com`, `platform.claude.com`), the MITM proxy, the CA seed, and the credential guardian. For claude-code, the credential guardian monitors `~/.claude/.credentials.json` and proactively refreshes it; the guest reads the file directly from the live mount.
 - Without the flag no supervisor is started, and therefore no perimeter process pumps the guest's network device — the sandbox has **no egress at all**, not open egress.
 - Teardown stops the supervisor and waits for it to exit; a parent-watchdog pipe tears the VM down even if the caller is `SIGKILL`ed.
 
@@ -153,19 +153,19 @@ nexus3 herdr launch --agent-egress \
 
 ### Public agent launch surface <Badge type="danger" text="not built" />
 
-A single `nexus3 agent launch` public command will wrap `nexus3 herdr launch` with a stable, versioned interface for external orchestrators. Today, external callers use the `herdr` group or the MCP tools.
+A single `nexus agent launch` public command will wrap `nexus herdr launch` with a stable, versioned interface for external orchestrators. Today, external callers use the `herdr` group or the MCP tools.
 
 ---
 
 ## Port auto-forward <Badge type="tip" text="built" />
 
-When a guest process binds a TCP port in the range 1024–11023, nexus3 auto-discovers it (via `/proc/net/tcp` polling inside the sandbox) and makes it available at the same port number on the host at `127.0.0.1:<port>`. A remote herdr client sees the port forwarded to `127.0.0.1:<port>` on the laptop, also at the same number.
+When a guest process binds a TCP port in the range 1024–11023, nexus auto-discovers it (via `/proc/net/tcp` polling inside the sandbox) and makes it available at the same port number on the host at `127.0.0.1:<port>`. A remote herdr client sees the port forwarded to `127.0.0.1:<port>` on the laptop, also at the same number.
 
-This requires **herdr ≥ 0.9** on the remote client. nexus3 declares `min_herdr_version = "0.9.0"` and plugin ABI `"3"` in the herdr plugin manifest; herdr versions below 0.9 fail the ABI probe at install time with a clear version message.
+This requires **herdr ≥ 0.9** on the remote client. nexus declares `min_herdr_version = "0.9.0"` and plugin ABI `"3"` in the herdr plugin manifest; herdr versions below 0.9 fail the ABI probe at install time with a clear version message.
 
-Port-forward state is persisted under `~/.config/herdr/portfwd/` on the herdr host. Forwarded ports appear in the herdr overlay alongside the sandbox that owns them. When the guest listener closes, nexus3 cancels the forward and the port disappears from the laptop within the reconcile interval.
+Port-forward state is persisted under `~/.config/herdr/portfwd/` on the herdr host. Forwarded ports appear in the herdr overlay alongside the sandbox that owns them. When the guest listener closes, nexus cancels the forward and the port disappears from the laptop within the reconcile interval.
 
-**Remote-client focus scoping:** `nexus3-client` on a laptop scopes forwards to the sandbox bound to the focused herdr workspace. Unfocusing removes its forwards from `127.0.0.1` within one reconcile tick (≤ 5 s); focusing restores them. Forwards of unfocused sandboxes are never applied. Host-side listeners are not affected — focus scoping is client-side only.
+**Remote-client focus scoping:** `nexus-client` on a laptop scopes forwards to the sandbox bound to the focused herdr workspace. Unfocusing removes its forwards from `127.0.0.1` within one reconcile tick (≤ 5 s); focusing restores them. Forwards of unfocused sandboxes are never applied. Host-side listeners are not affected — focus scoping is client-side only.
 
 > Note: the same-number invariant (`127.0.0.1:5173` on the guest → `127.0.0.1:5173` on the host) is preserved end-to-end. Renumbering would break OAuth redirect URIs and Vite HMR WebSocket URLs.
 
@@ -176,14 +176,14 @@ Port-forward state is persisted under `~/.config/herdr/portfwd/` on the herdr ho
 | Surface | Built | Live-proven |
 |---|---|---|
 | MCP 7-tool surface | Yes | Yes |
-| `nexus3 herdr launch` | Yes | Yes |
+| `nexus herdr launch` | Yes | Yes |
 | `--agent-egress` perimeter handoff (MITM + credential guardian) | Yes | Yes |
-| `nexus3 herdr space-create` / `herdr create-from-file` | Yes | Yes |
-| `nexus3 recipe` CLI (Orca) | Yes | Yes |
+| `nexus herdr space-create` / `herdr create-from-file` | Yes | Yes |
+| `nexus recipe` CLI (Orca) | Yes | Yes |
 | `~/.claude` live-mount credential delivery for claude-code | Yes | Yes |
 | auto permission mode (no `--dangerously-skip-permissions`) | Yes | Yes |
 | git SSH relay to GitHub via host ssh-agent | Yes | Yes |
 | Port auto-forward (herdr ≥ 0.9, ABI 3) | Yes | Yes |
-| `nexus3 herdr launch -v` | No | — |
-| `nexus3 agent launch` public command | No | — |
+| `nexus herdr launch -v` | No | — |
+| `nexus agent launch` public command | No | — |
 | MCP log streaming / pane attach | No | — |

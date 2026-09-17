@@ -1,4 +1,4 @@
-module github.com/IniZio/nexus3
+module github.com/IniZio/nexus
 
 go 1.26.0
 

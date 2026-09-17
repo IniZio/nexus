@@ -15,8 +15,8 @@
 //
 // Environment variables:
 //
-//	NEXUS3            path to nexus3 binary (default: nexus3 on PATH)
-//	NEXUS3_STATE_DIR  nexus3 state directory (default: ~/.local/state/nexus3)
+//	NEXUS            path to nexus binary (default: nexus on PATH)
+//	NEXUS_STATE_DIR  nexus state directory (default: ~/.local/state/nexus)
 //
 // Exit codes:
 //
@@ -35,7 +35,7 @@ import (
 	"path/filepath"
 	"time"
 
-	repro "github.com/IniZio/nexus3/internal/test/repro"
+	repro "github.com/IniZio/nexus/internal/test/repro"
 )
 
 func main() {
@@ -56,21 +56,21 @@ func main() {
 		}
 	}
 
-	stateDir := os.Getenv("NEXUS3_STATE_DIR")
+	stateDir := os.Getenv("NEXUS_STATE_DIR")
 	if stateDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			fatalf("cannot determine home dir: %v", err)
 		}
-		stateDir = filepath.Join(home, ".local", "state", "nexus3")
+		stateDir = filepath.Join(home, ".local", "state", "nexus")
 	}
 
-	agentBin, _ := exec.LookPath("nexus3-agent")
+	agentBin, _ := exec.LookPath("nexus-agent")
 
 	// baseBuild is the shared BuildConfig used by all phases.
 	// Each phase overrides SandboxName and (where applicable) BuilderMemoryMiB.
 	baseBuild := repro.BuildConfig{
-		Nexus3:         os.Getenv("NEXUS3"),
+		Nexus:          os.Getenv("NEXUS"),
 		Workspace:      filepath.Join(reproDir, "workspace"),
 		Project:        "repro",
 		SandboxName:    phase, // overridden per-run inside each phase

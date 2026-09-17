@@ -179,7 +179,7 @@ func TestPruneFull_wtSandboxPresentWorkspaceGone_reapsVM(t *testing.T) {
 	h := newPruneHarness(t)
 	const handle = "myrepo/feature-foo"
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + handle,
+		SpaceLabel:       "nexus:" + handle,
 		HerdrWorkspaceID: "wTEST-gone",
 		SandboxHandle:    handle,
 		SandboxID:        "sb-abc",
@@ -223,7 +223,7 @@ func TestPruneFull_nonWtWorkspaceGone_doesNotReapVM(t *testing.T) {
 	h := newPruneHarness(t)
 	const handle = "ac3/demo-sandbox"
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + handle,
+		SpaceLabel:       "nexus:" + handle,
 		HerdrWorkspaceID: "wTEST-ac3",
 		SandboxHandle:    handle,
 		SandboxID:        "sb-nonwt",
@@ -252,7 +252,7 @@ func TestPruneFull_wtSandboxAlreadyAbsent_doesNotCallRemove(t *testing.T) {
 	h := newPruneHarness(t)
 	const handle = "wt/feature-bar"
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + handle,
+		SpaceLabel:       "nexus:" + handle,
 		HerdrWorkspaceID: "wTEST-absent",
 		SandboxHandle:    handle,
 		SandboxID:        "sb-gone",
@@ -279,7 +279,7 @@ func TestPruneFull_dryRun_neverCallsRemove(t *testing.T) {
 	h := newPruneHarness(t)
 	const handle = "wt/main"
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + handle,
+		SpaceLabel:       "nexus:" + handle,
 		HerdrWorkspaceID: "wTEST-dry",
 		SandboxHandle:    handle,
 		SandboxID:        "sb-dry",
@@ -376,7 +376,7 @@ func setupWtSeams(
 // stubBinding returns a minimal HerdrSpaceBinding with a wt/ handle.
 func stubWtBinding() HerdrSpaceBinding {
 	return HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:wt/test-branch",
+		SpaceLabel:       "nexus:wt/test-branch",
 		HerdrWorkspaceID: "wTEST-sup",
 		SandboxHandle:    "wt/test-branch",
 		SandboxID:        "sb-sup",
@@ -395,8 +395,8 @@ func TestWtSupervisedShell_lastPane_callsRemover(t *testing.T) {
 	teardownCalled := setupWtSeams(t, nil /* child ok */, 0 /* no panes remain */, nil /* unused */)
 
 	binding := stubWtBinding()
-	argv := []string{"/usr/bin/nexus3", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
-	if err := herdrWtSupervisedShell(context.Background(), "/usr/bin/nexus3", binding, argv); err != nil {
+	argv := []string{"/usr/bin/nexus", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
+	if err := herdrWtSupervisedShell(context.Background(), "/usr/bin/nexus", binding, argv); err != nil {
 		t.Fatalf("herdrWtSupervisedShell: %v", err)
 	}
 
@@ -415,8 +415,8 @@ func TestWtSupervisedShell_otherPanesRemain_doesNotCallRemover(t *testing.T) {
 	teardownCalled := setupWtSeams(t, nil, 2 /* 2 panes remain */, nil)
 
 	binding := stubWtBinding()
-	argv := []string{"/usr/bin/nexus3", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
-	if err := herdrWtSupervisedShell(context.Background(), "/usr/bin/nexus3", binding, argv); err != nil {
+	argv := []string{"/usr/bin/nexus", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
+	if err := herdrWtSupervisedShell(context.Background(), "/usr/bin/nexus", binding, argv); err != nil {
 		t.Fatalf("herdrWtSupervisedShell: %v", err)
 	}
 
@@ -436,8 +436,8 @@ func TestWtSupervisedShell_removerError_swallowed(t *testing.T) {
 	teardownCalled := setupWtSeams(t, nil, 0, errors.New("unused: teardown errors are swallowed by herdrWtTeardownFn"))
 
 	binding := stubWtBinding()
-	argv := []string{"/usr/bin/nexus3", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
-	err := herdrWtSupervisedShell(context.Background(), "/usr/bin/nexus3", binding, argv)
+	argv := []string{"/usr/bin/nexus", "exec", "--pty", "--cwd", "/root", binding.SandboxHandle, "/bin/bash", "--login"}
+	err := herdrWtSupervisedShell(context.Background(), "/usr/bin/nexus", binding, argv)
 	if err != nil {
 		t.Errorf("herdrWtSupervisedShell returned error %v; want nil (fail-open)", err)
 	}
@@ -467,7 +467,7 @@ func TestWtSupervisedShell_nonWtPath_usesExecSeam(t *testing.T) {
 	const handle = "demo/my-sandbox"
 	const wsID = "wTEST-nonwt"
 	if err := HerdrSpacePut(context.Background(), storeRoot, HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + handle,
+		SpaceLabel:       "nexus:" + handle,
 		HerdrWorkspaceID: wsID,
 		SandboxHandle:    handle,
 		SandboxID:        "sb-nonwt",
@@ -495,7 +495,7 @@ func TestWtSupervisedShell_nonWtPath_usesExecSeam(t *testing.T) {
 	herdrAutoCreatePredicateFn = func(_ []HerdrSpaceBinding) bool { return false }
 
 	t.Setenv("HERDR_WORKSPACE_ID", wsID)
-	t.Setenv("NEXUS3_HOST_SHELL", "") // ensure not forced to host shell
+	t.Setenv("NEXUS_HOST_SHELL", "") // ensure not forced to host shell
 
 	if err := herdrDefaultShellCore(
 		context.Background(),
@@ -503,14 +503,14 @@ func TestWtSupervisedShell_nonWtPath_usesExecSeam(t *testing.T) {
 			switch key {
 			case "HERDR_WORKSPACE_ID":
 				return wsID
-			case "NEXUS3_HOST_SHELL":
+			case "NEXUS_HOST_SHELL":
 				return ""
 			}
 			return ""
 		},
 		storeRoot,
 		nil, // svc=nil: skip state check, use /root cwd
-		"/usr/bin/nexus3",
+		"/usr/bin/nexus",
 		mockExec,
 	); err != nil {
 		t.Fatalf("herdrDefaultShellCore: %v", err)
@@ -599,7 +599,7 @@ func TestWtTeardownFn_sandboxIDMismatch_guardRefusesSvcRemove(t *testing.T) {
 	// Seed the store with a binding whose SandboxID is "sb-original".
 	storeRoot := t.TempDir()
 	b := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:wt/guard-test",
+		SpaceLabel:       "nexus:wt/guard-test",
 		HerdrWorkspaceID: "wGUARD",
 		SandboxHandle:    "wt/guard-test",
 		SandboxID:        "sb-original",

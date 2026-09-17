@@ -1,6 +1,6 @@
 //go:build integration
 
-// Package selfhost — Milestone-A dogfood: in-guest claude via nexus3 zero-cred MITM perimeter.
+// Package selfhost — Milestone-A dogfood: in-guest claude via nexus zero-cred MITM perimeter.
 // Gap 1 (SeedCA): MITM CA cert at GuestCACertPath, NODE_EXTRA_CA_CERTS → Node.js direct.
 // Gap 2 (HTTPS_PROXY): not injected; transparent SNI shim via buildDialer intercepts port-443.
 package selfhost
@@ -19,21 +19,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/agent/agentpb"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 const dogfoodHaikuModel = "claude-haiku-4-5-20251001" // Exact model; test fails if rejected
@@ -43,9 +43,9 @@ func TestAgentDogfood(t *testing.T) {
 	chBin := skipUnlessCHBinSH(t)
 	skipUnlessMke2fsSH(t)
 
-	token := os.Getenv("NEXUS3_CLAUDE_OAUTH_TOKEN")
+	token := os.Getenv("NEXUS_CLAUDE_OAUTH_TOKEN")
 	if token == "" {
-		t.Skip("set NEXUS3_CLAUDE_OAUTH_TOKEN (source ~/.config/nexus3/agent.env) to run the live dogfood")
+		t.Skip("set NEXUS_CLAUDE_OAUTH_TOKEN (source ~/.config/nexus/agent.env) to run the live dogfood")
 	}
 
 	// Clear ANTHROPIC_AUTH_TOKEN so resolveAgentCredKind() returns kindOAuth
@@ -300,7 +300,7 @@ echo "=== PREFLIGHT_DONE ==="
 		Cwd: "/root",
 		Argv: []string{
 			"/usr/local/bin/claude",
-			"-p", "reply with exactly: NEXUS3_OK",
+			"-p", "reply with exactly: NEXUS_OK",
 			"--model", dogfoodHaikuModel,
 		},
 		Env:    guestEnv,
@@ -321,8 +321,8 @@ echo "=== PREFLIGHT_DONE ==="
 	if exitCode != 0 {
 		t.Fatalf("claude exited %d\noutput: %s", exitCode, output)
 	}
-	if !strings.Contains(output, "NEXUS3_OK") {
-		t.Errorf("expected output to contain NEXUS3_OK; got: %q", output)
+	if !strings.Contains(output, "NEXUS_OK") {
+		t.Errorf("expected output to contain NEXUS_OK; got: %q", output)
 		return
 	}
 	t.Logf("dogfood PASSED — model=%s response=%q", dogfoodHaikuModel, output)

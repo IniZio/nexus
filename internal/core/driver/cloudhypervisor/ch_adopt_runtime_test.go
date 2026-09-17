@@ -1,7 +1,7 @@
 // ch_adopt_runtime_test.go — tests for CHDriver.AdoptRuntime, the seam that
 // installs an already-adopted NetnsRuntime into a driver's in-memory state
 // so Observe/Stop/GuestNetworkFD operate on it as though this driver's own
-// Start had produced it (motive nexus3-host-supervisor-hotswap, slice 07).
+// Start had produced it (motive nexus-host-supervisor-hotswap, slice 07).
 package cloudhypervisor
 
 import (
@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // newTestAdoptedRuntime builds a real *NetnsRuntime via AdoptNetnsRuntime,
@@ -39,7 +39,7 @@ func newTestAdoptedRuntime(t *testing.T) *NetnsRuntime {
 		t.Fatalf("readProcStartTime(%d): %v", pid, err)
 	}
 
-	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, startTime, "nx3g-test", "/tmp/nx3-test.sock", perimFile)
+	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, startTime, "nxg-test", "/tmp/nx3-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}

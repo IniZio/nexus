@@ -28,14 +28,14 @@ func runKernelInstall(ctx context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: err.Error()}
 	}
 
-	baseURL := os.Getenv("NEXUS3_RELEASE_BASE_URL")
+	baseURL := os.Getenv("NEXUS_RELEASE_BASE_URL")
 	if baseURL == "" {
-		baseURL = "https://github.com/IniZio/nexus3/releases/download"
+		baseURL = "https://github.com/IniZio/nexus/releases/download"
 	}
 
 	ver := *flagVersion
-	if strings.HasSuffix(ver, "-dev") && os.Getenv("NEXUS3_RELEASE_BASE_URL") == "" && ver == version {
-		return &UsageError{Msg: "kernel install: --version is required for dev builds (or set NEXUS3_RELEASE_BASE_URL)"}
+	if strings.HasSuffix(ver, "-dev") && os.Getenv("NEXUS_RELEASE_BASE_URL") == "" && ver == version {
+		return &UsageError{Msg: "kernel install: --version is required for dev builds (or set NEXUS_RELEASE_BASE_URL)"}
 	}
 
 	tag := ver
@@ -79,7 +79,7 @@ func runKernelInstall(ctx context.Context, args []string, out *Output) error {
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusNotFound {
 			return &UsageError{Msg: fmt.Sprintf(
-				"kernel install: release asset not found (HTTP 404): %s\n  run: nexus3 kernel install --version <tag>",
+				"kernel install: release asset not found (HTTP 404): %s\n  run: nexus kernel install --version <tag>",
 				kernelURL,
 			)}
 		}
@@ -125,7 +125,7 @@ func downloadSHA256(url string) (string, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		return "", &UsageError{Msg: fmt.Sprintf(
-			"kernel install: release asset not found (HTTP 404): %s\n  run: nexus3 kernel install --version <tag>",
+			"kernel install: release asset not found (HTTP 404): %s\n  run: nexus kernel install --version <tag>",
 			url,
 		)}
 	}

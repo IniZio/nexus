@@ -11,16 +11,16 @@ These are the live accepted risks for v1. Each entry identifies the threat, the 
 
 ```sh
 # The exfiltration surface is the allowlist — keep it minimal
-nexus3 create --allow-host api.example.com my-sandbox
+nexus create --allow-host api.example.com my-sandbox
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 ## Live accepted risks
 
 ### Pane latency — measurement deferred
 
-**Risk**: Composed keystroke-to-echo pane latency has not been measured. nexus3 adds at least one extra network hop (vsock → host → guest) versus running directly on the host. This may produce noticeable lag in interactive pane sessions.
+**Risk**: Composed keystroke-to-echo pane latency has not been measured. nexus adds at least one extra network hop (vsock → host → guest) versus running directly on the host. This may produce noticeable lag in interactive pane sessions.
 
 **Acceptance rationale**: The latency is a post-implementation measurement item. The architecture does not preclude optimization (direct vsock paths exist). Accepted pending a real measurement run.
 
@@ -52,7 +52,7 @@ nexus3 create --allow-host api.example.com my-sandbox
 
 **Risk**: The virtiofs mount is bidirectional. A running guest can write to any path in the mounted host directory that the host process owns. A compromised agent could modify source files, corrupt the git index, or delete staged commits.
 
-**Acceptance rationale**: nexus3's threat model is credential theft and unauthorized egress — not host filesystem corruption. The mounted directory is a `git worktree` under orchestrator control; integrity can be verified after the agent exits via `git diff` or `git fsck`. The host process user, not root, owns the files; the guest cannot escalate beyond those permissions.
+**Acceptance rationale**: nexus's threat model is credential theft and unauthorized egress — not host filesystem corruption. The mounted directory is a `git worktree` under orchestrator control; integrity can be verified after the agent exits via `git diff` or `git fsck`. The host process user, not root, owns the files; the guest cannot escalate beyond those permissions.
 
 **Mitigations**: Each sandbox gets its own worktree — no two concurrent sandboxes share a mounted path. `fork` and `snapshot create` are refused on a mounted sandbox with an explicit error naming the offending host→guest pairs; the enforcement exists in the current binary.
 
@@ -74,9 +74,9 @@ These were previously open and are now closed.
 
 ## Threat model
 
-nexus3's threat model is a compromised or malicious in-guest agent. The perimeter defends against:
+nexus's threat model is a compromised or malicious in-guest agent. The perimeter defends against:
 
 1. **Credential theft**: the guest holds only useless placeholders; real tokens never cross the guest boundary.
 2. **Unauthorized lateral movement**: connections to hosts not on the allowlist are dropped at L4.
 
-The model does **not** defend against a compromised host operator. nexus3 runs as an unprivileged user process; it does not add any host-side privilege escalation surface beyond what Cloud Hypervisor requires.
+The model does **not** defend against a compromised host operator. nexus runs as an unprivileged user process; it does not add any host-side privilege escalation surface beyond what Cloud Hypervisor requires.

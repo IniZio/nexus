@@ -15,9 +15,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // createSparseFile creates a sparse file with the given apparent size. Only the
@@ -669,7 +669,7 @@ func TestReap_ConcurrentCreateInFlight(t *testing.T) {
 	if err := os.MkdirAll(pidDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	cmdline := "nexus3\x00create\x00--file\x00rootfs.ext4\x00--id\x00" + id.String() + "\x00"
+	cmdline := "nexus\x00create\x00--file\x00rootfs.ext4\x00--id\x00" + id.String() + "\x00"
 	if err := os.WriteFile(filepath.Join(pidDir, "cmdline"), []byte(cmdline), 0600); err != nil {
 		t.Fatal(err)
 	}

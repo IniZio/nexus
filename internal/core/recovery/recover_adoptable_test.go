@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	. "github.com/IniZio/nexus3/internal/core/recovery"
+	"github.com/IniZio/nexus/internal/core/domain"
+	. "github.com/IniZio/nexus/internal/core/recovery"
 )
 
 // withSupervisor sets a recorded (pid, sock) pair on the sandbox at creation.

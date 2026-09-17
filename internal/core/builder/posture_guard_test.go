@@ -24,9 +24,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder"
 	// Compile smoke for the herdr/service path.
-	_ "github.com/IniZio/nexus3/internal/core/service"
+	_ "github.com/IniZio/nexus/internal/core/service"
 )
 
 // egressFieldNames is the set of field names that, if present on BuilderVMSpec,

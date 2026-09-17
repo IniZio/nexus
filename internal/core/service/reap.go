@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // netnsRunEnv and netnsEnvAPISocket mirror
@@ -29,8 +29,8 @@ import (
 // between the two packages; NetnsEnvAPISocket is separately re-exported from
 // the same package for the same reason by internal/supervisor/netns_backfill.go.
 const (
-	netnsRunEnv       = "NEXUS3_NETNS_RUN"
-	netnsEnvAPISocket = "NEXUS3_NETNS_API_SOCKET"
+	netnsRunEnv       = "NEXUS_NETNS_RUN"
+	netnsEnvAPISocket = "NEXUS_NETNS_API_SOCKET"
 )
 
 // ReapStatus classifies a host resource for reclamation purposes.
@@ -103,7 +103,7 @@ type ReapReport struct {
 
 	// ZombieProcesses is the count of zombie processes encountered during the
 	// netns sweep. A zombie has no mm, no tap, and no netns — it cannot be a
-	// live netns child. The dominant real-world source is virtiofsd and nexus3
+	// live netns child. The dominant real-world source is virtiofsd and nexus
 	// child processes whose parent holds a missing Wait() call; counting these
 	// separately keeps the structural leak visible without raising a false alarm.
 	// Does NOT affect the exit code.
@@ -567,7 +567,7 @@ const supervisorSockFile = "supervisor.sock"
 // This is the fail-closed rail for D-HSH-18. The directory holds the state a
 // future re-acquisition needs — spawn.json, and from the CA-persistence slice
 // the MITM CA private key — so deleting one belonging to a sandbox that is
-// live, or that `nexus3 recover` would classify adoptable, destroys the very
+// live, or that `nexus recover` would classify adoptable, destroys the very
 // thing recovery exists to use. When in doubt this KEEPS.
 //
 // # Why this reuses the reap classification instead of internal/core/recovery
@@ -600,7 +600,7 @@ const supervisorSockFile = "supervisor.sock"
 // corrupt, half-written by an interrupted Create, or ErrSchemaTooNew
 // (filestore.go, List). So R1 alone reads "cannot read the record" as "there
 // is no record", which is fail-OPEN, and the failure is not rare: an older
-// binary — this repo keeps a stale ./nexus3 in the tree — gets ErrSchemaTooNew
+// binary — this repo keeps a stale ./nexus in the tree — gets ErrSchemaTooNew
 // for EVERY record, so a single `reap --apply` under it would collect the
 // state dir of every stopped sandbox on the host at once.
 //
@@ -1027,9 +1027,9 @@ var killNetnsProcessFn = func(pgid int) error {
 //     NOTE FOR FUTURE READERS: do NOT revert this to Suspect on the grounds
 //     that "we cannot classify it, so it might be an orphan." That logic was
 //     tried (round 2 of ticket 10) and produced 50 bogus Suspects per run
-//     (42 zombie virtiofsd + 4 zombie nexus3 + sshd/systemd with dumpable
+//     (42 zombie virtiofsd + 4 zombie nexus + sshd/systemd with dumpable
 //     cleared), drowning 17 genuine orphans in noise. The dominant cause was
-//     own-uid zombies — unwaited nexus3 children — not any ptrace policy.
+//     own-uid zombies — unwaited nexus children — not any ptrace policy.
 //
 //   - a candidate's socket path names a sandbox ID with a live record whose
 //     CHAPISocket does not match what this live process is actually using:
@@ -1124,7 +1124,7 @@ func sweepOrphanNetnsProcesses(
 			// NOTE FOR FUTURE READERS: do NOT revert this to Suspect on the grounds
 			// that "we cannot rule out the process being an orphan." That logic was
 			// tried in round 2 of ticket 10 and produced 50 bogus Suspects per run
-			// (42 zombie virtiofsd + 4 zombie nexus3 + sshd/systemd with dumpable
+			// (42 zombie virtiofsd + 4 zombie nexus + sshd/systemd with dumpable
 			// cleared), drowning 17 genuine orphans in noise. The dominant cause was
 			// own-uid zombies, not any ptrace policy.
 			inaccessible++

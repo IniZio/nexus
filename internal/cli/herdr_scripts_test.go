@@ -50,7 +50,7 @@ func newScriptEnv(t *testing.T) *scriptEnv {
 		"fi\n" +
 		"case \"$*\" in *'command -v bash'*) echo \"${STUB_GUEST_BASH:-/usr/bin/bash}\";; esac\n" +
 		"exit 0\n"
-	if err := os.WriteFile(filepath.Join(root, "nexus3-shim.sh"), []byte(shim), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "nexus-shim.sh"), []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestOpenPaneScript_SplitOmitsWorkspace(t *testing.T) {
 		t.Errorf("split must not pass the workspace id; herdr argv = %q", got)
 	}
 	for _, want := range []string{
-		"plugin pane open", "--plugin nexus3", "--entrypoint doctor",
+		"plugin pane open", "--plugin nexus", "--entrypoint doctor",
 		"--placement split", "--focus",
 	} {
 		if !strings.Contains(got, want) {
@@ -141,7 +141,7 @@ func TestOpenPaneScript_ZoomedOmitsWorkspace(t *testing.T) {
 		t.Errorf("zoomed must not pass the workspace id; herdr argv = %q", got)
 	}
 	for _, want := range []string{
-		"plugin pane open", "--plugin nexus3", "--entrypoint logs",
+		"plugin pane open", "--plugin nexus", "--entrypoint logs",
 		"--placement zoomed",
 	} {
 		if !strings.Contains(got, want) {
@@ -150,13 +150,13 @@ func TestOpenPaneScript_ZoomedOmitsWorkspace(t *testing.T) {
 	}
 }
 
-// TestOpenPaneScript_OmitsEnvFlagWhenWorkspaceUnset guards passing empty NEXUS3_WORKSPACE.
+// TestOpenPaneScript_OmitsEnvFlagWhenWorkspaceUnset guards passing empty NEXUS_WORKSPACE.
 func TestOpenPaneScript_OmitsEnvFlagWhenWorkspaceUnset(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{"HERDR_WORKSPACE_ID": "w1"})
 
 	if got := e.herdrArgv(t); strings.Contains(got, "--env") {
-		t.Errorf("no NEXUS3_WORKSPACE set, so --env must be omitted; got %q", got)
+		t.Errorf("no NEXUS_WORKSPACE set, so --env must be omitted; got %q", got)
 	}
 }
 
@@ -164,18 +164,18 @@ func TestOpenPaneScript_PassesEnvFlagWhenWorkspaceSet(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"attach", "tab"}, map[string]string{
 		"HERDR_WORKSPACE_ID": "w1",
-		"NEXUS3_WORKSPACE":   "demo/api",
+		"NEXUS_WORKSPACE":    "demo/api",
 	})
 
-	if got := e.herdrArgv(t); !strings.Contains(got, "--env NEXUS3_WORKSPACE=demo/api") {
-		t.Errorf("expected --env NEXUS3_WORKSPACE=demo/api; got %q", got)
+	if got := e.herdrArgv(t); !strings.Contains(got, "--env NEXUS_WORKSPACE=demo/api") {
+		t.Errorf("expected --env NEXUS_WORKSPACE=demo/api; got %q", got)
 	}
 }
 
 // TestPaneScript_ShellUsesResolvedGuestCwd pins guest shell resolves cwd before exec.
 func TestPaneScript_ShellUsesResolvedGuestCwd(t *testing.T) {
 	e := newScriptEnv(t)
-	e.run(t, "pane.sh", []string{"shell"}, map[string]string{"NEXUS3_WORKSPACE": "demo/api"})
+	e.run(t, "pane.sh", []string{"shell"}, map[string]string{"NEXUS_WORKSPACE": "demo/api"})
 
 	got := e.shimArgv(t)
 	if !strings.Contains(got, "herdr shell-cwd demo/api") {
@@ -193,12 +193,12 @@ func TestPaneScript_ShellUsesResolvedGuestCwd(t *testing.T) {
 func TestPaneScript_ShellRefusesWithoutWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	cmd := exec.Command("sh", filepath.Join(e.dir, "pane.sh"), "shell")
-	cmd.Env = append(os.Environ(), "NEXUS3_WORKSPACE=")
+	cmd.Env = append(os.Environ(), "NEXUS_WORKSPACE=")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatal("expected a non-zero exit when NEXUS3_WORKSPACE is unset")
+		t.Fatal("expected a non-zero exit when NEXUS_WORKSPACE is unset")
 	}
-	if !strings.Contains(string(out), "NEXUS3_WORKSPACE not set") {
+	if !strings.Contains(string(out), "NEXUS_WORKSPACE not set") {
 		t.Errorf("error should name the missing variable; got %q", out)
 	}
 }
@@ -220,8 +220,8 @@ func TestPaneScript_RejectsUnknownSubcommand(t *testing.T) {
 func TestPaneScript_ProbesGuestNotHostForBash(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
-		"NEXUS3_WORKSPACE": "demo/api",
-		"STUB_GUEST_BASH":  "/usr/bin/bash",
+		"NEXUS_WORKSPACE": "demo/api",
+		"STUB_GUEST_BASH": "/usr/bin/bash",
 	})
 
 	got := e.shimArgv(t)
@@ -237,8 +237,8 @@ func TestPaneScript_ProbesGuestNotHostForBash(t *testing.T) {
 func TestPaneScript_FallsBackToShWhenGuestLacksBash(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
-		"NEXUS3_WORKSPACE": "demo/api",
-		"STUB_GUEST_BASH":  "/bin/sh",
+		"NEXUS_WORKSPACE": "demo/api",
+		"STUB_GUEST_BASH": "/bin/sh",
 	})
 
 	got := e.shimArgv(t)
@@ -255,7 +255,7 @@ func TestPaneScript_ShellCwdFailureIsVisible(t *testing.T) {
 	e := newScriptEnv(t)
 	cmd := exec.Command("sh", filepath.Join(e.dir, "pane.sh"), "shell")
 	cmd.Env = append(os.Environ(),
-		"NEXUS3_WORKSPACE=ac3/envproof2",
+		"NEXUS_WORKSPACE=ac3/envproof2",
 		"STUB_SHELL_CWD_FAIL=1",
 	)
 	out, err := cmd.CombinedOutput()
@@ -275,8 +275,8 @@ func TestPaneScript_ShellCwdFailureIsVisible(t *testing.T) {
 func TestPaneScript_ShellCwdLegitimateRoot(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
-		"NEXUS3_WORKSPACE": "ac3/vcpuctl",
-		"STUB_SHELL_CWD":   "/root",
+		"NEXUS_WORKSPACE": "ac3/vcpuctl",
+		"STUB_SHELL_CWD":  "/root",
 	})
 
 	got := e.shimArgv(t)
@@ -311,7 +311,7 @@ func TestOpenPaneScript_OverlayOmitsWorkspace(t *testing.T) {
 	if strings.Contains(got, "w8") {
 		t.Errorf("overlay must not pass the workspace id; herdr argv = %q", got)
 	}
-	for _, want := range []string{"--plugin nexus3", "--entrypoint workspaces", "--placement overlay"} {
+	for _, want := range []string{"--plugin nexus", "--entrypoint workspaces", "--placement overlay"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("herdr argv %q missing %q", got, want)
 		}
@@ -335,7 +335,7 @@ func TestOpenPaneScript_TabCarriesWorkspace(t *testing.T) {
 
 	got := e.herdrArgv(t)
 	for _, want := range []string{
-		"--plugin nexus3", "--entrypoint attach", "--placement tab", "--workspace w33",
+		"--plugin nexus", "--entrypoint attach", "--placement tab", "--workspace w33",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("tab: herdr argv %q missing %q", got, want)
@@ -348,18 +348,18 @@ func TestOpenPaneScript_OverlayWithEnvOmitsWorkspace(t *testing.T) {
 	e := newScriptEnv(t)
 	e.run(t, "open-pane.sh", []string{"workspaces", "overlay"}, map[string]string{
 		"HERDR_WORKSPACE_ID": "w8",
-		"NEXUS3_WORKSPACE":   "demo/api",
+		"NEXUS_WORKSPACE":    "demo/api",
 	})
 
 	got := e.herdrArgv(t)
 	if strings.Contains(got, "--workspace") {
-		t.Errorf("overlay must not pass --workspace even when NEXUS3_WORKSPACE is set; herdr argv = %q", got)
+		t.Errorf("overlay must not pass --workspace even when NEXUS_WORKSPACE is set; herdr argv = %q", got)
 	}
 	if strings.Contains(got, "w8") {
 		t.Errorf("overlay must not pass the workspace id; herdr argv = %q", got)
 	}
-	if !strings.Contains(got, "--env NEXUS3_WORKSPACE=demo/api") {
-		t.Errorf("NEXUS3_WORKSPACE must be forwarded as --env; herdr argv = %q", got)
+	if !strings.Contains(got, "--env NEXUS_WORKSPACE=demo/api") {
+		t.Errorf("NEXUS_WORKSPACE must be forwarded as --env; herdr argv = %q", got)
 	}
 }
 

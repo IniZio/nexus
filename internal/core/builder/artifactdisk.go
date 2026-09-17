@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // ArtifactFromDisk reads the raw ext4 image at artifactExt4 (written by the

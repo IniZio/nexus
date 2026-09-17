@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 func TestWriteReadSpawnSpec_RoundTrip(t *testing.T) {
@@ -15,7 +15,7 @@ func TestWriteReadSpawnSpec_RoundTrip(t *testing.T) {
 		StoreRoot:          "/store",
 		StateDir:           "/tmp/old",
 		CHBin:              "/usr/bin/cloud-hypervisor",
-		SocketDir:          "/run/nexus3",
+		SocketDir:          "/run/nexus",
 		KernelPath:         "/boot/vmlinux",
 		DiskPath:           "/data/sb.raw",
 		ExtraDisks:         []string{"/data/ws.ext4"},

@@ -102,23 +102,23 @@ func TestLogRootfsSizeManifest_SmallFileExcluded(t *testing.T) {
 func TestLogRootfsSizeManifest_TruncatedFileSurfaced(t *testing.T) {
 	const truncatedAt = 33554432 // exactly 2^25 bytes — the observed truncation cap
 	dir := makeManifestFixture(t, map[string]int64{
-		"sbin/nexus3-agent": truncatedAt,
+		"sbin/nexus-agent": truncatedAt,
 	})
 
 	entries := logRootfsSizeManifest(dir)
 
 	if len(entries) == 0 {
-		t.Fatal("manifest returned no entries; expected truncated nexus3-agent to appear")
+		t.Fatal("manifest returned no entries; expected truncated nexus-agent to appear")
 	}
 	for _, e := range entries {
-		if e.RelPath == "sbin/nexus3-agent" {
+		if e.RelPath == "sbin/nexus-agent" {
 			if e.Size != truncatedAt {
 				t.Errorf("manifest recorded size %d, want %d (the truncation cap)", e.Size, truncatedAt)
 			}
 			return
 		}
 	}
-	t.Errorf("sbin/nexus3-agent not found in manifest; entries = %v", entries)
+	t.Errorf("sbin/nexus-agent not found in manifest; entries = %v", entries)
 }
 
 // TestLogRootfsSizeManifest_EmptyDirReturnsNone ensures the function is
@@ -240,7 +240,7 @@ func TestManifestBeforeIntegrityGate_ScenarioProof(t *testing.T) {
 	if err := os.MkdirAll(sbin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Create(filepath.Join(sbin, "nexus3-agent"))
+	f, err := os.Create(filepath.Join(sbin, "nexus-agent"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestManifestBeforeIntegrityGate_ScenarioProof(t *testing.T) {
 	}
 	f.Close()
 
-	srcPath := filepath.Join(t.TempDir(), "nexus3-agent-src")
+	srcPath := filepath.Join(t.TempDir(), "nexus-agent-src")
 	sf, err := os.Create(srcPath)
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ func TestManifestBeforeIntegrityGate_ScenarioProof(t *testing.T) {
 	entries := logRootfsSizeManifest(rootfsDir)
 	found := false
 	for _, e := range entries {
-		if e.RelPath == "sbin/nexus3-agent" {
+		if e.RelPath == "sbin/nexus-agent" {
 			found = true
 			if e.Size != truncatedAt {
 				t.Errorf("manifest recorded size %d, want %d", e.Size, truncatedAt)
@@ -272,10 +272,10 @@ func TestManifestBeforeIntegrityGate_ScenarioProof(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("manifest did not surface sbin/nexus3-agent; entries = %v", entries)
+		t.Errorf("manifest did not surface sbin/nexus-agent; entries = %v", entries)
 	}
 
-	gateErr := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", srcPath)
+	gateErr := verifyAgentIntegrity(rootfsDir, "/sbin/nexus-agent", srcPath)
 	if gateErr == nil {
 		t.Fatal("expected verifyAgentIntegrity to fail for truncated agent, got nil")
 	}

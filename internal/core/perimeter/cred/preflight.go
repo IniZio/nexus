@@ -62,18 +62,18 @@ func (r PreflightResult) Sentence() string {
 		return ""
 	case PreflightAbsent:
 		return fmt.Sprintf(
-			"%s: credential not found; run 'nexus3 auth login --agent %s' to provision it",
+			"%s: credential not found; run 'nexus auth login --agent %s' to provision it",
 			r.AgentName, r.AgentName,
 		)
 	case PreflightUnreadable:
 		return fmt.Sprintf(
 			"%s: credential is present but cannot be read or parsed;"+
-				" check file permissions or re-run 'nexus3 auth login --agent %s'",
+				" check file permissions or re-run 'nexus auth login --agent %s'",
 			r.AgentName, r.AgentName,
 		)
 	case PreflightExpired:
 		return fmt.Sprintf(
-			"%s: credential expired at %s; run 'nexus3 auth login --agent %s' to refresh it",
+			"%s: credential expired at %s; run 'nexus auth login --agent %s' to refresh it",
 			r.AgentName, r.ExpiredAt.UTC().Format(time.RFC3339), r.AgentName,
 		)
 	default:

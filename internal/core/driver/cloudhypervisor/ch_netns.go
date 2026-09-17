@@ -14,7 +14,7 @@
 //     via net.FileConn for reading guest Ethernet frames.
 //
 // Child (re-exec'd, inside user+network namespace):
-//  4. Detects NEXUS3_NETNS_RUN=1. Has effective CAP_NET_ADMIN in-ns (uid 0).
+//  4. Detects NEXUS_NETNS_RUN=1. Has effective CAP_NET_ADMIN in-ns (uid 0).
 //  5. Calls createTapBridge → openHostTap → spawnVMM (CH inherits netns) →
 //     tapPump(hostTapFile, pumpConn).
 //
@@ -25,9 +25,9 @@
 //
 // The child entry (RunNetnsChild) is exported so the TEST BINARY acts as the
 // re-exec image: TestMain in ch_netns_test.go checks the sentinel and calls
-// RunNetnsChild. S1 wires the same sentinel into cmd/nexus3/main.go.
+// RunNetnsChild. S1 wires the same sentinel into cmd/nexus/main.go.
 //
-// S1: wire this sentinel dispatch into cmd/nexus3/main.go
+// S1: wire this sentinel dispatch into cmd/nexus/main.go
 package cloudhypervisor
 
 import (
@@ -45,7 +45,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // Sentinel and env-var names for the netns-runtime re-exec protocol.
@@ -53,16 +53,16 @@ const (
 	// NetnsRunEnv is the sentinel environment variable. When set to "1", the
 	// process is a re-exec'd child running inside a user+network namespace.
 	//
-	// S1: wire this sentinel dispatch into cmd/nexus3/main.go
-	NetnsRunEnv = "NEXUS3_NETNS_RUN"
+	// S1: wire this sentinel dispatch into cmd/nexus/main.go
+	NetnsRunEnv = "NEXUS_NETNS_RUN"
 
-	netnsEnvPumpFD         = "NEXUS3_NETNS_PUMP_FD"
-	netnsEnvGuestTap       = "NEXUS3_NETNS_GUEST_TAP"
-	netnsEnvHostTap        = "NEXUS3_NETNS_HOST_TAP"
-	netnsEnvBridge         = "NEXUS3_NETNS_BRIDGE"
-	netnsEnvAPISocket      = "NEXUS3_NETNS_API_SOCKET"
-	netnsEnvCHBin          = "NEXUS3_NETNS_CH_BIN"
-	netnsEnvStartTimeoutMS = "NEXUS3_NETNS_START_TIMEOUT_MS"
+	netnsEnvPumpFD         = "NEXUS_NETNS_PUMP_FD"
+	netnsEnvGuestTap       = "NEXUS_NETNS_GUEST_TAP"
+	netnsEnvHostTap        = "NEXUS_NETNS_HOST_TAP"
+	netnsEnvBridge         = "NEXUS_NETNS_BRIDGE"
+	netnsEnvAPISocket      = "NEXUS_NETNS_API_SOCKET"
+	netnsEnvCHBin          = "NEXUS_NETNS_CH_BIN"
+	netnsEnvStartTimeoutMS = "NEXUS_NETNS_START_TIMEOUT_MS"
 
 	// NetnsEnvGuestTap and NetnsEnvAPISocket are exported aliases of the
 	// unexported env-var names above, for ticket 11's netns identity
@@ -81,13 +81,13 @@ const (
 	// empty the child runs without a control socket, which is the pre-D-HSH-17
 	// behaviour: the VM boots and pumps normally but cannot be re-acquired
 	// after a supervisor crash.
-	netnsEnvControlDir = "NEXUS3_NETNS_CONTROL_DIR"
-	netnsEnvSandboxID  = "NEXUS3_NETNS_SANDBOX_ID"
+	netnsEnvControlDir = "NEXUS_NETNS_CONTROL_DIR"
+	netnsEnvSandboxID  = "NEXUS_NETNS_SANDBOX_ID"
 
 	// netnsEnvConsoleLog carries the absolute path where the child should write
 	// guest virtio-console output (CH stdout). When absent or empty the child
 	// discards the stream while still draining the pipe (pipe-buffer safety).
-	netnsEnvConsoleLog = "NEXUS3_NETNS_CONSOLE_LOG"
+	netnsEnvConsoleLog = "NEXUS_NETNS_CONSOLE_LOG"
 
 	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
 	// to vm.restore after spawning CH. When absent (empty), the child runs in
@@ -95,7 +95,7 @@ const (
 	// vm.create + vm.boot over the shared API socket. When set (restore mode),
 	// the child issues vm.restore before starting the frame pump, so the VM is
 	// Running by the time tapPump blocks.
-	netnsEnvRestoreURL = "NEXUS3_NETNS_RESTORE_URL"
+	netnsEnvRestoreURL = "NEXUS_NETNS_RESTORE_URL"
 )
 
 // NetnsRuntime is the parent-side handle to a running netns-runtime child.
@@ -560,7 +560,7 @@ func AdoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartT
 	//
 	// An earlier revision skipped the check when childStartTime was 0, for
 	// backward compatibility with records predating the field. This branch
-	// (nexus3-hotswap-04) wires service.Start to write the adoption identity
+	// (nexus-hotswap-04) wires service.Start to write the adoption identity
 	// onto domain.Sandbox, and recover.go to clear it on substrate loss — so
 	// a zero here means the identity was lost or never set, which is exactly
 	// when Stop()'s Kill(-ChildPGID, SIGKILL) is most likely to hit a
@@ -729,7 +729,7 @@ func waitForGroupExit(pgid int, timeout time.Duration) bool {
 // Sequence: createTapBridge → openHostTap → spawnVMM → tapPump (blocks).
 // The process exits when tapPump returns (both fds closed by parent teardown).
 //
-// S1: wire this sentinel dispatch into cmd/nexus3/main.go
+// S1: wire this sentinel dispatch into cmd/nexus/main.go
 func RunNetnsChild() {
 	pumpFD, err := strconv.Atoi(os.Getenv(netnsEnvPumpFD))
 	if err != nil {

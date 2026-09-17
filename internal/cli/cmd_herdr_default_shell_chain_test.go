@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 func captureStderr(t *testing.T, fn func()) string {
@@ -87,12 +87,12 @@ func writeExecutable(t *testing.T, dir, name string) string {
 // real default-shell lookup with a binding written exactly the way the
 // worktree-sandbox path (the path behind delegate_worktree_create and the
 // worktree.created hook) writes it: through HerdrSpacePut, keyed on the herdr
-// workspace id, labelled "nexus3:<handle>". The live w18 record has this shape.
+// workspace id, labelled "nexus:<handle>". The live w18 record has this shape.
 func TestHerdrDefaultShell_WorktreeSandboxBinding_ResolvesByWorkspaceID(t *testing.T) {
 	storeRoot := t.TempDir()
 	handle := "hanlun-lms/han-941-legacy-seed-verify"
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:" + handle,
+		SpaceLabel:       "nexus:" + handle,
 		HerdrWorkspaceID: "w18",
 		SandboxHandle:    handle,
 		SandboxID:        "sb-06GAFVM449VAB3SPJFV2Q0BM8M",
@@ -110,7 +110,7 @@ func TestHerdrDefaultShell_WorktreeSandboxBinding_ResolvesByWorkspaceID(t *testi
 	next := writeExecutable(t, t.TempDir(), "other-guest-shell")
 	getenv := wsGetenv("w18", map[string]string{herdrGuestShellNextEnv: next})
 
-	if err := herdrDefaultShellCore(context.Background(), getenv, storeRoot, svc, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), getenv, storeRoot, svc, "/fake/nexus", cap.fn); err != nil {
 		t.Fatal(err)
 	}
 	if cap.calls != 0 {
@@ -121,12 +121,12 @@ func TestHerdrDefaultShell_WorktreeSandboxBinding_ResolvesByWorkspaceID(t *testi
 	}
 	joined := strings.Join(*childArgv, " ")
 	if !strings.Contains(joined, " exec --pty ") || !strings.Contains(joined, " "+handle+" ") {
-		t.Errorf("supervised child argv = %q; want nexus3 exec --pty ... %s", joined, handle)
+		t.Errorf("supervised child argv = %q; want nexus exec --pty ... %s", joined, handle)
 	}
 }
 
 // TestHerdrDefaultShell_Unbound_ChainsToNextGuestShell: a workspace with no
-// nexus3 binding hands the pane to the chained guest shell, not to $SHELL.
+// nexus binding hands the pane to the chained guest shell, not to $SHELL.
 func TestHerdrDefaultShell_Unbound_ChainsToNextGuestShell(t *testing.T) {
 	storeRoot := t.TempDir()
 	makeBindings(t, storeRoot, []HerdrSpaceBinding{testBinding})
@@ -135,7 +135,7 @@ func TestHerdrDefaultShell_Unbound_ChainsToNextGuestShell(t *testing.T) {
 	next := writeExecutable(t, t.TempDir(), "herdr-plugin-msb-guest-shell")
 	cap := &capturedExec{}
 
-	err := herdrDefaultShellCore(context.Background(), wsGetenv("wOTHER", map[string]string{herdrGuestShellNextEnv: next}), storeRoot, nil, "/fake/nexus3", cap.fn)
+	err := herdrDefaultShellCore(context.Background(), wsGetenv("wOTHER", map[string]string{herdrGuestShellNextEnv: next}), storeRoot, nil, "/fake/nexus", cap.fn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestHerdrDefaultShell_Unbound_ChainsToNextGuestShell(t *testing.T) {
 func TestHerdrDefaultShell_Unbound_NoWorkspaceID_Chains(t *testing.T) {
 	next := writeExecutable(t, t.TempDir(), "other")
 	cap := &capturedExec{}
-	if err := herdrDefaultShellCore(context.Background(), wsGetenv("", map[string]string{herdrGuestShellNextEnv: next}), t.TempDir(), nil, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), wsGetenv("", map[string]string{herdrGuestShellNextEnv: next}), t.TempDir(), nil, "/fake/nexus", cap.fn); err != nil {
 		t.Fatal(err)
 	}
 	if cap.argv0 != next {
@@ -169,7 +169,7 @@ func TestHerdrDefaultShell_Unbound_NextMissingOrSelf_HostShell(t *testing.T) {
 			stubPredicate(t, false)
 			stubLinkedWorktreeReason(t, false)
 			cap := &capturedExec{}
-			if err := herdrDefaultShellCore(context.Background(), wsGetenv("wX", map[string]string{herdrGuestShellNextEnv: next}), t.TempDir(), nil, "/fake/nexus3", cap.fn); err != nil {
+			if err := herdrDefaultShellCore(context.Background(), wsGetenv("wX", map[string]string{herdrGuestShellNextEnv: next}), t.TempDir(), nil, "/fake/nexus", cap.fn); err != nil {
 				t.Fatal(err)
 			}
 			assertHostShell(t, cap, "/bin/bash")
@@ -180,22 +180,22 @@ func TestHerdrDefaultShell_Unbound_NextMissingOrSelf_HostShell(t *testing.T) {
 func TestHerdrDefaultShell_HostShellEscapeHatch_NeverChains(t *testing.T) {
 	next := writeExecutable(t, t.TempDir(), "other")
 	cap := &capturedExec{}
-	getenv := wsGetenv("wX", map[string]string{herdrGuestShellNextEnv: next, "NEXUS3_HOST_SHELL": "1"})
-	if err := herdrDefaultShellCore(context.Background(), getenv, t.TempDir(), nil, "/fake/nexus3", cap.fn); err != nil {
+	getenv := wsGetenv("wX", map[string]string{herdrGuestShellNextEnv: next, "NEXUS_HOST_SHELL": "1"})
+	if err := herdrDefaultShellCore(context.Background(), getenv, t.TempDir(), nil, "/fake/nexus", cap.fn); err != nil {
 		t.Fatal(err)
 	}
 	assertHostShell(t, cap, "/bin/bash")
 }
 
-// A bound workspace whose sandbox is not running is a nexus3 failure: fall to
-// the host shell with nexus3's own diagnostics, never into another plugin's.
+// A bound workspace whose sandbox is not running is a nexus failure: fall to
+// the host shell with nexus's own diagnostics, never into another plugin's.
 func TestHerdrDefaultShell_BoundButNotRunning_NeverChains(t *testing.T) {
 	storeRoot := t.TempDir()
 	makeBindings(t, storeRoot, []HerdrSpaceBinding{testBinding})
 	next := writeExecutable(t, t.TempDir(), "other")
 	svc := &fakeDefaultShellGetter{sb: domain.Sandbox{State: domain.Stopped}}
 	cap := &capturedExec{}
-	if err := herdrDefaultShellCore(context.Background(), wsGetenv(testBinding.HerdrWorkspaceID, map[string]string{herdrGuestShellNextEnv: next}), storeRoot, svc, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), wsGetenv(testBinding.HerdrWorkspaceID, map[string]string{herdrGuestShellNextEnv: next}), storeRoot, svc, "/fake/nexus", cap.fn); err != nil {
 		t.Fatal(err)
 	}
 	assertHostShell(t, cap, "/bin/bash")
@@ -208,12 +208,12 @@ func TestHerdrDefaultShell_LinkedWorktreeNotEngaged_PrintsReason(t *testing.T) {
 	stubLinkedWorktreeReason(t, true)
 	cap := &capturedExec{}
 	out := captureStderr(t, func() {
-		if err := herdrDefaultShellCore(context.Background(), wsGetenv("w7", nil), t.TempDir(), nil, "/fake/nexus3", cap.fn); err != nil {
+		if err := herdrDefaultShellCore(context.Background(), wsGetenv("w7", nil), t.TempDir(), nil, "/fake/nexus", cap.fn); err != nil {
 			t.Error(err)
 		}
 	})
 	assertHostShell(t, cap, "/bin/bash")
-	if !strings.Contains(out, "workspace w7 has no nexus3 sandbox binding") {
+	if !strings.Contains(out, "workspace w7 has no nexus sandbox binding") {
 		t.Errorf("stderr = %q; want a one-line reason naming workspace w7", out)
 	}
 }
@@ -223,7 +223,7 @@ func TestHerdrDefaultShell_NonWorktreeNotEngaged_Silent(t *testing.T) {
 	stubLinkedWorktreeReason(t, false)
 	cap := &capturedExec{}
 	out := captureStderr(t, func() {
-		if err := herdrDefaultShellCore(context.Background(), wsGetenv("w7", nil), t.TempDir(), nil, "/fake/nexus3", cap.fn); err != nil {
+		if err := herdrDefaultShellCore(context.Background(), wsGetenv("w7", nil), t.TempDir(), nil, "/fake/nexus", cap.fn); err != nil {
 			t.Error(err)
 		}
 	})
@@ -242,7 +242,7 @@ func TestHerdrDefaultShell_AutoCreateFails_PrintsReason(t *testing.T) {
 	t.Cleanup(func() { herdrDefaultShellAutoCreateFn = old })
 	cap := &capturedExec{}
 	out := captureStderr(t, func() {
-		if err := herdrDefaultShellCore(context.Background(), wsGetenv("w9", nil), t.TempDir(), nil, "/fake/nexus3", cap.fn); err != nil {
+		if err := herdrDefaultShellCore(context.Background(), wsGetenv("w9", nil), t.TempDir(), nil, "/fake/nexus", cap.fn); err != nil {
 			t.Error(err)
 		}
 	})
@@ -277,12 +277,12 @@ func TestHerdrAutoCreatePredicate_OnboardedWorktreeNoBindings_Engages(t *testing
 }
 
 func TestHerdrParseSidecar_ThirdLineIsNextShell(t *testing.T) {
-	bin, kernel, next := herdrParseSidecar([]byte("/usr/bin/nexus3\n/k/vmlinux\n/usr/bin/msb-guest-shell\n"))
-	if bin != "/usr/bin/nexus3" || kernel != "/k/vmlinux" || next != "/usr/bin/msb-guest-shell" {
+	bin, kernel, next := herdrParseSidecar([]byte("/usr/bin/nexus\n/k/vmlinux\n/usr/bin/msb-guest-shell\n"))
+	if bin != "/usr/bin/nexus" || kernel != "/k/vmlinux" || next != "/usr/bin/msb-guest-shell" {
 		t.Fatalf("got (%q,%q,%q)", bin, kernel, next)
 	}
-	bin, kernel, next = herdrParseSidecar([]byte("/usr/bin/nexus3\n\n"))
-	if bin != "/usr/bin/nexus3" || kernel != "" || next != "" {
+	bin, kernel, next = herdrParseSidecar([]byte("/usr/bin/nexus\n\n"))
+	if bin != "/usr/bin/nexus" || kernel != "" || next != "" {
 		t.Fatalf("two-line sidecar: got (%q,%q,%q)", bin, kernel, next)
 	}
 }
@@ -317,7 +317,7 @@ func TestHerdrInstallDefaultShellParseArgs(t *testing.T) {
 	}
 	for name, args := range map[string][]string{
 		"missing":  {"--next", filepath.Join(t.TempDir(), "nope")},
-		"self":     {"--next", filepath.Join(t.TempDir(), "nexus3-guest-shell")},
+		"self":     {"--next", filepath.Join(t.TempDir(), "nexus-guest-shell")},
 		"unknown":  {"--bogus"},
 		"dangling": {"--next"},
 	} {
@@ -338,7 +338,7 @@ func TestHerdrInstallDefaultShell_StampsNextShell(t *testing.T) {
 	if err := runHerdrInstallDefaultShell(context.Background(), []string{"--next", next}, &Output{w: &sb}); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".local", "bin", "nexus3-guest-shell"+herdrSidecarSuffix))
+	data, err := os.ReadFile(filepath.Join(home, ".local", "bin", "nexus-guest-shell"+herdrSidecarSuffix))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestHerdrDefaultShell_UnboundMainCheckout_ChainsSilentlyWithArgvAndCwd(t *t
 
 	var err error
 	stderr := captureStderr(t, func() {
-		err = herdrDefaultShellCore(context.Background(), wsGetenv("w2", map[string]string{herdrGuestShellNextEnv: next}), storeRoot, nil, "/fake/nexus3", cap.fn)
+		err = herdrDefaultShellCore(context.Background(), wsGetenv("w2", map[string]string{herdrGuestShellNextEnv: next}), storeRoot, nil, "/fake/nexus", cap.fn)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +430,7 @@ func TestHerdrDefaultShell_UnboundMainCheckout_HostShellKeepsArgvAndCwd(t *testi
 	cap := &cwdExec{}
 	wantCwd := paneCwd(t)
 
-	if err := herdrDefaultShellCore(context.Background(), wsGetenv("w2", nil), storeRoot, nil, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), wsGetenv("w2", nil), storeRoot, nil, "/fake/nexus", cap.fn); err != nil {
 		t.Fatal(err)
 	}
 	assertArgvAndCwd(t, cap, "/bin/bash", wantCwd)
@@ -448,13 +448,13 @@ func TestHerdrDefaultShell_Bound_EntersGuest_NeverChains(t *testing.T) {
 	svc := &fakeDialableGetter{fakeDefaultShellGetter: fakeDefaultShellGetter{sb: domain.Sandbox{State: domain.Running}}}
 	cap := &cwdExec{}
 
-	if err := herdrDefaultShellCore(context.Background(), wsGetenv(testBinding.HerdrWorkspaceID, map[string]string{herdrGuestShellNextEnv: next}), storeRoot, svc, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), wsGetenv(testBinding.HerdrWorkspaceID, map[string]string{herdrGuestShellNextEnv: next}), storeRoot, svc, "/fake/nexus", cap.fn); err != nil {
 		t.Fatal(err)
 	}
-	if cap.calls != 1 || cap.argv0 != "/fake/nexus3" {
-		t.Fatalf("exec argv0 = %q (calls=%d), want the nexus3 guest exec", cap.argv0, cap.calls)
+	if cap.calls != 1 || cap.argv0 != "/fake/nexus" {
+		t.Fatalf("exec argv0 = %q (calls=%d), want the nexus guest exec", cap.argv0, cap.calls)
 	}
-	want := []string{"/fake/nexus3", "exec", "--pty", "--cwd", "/root", testBinding.SandboxHandle, "/bin/bash", "--login"}
+	want := []string{"/fake/nexus", "exec", "--pty", "--cwd", "/root", testBinding.SandboxHandle, "/bin/bash", "--login"}
 	if !reflect.DeepEqual(cap.argv, want) {
 		t.Errorf("guest argv = %q, want %q", cap.argv, want)
 	}
@@ -465,7 +465,7 @@ func TestHerdrDefaultShell_Bound_EntersGuest_NeverChains(t *testing.T) {
 func TestHerdrDefaultShell_UnboundLinkedWorktree_AutoCreatesThenGuest(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	wsID := "wWT2"
-	binding := HerdrSpaceBinding{SpaceLabel: "nexus3:wt/feat", HerdrWorkspaceID: wsID, SandboxHandle: "wt/feat", SandboxID: "sb-wt2", WorktreeManaged: true}
+	binding := HerdrSpaceBinding{SpaceLabel: "nexus:wt/feat", HerdrWorkspaceID: wsID, SandboxHandle: "wt/feat", SandboxID: "sb-wt2", WorktreeManaged: true}
 	stubPredicate(t, true)
 	stubShellArgs(t, paneShellArgs...)
 	childArgv := stubWtSeams(t)
@@ -480,7 +480,7 @@ func TestHerdrDefaultShell_UnboundLinkedWorktree_AutoCreatesThenGuest(t *testing
 	svc := &fakeDialableGetter{fakeDefaultShellGetter: fakeDefaultShellGetter{sb: domain.Sandbox{State: domain.Running}}}
 	cap := &cwdExec{}
 
-	if err := herdrDefaultShellCore(context.Background(), wsGetenv(wsID, map[string]string{herdrGuestShellNextEnv: next}), t.TempDir(), svc, "/fake/nexus3", cap.fn); err != nil {
+	if err := herdrDefaultShellCore(context.Background(), wsGetenv(wsID, map[string]string{herdrGuestShellNextEnv: next}), t.TempDir(), svc, "/fake/nexus", cap.fn); err != nil {
 		t.Fatal(err)
 	}
 	if !autoCreated {
@@ -491,7 +491,7 @@ func TestHerdrDefaultShell_UnboundLinkedWorktree_AutoCreatesThenGuest(t *testing
 	}
 	joined := strings.Join(*childArgv, " ")
 	if !strings.Contains(joined, " exec --pty ") || !strings.Contains(joined, " wt/feat ") {
-		t.Errorf("supervised child argv = %q; want nexus3 exec --pty ... wt/feat", joined)
+		t.Errorf("supervised child argv = %q; want nexus exec --pty ... wt/feat", joined)
 	}
 }
 
@@ -499,11 +499,11 @@ func TestHerdrGuestShellArgs_DefaultFollowsArgv0Dispatch(t *testing.T) {
 	oldArgs := os.Args
 	t.Cleanup(func() { os.Args = oldArgs })
 
-	os.Args = append([]string{"/x/nexus3-guest-shell"}, paneShellArgs...)
+	os.Args = append([]string{"/x/nexus-guest-shell"}, paneShellArgs...)
 	if got := herdrGuestShellArgsFn(); !reflect.DeepEqual(got, paneShellArgs) {
 		t.Errorf("guest-shell dispatch args = %q, want %q", got, paneShellArgs)
 	}
-	os.Args = []string{"/x/nexus3", "herdr", "default-shell"}
+	os.Args = []string{"/x/nexus", "herdr", "default-shell"}
 	if got := herdrGuestShellArgsFn(); len(got) != 0 {
 		t.Errorf("CLI verb args = %q, want none", got)
 	}

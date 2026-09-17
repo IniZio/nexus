@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/test/selfhost"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/test/selfhost"
 )
 
 // TestBuildSelfHostBaseImage is the acceptance test for S1 of Run 5.
@@ -28,7 +28,7 @@ import (
 //  1. The returned image has a valid SHA-256 digest.
 //  2. The image is retrievable from the cache (metadata round-trip).
 //  3. The ext4 artifact is non-empty and the correct size is recorded.
-//  4. The rootfs contains /sbin/nexus3-agent, /usr/local/go/bin/go, and a
+//  4. The rootfs contains /sbin/nexus-agent, /usr/local/go/bin/go, and a
 //     non-empty seeded module cache at /usr/local/gopath/pkg/mod
 //     (checked via debugfs if available, otherwise via the cache artifact path).
 //
@@ -80,8 +80,8 @@ func TestBuildSelfHostBaseImage(t *testing.T) {
 	if cached.Digest != img.Digest {
 		t.Errorf("cache.Get digest mismatch: got %s, want %s", cached.Digest, img.Digest)
 	}
-	if cached.Ref != "nexus3-selfhost-base" {
-		t.Errorf("cache.Get ref: got %q, want %q", cached.Ref, "nexus3-selfhost-base")
+	if cached.Ref != "nexus-selfhost-base" {
+		t.Errorf("cache.Get ref: got %q, want %q", cached.Ref, "nexus-selfhost-base")
 	}
 
 	// ── Assertion 3: artifact is non-empty ────────────────────────────────────
@@ -121,7 +121,7 @@ func TestBuildSelfHostBaseImage(t *testing.T) {
 	}
 
 	// Agent binary — the init process for the workspace VM
-	checkPath("/sbin/nexus3-agent")
+	checkPath("/sbin/nexus-agent")
 
 	// Go toolchain — required for in-workspace builds
 	checkPath("/usr/local/go/bin/go")

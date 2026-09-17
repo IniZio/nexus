@@ -14,17 +14,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vmcfg"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 func init() {
@@ -50,7 +50,7 @@ type orcaConnectionTarget struct {
 	// IdentityFile is the absolute host path to the ed25519 private key for this
 	// sandbox. Orca's ssh2 client uses it to authenticate over the proxyCommand
 	// pipe. Generated once per instanceID and stored at
-	// ~/.local/share/nexus3/orca/<instanceID>/id_ed25519.
+	// ~/.local/share/nexus/orca/<instanceID>/id_ed25519.
 	IdentityFile string `json:"identityFile,omitempty"`
 }
 
@@ -125,8 +125,8 @@ func orcaProjectRoot(repoPath, workspaceName, instanceID string) string {
 // "" in tests that don't exercise SSH auth).
 //
 // proxyCommand uses %h which the SSH client expands to target.Host (= sandboxID),
-// yielding:  nexus3 ssh --stdio <sandboxID>
-// This matches the cmd_ssh.go usage: `nexus3 ssh [--stdio] <sandbox-ref>`.
+// yielding:  nexus ssh --stdio <sandboxID>
+// This matches the cmd_ssh.go usage: `nexus ssh [--stdio] <sandbox-ref>`.
 func buildOrcaConnectionJSON(instanceID, sandboxID, workspaceName, repoPath, privKeyPath string) orcaCreateResult {
 	label := workspaceName
 	if label == "" {
@@ -143,7 +143,7 @@ func buildOrcaConnectionJSON(instanceID, sandboxID, workspaceName, repoPath, pri
 				Host:         sandboxID,
 				Port:         22,
 				Username:     "root",
-				ProxyCommand: "nexus3 ssh --stdio %h",
+				ProxyCommand: "nexus ssh --stdio %h",
 				IdentityFile: privKeyPath,
 			},
 			ProjectRoot: projectRoot,
@@ -193,14 +193,14 @@ func gitHostsFromURL(repoURL string) []string {
 
 // ── SSH keypair helpers ───────────────────────────────────────────────────────
 
-// orcaKeyDir returns ~/.local/share/nexus3/orca/<instanceID>, the directory
+// orcaKeyDir returns ~/.local/share/nexus/orca/<instanceID>, the directory
 // where the per-instance SSH keypair is stored for cross-reconnect reuse.
 func orcaKeyDir(instanceID string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("orca keypair: home dir: %w", err)
 	}
-	return filepath.Join(home, ".local", "share", "nexus3", "orca", instanceID), nil
+	return filepath.Join(home, ".local", "share", "nexus", "orca", instanceID), nil
 }
 
 // generateOrLoadOrcaKeypair returns the ed25519 keypair for instanceID,
@@ -503,17 +503,17 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		return json.NewEncoder(w).Encode(result)
 	}
 
-	// Image to boot. Override via NEXUS3_IMAGE; default to the standard base.
+	// Image to boot. Override via NEXUS_IMAGE; default to the standard base.
 	//
 	// Image requirement (ORCA-P3): the image must include git, sshd, claude-code.
-	// The default "nexus3-base:latest" may lack these tools.
-	imageRef := os.Getenv("NEXUS3_IMAGE")
+	// The default "nexus-base:latest" may lack these tools.
+	imageRef := os.Getenv("NEXUS_IMAGE")
 	if imageRef == "" {
-		imageRef = "nexus3-base:latest"
+		imageRef = "nexus-base:latest"
 	}
 
 	// Preflight: validate the kernel path before store/cache/VM setup so that a
-	// missing/misconfigured NEXUS3_KERNEL_PATH surfaces immediately with an
+	// missing/misconfigured NEXUS_KERNEL_PATH surfaces immediately with an
 	// actionable error rather than after expensive work inside CreateAndBoot.
 	kernelPath, err := resolveKernelPath()
 	if err != nil {
@@ -546,7 +546,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// ── stateDir for supervisor.pid / supervisor.sock ─────────────────────────
 	// Use /tmp so the path is guaranteed short (supervisor.sock fits in 107-byte
 	// AF_UNIX sun_path even on systems with long $HOME).
-	stateDir, err := os.MkdirTemp("/tmp", "nexus3-sv-")
+	stateDir, err := os.MkdirTemp("/tmp", "nexus-sv-")
 	if err != nil {
 		return fmt.Errorf("orca create: create supervisor state dir: %w", err)
 	}
@@ -764,9 +764,9 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 func orcaSocketDir() (string, error) {
 	var dir string
 	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
-		dir = filepath.Join(d, "nexus3")
+		dir = filepath.Join(d, "nexus")
 	} else {
-		dir = filepath.Join(os.TempDir(), fmt.Sprintf("nexus3-%d", os.Getuid()))
+		dir = filepath.Join(os.TempDir(), fmt.Sprintf("nexus-%d", os.Getuid()))
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("orca socket dir %s: %w", dir, err)

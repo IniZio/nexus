@@ -5,7 +5,7 @@ package supervisor
 // that actually passes handoff.Payload.Validate(), against a Service whose
 // perimeter has real CA material.
 //
-// Gate finding (motive nexus3-host-supervisor-hotswap, ticket 08, round 3):
+// Gate finding (motive nexus-host-supervisor-hotswap, ticket 08, round 3):
 // handoff.Payload.Validate() has always unconditionally required non-empty
 // CA.CertPEM/CA.KeyPEM, but no payloadBuilder populated Payload.CA until the
 // ticket-08 CA-transfer fix — and every existing test (ipc_detach_test.go,
@@ -21,12 +21,12 @@ import (
 	"net"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // netHookStub wraps fake.FakeDriver and satisfies driver.NetworkHook by

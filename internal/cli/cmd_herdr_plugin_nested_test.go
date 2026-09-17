@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/config"
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // ── herdrWorktreeSandboxCreateArgs — --nested flag ────────────────────────────

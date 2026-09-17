@@ -1,4 +1,4 @@
-// Package cred implements the host-side credential broker for nexus3's
+// Package cred implements the host-side credential broker for nexus's
 // perimeter subsystem.
 //
 // # Security model
@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // syntheticExpiry is the far-future expiry seeded into every PlaceholderRecord.
@@ -353,7 +353,7 @@ func mintJWTPlaceholder() (string, error) {
 	hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	// exp: 2099-12-31T23:59:59Z in Unix epoch seconds.
 	exp := syntheticExpiry.Unix()
-	pay := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d,"sub":"nexus3-placeholder"}`, exp)))
+	pay := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d,"sub":"nexus-placeholder"}`, exp)))
 	sig := make([]byte, placeholderEntropy)
 	if _, err := rand.Read(sig); err != nil {
 		return "", err

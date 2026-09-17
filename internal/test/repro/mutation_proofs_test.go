@@ -481,8 +481,8 @@ func TestMutation_ClassifySizeAllSites(t *testing.T) {
 		{"stageA.file_200m", 209715200},
 		{"stageA.file_elf", 0}, // no fixed expected
 		{"stageA.run-produced-40m", ExpRunProduced40m},
-		{"stageA.docker-compose", 0},      // no fixed expected
-		{"stageA.nexus3-agent", 36329665}, // plausible agent size
+		{"stageA.docker-compose", 0},     // no fixed expected
+		{"stageA.nexus-agent", 36329665}, // plausible agent size
 		// Stage B
 		{"stageB.file_8m", 8388608},
 		{"stageB.file_31m", 32505856},
@@ -494,7 +494,7 @@ func TestMutation_ClassifySizeAllSites(t *testing.T) {
 		{"stageB.file_elf", 0},
 		{"stageB.run-produced-40m", ExpRunProduced40m},
 		{"stageB.docker-compose", 0},
-		{"stageB.nexus3-agent", 36329665},
+		{"stageB.nexus-agent", 36329665},
 	}
 
 	for _, site := range sites {

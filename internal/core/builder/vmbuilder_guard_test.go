@@ -24,9 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
 )
 
 // ── fakeBuilderStore ──────────────────────────────────────────────────────────
@@ -321,9 +321,9 @@ func TestBuildInVM_CtxTimeout(t *testing.T) {
 // that Stop is still called (no orphaned CH VMM), and that the function never
 // reaches the ArtifactFromDisk harvest step (no cache write).
 //
-// This mirrors the outer task-timeout path: NEXUS3_BUILD_TASK_TIMEOUT creates a
+// This mirrors the outer task-timeout path: NEXUS_BUILD_TASK_TIMEOUT creates a
 // context.WithTimeout whose deadline may expire before or during VM boot — a
-// case the inner NEXUS3_BUILD_SOLVE_TIMEOUT (which caps only the buildkitd solve
+// case the inner NEXUS_BUILD_SOLVE_TIMEOUT (which caps only the buildkitd solve
 // step) cannot catch.
 func TestBuildInVM_TaskTimeout(t *testing.T) {
 	seq := &seqCounter{}
@@ -411,7 +411,7 @@ func TestBuildInVM_StartFails(t *testing.T) {
 
 // TestBuildInVM_StoreCleanupOnBuildFailure verifies that the transient sandbox
 // record created before boot is deleted when the in-guest build fails (non-zero
-// exit code). A record left behind would show up in `nexus3 sandbox list` and
+// exit code). A record left behind would show up in `nexus sandbox list` and
 // confuse users.
 func TestBuildInVM_StoreCleanupOnBuildFailure(t *testing.T) {
 	seq := &seqCounter{}

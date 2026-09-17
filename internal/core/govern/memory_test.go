@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // pagingSample models the HAN-941 F7/F13/F20 guest: MemAvailable comfortably

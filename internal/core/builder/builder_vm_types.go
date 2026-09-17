@@ -1,6 +1,6 @@
 package builder
 
-import "github.com/IniZio/nexus3/internal/core/perimeter/cred"
+import "github.com/IniZio/nexus/internal/core/perimeter/cred"
 
 // GoArchToVendorArch converts Go's runtime.GOARCH value to the vendor-specific
 // architecture name used by recipe package checksums (e.g. in Node.js tarballs

@@ -12,19 +12,19 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 const (
 	// nestedDockerTag is the temporary docker image tag used during build.
 	// It is removed (docker rmi --force) immediately after the rootfs export.
-	nestedDockerTag = "nexus3-nested-boot-test:dev"
+	nestedDockerTag = "nexus-nested-boot-test:dev"
 
 	// nestedImageSizeBytes is the ext4 image size for the outer nested-boot VM image.
 	// The rootfs is minimal (~250 MiB max): ubuntu:24.04 base + cloud-hypervisor
-	// static binary + vmlinux kernel + nexus3-agent. 1 GiB gives ample headroom.
+	// static binary + vmlinux kernel + nexus-agent. 1 GiB gives ample headroom.
 	nestedImageSizeBytes = 1 << 30 // 1 GiB
 )
 
@@ -33,11 +33,11 @@ const (
 // It is a test fixture: it produces an image that contains:
 //   - cloud-hypervisor static binary at /usr/local/bin/cloud-hypervisor
 //   - the inner-VM kernel at /boot/vmlinux (staged from the build context)
-//   - nexus3-agent at /sbin/nexus3-agent (boot contract: init=/sbin/nexus3-agent)
+//   - nexus-agent at /sbin/nexus-agent (boot contract: init=/sbin/nexus-agent)
 //
 // The build context (prepared by BuildNestedBootImage) must contain:
 //   - vmlinux       (inner-VM kernel; vmlinux-x86_64 renamed for brevity)
-//   - nexus3-agent  (guest agent binary compiled from cmd/nexus3-agent)
+//   - nexus-agent  (guest agent binary compiled from cmd/nexus-agent)
 //
 // This Containerfile is intentionally NOT the repo-root .nexus/Containerfile —
 // that file is the production outer-image recipe and must not be mutated by T5.
@@ -49,7 +49,7 @@ const nestedBootContainerfile = `# T5 test fixture — nested-boot outer VM imag
 #
 # Build context (provided by BuildNestedBootImage):
 #   vmlinux       — inner-VM kernel (images/kernel/vmlinux-x86_64)
-#   nexus3-agent  — guest PID-1 agent binary
+#   nexus-agent  — guest PID-1 agent binary
 
 FROM ubuntu:24.04
 
@@ -75,9 +75,9 @@ RUN curl -fsSL \
 COPY vmlinux /boot/vmlinux
 
 # ── Guest agent ──────────────────────────────────────────────────────────────
-# Boot contract: root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0
-COPY nexus3-agent /sbin/nexus3-agent
-RUN chmod 0755 /sbin/nexus3-agent
+# Boot contract: root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0
+COPY nexus-agent /sbin/nexus-agent
+RUN chmod 0755 /sbin/nexus-agent
 `
 
 // BuildNestedBootImage produces the outer nested-boot ext4 image and stores it
@@ -86,7 +86,7 @@ RUN chmod 0755 /sbin/nexus3-agent
 // The image extends ubuntu:24.04 with:
 //   - cloud-hypervisor (latest stable static binary from GitHub)
 //   - inner-VM kernel at /boot/vmlinux (staged from images/kernel/vmlinux-x86_64)
-//   - nexus3-agent at /sbin/nexus3-agent (boot contract: init=/sbin/nexus3-agent)
+//   - nexus-agent at /sbin/nexus-agent (boot contract: init=/sbin/nexus-agent)
 //
 // Prerequisite checks:
 //   - docker in PATH (returns [ErrDockerUnavailable] if absent)
@@ -94,7 +94,7 @@ RUN chmod 0755 /sbin/nexus3-agent
 //   - images/kernel/vmlinux-x86_64 present in the repo root
 //
 // Build steps:
-//  1. Compile cmd/nexus3-agent CGO_ENABLED=0 GOOS=linux GOARCH=amd64.
+//  1. Compile cmd/nexus-agent CGO_ENABLED=0 GOOS=linux GOARCH=amd64.
 //  2. Copy vmlinux-x86_64 kernel into the docker build context as "vmlinux".
 //  3. docker build with [nestedBootContainerfile] (installs cloud-hypervisor,
 //     stages kernel and agent binary).
@@ -127,15 +127,15 @@ func BuildNestedBootImage(ctx context.Context, cache *image.Cache) (domain.Image
 
 	// ── Working directory ─────────────────────────────────────────────────────
 
-	workDir, err := os.MkdirTemp("", "nexus3-nested-image-*")
+	workDir, err := os.MkdirTemp("", "nexus-nested-image-*")
 	if err != nil {
 		return domain.Image{}, fmt.Errorf("nested-image: mkdir work: %w", err)
 	}
 	defer os.RemoveAll(workDir)
 
-	// ── Step 1: build nexus3-agent static binary ──────────────────────────────
+	// ── Step 1: build nexus-agent static binary ──────────────────────────────
 
-	agentBin := filepath.Join(workDir, "nexus3-agent")
+	agentBin := filepath.Join(workDir, "nexus-agent")
 	if err := buildAgent(ctx, repoRoot, agentBin); err != nil {
 		return domain.Image{}, fmt.Errorf("nested-image: build agent: %w", err)
 	}
@@ -153,8 +153,8 @@ func BuildNestedBootImage(ctx context.Context, cache *image.Cache) (domain.Image
 		return domain.Image{}, fmt.Errorf("nested-image: write Containerfile: %w", err)
 	}
 
-	// Copy nexus3-agent binary into context.
-	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus3-agent"), 0o755); err != nil {
+	// Copy nexus-agent binary into context.
+	if err := copyFile(agentBin, filepath.Join(ctxDir, "nexus-agent"), 0o755); err != nil {
 		return domain.Image{}, fmt.Errorf("nested-image: copy agent into ctx: %w", err)
 	}
 

@@ -6,9 +6,9 @@ import (
 )
 
 const StateFileName = "forwards.state" // basename consumed by supervisor, CLI, herdr plugin, laptop ssh client
-const stateRelDir = "nexus3/portfwd"   // relative to XDG_STATE_HOME; single source of truth for StateDir and RemoteStateFileShell
+const stateRelDir = "nexus/portfwd"    // relative to XDG_STATE_HOME; single source of truth for StateDir and RemoteStateFileShell
 
-// StateDir returns $XDG_STATE_HOME/nexus3/portfwd; not HERDR_PLUGIN_STATE_DIR (remote ssh clients lack it).
+// StateDir returns $XDG_STATE_HOME/nexus/portfwd; not HERDR_PLUGIN_STATE_DIR (remote ssh clients lack it).
 func StateDir() string {
 	xdg := os.Getenv("XDG_STATE_HOME")
 	if xdg == "" {

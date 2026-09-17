@@ -12,7 +12,7 @@ package selfhost
 //
 // Flow:
 //  1. Build the self-host base image (or reuse from cache).
-//  2. Build the nexus3 binary so SpawnDetached can re-exec it.
+//  2. Build the nexus binary so SpawnDetached can re-exec it.
 //  3. CreateAndBoot a sandbox; capture disk path and bootDrv.
 //  4. Wait for guest agent (confirms VM is up).
 //  5. svc.Stop → VM stopped, sandbox in Stopped state, disk file retained.
@@ -37,33 +37,33 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
-// buildNexus3Bin compiles cmd/nexus3 as a native Linux binary and returns its
+// buildNexusBin compiles cmd/nexus as a native Linux binary and returns its
 // path inside a temp directory cleaned up when t ends.
-func buildNexus3Bin(t *testing.T) string {
+func buildNexusBin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "nexus3")
+	bin := filepath.Join(dir, "nexus")
 	repoR, err := findRepoRoot()
 	if err != nil {
-		t.Fatalf("buildNexus3Bin: findRepoRoot: %v", err)
+		t.Fatalf("buildNexusBin: findRepoRoot: %v", err)
 	}
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/IniZio/nexus3/cmd/nexus3")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/IniZio/nexus/cmd/nexus")
 	cmd.Dir = repoR
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build cmd/nexus3: %s\n%v", string(out), err)
+		t.Fatalf("go build cmd/nexus: %s\n%v", string(out), err)
 	}
 	return bin
 }
@@ -85,7 +85,7 @@ func TestSupervisorPostExitEgress(t *testing.T) {
 
 	// ── Step 1: base image ─────────────────────────────────────────────────────
 	// Use the agent base image (not the self-host base image). The agent image
-	// installs iproute2 so the nexus3-agent PID-1 can configure eth0 via ip(8)
+	// installs iproute2 so the nexus-agent PID-1 can configure eth0 via ip(8)
 	// on boot, giving the VM a default route from gvproxy. The self-host image
 	// lacks iproute2: network init silently fails and /proc/net/route is empty,
 	// which would sink the egress check even after the perimeter fix.
@@ -112,10 +112,10 @@ func TestSupervisorPostExitEgress(t *testing.T) {
 	t.Logf("base image ready: digest=%s size=%.2f GiB",
 		img.Digest, float64(img.Size)/(1<<30))
 
-	// ── Step 2: build nexus3 binary for SpawnDetached ─────────────────────────
-	t.Log("building nexus3 binary …")
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	// ── Step 2: build nexus binary for SpawnDetached ─────────────────────────
+	t.Log("building nexus binary …")
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	// ── Step 3: infrastructure — dirs in /tmp for sun_path limit ──────────────
 	socketDir, err := os.MkdirTemp("/tmp", "sv-smoke-sock-")
@@ -249,7 +249,7 @@ func TestSupervisorPostExitEgress(t *testing.T) {
 			KernelPath: kernelPath,
 			DiskPath:   diskPath,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		ReadyTimeout: 5 * time.Minute,
 	}
 	pid, _, err := supervisor.SpawnDetached(spawnCfg)

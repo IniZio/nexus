@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/recovery"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/recovery"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 func init() {
@@ -21,7 +21,7 @@ func init() {
 	})
 }
 
-// runRecover is the implementation of the `nexus3 recover` subcommand.
+// runRecover is the implementation of the `nexus recover` subcommand.
 //
 // # Safety guarantee
 //
@@ -103,7 +103,7 @@ func runRecoverWith(ctx context.Context, st store.Store, drv driver.Driver, out 
 	// needing adoption, not merely classified correctly in the JSON envelope
 	// — --json is opt-in, so the default surface is human mode, and
 	// EmitSuccess's human-mode branch below prints only the bare summary
-	// count. Without this, an operator running plain `nexus3 recover` against
+	// count. Without this, an operator running plain `nexus recover` against
 	// the exact sandbox this ticket exists to fix sees only "examined 1
 	// sandbox(es)" — the literal symptom the ticket quotes — with the
 	// adoptable classification invisible unless they already know to pass

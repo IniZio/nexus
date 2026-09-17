@@ -1,12 +1,12 @@
 // Package agent — in-guest buildkitd helper.
 //
-// BuildInGuestImage starts buildkitd inside a nexus3 microVM, waits for it to
-// be ready, drives the existing nexus3 BuildkitClient.Solve seam against the
+// BuildInGuestImage starts buildkitd inside a nexus microVM, waits for it to
+// be ready, drives the existing nexus BuildkitClient.Solve seam against the
 // local socket to produce a rootfs directory, then converts the directory to a
 // raw ext4 disk image consumable by cloud-hypervisor.
 //
 // This function is intended to be called from inside the microVM (e.g. by
-// cmd/nexus3-agent when it needs to build an inner guest image). The microVM
+// cmd/nexus-agent when it needs to build an inner guest image). The microVM
 // itself is the isolation boundary, so buildkitd runs rootful without
 // rootlesskit.
 //
@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // InGuestBuildOptions configures [BuildInGuestImage].
@@ -33,10 +33,10 @@ type InGuestBuildOptions struct {
 	// (e.g. "ubuntu:24.04"). Defaults to "ubuntu:24.04" when empty.
 	BaseRef string
 
-	// AgentPath is the absolute in-guest path to the nexus3-agent binary.
-	// It is baked into the inner image at /sbin/nexus3-agent (the boot
-	// contract: init=/sbin/nexus3-agent).
-	// Typically the outer guest's own /sbin/nexus3-agent.
+	// AgentPath is the absolute in-guest path to the nexus-agent binary.
+	// It is baked into the inner image at /sbin/nexus-agent (the boot
+	// contract: init=/sbin/nexus-agent).
+	// Typically the outer guest's own /sbin/nexus-agent.
 	AgentPath string
 
 	// OutputExt4 is the destination path for the produced raw ext4 image.

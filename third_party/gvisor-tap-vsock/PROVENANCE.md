@@ -28,7 +28,7 @@ The verbatim diff is preserved in `withdialer.patch` alongside this file.
 ## Tree modifications
 
 The extracted tree is pruned:
-- `vendor/` removed (transitive deps resolve through nexus3's module graph)
+- `vendor/` removed (transitive deps resolve through nexus's module graph)
 - `tools/` removed (build tooling not needed at compile time)
 
 All other files, including `LICENSE`, are retained intact.
@@ -37,7 +37,7 @@ All other files, including `LICENSE`, are retained intact.
 
 Apache License, Version 2.0. See `LICENSE`.
 
-## go.mod replace directive (nexus3)
+## go.mod replace directive (nexus)
 
 ```
 replace github.com/containers/gvisor-tap-vsock => ./third_party/gvisor-tap-vsock

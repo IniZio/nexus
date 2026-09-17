@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build the nexus3 guest kernel (Linux 6.12.76, x86_64) from upstream source.
+# Build the nexus guest kernel (Linux 6.12.76, x86_64) from upstream source.
 #
 # Produces a vmlinux ELF with:
 #   - libkrunfw microVM base config (PVH boot, virtio-MMIO)
@@ -52,7 +52,7 @@ LIBKRUNFW_CONFIG_URL="https://raw.githubusercontent.com/smol-machines/libkrunfw/
 COMMITTED_CONFIG="${SCRIPT_DIR}/config-6.12.76"
 
 # Build directory (scratch — NOT inside the repo)
-BUILD_DIR="${BUILD_DIR:-/tmp/nexus3-kernel-build}/x86_64"
+BUILD_DIR="${BUILD_DIR:-/tmp/nexus-kernel-build}/x86_64"
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
@@ -64,7 +64,7 @@ case "$OUTPUT_PATH" in
   *) OUTPUT_PATH="$(pwd)/$OUTPUT_PATH" ;;
 esac
 
-echo "=== nexus3 guest kernel build ==="
+echo "=== nexus guest kernel build ==="
 echo "Version:     ${KERNEL_VERSION}"
 echo "Output:      ${OUTPUT_PATH}"
 echo "Build dir:   ${BUILD_DIR}"
@@ -237,7 +237,7 @@ CONFIG_KVM_GUEST=y
 CONFIG_VIRTIO_FS=y
 
 # ── Nested virtualisation: Cloud Hypervisor inside a guest workspace ──────
-# nexus3 uses /dev/kvm passthrough (CpusConfig.nested) and Cloud Hypervisor's
+# nexus uses /dev/kvm passthrough (CpusConfig.nested) and Cloud Hypervisor's
 # own userspace virtio-vsock/net — no host vhost devices are needed.
 # vhost_vsock/vhost_net are intentionally NOT enabled: the committed
 # config-6.12.76 has CONFIG_VHOST_MENU disabled, and CONFIG_MODULES=n means

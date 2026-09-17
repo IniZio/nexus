@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // testSocketDir returns a guaranteed-short, uniquely-named, auto-cleaned
@@ -366,7 +366,7 @@ func TestStop_callsVMMShutdown(t *testing.T) {
 // vm.delete returns 204 (idempotent), and verifies that vmm.shutdown is still
 // reached to terminate the orphaned VMM process.
 //
-// This is the crash window: nexus3 died after vm.delete succeeded but before
+// This is the crash window: nexus died after vm.delete succeeded but before
 // vmm.shutdown ran. On restart, no proc handle exists in d.procs; vmm.shutdown
 // is the only path to kill the process.
 func TestStop_callsVMMShutdown_afterRestart(t *testing.T) {

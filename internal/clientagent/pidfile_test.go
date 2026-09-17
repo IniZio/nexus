@@ -55,9 +55,9 @@ func withProcs(t *testing.T, entries []procEntry) {
 }
 
 func TestReapPrevious_KillsMatchingArgv(t *testing.T) {
-	pid, exited := startManaged(t, "bash", "-c", "exec -a 'nexus3-client herdr local-agent-startup' sleep 60")
+	pid, exited := startManaged(t, "bash", "-c", "exec -a 'nexus-client herdr local-agent-startup' sleep 60")
 	waitVisible(t, pid)
-	withProcs(t, []procEntry{{Pid: pid, Argv: "nexus3-client herdr local-agent-startup"}})
+	withProcs(t, []procEntry{{Pid: pid, Argv: "nexus-client herdr local-agent-startup"}})
 
 	if err := ReapPrevious(context.Background(), writeTempPid(t, pid)); err != nil {
 		t.Fatal(err)
@@ -110,9 +110,9 @@ func TestReapPrevious_ToleratesUnparseablePidfile(t *testing.T) {
 }
 
 func TestReapPrevious_NoPidfile_KillsOrphanMatchingArgv(t *testing.T) {
-	pid, exited := startManaged(t, "bash", "-c", "exec -a 'nexus3-client herdr local-agent-startup' sleep 60")
+	pid, exited := startManaged(t, "bash", "-c", "exec -a 'nexus-client herdr local-agent-startup' sleep 60")
 	waitVisible(t, pid)
-	withProcs(t, []procEntry{{Pid: pid, Argv: "nexus3-client herdr local-agent-startup"}})
+	withProcs(t, []procEntry{{Pid: pid, Argv: "nexus-client herdr local-agent-startup"}})
 
 	missing := filepath.Join(t.TempDir(), "no-such.pid")
 	if err := ReapPrevious(context.Background(), missing); err != nil {

@@ -2,9 +2,9 @@ package cli
 
 // cmd_herdr_space.go — herdr space ↔ sandbox binding store.
 //
-// A "herdr space" is a named herdr workspace used as the UI shell for a nexus3
-// sandbox. Convention: the herdr workspace label is "nexus3:<sandbox-handle>"
-// (e.g. "nexus3:demo-orca-01").
+// A "herdr space" is a named herdr workspace used as the UI shell for a nexus
+// sandbox. Convention: the herdr workspace label is "nexus:<sandbox-handle>"
+// (e.g. "nexus:demo-orca-01").
 //
 // The binding store persists a flat JSON array of HerdrSpaceBinding records at:
 //
@@ -29,14 +29,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // HerdrSpaceBinding records the 1:1 relationship between a herdr workspace and
-// a nexus3 sandbox.
+// a nexus sandbox.
 type HerdrSpaceBinding struct {
-	// SpaceLabel is the herdr workspace label, e.g. "nexus3:demo-orca-01".
+	// SpaceLabel is the herdr workspace label, e.g. "nexus:demo-orca-01".
 	SpaceLabel string `json:"space_label"`
 	// HerdrWorkspaceID is the opaque ID returned by herdr when the workspace
 	// was created, e.g. "wB".
@@ -44,7 +44,7 @@ type HerdrSpaceBinding struct {
 	// SandboxHandle is the human-readable ref for the sandbox,
 	// e.g. "orca/demo-orca-01".
 	SandboxHandle string `json:"sandbox_handle"`
-	// SandboxID is the stable nexus3 sandbox ID, e.g. "sb-...".
+	// SandboxID is the stable nexus sandbox ID, e.g. "sb-...".
 	SandboxID string `json:"sandbox_id"`
 	// GuestPaneID is the opaque pane ID herdr assigned to the guest-shell pane
 	// last opened for this space, e.g. "w1V:p2" — see

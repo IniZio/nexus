@@ -1,6 +1,6 @@
 //go:build integration
 
-// TestEgress_GuestOnWire_E2E is the S2 on-wire egress proof for nexus3.
+// TestEgress_GuestOnWire_E2E is the S2 on-wire egress proof for nexus.
 //
 // It boots a real VM through the netns-runtime path (CH + TAP/bridge + pump
 // inside a rootless user+network namespace) and asserts egress policy on the
@@ -50,19 +50,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
 )
 
 // TestMain dispatches the netns re-exec sentinel so the perimeter test binary
 // can act as the child inside the user+network namespace created by
-// StartNetnsRuntime. Without this, re-exec with NEXUS3_NETNS_RUN=1 would try
+// StartNetnsRuntime. Without this, re-exec with NEXUS_NETNS_RUN=1 would try
 // to run test functions instead of the netns child work.
 func TestMain(m *testing.M) {
 	if os.Getenv(cloudhypervisor.NetnsRunEnv) == "1" {
@@ -180,16 +180,16 @@ func TestEgress_GuestOnWire_E2E(t *testing.T) {
 
 	// ── build custom initramfs overlay with probe init script ─────────────────
 	// The overlay CPIO overrides /init in the alpine initramfs. The init script
-	// reads nexus3_ph from /proc/cmdline and drives wget probes.
+	// reads nexus_ph from /proc/cmdline and drives wget probes.
 	initScript := e2eBuildInitScript(rec.Placeholder)
 	combinedInitramfs := e2eBuildInitramfs(t, baseInitramfs, initScript)
 
 	// ── serial output capture path ────────────────────────────────────────────
 	serialPath := filepath.Join(socketDir, "serial.txt")
 
-	// ── kernel cmdline: console + nexus3 params ───────────────────────────────
-	// nexus3_ph is parsed by the init script from /proc/cmdline.
-	cmdline := fmt.Sprintf("console=ttyS0 panic=5 nexus3_ph=%s", rec.Placeholder)
+	// ── kernel cmdline: console + nexus params ───────────────────────────────
+	// nexus_ph is parsed by the init script from /proc/cmdline.
+	cmdline := fmt.Sprintf("console=ttyS0 panic=5 nexus_ph=%s", rec.Placeholder)
 
 	// ── boot VM via CHDriver ───────────────────────────────────────────────────
 	drv, err := cloudhypervisor.New(cloudhypervisor.Config{
@@ -243,19 +243,19 @@ func TestEgress_GuestOnWire_E2E(t *testing.T) {
 
 	// ── diagnostic: wait for init-start marker (proves custom init is running) ─
 	t.Log("Waiting for custom init start marker...")
-	pollSerialLine(t, serialPath, "nexus3_init_start:", 20*time.Second)
+	pollSerialLine(t, serialPath, "nexus_init_start:", 20*time.Second)
 	t.Log("Custom init started — CPIO overlay is working")
 
 	// ── diagnostic: wait for DHCP completion marker ───────────────────────────
 	t.Log("Waiting for DHCP completion marker...")
-	dhcpResult := pollSerialLine(t, serialPath, "nexus3_dhcp_done:", 40*time.Second)
+	dhcpResult := pollSerialLine(t, serialPath, "nexus_dhcp_done:", 40*time.Second)
 	t.Logf("DHCP exit code: %s", dhcpResult)
 
 	// ── case 1: ALLOW + bearer-swap ───────────────────────────────────────────
 	// Poll serial output for the marker that wget to allowed.test finished.
 	// Then assert the stub upstream received the real token, not the placeholder.
 	t.Log("Waiting for ALLOW probe to complete (serial output)...")
-	allowResult := pollSerialLine(t, serialPath, "nexus3_allow_done:", 60*time.Second)
+	allowResult := pollSerialLine(t, serialPath, "nexus_allow_done:", 60*time.Second)
 	t.Logf("ALLOW probe exit code from serial: %q", allowResult)
 
 	t.Log("Waiting for stub upstream to receive the token-swapped request...")
@@ -277,7 +277,7 @@ func TestEgress_GuestOnWire_E2E(t *testing.T) {
 	// ── case 2: DENY ──────────────────────────────────────────────────────────
 	// Poll serial output for the denied probe result.
 	t.Log("Waiting for DENY probe to complete (serial output)...")
-	denyResult := pollSerialLine(t, serialPath, "nexus3_deny_done:", 30*time.Second)
+	denyResult := pollSerialLine(t, serialPath, "nexus_deny_done:", 30*time.Second)
 	t.Logf("DENY probe exit code from serial: %q", denyResult)
 
 	// Wait for a Deny AuditEvent for the denied IP.
@@ -303,7 +303,7 @@ denyWait:
 	// interfaces inside the guest's netns have disable_ipv6=1 applied by
 	// applySandboxNetSysctls before the interfaces came up. Verify via serial.
 	t.Log("Waiting for IPv6 probe result (serial output)...")
-	ipv6Result := pollSerialLine(t, serialPath, "nexus3_ipv6_done:", 20*time.Second)
+	ipv6Result := pollSerialLine(t, serialPath, "nexus_ipv6_done:", 20*time.Second)
 	if ipv6Result == "0" {
 		t.Errorf("IPV6 FAIL: IPv6 connection succeeded (exit 0) — egress should be blocked")
 	} else {
@@ -397,7 +397,7 @@ func e2eSkipUnlessArtifact(t *testing.T, name string) string {
 }
 
 // e2eBuildInitScript returns the shell script content for the guest's custom
-// /init. It reads nexus3_ph from /proc/cmdline (kernel passes unrecognised
+// /init. It reads nexus_ph from /proc/cmdline (kernel passes unrecognised
 // parameters to /proc/cmdline) and probes:
 //   - HTTPS to allowed.test (10.0.0.100) with the placeholder bearer
 //   - HTTPS to denied.test (10.0.0.200) without bearer (expect failure)
@@ -410,8 +410,8 @@ func e2eBuildInitScript(placeholder string) string {
 	// /proc/cmdline — the placeholder contains only hex chars [0-9a-f] so
 	// there is no quoting hazard in the cmdline or in the script.
 	return fmt.Sprintf(`#!/bin/sh
-# nexus3 e2e egress test init
-echo "nexus3_init_start:1"
+# nexus e2e egress test init
+echo "nexus_init_start:1"
 
 mount -t devtmpfs devtmpfs /dev  2>/dev/null || true
 mount -t proc     proc     /proc 2>/dev/null || true
@@ -429,7 +429,7 @@ done
 # Bring the interface up and run DHCP (gvproxy provides a built-in DHCP server).
 ip link set "$iface" up 2>/dev/null || ifconfig "$iface" up 2>/dev/null
 /sbin/udhcpc -i "$iface" -n -q -t 20 2>/dev/null
-echo "nexus3_dhcp_done:$?"
+echo "nexus_dhcp_done:$?"
 
 # Resolve test targets via /etc/hosts (avoids DNS latency and bypass risk).
 echo "10.0.0.100 allowed.test" >> /etc/hosts
@@ -441,21 +441,21 @@ wget -q --no-check-certificate \
      --timeout=20 \
      -O /dev/null \
      "https://allowed.test/"
-echo "nexus3_allow_done:$?"
+echo "nexus_allow_done:$?"
 
 # Case 2: DENIED HTTPS to non-allowlisted IP (expect non-zero).
 wget -q --no-check-certificate \
      --timeout=6 \
      -O /dev/null \
      "https://denied.test/"
-echo "nexus3_deny_done:$?"
+echo "nexus_deny_done:$?"
 
 # Case 3: IPv6 probe — must fail (interfaces have disable_ipv6=1).
 wget -q -6 --no-check-certificate \
      --timeout=4 \
      -O /dev/null \
      "https://[2606:4700:4700::1111]/" 2>/dev/null
-echo "nexus3_ipv6_done:$?"
+echo "nexus_ipv6_done:$?"
 
 # Retry loop: keep probing allowed.test so the zero-egress test can observe
 # that connections stop arriving at the stub after supervisor.Close().
@@ -465,7 +465,7 @@ while true; do
          --timeout=3 \
          -O /dev/null \
          "https://allowed.test/" 2>/dev/null
-    echo "nexus3_retry_done:$?"
+    echo "nexus_retry_done:$?"
     sleep 2
 done
 `, placeholder, placeholder)

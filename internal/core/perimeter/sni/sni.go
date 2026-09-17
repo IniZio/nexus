@@ -1,4 +1,4 @@
-// Package sni implements the transparent-to-explicit TLS shim for nexus3's
+// Package sni implements the transparent-to-explicit TLS shim for nexus's
 // perimeter subsystem.
 //
 // The shim sits between the guest's raw :443 TCP connections and the

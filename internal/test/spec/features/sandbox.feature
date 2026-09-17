@@ -15,7 +15,7 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
     Then the list is empty
 
   # ── Scenario 2: BUILT (tip) ──────────────────────────────────────────────
-  # Capability: top-level `nexus3 create` verb.
+  # Capability: top-level `nexus create` verb.
   # Badge:      type="tip" text="built"
   # Docs ref:   docs/site/cli/sandbox-commands.md
   #               ::: tip Both spellings work <Badge type="tip" text="built" />
@@ -27,12 +27,12 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
   # the mechanism D-PD-72 exists for, doing its job on a real change.
   @badge-built
   Scenario: Target top-level create verb is available
-    Given the nexus3 CLI
+    Given the nexus CLI
     When I look up the command "create"
     Then the command is registered
 
   # ── Scenario 3: NOT BUILT (danger) ───────────────────────────────────────
-  # Capability: public agent launch surface (`nexus3 agent launch`).
+  # Capability: public agent launch surface (`nexus agent launch`).
   # Badge:      type="danger" text="not built"
   # Docs ref:   docs/site/ai-agents.md:96
   #               ### Public agent launch surface
@@ -41,7 +41,7 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
   # the suite must NOT turn red.
   @badge-not-built
   Scenario: Public agent launch surface creates a sandbox for the task
-    Given the nexus3 CLI
+    Given the nexus CLI
     When an agent requests a launch for task "my-task"
     Then a new sandbox is created for the agent task
 

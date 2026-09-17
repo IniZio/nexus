@@ -2,7 +2,7 @@
 id: C-SUR
 type: concept
 title: Surface contract
-parent: C-NEXUS3
+parent: C-NEXUS
 summary: "Requirements for a canonical API surface, uniform MCP envelope, ephemeral one-call exec, surface-parity enforcement, and MCP verb parity."
 ---
 

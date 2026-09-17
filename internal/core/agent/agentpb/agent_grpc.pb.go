@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             (unknown)
-// source: nexus3/agent/v1/agent.proto
+// source: nexus/agent/v1/agent.proto
 
 package agentpb
 
@@ -19,13 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentService_Exec_FullMethodName          = "/nexus3.agent.v1.AgentService/Exec"
-	AgentService_Signal_FullMethodName        = "/nexus3.agent.v1.AgentService/Signal"
-	AgentService_SessionStatus_FullMethodName = "/nexus3.agent.v1.AgentService/SessionStatus"
-	AgentService_ListSessions_FullMethodName  = "/nexus3.agent.v1.AgentService/ListSessions"
-	AgentService_Copy_FullMethodName          = "/nexus3.agent.v1.AgentService/Copy"
-	AgentService_AgentInfo_FullMethodName     = "/nexus3.agent.v1.AgentService/AgentInfo"
-	AgentService_RestartAgent_FullMethodName  = "/nexus3.agent.v1.AgentService/RestartAgent"
+	AgentService_Exec_FullMethodName          = "/nexus.agent.v1.AgentService/Exec"
+	AgentService_Signal_FullMethodName        = "/nexus.agent.v1.AgentService/Signal"
+	AgentService_SessionStatus_FullMethodName = "/nexus.agent.v1.AgentService/SessionStatus"
+	AgentService_ListSessions_FullMethodName  = "/nexus.agent.v1.AgentService/ListSessions"
+	AgentService_Copy_FullMethodName          = "/nexus.agent.v1.AgentService/Copy"
+	AgentService_AgentInfo_FullMethodName     = "/nexus.agent.v1.AgentService/AgentInfo"
+	AgentService_RestartAgent_FullMethodName  = "/nexus.agent.v1.AgentService/RestartAgent"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -356,7 +356,7 @@ func _AgentService_RestartAgent_Handler(srv interface{}, ctx context.Context, de
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var AgentService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "nexus3.agent.v1.AgentService",
+	ServiceName: "nexus.agent.v1.AgentService",
 	HandlerType: (*AgentServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -389,5 +389,5 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "nexus3/agent/v1/agent.proto",
+	Metadata: "nexus/agent/v1/agent.proto",
 }

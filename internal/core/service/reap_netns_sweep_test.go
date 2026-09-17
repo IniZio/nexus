@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // spawnSleeperForTest starts a real, short-lived "sleep" child process as its
@@ -90,15 +90,15 @@ func waitForProcessExit(pid int) error {
 
 // writeSyntheticNetnsProcess creates a synthetic /proc/<pid>/environ file
 // carrying the netns-child sentinel env vars StartNetnsRuntime sets on every
-// real netns child (ch_netns.go:227-233): NEXUS3_NETNS_RUN=1 and
-// NEXUS3_NETNS_API_SOCKET=<apiSocket>.
+// real netns child (ch_netns.go:227-233): NEXUS_NETNS_RUN=1 and
+// NEXUS_NETNS_API_SOCKET=<apiSocket>.
 func writeSyntheticNetnsProcess(t *testing.T, procDir string, pid int, apiSocket string) {
 	t.Helper()
 	pidDir := filepath.Join(procDir, itoa(pid))
 	if err := os.MkdirAll(pidDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	environ := "NEXUS3_NETNS_RUN=1\x00NEXUS3_NETNS_API_SOCKET=" + apiSocket + "\x00PATH=/usr/bin\x00"
+	environ := "NEXUS_NETNS_RUN=1\x00NEXUS_NETNS_API_SOCKET=" + apiSocket + "\x00PATH=/usr/bin\x00"
 	if err := os.WriteFile(filepath.Join(pidDir, "environ"), []byte(environ), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -449,8 +449,8 @@ func TestReap_ForeignUidProcess_ProducesNoEntry(t *testing.T) {
 }
 
 // TestNetnsConstantDrift is a behavioral guard that fails if the mirrored
-// constants in reap.go (netnsRunEnv = "NEXUS3_NETNS_RUN",
-// netnsEnvAPISocket = "NEXUS3_NETNS_API_SOCKET") drift from the ABI-defining
+// constants in reap.go (netnsRunEnv = "NEXUS_NETNS_RUN",
+// netnsEnvAPISocket = "NEXUS_NETNS_API_SOCKET") drift from the ABI-defining
 // values set by cloudhypervisor.StartNetnsRuntime on every netns child's own
 // environ (ch_netns.go:228-233).
 //
@@ -558,7 +558,7 @@ func TestNetnsProcess_UninspectableEnviron(t *testing.T) {
 	// file is only unreadable for a uid that is subject to the DAC check. Root
 	// holds CAP_DAC_OVERRIDE and reads it successfully, so under uid 0 the sweep
 	// parses the environ and reports the pid as an ORPHAN — the assertions below
-	// then cannot fail, and the coverage is vacuous. Every nexus3 sandbox runs
+	// then cannot fail, and the coverage is vacuous. Every nexus sandbox runs
 	// its tests as uid 0, so the chmod form was silently dead on the runner that
 	// matters most.
 	//
@@ -605,7 +605,7 @@ func TestNetnsProcess_UninspectableEnviron(t *testing.T) {
 
 // TestNetnsZombieSkip verifies that a process whose /proc/<pid>/stat shows
 // state "Z" (zombie) is never classified as a ReapEntry — even when its
-// environ carries NEXUS3_NETNS_RUN=1 and a parseable sandbox socket (which
+// environ carries NEXUS_NETNS_RUN=1 and a parseable sandbox socket (which
 // would produce a ReapStatusOrphan entry on a live process). A zombie has no
 // mm, no tap, no netns, so killing it would be both wrong and useless.
 //

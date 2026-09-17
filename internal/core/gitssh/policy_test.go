@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/IniZio/nexus3/internal/core/gitssh"
+	"github.com/IniZio/nexus/internal/core/gitssh"
 )
 
 //go:embed testdata/example-app-config.yaml

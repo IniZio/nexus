@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // The overlay's job is to let the operator decide what to act on WITHOUT
@@ -88,7 +88,7 @@ func TestHerdrWorkspacesRendering_ColumnsAlign(t *testing.T) {
 	}
 }
 
-// `nexus3 ps` printed only "N sandbox(es)" — the rows went into the JSON
+// `nexus ps` printed only "N sandbox(es)" — the rows went into the JSON
 // envelope and were never rendered in human mode, so the primary listing
 // command told the operator how many sandboxes existed but not what any of
 // them were. This pins the table renderer that fixed it.

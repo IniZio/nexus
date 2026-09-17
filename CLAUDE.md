@@ -1,4 +1,4 @@
-# nexus3
+# nexus
 
 ## Always build and test through `make`
 
@@ -36,7 +36,7 @@ alone. Have real headroom and want a bigger cap? Raise it explicitly:
 ### `make build` produces no binary
 
 `make build` runs `go build ./...`, which type-checks every package and
-**discards the results**. It never writes a CLI binary. The `./nexus3` file in
+**discards the results**. It never writes a CLI binary. The `./nexus` file in
 the repo root is a leftover from some earlier explicit build and can be
 arbitrarily old, so installing it after `make build` silently ships stale code —
 your change appears to have no effect and the bug looks like it is in your new
@@ -44,25 +44,25 @@ code.
 
 To produce a runnable CLI:
 
-    go build -o nexus3 ./cmd/nexus3
+    go build -o nexus ./cmd/nexus
 
 Install it with an atomic rename. A plain `cp` over the live path fails with
 `Text file busy`, because running supervisors are executing that binary; the
 rename leaves them on their old inode, which is what you want:
 
-    cp nexus3 ~/.local/bin/nexus3.new && mv -f ~/.local/bin/nexus3.new ~/.local/bin/nexus3
+    cp nexus ~/.local/bin/nexus.new && mv -f ~/.local/bin/nexus.new ~/.local/bin/nexus
 
 `make vet` and `make test` remain the right way to check and test — only the
 binary-producing step needs the explicit `-o`.
 
-## Developing nexus3 inside nexus3
+## Developing nexus inside nexus
 
-nexus3 is developed in its own product: a unit of work gets a git worktree, a
-herdr workspace, and a nexus3 VM with an agent running inside it. That workflow —
+nexus is developed in its own product: a unit of work gets a git worktree, a
+herdr workspace, and a nexus VM with an agent running inside it. That workflow —
 the herdr verbs, nested virtualisation, guest toolchain, agent briefs, and the
-traps peculiar to a self-hosting sandbox — is documented in the
-`nexus3-slice-sandbox` skill (`.claude/skills/nexus3-slice-sandbox/`), which is
-the authoritative source. Consult it before delegating work to a sandbox or
+traps peculiar to a self-hosting sandbox — is documented in
+`plugins/claude/skills/nexus/references/self-hosting.md`, installed as the
+`nexus` plugin skill. Consult it before delegating work to a sandbox or
 diagnosing a sandbox that came up wrong, rather than reconstructing the workflow
 from the code.
 

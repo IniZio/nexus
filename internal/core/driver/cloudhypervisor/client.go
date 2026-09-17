@@ -1,6 +1,6 @@
 // Package cloudhypervisor implements driver.Driver backed by Cloud Hypervisor
 // (https://github.com/cloud-hypervisor/cloud-hypervisor). One CH process is
-// spawned per sandbox and communicates with nexus3 via REST over a per-sandbox
+// spawned per sandbox and communicates with nexus via REST over a per-sandbox
 // Unix socket (--api-socket).
 //
 // # Reentrancy prohibition
@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"syscall"
 
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // CH v52 VmState strings — verified against:
@@ -29,12 +29,12 @@ import (
 //	vmm/src/api/openapi/cloud-hypervisor.yaml @ v52.0
 //	VmState: { type: string, enum: [Created, Running, Shutdown, Paused] }
 //
-// Mapping rationale (nexus3's four-state model: Running / Paused / Absent / Unknown):
+// Mapping rationale (nexus's four-state model: Running / Paused / Absent / Unknown):
 //
 //	"Running"  → driver.Running   VM is executing.
 //	"Paused"   → driver.Paused    VM memory preserved, execution suspended.
 //	"Created"  → driver.Unknown   VM config loaded but guest not yet booted.
-//	                               No nexus3 state cell for "present, not executing,
+//	                               No nexus state cell for "present, not executing,
 //	                               no memory to preserve." Running would make
 //	                               recovery skip repair; Absent is destructive
 //	                               (authorises a new Start onto an occupied socket).
@@ -103,7 +103,7 @@ func (e chErrorResponse) isNotRunning() bool {
 	return len(e) >= 3 && e[2] == "VM is not running"
 }
 
-// vmConfig is the subset of Cloud Hypervisor's VmConfig that nexus3 submits
+// vmConfig is the subset of Cloud Hypervisor's VmConfig that nexus submits
 // via PUT /api/v1/vm.create.
 type vmConfig struct {
 	Payload vmPayloadConfig `json:"payload"`
@@ -187,7 +187,7 @@ type vmCPUsConfig struct {
 // REQUIRES this (or hugepages) for ANY vhost-user device including virtiofs —
 // omitting it produces HTTP 500 "Using vhost-user requires using shared memory
 // or huge pages". hugepages is NOT used: it requires host huge page
-// pre-allocation and is a system-wide operator decision outside nexus3's scope.
+// pre-allocation and is a system-wide operator decision outside nexus's scope.
 type vmMemoryConfig struct {
 	SizeBytes     uint64 `json:"size"`
 	HotplugSize   uint64 `json:"hotplug_size,omitempty"`

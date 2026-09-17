@@ -8,7 +8,7 @@ import (
 )
 
 // TestMain skips the entire builderimage test suite when running inside a
-// nexus3 KVM guest.
+// nexus KVM guest.
 //
 // The builderimage package imports github.com/google/go-containerregistry
 // which has a large transitive dependency graph. Linking the test binary
@@ -18,7 +18,7 @@ import (
 // EOF that fails the TestBuildDogfood harness at batch 10.
 //
 // Detection: /dev/vda is the virtio-blk rootfs; it is present in every
-// nexus3 KVM guest and absent on the development host.
+// nexus KVM guest and absent on the development host.
 //
 // Coverage: EnsureBuilderImage and its caching logic are exercised on the
 // development host where the full test suite runs. In-guest, the builder VM

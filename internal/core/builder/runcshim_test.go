@@ -7,16 +7,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func TestSynthesizeDockerfile_RuncShimAfterAgentCopy(t *testing.T) {
-	const agentFile = "_nexus3-agent-abc"
-	const installPath = "/sbin/nexus3-agent"
+	const agentFile = "_nexus-agent-abc"
+	const installPath = "/sbin/nexus-agent"
 	df := string(synthesizeDockerfile([]byte("FROM scratch\n"), nil, agentFile, installPath, runcShimContextFilename))
 
-	agentLine := "COPY --chmod=0755 --from=nexus3agent " + agentFile + " " + installPath
-	shimLine := "COPY --chmod=0755 --from=nexus3agent nexus3-runc /usr/local/sbin/runc"
+	agentLine := "COPY --chmod=0755 --from=nexusagent " + agentFile + " " + installPath
+	shimLine := "COPY --chmod=0755 --from=nexusagent nexus-runc /usr/local/sbin/runc"
 
 	agentIdx := strings.Index(df, agentLine)
 	shimIdx := strings.Index(df, shimLine)
@@ -40,8 +40,8 @@ func TestStageRuncShim_WritesExecutableScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stageRuncShim: %v", err)
 	}
-	if name != "nexus3-runc" {
-		t.Fatalf("stageRuncShim returned %q, want %q", name, "nexus3-runc")
+	if name != "nexus-runc" {
+		t.Fatalf("stageRuncShim returned %q, want %q", name, "nexus-runc")
 	}
 	path := filepath.Join(dir, name)
 	got, err := os.ReadFile(path)

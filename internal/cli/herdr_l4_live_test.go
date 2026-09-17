@@ -1,6 +1,6 @@
 //go:build herdr_live
 
-//     It never touches the operator's existing workspaces.
+// It never touches the operator's existing workspaces.
 package cli
 
 import (
@@ -14,9 +14,9 @@ import (
 	"time"
 )
 
-// TestHerdrPlugin_L4_BinaryVerb is Layer 4 of the herdr+nexus3 test strategy.
+// TestHerdrPlugin_L4_BinaryVerb is Layer 4 of the herdr+nexus test strategy.
 //
-// It builds the nexus3 binary, then asserts in two ways:
+// It builds the nexus binary, then asserts in two ways:
 //
 //  1. Direct exec — the binary is called with `__herdr-plugin abi` as a
 //     subprocess and stdout is checked for the ABI string declared in plugins/herdr/abi. This is
@@ -34,8 +34,8 @@ import (
 // To verify Layer 4 is the only layer that catches a missing verb:
 //
 //	sed -i 's/__herdr-plugin"/__herdr-plugin-MUTATED"/' internal/cli/cmd_herdr_plugin.go
-//	TMPDIR=/tmp go build -o /tmp/nexus3-mutated ./cmd/nexus3
-//	/tmp/nexus3-mutated __herdr-plugin abi  # exits 2: "unknown command"
+//	TMPDIR=/tmp go build -o /tmp/nexus-mutated ./cmd/nexus
+//	/tmp/nexus-mutated __herdr-plugin abi  # exits 2: "unknown command"
 //	go test ./internal/cli/ -count=1        # L1/L2/L3: all green
 //	TMPDIR=/tmp go test -count=1 -tags herdr_live ./internal/cli/ -run TestHerdrPlugin_L4
 //	# L4: FAIL — want current ABI from plugins/herdr/abi, binary exited non-zero
@@ -50,8 +50,8 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 	}
 
 	binDir := t.TempDir()
-	binary := filepath.Join(binDir, "nexus3-l4")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus3")
+	binary := filepath.Join(binDir, "nexus-l4")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/nexus")
 	build.Dir = filepath.Join("..", "..")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
@@ -73,16 +73,16 @@ func TestHerdrPlugin_L4_BinaryVerb(t *testing.T) {
 		if ee, ok := abiErr.(*exec.ExitError); ok {
 			stderr = ee.Stderr
 		}
-		t.Fatalf("nexus3 __herdr-plugin abi: exit %v\nstderr: %s", abiErr, stderr)
+		t.Fatalf("nexus __herdr-plugin abi: exit %v\nstderr: %s", abiErr, stderr)
 	}
 	got := strings.TrimSpace(string(abiOut))
 	if got != wantABI {
-		t.Errorf("nexus3 __herdr-plugin abi: want %q, got %q", wantABI, got)
+		t.Errorf("nexus __herdr-plugin abi: want %q, got %q", wantABI, got)
 	}
-	t.Logf("nexus3 __herdr-plugin abi stdout: %q", got)
+	t.Logf("nexus __herdr-plugin abi stdout: %q", got)
 
 	// was hardcoded as "1" and silently went stale when the ABI moved to 2.
-	label := fmt.Sprintf("nexus3-l4-probe-%d", time.Now().UnixMilli())
+	label := fmt.Sprintf("nexus-l4-probe-%d", time.Now().UnixMilli())
 	// re-resolves the workspace from the live list; if the workspace was never
 	t.Cleanup(func() {
 		id := findL4WorkspaceIDByLabel(t, label)
@@ -241,8 +241,8 @@ func closeL4ScratchWorkspace(t *testing.T, wsID, expectedLabel string) {
 func liveSkip(t *testing.T, format string, args ...any) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)
-	if os.Getenv("NEXUS3_LIVE_REQUIRED") == "1" {
-		t.Fatalf("%s [NEXUS3_LIVE_REQUIRED=1: refusing to skip]", msg)
+	if os.Getenv("NEXUS_LIVE_REQUIRED") == "1" {
+		t.Fatalf("%s [NEXUS_LIVE_REQUIRED=1: refusing to skip]", msg)
 	}
 	t.Skip(msg)
 }

@@ -1,9 +1,9 @@
 package service
 
 import (
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/statedir"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/statedir"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // removeSupervisorStateDir deletes <storeRoot>/supervisors/<id>, the durable

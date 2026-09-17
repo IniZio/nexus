@@ -1,6 +1,6 @@
 package cli
 
-// herdr_negative_scope_test.go — mechanical guard that the herdr ↔ nexus3
+// herdr_negative_scope_test.go — mechanical guard that the herdr ↔ nexus
 // integration stays within agreed scope. Assertions are intentionally brittle:
 // scope expansion silently triggers failure and forces review.
 

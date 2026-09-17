@@ -17,9 +17,9 @@ import (
 // into the guest. It tells the in-guest agent what kind of environment it is
 // in and what the baseline for evidence is — facts a cold agent cannot
 // discover on its own. Keep it in sync with the canonical copy in
-// plugins/claude/skills/nexus3/references/delegate-briefs.md.
-const standingOrders = `STANDING ORDERS (nexus3 sandbox)
-You are running inside a dedicated, isolated nexus3 microVM created for this task.
+// plugins/claude/skills/nexus/references/delegate-briefs.md.
+const standingOrders = `STANDING ORDERS (nexus sandbox)
+You are running inside a dedicated, isolated nexus microVM created for this task.
 This VM is yours: you are root, it has its own kernel, disk and network, and CPU and
 memory grow automatically under load. Use it fully.
 The baseline for any work here is the project's full local stack running (e.g.
@@ -32,11 +32,11 @@ Record any friction you hit — what happened, the evidence, the workaround — 
 report so the platform can be fixed.
 Egress is policy-gated. A 403 from the proxy names the policy that denied you:
 report it, do not route around it.
-Containers built or run by docker inside this VM already trust the sandbox TLS perimeter (CA at /etc/nexus3/ca, SSL_CERT_FILE and friends pre-set); a 403 from a TLS-intercepted host is egress policy, not a certificate problem — report it, do not work around it.
+Containers built or run by docker inside this VM already trust the sandbox TLS perimeter (CA at /etc/nexus/ca, SSL_CERT_FILE and friends pre-set); a 403 from a TLS-intercepted host is egress policy, not a certificate problem — report it, do not work around it.
 
 `
 
-// runHostCLI runs the nexus3 host binary with argv and returns its combined
+// runHostCLI runs the nexus host binary with argv and returns its combined
 // output. It is a package variable so tests can substitute a fake executor.
 var runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
 	exe, err := os.Executable()
@@ -48,7 +48,7 @@ var runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
 
 // runHerdrCLI runs the herdr binary (resolved by resolveHerdrBin) with argv
 // and returns its combined output. Separate from runHostCLI so tests can tell
-// herdr calls from nexus3 calls and fake each independently.
+// herdr calls from nexus calls and fake each independently.
 var runHerdrCLI = func(ctx context.Context, herdrBin string, argv ...string) (string, error) {
 	return runBinary(ctx, herdrBin, argv...)
 }
@@ -203,7 +203,7 @@ func parseHerdrWorktreeCreateWS(out string) string {
 	return ""
 }
 
-// parseHerdrListBinding finds the `nexus3 herdr list` line for workspaceID
+// parseHerdrListBinding finds the `nexus herdr list` line for workspaceID
 // and returns its handle and sandbox_id.
 func parseHerdrListBinding(out, workspaceID string) (handle, sandboxID string, ok bool) {
 	needle := "workspace_id=" + workspaceID
@@ -257,7 +257,7 @@ func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID
 	return "", "", "", false
 }
 
-// sandboxListed reports whether `nexus3 sandbox list` still shows handle or sandboxID.
+// sandboxListed reports whether `nexus sandbox list` still shows handle or sandboxID.
 func sandboxListed(psOut, handle, sandboxID string) bool {
 	for _, line := range strings.Split(psOut, "\n") {
 		for _, tok := range strings.Fields(line) {
@@ -300,7 +300,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 	gosdk.AddTool(srv, &gosdk.Tool{
 		Name: "delegate_worktree_create",
 		Description: "Create a linked git worktree via herdr (`herdr worktree create --workspace <parent> --branch <branch>`), " +
-			"then bind a nexus3 sandbox to it with the same `nexus3 herdr worktree-sandbox` path a herdr-created worktree gets: " +
+			"then bind a nexus sandbox to it with the same `nexus herdr worktree-sandbox` path a herdr-created worktree gets: " +
 			"image and egress from the checkout's .nexus/config.yaml (or .nexus/Containerfile), .git and .groundwork mounts, named volumes. " +
 			"Requires herdr running and repo_path open as a herdr workspace. " +
 			"image_ref, memory_mib and vcpus are rejected (the worktree-sandbox path has no flags for them); " +
@@ -340,12 +340,12 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 
 		bindOut, err := runHostCLI(ctx, "herdr", "worktree-sandbox", ws)
 		if err != nil {
-			return errorResult(fmt.Errorf("delegate_worktree_create: nexus3 herdr worktree-sandbox: %w\n%s", err, bindOut)), nil, nil
+			return errorResult(fmt.Errorf("delegate_worktree_create: nexus herdr worktree-sandbox: %w\n%s", err, bindOut)), nil, nil
 		}
 
 		listOut, err := runHostCLI(ctx, "herdr", "list")
 		if err != nil {
-			return errorResult(fmt.Errorf("delegate_worktree_create: nexus3 herdr list: %w\n%s", err, listOut)), nil, nil
+			return errorResult(fmt.Errorf("delegate_worktree_create: nexus herdr list: %w\n%s", err, listOut)), nil, nil
 		}
 		handle, sandboxID, ok := parseHerdrListBinding(listOut, ws)
 		if !ok {
@@ -371,7 +371,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 	gosdk.AddTool(srv, &gosdk.Tool{
 		Name: "delegate_agent_dispatch",
 		Description: "Deliver a task brief to the claude agent running inside a worktree sandbox " +
-			"via `nexus3 herdr space-agent --autonomous --no-focus`. " +
+			"via `nexus herdr space-agent --autonomous --no-focus`. " +
 			"The in-guest claude runs in auto permission mode (--permission-mode auto). " +
 			"Returns the dispatch log.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentDispatchArgs) (*gosdk.CallToolResult, any, error) {
@@ -428,9 +428,9 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 
 	gosdk.AddTool(srv, &gosdk.Tool{
 		Name: "delegate_teardown",
-		Description: "Reverse delegate_worktree_create: resolve the herdr workspace bound to the sandbox (`nexus3 herdr list`), " +
+		Description: "Reverse delegate_worktree_create: resolve the herdr workspace bound to the sandbox (`nexus herdr list`), " +
 			"run `herdr worktree remove --workspace <ws>` (closes the workspace, removes the git worktree, and reaps the sandbox via the worktree.removed hook), " +
-			"then verify the sandbox is gone. Falls back to `nexus3 sandbox rm <ref>` only when no workspace is bound or the sandbox is still listed afterwards. " +
+			"then verify the sandbox is gone. Falls back to `nexus sandbox rm <ref>` only when no workspace is bound or the sandbox is still listed afterwards. " +
 			"Returns {removed, workspace_id, handle, sandbox_id, output}.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateTeardownArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
@@ -438,7 +438,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		listOut, err := runHostCLI(ctx, "herdr", "list")
 		if err != nil {
-			return errorResult(fmt.Errorf("delegate_teardown: nexus3 herdr list: %w\n%s", err, listOut)), nil, nil
+			return errorResult(fmt.Errorf("delegate_teardown: nexus herdr list: %w\n%s", err, listOut)), nil, nil
 		}
 		ws, handle, sandboxID, bound := parseHerdrListBindingByRef(listOut, args.Ref)
 		if !bound {
@@ -459,7 +459,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 
 		psOut, err := runHostCLI(ctx, "sandbox", "list")
 		if err != nil {
-			return errorResult(fmt.Errorf("delegate_teardown: nexus3 sandbox list: %w\n%s", err, psOut)), nil, nil
+			return errorResult(fmt.Errorf("delegate_teardown: nexus sandbox list: %w\n%s", err, psOut)), nil, nil
 		}
 		out := rmOut
 		if sandboxListed(psOut, handle, sandboxID) {

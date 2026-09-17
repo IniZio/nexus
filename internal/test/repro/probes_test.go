@@ -30,7 +30,7 @@ func writeLogFile(t *testing.T, content string) string {
 // a SkipVerdict not_collected probe.
 //
 // To run the mutation manually: comment out logRootfsSizeManifest(rootfsDir) in
-// internal/core/agent/buildkit_linux.go, build a nexus3 binary, run the harness,
+// internal/core/agent/buildkit_linux.go, build a nexus binary, run the harness,
 // and observe Stage A yields HIF. This unit test proves the same property
 // against a synthetic log that matches what that mutation would produce.
 func TestParseManifestStageA_SentinelPresentNoData(t *testing.T) {
@@ -79,7 +79,7 @@ func TestParseManifestStageA_SentinelPresentNoData(t *testing.T) {
 func TestParseManifestStageA_NoSentinel_NotCollected(t *testing.T) {
 	logContent := strings.Join([]string{
 		"2026/08/29 10:00:00 INFO build-cache: miss — starting builder VM",
-		"2026/08/29 10:01:00 in-guest build: rootfs at /tmp/nexus3-...",
+		"2026/08/29 10:01:00 in-guest build: rootfs at /tmp/nexus-...",
 		// No sentinel, no manifest data.
 	}, "\n") + "\n"
 
@@ -120,7 +120,7 @@ func TestParseManifestStageA_RealManifestLines(t *testing.T) {
 		"2026/08/29 10:01:00 in-guest build: rootfs-size-manifest: 3 file(s) >= 1.0 MiB in /tmp/rootfs",
 		makeLine("testfiles/file_33m", 34603008),
 		makeLine("testfiles/file_64m", 67108864),
-		makeLine("usr/sbin/nexus3-agent", agentSize),
+		makeLine("usr/sbin/nexus-agent", agentSize),
 	}
 	logPath := writeLogFile(t, strings.Join(lines, "\n")+"\n")
 	results := ParseManifestStageA(logPath, agentSize, 0)
@@ -135,7 +135,7 @@ func TestParseManifestStageA_RealManifestLines(t *testing.T) {
 	}{
 		{"stageA.file_33m"},
 		{"stageA.file_64m"},
-		{"stageA.nexus3-agent"},
+		{"stageA.nexus-agent"},
 	} {
 		r, ok := probeMap[tc.probe]
 		if !ok {
@@ -215,7 +215,7 @@ func TestParseManifestStageA_SlogForm(t *testing.T) {
 	// Sentinel is bare-form even in the slog log (comes from a different code path).
 	logContent := strings.Join([]string{
 		`2026/08/29 09:18:27 in-guest build: manifest-channel: active`,
-		`time=2026-08-29T09:18:24.659Z level=INFO msg="in-guest build: rootfs-size-manifest: 24 file(s) >= 1.0 MiB in /var/lib/buildkit/nexus3-export/nexus3-inguestbuild-rootfs-879230242"`,
+		`time=2026-08-29T09:18:24.659Z level=INFO msg="in-guest build: rootfs-size-manifest: 24 file(s) >= 1.0 MiB in /var/lib/buildkit/nexus-export/nexus-inguestbuild-rootfs-879230242"`,
 		`time=2026-08-29T09:18:24.659Z level=INFO msg="in-guest build: rootfs-size-manifest:   testfiles/file_200m                                          209715200"`,
 		`time=2026-08-29T09:18:24.659Z level=INFO msg="in-guest build: rootfs-size-manifest:   testfiles/file_32m                                           33554433"`,
 	}, "\n") + "\n"
@@ -256,7 +256,7 @@ func TestParseManifestStageA_BareForm(t *testing.T) {
 	// Verbatim lines from baseline-20260829-074453.log.
 	logContent := strings.Join([]string{
 		`2026/08/29 07:45:11 in-guest build: manifest-channel: active`,
-		`2026/08/29 07:45:07 in-guest build: rootfs-size-manifest: 24 file(s) >= 1.0 MiB in /var/lib/buildkit/nexus3-export/nexus3-inguestbuild-rootfs-3209933237`,
+		`2026/08/29 07:45:07 in-guest build: rootfs-size-manifest: 24 file(s) >= 1.0 MiB in /var/lib/buildkit/nexus-export/nexus-inguestbuild-rootfs-3209933237`,
 		`2026/08/29 07:45:07 in-guest build: rootfs-size-manifest:   testfiles/file_200m                                          209715200`,
 		`2026/08/29 07:45:07 in-guest build: rootfs-size-manifest:   testfiles/file_32m                                           33554433`,
 	}, "\n") + "\n"

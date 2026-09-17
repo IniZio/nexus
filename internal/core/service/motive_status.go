@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // sandboxProbeFn probes one sandbox for live state. It returns the supervisor
@@ -47,7 +47,7 @@ type LabelStatusReport struct {
 	TotalAllocBytes int64
 	// LeakedCount is the number of ULID-keyed host resources (disks, sockets,
 	// intent files) whose owning sandbox ID does not appear in the record
-	// store. These are reclaimable via `nexus3 reap`. Sourced from
+	// store. These are reclaimable via `nexus reap`. Sourced from
 	// ResourceIndex (R1) without process probing.
 	LeakedCount int
 }

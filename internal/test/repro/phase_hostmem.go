@@ -30,7 +30,7 @@ type HostMemPhaseConfig struct {
 	// Targets defines the pressure sweep. If nil, defaults are used.
 	Targets []HostMemTarget
 	// Runner is the build runner. Nil uses RunBuild (production default).
-	// Set to a fake in tests to avoid real nexus3/VM invocations.
+	// Set to a fake in tests to avoid real nexus/VM invocations.
 	Runner BuildRunner
 	// MemChecker returns the current MemAvailable in MiB. Nil uses readMemAvailableMiB.
 	// Set to a fake in tests to bypass the pre-target memory reading (avoids real /proc/meminfo

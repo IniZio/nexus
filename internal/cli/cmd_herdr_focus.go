@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func runHerdrFocusChanged(ctx context.Context, args []string, out *Output) error {

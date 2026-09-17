@@ -8,8 +8,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/test/selfhost"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/test/selfhost"
 )
 
 // TestBuildSelfHostBaseImageSkipDocker verifies that BuildSelfHostBaseImage

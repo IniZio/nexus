@@ -5,17 +5,17 @@
 // Proves that the guest agent survives a host-side token rotation from an
 // invalid bearer token (T0) to a valid one (T1), with ZERO OAuth refresh
 // grants to the token endpoint. This design is strictly stronger than the
-// prior OAuth-grant approach: a post-rotation NEXUS3_OK response is
+// prior OAuth-grant approach: a post-rotation NEXUS_OK response is
 // unambiguous proof that T1 propagated to the MITM (a successful API call
 // cannot arrive by accident).
 //
 // Properties proved:
 //  1. Baseline exec with T0 (deliberately invalid) → API call rejected by
-//     Anthropic (NEXUS3_OK absent); MITM swap delta confirms the failure
+//     Anthropic (NEXUS_OK absent); MITM swap delta confirms the failure
 //     reached Anthropic, not a network/boot problem.
 //  2. broker.SetRealToken(sb.ID, host, T1) rotates the MITM mapping host-side;
 //     the guest placeholder is byte-identical before and after.
-//  3. Post-rotation exec with T1 (valid) → API call succeeds (NEXUS3_OK).
+//  3. Post-rotation exec with T1 (valid) → API call succeeds (NEXUS_OK).
 //  4. The MITM performs host-side credential swaps (swapCount delta > 0).
 //  5. Zero Deny egress events: the guest never reached the OAuth token endpoint
 //     (outside AgentEgressHosts; would appear as a Deny if attempted).
@@ -29,7 +29,7 @@
 //   - cloud-hypervisor binary (CLOUD_HYPERVISOR_BIN or ~/.local/bin/cloud-hypervisor)
 //   - mke2fs in PATH (e2fsprogs)
 //   - docker (required by BuildAgentBaseImage)
-//   - ~/.config/nexus3/creds.json (or NEXUS3_DEDICATED_CRED_STORE) present with a
+//   - ~/.config/nexus/creds.json (or NEXUS_DEDICATED_CRED_STORE) present with a
 //     currently-valid access_token (ExpiresAt > now+10m); no refresh_token needed.
 //
 // # Running
@@ -70,20 +70,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // TestOAuthRotationDogfood is the AC-5 acceptance test: invalid→valid host-side
@@ -373,7 +373,7 @@ func TestOAuthRotationDogfood(t *testing.T) {
 		defer execCancel()
 		exitCode, execErr = agentClient.Exec(execCtx, agent.ExecOptions{
 			Cwd:    "/root",
-			Argv:   []string{"/usr/local/bin/claude", "-p", "reply with exactly: NEXUS3_OK", "--model", dogfoodHaikuModel},
+			Argv:   []string{"/usr/local/bin/claude", "-p", "reply with exactly: NEXUS_OK", "--model", dogfoodHaikuModel},
 			Env:    guestEnv,
 			Stdout: &stdoutBuf,
 			Stderr: &stderrBuf,
@@ -404,9 +404,9 @@ func TestOAuthRotationDogfood(t *testing.T) {
 	if swapCount.Load() == swapBeforeBaseline {
 		t.Fatalf("baseline-T0-invalid: MITM swap count unchanged (was %d); failure is network/boot, not auth rejection — cannot confirm AC-5 baseline", swapBeforeBaseline)
 	}
-	// Load-bearing negative: T0 should be rejected — NEXUS3_OK must be absent.
-	if strings.Contains(bOut, "NEXUS3_OK") {
-		t.Fatalf("baseline-T0-invalid: unexpectedly produced NEXUS3_OK (T0 was accepted by Anthropic); output: %q", bOut)
+	// Load-bearing negative: T0 should be rejected — NEXUS_OK must be absent.
+	if strings.Contains(bOut, "NEXUS_OK") {
+		t.Fatalf("baseline-T0-invalid: unexpectedly produced NEXUS_OK (T0 was accepted by Anthropic); output: %q", bOut)
 	}
 	t.Logf("baseline PASSED: T0 correctly rejected (exitCode=%d, swap delta=%d)",
 		bExitCode, swapCount.Load()-swapBeforeBaseline)
@@ -438,8 +438,8 @@ func TestOAuthRotationDogfood(t *testing.T) {
 	if pExitCode != 0 {
 		t.Fatalf("post-rotation claude exited %d (T1 not accepted by Anthropic); output: %q", pExitCode, pOut)
 	}
-	if !strings.Contains(pOut, "NEXUS3_OK") {
-		t.Errorf("post-rotation: expected output to contain NEXUS3_OK; got: %q", pOut)
+	if !strings.Contains(pOut, "NEXUS_OK") {
+		t.Errorf("post-rotation: expected output to contain NEXUS_OK; got: %q", pOut)
 	}
 	t.Logf("post-rotation PASSED with T1 (exitCode=%d, swap delta=%d)",
 		pExitCode, swapCount.Load()-swapBeforePostRotation)

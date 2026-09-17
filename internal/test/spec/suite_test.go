@@ -37,11 +37,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/cli"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	testharness "github.com/IniZio/nexus3/internal/test/harness"
+	"github.com/IniZio/nexus/internal/cli"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	testharness "github.com/IniZio/nexus/internal/test/harness"
 	"github.com/cucumber/godog"
 )
 
@@ -64,7 +64,7 @@ type ctxKey struct{}
 func InitializeScenario(sc *godog.ScenarioContext) {
 	// Before each scenario: wire a fresh harness via the shared seam.
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
-		root, err := os.MkdirTemp("", "nexus3-spec-*")
+		root, err := os.MkdirTemp("", "nexus-spec-*")
 		if err != nil {
 			return ctx, fmt.Errorf("MkdirTemp: %w", err)
 		}
@@ -162,14 +162,14 @@ func registerSteps(sc *godog.ScenarioContext) {
 	// ── Scenario 2: PARTIAL (warning) ─────────────────────────────────────
 	// Docs:    docs/site/ai-agents.md:74
 	//            <Badge type="warning" text="partial" /> — target design exposes
-	//            `nexus3 create` as a top-level verb; current impl uses
-	//            `nexus3 sandbox create`.
+	//            `nexus create` as a top-level verb; current impl uses
+	//            `nexus sandbox create`.
 	// Driver:  cli.Lookup — checks the in-process command registry.
 	// Outcome: PENDING — the capability is partially built; the step reports
 	//          divergence as pending so the suite stays green. The After hook
 	//          turns this red if the command is ever registered (stale badge).
 
-	sc.Step(`^the nexus3 CLI$`, func() error {
+	sc.Step(`^the nexus CLI$`, func() error {
 		return nil // CLI registry loaded via the cli import side-effect
 	})
 
@@ -182,12 +182,12 @@ func registerSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the command is registered$`, func(gctx context.Context) (context.Context, error) {
 		s := gctx.Value(ctxKey{}).(*specCtx)
 		if !s.cmdFound {
-			// Known divergence: target design uses `nexus3 create`; current
-			// impl registers it as `nexus3 sandbox create` (docs badge: partial).
+			// Known divergence: target design uses `nexus create`; current
+			// impl registers it as `nexus sandbox create` (docs badge: partial).
 			s.hadPending = true
 			return gctx, fmt.Errorf(
 				"'create' is not a registered top-level command — "+
-					"current impl uses 'nexus3 sandbox create' "+
+					"current impl uses 'nexus sandbox create' "+
 					"(docs/site/ai-agents.md:74, badge: partial): %w",
 				godog.ErrPending,
 			)

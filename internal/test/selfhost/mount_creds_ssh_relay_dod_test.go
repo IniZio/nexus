@@ -2,9 +2,9 @@
 
 package selfhost
 
-// Live DoD proof for nexus3-mount-creds-ssh-relay. Requires NEXUS3_DOD_REPO_DIR
+// Live DoD proof for nexus-mount-creds-ssh-relay. Requires NEXUS_DOD_REPO_DIR
 // (a checkout of any repo whose .nexus/config.yaml configures the git-ssh relay,
-// already open as a herdr workspace), HERDR_ENV=1, herdr+nexus3 on PATH, /dev/kvm.
+// already open as a herdr workspace), HERDR_ENV=1, herdr+nexus on PATH, /dev/kvm.
 
 import (
 	"bytes"
@@ -25,8 +25,8 @@ import (
 
 func skipUnlessDoDEnv(t *testing.T) {
 	t.Helper()
-	if os.Getenv("NEXUS3_DOD_REPO_DIR") == "" {
-		t.Skip("skipping: NEXUS3_DOD_REPO_DIR not set")
+	if os.Getenv("NEXUS_DOD_REPO_DIR") == "" {
+		t.Skip("skipping: NEXUS_DOD_REPO_DIR not set")
 	}
 	if os.Getenv("HERDR_ENV") != "1" {
 		t.Skip("skipping: HERDR_ENV != 1 — must run inside herdr")
@@ -34,8 +34,8 @@ func skipUnlessDoDEnv(t *testing.T) {
 	if _, err := exec.LookPath("herdr"); err != nil {
 		t.Skip("skipping: herdr not on PATH")
 	}
-	if _, err := exec.LookPath("nexus3"); err != nil {
-		t.Skip("skipping: nexus3 not on PATH")
+	if _, err := exec.LookPath("nexus"); err != nil {
+		t.Skip("skipping: nexus not on PATH")
 	}
 }
 
@@ -50,7 +50,7 @@ func dodPortfwdStateFile() string {
 		}
 		xdg = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(xdg, "nexus3", "portfwd", "forwards.state")
+	return filepath.Join(xdg, "nexus", "portfwd", "forwards.state")
 }
 
 func dodSupervisorLog(sandboxID string) string {
@@ -62,7 +62,7 @@ func dodSupervisorLog(sandboxID string) string {
 		}
 		xdg = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(xdg, "nexus3", "supervisors", sandboxID, "supervisor.log")
+	return filepath.Join(xdg, "nexus", "supervisors", sandboxID, "supervisor.log")
 }
 
 // ── herdr workspace lookup ────────────────────────────────────────────────────
@@ -110,9 +110,9 @@ func dodFindParentWS(ctx context.Context, t *testing.T, herdrBin, repoDir string
 // ── dodWorktreeEnv — shared state returned by setupDoDWorktree ─────────
 
 type dodWorktreeEnv struct {
-	handle    string // sandbox handle, e.g. "example-app/nexus3-proof-…"
+	handle    string // sandbox handle, e.g. "example-app/nexus-proof-…"
 	sandboxID string // sandbox ID, e.g. "sb-…"
-	branch    string // git branch name, e.g. "nexus3-proof/1700000000"
+	branch    string // git branch name, e.g. "nexus-proof/1700000000"
 	wsID      string // herdr workspace ID for the new worktree workspace
 }
 
@@ -121,18 +121,18 @@ type dodWorktreeEnv struct {
 func setupDoDWorktree(t *testing.T, ctx context.Context) dodWorktreeEnv {
 	t.Helper()
 
-	repoDir := os.Getenv("NEXUS3_DOD_REPO_DIR")
+	repoDir := os.Getenv("NEXUS_DOD_REPO_DIR")
 
 	herdrBin, _ := exec.LookPath("herdr")
-	nexus3Bin, _ := exec.LookPath("nexus3")
+	nexusBin, _ := exec.LookPath("nexus")
 
-	branch := fmt.Sprintf("nexus3-proof/%d", time.Now().Unix())
+	branch := fmt.Sprintf("nexus-proof/%d", time.Now().Unix())
 	t.Logf("[%s] setup: repoDir=%s branch=%s", time.Now().Format(time.RFC3339), repoDir, branch)
 
 	// ── Find herdr parent workspace for the lms repo ──────────────────────────
 	parentWS, ok := dodFindParentWS(ctx, t, herdrBin, repoDir)
 	if !ok {
-		t.Skip("skipping: no herdr workspace found for NEXUS3_DOD_REPO_DIR and HERDR_WORKSPACE_ID unset — open the repo in herdr first")
+		t.Skip("skipping: no herdr workspace found for NEXUS_DOD_REPO_DIR and HERDR_WORKSPACE_ID unset — open the repo in herdr first")
 	}
 
 	// ── herdr worktree create ─────────────────────────────────────────────────
@@ -188,23 +188,23 @@ func setupDoDWorktree(t *testing.T, ctx context.Context) dodWorktreeEnv {
 		exec.CommandContext(rmCtx, "git", "-C", repoDir, "branch", "-D", branch).Run() //nolint:errcheck
 	})
 
-	// ── nexus3 herdr worktree-sandbox — explicit bind ─────────────────────────
-	// The auto-provision hook skips when no existing nexus3-bound workspace
+	// ── nexus herdr worktree-sandbox — explicit bind ─────────────────────────
+	// The auto-provision hook skips when no existing nexus-bound workspace
 	// exists in the repo (FRICTION-1). Explicit bind always proceeds.
-	t.Logf("[%s] nexus3 herdr worktree-sandbox %s", time.Now().Format(time.RFC3339), wsID)
-	wtsOut, wtsErr := exec.CommandContext(ctx, nexus3Bin, "herdr", "worktree-sandbox", wsID).CombinedOutput()
+	t.Logf("[%s] nexus herdr worktree-sandbox %s", time.Now().Format(time.RFC3339), wsID)
+	wtsOut, wtsErr := exec.CommandContext(ctx, nexusBin, "herdr", "worktree-sandbox", wsID).CombinedOutput()
 	t.Logf("[%s] worktree-sandbox output:\n%s", time.Now().Format(time.RFC3339), wtsOut)
 	if wtsErr != nil {
-		t.Fatalf("nexus3 herdr worktree-sandbox: exit err: %v", wtsErr)
+		t.Fatalf("nexus herdr worktree-sandbox: exit err: %v", wtsErr)
 	}
 
-	// ── nexus3 herdr list — resolve handle and sandbox ID ────────────────────
+	// ── nexus herdr list — resolve handle and sandbox ID ────────────────────
 	// Output format (cmd_herdr_plugin.go:2113):
 	//   label=…\tworkspace_id=…\thandle=…\tsandbox_id=…\tpane_id=…
 	var handle, sandboxID string
 	deadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(deadline) {
-		listOut, _ := exec.CommandContext(ctx, nexus3Bin, "herdr", "list").CombinedOutput()
+		listOut, _ := exec.CommandContext(ctx, nexusBin, "herdr", "list").CombinedOutput()
 		for _, line := range strings.Split(string(listOut), "\n") {
 			if !strings.Contains(line, "workspace_id="+wsID) {
 				continue
@@ -224,20 +224,20 @@ func setupDoDWorktree(t *testing.T, ctx context.Context) dodWorktreeEnv {
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("context expired waiting for nexus3 herdr list to show workspace %s", wsID)
+			t.Fatalf("context expired waiting for nexus herdr list to show workspace %s", wsID)
 		case <-time.After(5 * time.Second):
 		}
 	}
 	if handle == "" || sandboxID == "" {
-		t.Fatalf("nexus3 herdr list: workspace %s not found after 2 min; cannot continue", wsID)
+		t.Fatalf("nexus herdr list: workspace %s not found after 2 min; cannot continue", wsID)
 	}
 	t.Logf("[%s] sandbox ready: handle=%s sandbox_id=%s", time.Now().Format(time.RFC3339), handle, sandboxID)
 
 	// ── Wait for guest agent ──────────────────────────────────────────────────
-	t.Logf("[%s] polling nexus3 exec until guest agent reachable …", time.Now().Format(time.RFC3339))
+	t.Logf("[%s] polling nexus exec until guest agent reachable …", time.Now().Format(time.RFC3339))
 	agentDeadline := time.Now().Add(5 * time.Minute)
 	for {
-		echoOut, echoErr := exec.CommandContext(ctx, nexus3Bin, "exec", handle, "--", "/bin/echo", "agent-alive").CombinedOutput()
+		echoOut, echoErr := exec.CommandContext(ctx, nexusBin, "exec", handle, "--", "/bin/echo", "agent-alive").CombinedOutput()
 		if echoErr == nil && bytes.Contains(echoOut, []byte("agent-alive")) {
 			t.Logf("[%s] guest agent reachable", time.Now().Format(time.RFC3339))
 			break
@@ -263,9 +263,9 @@ func setupDoDWorktree(t *testing.T, ctx context.Context) dodWorktreeEnv {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // Never calls t.Fatal on non-zero exit — callers assert exit codes directly (evidence discipline).
-func dodGuestExec(ctx context.Context, nexus3Bin, handle, script string) (stdout, stderr string, exitCode int) {
+func dodGuestExec(ctx context.Context, nexusBin, handle, script string) (stdout, stderr string, exitCode int) {
 	var outBuf, errBuf bytes.Buffer
-	cmd := exec.CommandContext(ctx, nexus3Bin, "exec", handle, "--", "/bin/bash", "-c", script)
+	cmd := exec.CommandContext(ctx, nexusBin, "exec", handle, "--", "/bin/bash", "-c", script)
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	err := cmd.Run()
@@ -290,7 +290,7 @@ func dodReadLog(path string) string {
 
 // ── AC-3: git SSH relay ───────────────────────────────────────────────────────
 
-// @verifies nexus3-mount-creds-ssh-relay/AC-3
+// @verifies nexus-mount-creds-ssh-relay/AC-3
 func TestDoD_AC3(t *testing.T) {
 	skipUnlessDoDEnv(t)
 	skipUnlessKVMSH(t)
@@ -298,7 +298,7 @@ func TestDoD_AC3(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
-	nexus3Bin, _ := exec.LookPath("nexus3")
+	nexusBin, _ := exec.LookPath("nexus")
 	env := setupDoDWorktree(t, ctx)
 	supLog := dodSupervisorLog(env.sandboxID)
 
@@ -308,14 +308,14 @@ func TestDoD_AC3(t *testing.T) {
 	// Relay connects first, forwards capabilities, then intercepts ref-updates (deadlock fix 6cfa39c).
 	pushScript := fmt.Sprintf(`set -euo pipefail
 cd /workspace
-git config user.email "nexus3-dod@example.com" 2>/dev/null || true
-git config user.name  "nexus3 DoD"              2>/dev/null || true
-git commit --allow-empty -m "nexus3 dod probe: AC-3"
+git config user.email "nexus-dod@example.com" 2>/dev/null || true
+git config user.name  "nexus DoD"              2>/dev/null || true
+git commit --allow-empty -m "nexus dod probe: AC-3"
 git push origin HEAD
 echo PUSH_ALLOWED_BRANCH_OK
 `)
 	t.Logf("[%s] AC-3/step1: git commit + git push origin HEAD", time.Now().Format(time.RFC3339))
-	stdout, stderr, code := dodGuestExec(ctx, nexus3Bin, env.handle, pushScript)
+	stdout, stderr, code := dodGuestExec(ctx, nexusBin, env.handle, pushScript)
 	t.Logf("[%s] AC-3/step1 exit=%d stdout:\n%s\nstderr:\n%s",
 		time.Now().Format(time.RFC3339), code, stdout, stderr)
 	if code != 0 {
@@ -328,7 +328,7 @@ echo PUSH_ALLOWED_BRANCH_OK
 	// git client rejects non-ff pushes before the relay sees a ref; use commit-tree to build a genuine ff so deny_ref fires.
 	lsRemoteBeforeScript := `set -euo pipefail; cd /workspace; git fetch origin main; git ls-remote origin main`
 	t.Logf("[%s] AC-3/step2-pre: ls-remote origin main (before probe)", time.Now().Format(time.RFC3339))
-	lsOut1, _, _ := dodGuestExec(ctx, nexus3Bin, env.handle, lsRemoteBeforeScript)
+	lsOut1, _, _ := dodGuestExec(ctx, nexusBin, env.handle, lsRemoteBeforeScript)
 
 	pushMainScript := `set -euo pipefail
 cd /workspace
@@ -336,7 +336,7 @@ sha=$(git commit-tree origin/main^{tree} -p origin/main -m "relay deny probe")
 git push origin "${sha}:refs/heads/main"
 `
 	t.Logf("[%s] AC-3/step2: git push <ff-sha>:refs/heads/main (expect refusal)", time.Now().Format(time.RFC3339))
-	stdout2, stderr2, code2 := dodGuestExec(ctx, nexus3Bin, env.handle, pushMainScript)
+	stdout2, stderr2, code2 := dodGuestExec(ctx, nexusBin, env.handle, pushMainScript)
 	t.Logf("[%s] AC-3/step2 exit=%d stdout:\n%s\nstderr:\n%s",
 		time.Now().Format(time.RFC3339), code2, stdout2, stderr2)
 	if code2 == 0 {
@@ -344,7 +344,7 @@ git push origin "${sha}:refs/heads/main"
 	}
 
 	lsRemoteAfterScript := `set -euo pipefail; cd /workspace; git ls-remote origin main`
-	lsOut2, _, _ := dodGuestExec(ctx, nexus3Bin, env.handle, lsRemoteAfterScript)
+	lsOut2, _, _ := dodGuestExec(ctx, nexusBin, env.handle, lsRemoteAfterScript)
 	if strings.TrimSpace(lsOut1) != strings.TrimSpace(lsOut2) {
 		t.Errorf("AC-3/step2: refs/heads/main moved after refused push\nbefore: %q\nafter:  %q",
 			strings.TrimSpace(lsOut1), strings.TrimSpace(lsOut2))
@@ -353,7 +353,7 @@ git push origin "${sha}:refs/heads/main"
 	// ── Step 3: delete remote branch (cleanup) ───────────────────────────────
 	deleteScript := fmt.Sprintf("cd /workspace && git push origin --delete %s; echo DELETE_DONE", env.branch)
 	t.Logf("[%s] AC-3/step3: git push origin --delete %s", time.Now().Format(time.RFC3339), env.branch)
-	delOut, delErr, delCode := dodGuestExec(ctx, nexus3Bin, env.handle, deleteScript)
+	delOut, delErr, delCode := dodGuestExec(ctx, nexusBin, env.handle, deleteScript)
 	t.Logf("[%s] AC-3/step3 exit=%d stdout:\n%s\nstderr:\n%s",
 		time.Now().Format(time.RFC3339), delCode, delOut, delErr)
 	// Non-fatal: remote branch delete is best-effort (might not exist if push failed).
@@ -388,7 +388,7 @@ git push origin "${sha}:refs/heads/main"
 
 // ── AC-6: auto port forward ───────────────────────────────────────────────────
 
-// @verifies nexus3-mount-creds-ssh-relay/AC-6
+// @verifies nexus-mount-creds-ssh-relay/AC-6
 func TestDoD_AC6(t *testing.T) {
 	skipUnlessDoDEnv(t)
 	skipUnlessKVMSH(t)
@@ -396,7 +396,7 @@ func TestDoD_AC6(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
-	nexus3Bin, _ := exec.LookPath("nexus3")
+	nexusBin, _ := exec.LookPath("nexus")
 	env := setupDoDWorktree(t, ctx)
 	supLog := dodSupervisorLog(env.sandboxID)
 	stateFile := dodPortfwdStateFile()
@@ -406,7 +406,7 @@ func TestDoD_AC6(t *testing.T) {
 
 	serverScript := "python3 -m http.server 8123 --bind 0.0.0.0 </dev/null >/tmp/http-server.log 2>&1 &"
 	t.Logf("[%s] AC-6/step1: start python3 http.server 8123 in guest", time.Now().Format(time.RFC3339))
-	_, _, startCode := dodGuestExec(ctx, nexus3Bin, env.handle, serverScript)
+	_, _, startCode := dodGuestExec(ctx, nexusBin, env.handle, serverScript)
 	t.Logf("[%s] AC-6/step1 exit=%d", time.Now().Format(time.RFC3339), startCode)
 	if startCode != 0 {
 		t.Fatalf("AC-6/step1: failed to start http.server in guest, exit=%d", startCode)
@@ -465,7 +465,7 @@ func TestDoD_AC6(t *testing.T) {
 
 	// ── Step 4: kill the server ───────────────────────────────────────────────
 	t.Logf("[%s] AC-6/step4: killing python3 http.server 8123", time.Now().Format(time.RFC3339))
-	_, _, killCode := dodGuestExec(ctx, nexus3Bin, env.handle,
+	_, _, killCode := dodGuestExec(ctx, nexusBin, env.handle,
 		`pkill -f "http.server 8123" || pkill -f "http.server" ; echo KILL_SENT`)
 	t.Logf("[%s] AC-6/step4 kill exit=%d", time.Now().Format(time.RFC3339), killCode)
 

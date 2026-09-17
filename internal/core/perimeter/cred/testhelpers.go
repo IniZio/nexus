@@ -9,7 +9,7 @@ import "fmt"
 //
 // Deliberately no "testing" import. Not because it would newly link the test
 // framework into the shipped binary — it is already reachable there via
-// containerd, so that argument does not apply to nexus3 — but because a
+// containerd, so that argument does not apply to nexus — but because a
 // production file has no business depending on the test framework to express
 // its own API. The helpers therefore return an unregister func rather than
 // taking a *testing.T, which also keeps them usable outside a test.

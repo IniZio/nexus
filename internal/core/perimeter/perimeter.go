@@ -1,4 +1,4 @@
-// Package perimeter defines the shared types for nexus3's egress-filtering
+// Package perimeter defines the shared types for nexus's egress-filtering
 // subsystem. It is the policy layer: it consumes a raw TAP fd produced by the
 // driver transport layer and enforces per-sandbox egress policy.
 //
@@ -17,7 +17,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // Policy is the per-sandbox egress allowlist. It describes which destinations

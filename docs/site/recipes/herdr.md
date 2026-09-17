@@ -1,6 +1,6 @@
-# Using nexus3 from herdr
+# Using nexus from herdr
 
-herdr is the terminal workspace manager nexus3 integrates with. The plugin turns
+herdr is the terminal workspace manager nexus integrates with. The plugin turns
 every sandbox into something you can see and act on without leaving herdr: a
 listing overlay, a guest shell in a pane, and lifecycle actions bound to the
 focused workspace.
@@ -13,13 +13,13 @@ The plugin is self-bootstrapping. One command downloads, verifies, and installs
 everything:
 
 ```sh
-herdr plugin install IniZio/nexus3/plugins/herdr
+herdr plugin install IniZio/nexus/plugins/herdr
 ```
 
-`build.sh` (the plugin's build hook) reads `plugins/herdr/nexus3-version` for a
-pinned release tag, downloads `nexus3-linux-amd64` and `SHA256SUMS` from GitHub
-Releases, verifies the checksum, installs the binary to `~/.local/bin/nexus3`,
-ABI-probes it, then runs `nexus3 herdr install-default-shell --write-config` to
+`build.sh` (the plugin's build hook) reads `plugins/herdr/nexus-version` for a
+pinned release tag, downloads `nexus-linux-amd64` and `SHA256SUMS` from GitHub
+Releases, verifies the checksum, installs the binary to `~/.local/bin/nexus`,
+ABI-probes it, then runs `nexus herdr install-default-shell --write-config` to
 hard-link the guest shell and wire `config.toml` automatically.
 
 **Manual fallback.** If `install-default-shell --write-config` is skipped or
@@ -27,7 +27,7 @@ fails the `herdr config check` step, it prints the line to paste:
 
 ```
 [terminal]
-default_shell = ~/.local/bin/nexus3-guest-shell
+default_shell = ~/.local/bin/nexus-guest-shell
 ```
 
 Paste it into `~/.config/herdr/config.toml` and run `herdr server reload-config`.
@@ -42,57 +42,57 @@ herdr plugin list
 
 | Platform | Status |
 |---|---|
-| Linux x86-64 | **supported** — `nexus3` binary downloaded and installed by `build.sh` |
-| macOS arm64 | **supported** — `nexus3-client` downloaded from the pinned release by `build.sh` |
-| macOS amd64 | **supported** — `nexus3-client` downloaded from the pinned release by `build.sh` |
+| Linux x86-64 | **supported** — `nexus` binary downloaded and installed by `build.sh` |
+| macOS arm64 | **supported** — `nexus-client` downloaded from the pinned release by `build.sh` |
+| macOS amd64 | **supported** — `nexus-client` downloaded from the pinned release by `build.sh` |
 | Linux arm64 | no released binary — build from source (see below) |
 
 macOS users run the same install command as Linux:
 
 ```sh
-herdr plugin install IniZio/nexus3/plugins/herdr
+herdr plugin install IniZio/nexus/plugins/herdr
 ```
 
-`build.sh` detects the platform, downloads the matching `nexus3-client` binary
+`build.sh` detects the platform, downloads the matching `nexus-client` binary
 from the pinned release, verifies its checksum, and installs it to
-`~/.local/bin/nexus3-client`. No Go toolchain required.
+`~/.local/bin/nexus-client`. No Go toolchain required.
 
 For Linux arm64, `build.sh` exits with a clear message. Build and wire manually:
 
 ```sh
-git clone https://github.com/IniZio/nexus3
-cd nexus3 && go build -o ~/.local/bin/nexus3 ./cmd/nexus3
-nexus3 herdr install-default-shell --write-config
+git clone https://github.com/IniZio/nexus
+cd nexus && go build -o ~/.local/bin/nexus ./cmd/nexus
+nexus herdr install-default-shell --write-config
 ```
 
 Then wire the plugin from a local clone (two steps — `herdr plugin link` does
 not run the build hook, so run `build.sh` first):
 
 ```sh
-cd /path/to/nexus3/plugins/herdr
-NEXUS3_LOCAL=1 sh build.sh
-herdr plugin link /path/to/nexus3/plugins/herdr
+cd /path/to/nexus/plugins/herdr
+NEXUS_LOCAL=1 sh build.sh
+herdr plugin link /path/to/nexus/plugins/herdr
 ```
 
 ### Local-dev path
 
-If `nexus3` is already on `PATH` and you want to skip the download entirely
+If `nexus` is already on `PATH` and you want to skip the download entirely
 (e.g. while iterating on the binary itself):
 
 ```sh
-cd /path/to/nexus3/plugins/herdr
-NEXUS3_LOCAL=1 sh build.sh
-herdr plugin link /path/to/nexus3/plugins/herdr
+cd /path/to/nexus/plugins/herdr
+NEXUS_LOCAL=1 sh build.sh
+herdr plugin link /path/to/nexus/plugins/herdr
 ```
 
 `herdr plugin install` only accepts `OWNER/REPO` (GitHub) source; it cannot
 install from a local path. `herdr plugin link` registers the manifest but does
 not run the `[[build]]` hook. Run `build.sh` manually before or after linking;
-`NEXUS3_LOCAL=1` skips the download and uses the binary already on `PATH`.
+`NEXUS_LOCAL=1` skips the download and uses the binary already on `PATH`.
 
-`build.sh` writes the shim next to the plugin files (`plugins/herdr/nexus3-shim.sh`
+`build.sh` writes the shim next to the plugin files (`plugins/herdr/nexus-shim.sh`
 in a checkout install), and that shim is what every live hook execs. Override
-`INSTALL_DIR` for a throwaway run only together with `NEXUS3_SHIM_DIR=<dir>`;
+`INSTALL_DIR` for a throwaway run only together with `NEXUS_SHIM_DIR=<dir>`;
 without it `build.sh` refuses rather than repoint the live shim at a temporary
 binary.
 
@@ -106,7 +106,7 @@ stale shim is the most common cause of "herdr shows old behaviour".
 
 ### Create: transactional open
 
-When you run `nexus3: create a sandbox` (or open a worktree pane), nexus3
+When you run `nexus: create a sandbox` (or open a worktree pane), nexus
 creates three things in sequence: the sandbox, the herdr workspace, and the
 binding that links them. If any step fails **before** the binding is written,
 the incomplete pieces are rolled back — you do not end up with orphaned
@@ -115,26 +115,26 @@ failed pane-open.
 
 ### Teardown: one idempotent path
 
-Whether teardown is triggered by the `nexus3: remove this sandbox and close the
-space` action, `nexus3 herdr remove`, a `nexus3 rm` cascade, or the
+Whether teardown is triggered by the `nexus: remove this sandbox and close the
+space` action, `nexus herdr remove`, a `nexus rm` cascade, or the
 real-time pane-close reap described below, it follows the same path: remove the
 sandbox, close the herdr workspace, delete the binding. If the workspace close
-does not succeed, the binding is retained rather than deleted, so `nexus3 herdr
+does not succeed, the binding is retained rather than deleted, so `nexus herdr
 prune --apply` can retry it on the next pass — the only copy of the record is
 never lost.
 
 ### Real-time reap on pane close
 
 Closing the last pane of a worktree sandbox tears it down automatically. herdr
-sends a trappable `SIGHUP` to the process group; nexus3 catches it and runs the
-teardown path above. This is best-effort. If the signal arrives while nexus3 is
+sends a trappable `SIGHUP` to the process group; nexus catches it and runs the
+teardown path above. This is best-effort. If the signal arrives while nexus is
 in a non-interruptible state, or if herdr is not available, the teardown is
-skipped and the binding remains. `nexus3 herdr prune --apply` is the reliable
+skipped and the binding remains. `nexus herdr prune --apply` is the reliable
 backstop — run it after a session to confirm nothing leaked.
 
 ### `prune --apply`: 4-case reconciler
 
-`nexus3 herdr prune` (dry-run by default) inspects every binding and classifies
+`nexus herdr prune` (dry-run by default) inspects every binding and classifies
 it:
 
 | Binding state | Action |
@@ -144,18 +144,18 @@ it:
 | sandbox live + workspace gone | keep binding, clear stale workspace ID |
 | both live | noop |
 
-It also sweeps for `nexus3:`-labelled orphan workspaces that have no binding at
+It also sweeps for `nexus:`-labelled orphan workspaces that have no binding at
 all, and closes them.
 
 ```sh
-nexus3 herdr prune            # dry-run: report what would change
-nexus3 herdr prune --apply    # apply: close workspaces and delete stale bindings
+nexus herdr prune            # dry-run: report what would change
+nexus herdr prune --apply    # apply: close workspaces and delete stale bindings
 ```
 
 Global `prune --apply` is a **manual** verb. A workspace whose tab you merely
 closed is absent from `herdr workspace list`, so a global apply reaps its
 sandbox too. The `worktree.removed` hook therefore never runs it; it runs
-`nexus3 herdr prune --apply --workspace <id>`, which takes the workspace id
+`nexus herdr prune --apply --workspace <id>`, which takes the workspace id
 from the event payload and reconciles only that one binding (the named
 workspace is taken as gone; no orphan or bindingless sweep runs). Run the
 dry form first to see what a global apply would take.
@@ -169,18 +169,18 @@ decision D-SHL-27. The first worktree's sandbox, if one is left orphaned, is
 reclaimed by:
 
 ```sh
-nexus3 herdr prune --apply
+nexus herdr prune --apply
 ```
 
 ## What the overlay shows <Badge type="tip" text="built" />
 
-Open it with the **`nexus3: list sandboxes`** action. herdr has no built-in
+Open it with the **`nexus: list sandboxes`** action. herdr has no built-in
 action menu key, so actions are invoked through whatever you have bound to a
 palette — with the `jt.command-palette` plugin that is `prefix+p` — or from a
 terminal:
 
 ```sh
-herdr plugin action invoke workspaces --plugin nexus3
+herdr plugin action invoke workspaces --plugin nexus
 ```
 
 The overlay lists every sandbox, however it was created:
@@ -204,7 +204,7 @@ demo/agent-1  running  claude-code  /work,nm→/work/nm   -      sb-06G1…
 mounts gives you a guest shell in `/root`, while one with a live mount drops you
 straight into the mounted directory.
 
-The same information is available in a terminal with `nexus3 ps`.
+The same information is available in a terminal with `nexus ps`.
 
 ## Actions <Badge type="tip" text="built" />
 
@@ -212,16 +212,16 @@ These appear in herdr's action list for the focused workspace:
 
 | Action | Effect |
 |---|---|
-| `nexus3: list sandboxes` | open the listing overlay described above |
-| `nexus3: create a sandbox` | prompt for image, project and name, then create, boot and open a space |
-| `nexus3: attach to a workspace` | reattach to an existing guest session |
-| `nexus3: create sandbox space (from local Containerfile)` | build, boot, and open a space in one step |
-| `nexus3: open guest pane` | another guest shell in the current space |
-| `nexus3: pause this sandbox` | pause the bound sandbox — frees CPU, keeps memory state |
-| `nexus3: resume this sandbox` | resume it |
-| `nexus3: remove this sandbox and close the space` | remove the sandbox, close the workspace, drop the binding |
-| `nexus3: workspace logs` | <Badge type="danger" text="not built" /> prints a not-implemented notice |
-| `nexus3: doctor` | substrate and plugin diagnostics |
+| `nexus: list sandboxes` | open the listing overlay described above |
+| `nexus: create a sandbox` | prompt for image, project and name, then create, boot and open a space |
+| `nexus: attach to a workspace` | reattach to an existing guest session |
+| `nexus: create sandbox space (from local Containerfile)` | build, boot, and open a space in one step |
+| `nexus: open guest pane` | another guest shell in the current space |
+| `nexus: pause this sandbox` | pause the bound sandbox — frees CPU, keeps memory state |
+| `nexus: resume this sandbox` | resume it |
+| `nexus: remove this sandbox and close the space` | remove the sandbox, close the workspace, drop the binding |
+| `nexus: workspace logs` | <Badge type="danger" text="not built" /> prints a not-implemented notice |
+| `nexus: doctor` | substrate and plugin diagnostics |
 
 Every action resolves the sandbox from the focused herdr workspace, so none of
 them asks you to type a handle.
@@ -231,19 +231,19 @@ them asks you to type a handle.
 A sandbox made in a terminal is a first-class herdr citizen:
 
 ```sh
-nexus3 create demo/api --image ghcr.io/inizio/nexus3-base:latest
+nexus create demo/api --image ghcr.io/inizio/nexus-base:latest
 ```
 
 It appears in the overlay immediately, because the listing is unfiltered. The
-first time you run a herdr action against it, nexus3 **adopts** it — creating
+first time you run a herdr action against it, nexus **adopts** it — creating
 the binding that the action needs and telling you so:
 
 ```
-nexus3: adopted sandbox demo/api into herdr as nexus3:demo/api
+nexus: adopted sandbox demo/api into herdr as nexus:demo/api
 ```
 
 Adoption is deliberately lazy. Binding at creation time would mint a herdr
-workspace for every throwaway sandbox — including the ones `nexus3 run` creates
+workspace for every throwaway sandbox — including the ones `nexus run` creates
 and deletes seconds later — and would make sandbox creation depend on herdr
 being installed. Doing it on first use costs nothing until you actually ask
 herdr to act.
@@ -253,37 +253,37 @@ only the sandbox handle; only opening a pane needs a workspace, and that one is
 created at the moment it is needed. Otherwise pausing a sandbox would leave an
 empty workspace behind every time.
 
-Run `nexus3 herdr list` to see the current bindings.
+Run `nexus herdr list` to see the current bindings.
 
 ## A working session
 
 ```sh
 # create a sandbox with your repo mounted live
-nexus3 create demo/api --image ghcr.io/inizio/nexus3-base:latest --mount "$PWD:/work"
+nexus create demo/api --image ghcr.io/inizio/nexus-base:latest --mount "$PWD:/work"
 
 # see it
-nexus3 ps
+nexus ps
 ```
 
-Then, in herdr: run the `nexus3: list sandboxes` action, find `demo/api`, and use
-`nexus3: open guest pane`. The pane opens a login shell already in `/work`,
+Then, in herdr: run the `nexus: list sandboxes` action, find `demo/api`, and use
+`nexus: open guest pane`. The pane opens a login shell already in `/work`,
 because the shell's working directory is derived from the sandbox's first live
 mount.
 
-When you are done, `nexus3: remove this sandbox and close the space` tears down
+When you are done, `nexus: remove this sandbox and close the space` tears down
 the sandbox, the workspace, and the binding together. Verify nothing leaked:
 
 ```sh
-nexus3 reap
+nexus reap
 ```
 
 ## Update the plugin <Badge type="tip" text="built" />
 
-To upgrade nexus3 to the version pinned in the plugin's `nexus3-version` file,
+To upgrade nexus to the version pinned in the plugin's `nexus-version` file,
 re-run the same install command:
 
 ```sh
-herdr plugin install IniZio/nexus3/plugins/herdr
+herdr plugin install IniZio/nexus/plugins/herdr
 ```
 
 The build hook (`build.sh`) compares the installed binary against the pin. It
@@ -292,17 +292,17 @@ than the pin in place. To check whether your installed version matches the pin,
 run:
 
 ```sh
-nexus3 herdr version-check
+nexus herdr version-check
 ```
 
 This prints one of: `version ok: <ver> (matches pin)`, a kept-newer or dev
 message, or `version skew: installed <old> < pinned <new>` with the exact
 update command on stderr. The same check runs at herdr startup and in
-`nexus3 herdr doctor`.
+`nexus herdr doctor`.
 
 ::: info Restart herdr after a plugin upgrade
 After running `herdr plugin install …`, the new binary is installed but the
-running client daemon (`nexus3-client herdr local-agent-startup`) continues
+running client daemon (`nexus-client herdr local-agent-startup`) continues
 using the old code. To activate the new version, restart herdr:
 
 ```sh
@@ -317,20 +317,20 @@ behaviour.
 ## Troubleshooting
 
 **An action says a sandbox does not exist.** The binding outlived the sandbox —
-something removed it outside herdr. `nexus3 herdr list` shows the
+something removed it outside herdr. `nexus herdr list` shows the
 stale entry; removing through herdr again clears it.
 
 **The overlay is empty but you know a sandbox exists.** The overlay reads the
-same store as `nexus3 ps`. If `ps` also shows nothing, check that both are
+same store as `nexus ps`. If `ps` also shows nothing, check that both are
 running as the same user: state lives under the user's own state directory.
 
-**herdr shows behaviour you already fixed.** Rebuild nexus3 and re-run the
+**herdr shows behaviour you already fixed.** Rebuild nexus and re-run the
 plugin install, per the warning above.
 
 **`stop` says the sandbox is still running.** That is the honest answer, not a
 bug in the report: the detached supervisor did not finish within its timeout, so
-the record still reads `running`. Wait a moment and check `nexus3 ps`; if the
-state does not settle, `nexus3 reap` will show whether anything leaked.
+the record still reads `running`. Wait a moment and check `nexus ps`; if the
+state does not settle, `nexus reap` will show whether anything leaked.
 
 **Ports are not forwarded even though sandboxes are running.**
 The client daemon forwards ports for the sandbox bound to the currently focused
@@ -338,14 +338,14 @@ herdr workspace on the *host* session. When no workspace is focused, or the
 focused workspace has no bound sandbox, no forwards are active — the daemon logs
 `portfwd focus: focused workspace has no sandbox; forwarding nothing` and cancels
 any previously applied forwards within one reconcile tick.
-Look for that line in `~/.local/state/nexus3/portfwd-client/agent.log`.
-Switch focus to the workspace that owns the sandbox, or run `nexus3 herdr list`
+Look for that line in `~/.local/state/nexus/portfwd-client/agent.log`.
+Switch focus to the workspace that owns the sandbox, or run `nexus herdr list`
 on the host to confirm a binding exists.
 
 ::: warning Sole-interactive-client rule
 herdr 0.9.0 maintains one session-wide focus state shared across all connected
-clients. The `nexus3-client` daemon reads the focus from the host session.
-Focus-scoped forwarding is accurate only when `nexus3-client` is the **sole
+clients. The `nexus-client` daemon reads the focus from the host session.
+Focus-scoped forwarding is accurate only when `nexus-client` is the **sole
 interactive client** on that herdr session. When a host TUI and a remote client
 are both attached, the host session's most recent workspace focus is the one
 the daemon reads; the remote client has no independent focus channel.

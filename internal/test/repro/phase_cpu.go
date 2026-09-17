@@ -22,7 +22,7 @@ type CPUPhaseConfig struct {
 	// Runs is the number of builds per axis. If 0, defaults to 2.
 	Runs int
 	// Runner is the build runner. Nil uses RunBuild (production default).
-	// Set to a fake in tests to avoid real nexus3/VM invocations.
+	// Set to a fake in tests to avoid real nexus/VM invocations.
 	Runner BuildRunner
 }
 

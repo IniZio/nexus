@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // zombieState reads /proc/<pid>/stat field 3 and returns ("Z", true) if the

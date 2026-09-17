@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
 )
 
 // newSandboxID returns a deterministic SandboxID for tests.
@@ -1863,7 +1863,7 @@ func TestD38_BranchPolicy_DeniedBeforeCredSwap(t *testing.T) {
 		AllowedHosts:    []string{"github.com"},
 		Broker:          broker,
 		AllowedRepo:     "acme/myrepo",
-		AllowedBranches: []string{"refs/heads/nexus3/*"},
+		AllowedBranches: []string{"refs/heads/nexus/*"},
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
 
@@ -1920,11 +1920,11 @@ func TestD38_BranchPolicy_AllowedStreamsThrough(t *testing.T) {
 		AllowedHosts:    []string{"github.com"},
 		Broker:          broker,
 		AllowedRepo:     "acme/myrepo",
-		AllowedBranches: []string{"refs/heads/nexus3/*"},
+		AllowedBranches: []string{"refs/heads/nexus/*"},
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
 
-	pktBody := buildPktLines([]string{"refs/heads/nexus3/feat-1"}) // allowed ref
+	pktBody := buildPktLines([]string{"refs/heads/nexus/feat-1"}) // allowed ref
 	req, _ := http.NewRequest(http.MethodPost,
 		"http://github.com/acme/myrepo.git/git-receive-pack",
 		bytes.NewReader(pktBody))
@@ -1942,7 +1942,7 @@ func TestD38_BranchPolicy_AllowedStreamsThrough(t *testing.T) {
 	}
 	select {
 	case got := <-bodyCh:
-		if !strings.Contains(string(got), "nexus3/feat-1") {
+		if !strings.Contains(string(got), "nexus/feat-1") {
 			t.Errorf("upstream body does not contain allowed ref name: %q", got)
 		}
 	case <-time.After(3 * time.Second):
@@ -2019,7 +2019,7 @@ func TestD38_BranchPolicy_UnresolvedSentinelDeniesAll(t *testing.T) {
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
 
-	for _, ref := range []string{"refs/heads/main", "refs/heads/newman/some-work", "refs/heads/nexus3/foo"} {
+	for _, ref := range []string{"refs/heads/main", "refs/heads/newman/some-work", "refs/heads/nexus/foo"} {
 		t.Run(ref, func(t *testing.T) {
 			body := buildPktLines([]string{ref})
 			req, _ := http.NewRequest(http.MethodPost,
@@ -2038,10 +2038,10 @@ func TestD38_BranchPolicy_UnresolvedSentinelDeniesAll(t *testing.T) {
 	}
 }
 
-// TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3 verifies that when
-// AllowedBranches is set to the resolved default refs/heads/nexus3/**, the proxy
-// allows nexus3/ refs and denies others (e.g. refs/heads/main).
-func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
+// TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus verifies that when
+// AllowedBranches is set to the resolved default refs/heads/nexus/**, the proxy
+// allows nexus/ refs and denies others (e.g. refs/heads/main).
+func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2049,18 +2049,18 @@ func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	// Simulate the resolved default: ["refs/heads/nexus3/**"].
+	// Simulate the resolved default: ["refs/heads/nexus/**"].
 	proxyServer := newTestProxy(t, mitm.Config{
 		SandboxID:       newSandboxID(201),
 		AllowedHosts:    []string{"github.com"},
 		Broker:          cred.NewBroker(),
 		AllowedRepo:     "acme/myrepo",
-		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		AllowedBranches: []string{"refs/heads/nexus/**"},
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
 
-	t.Run("nexus3_ref_passes", func(t *testing.T) {
-		body := buildPktLines([]string{"refs/heads/nexus3/my-feature"})
+	t.Run("nexus_ref_passes", func(t *testing.T) {
+		body := buildPktLines([]string{"refs/heads/nexus/my-feature"})
 		req, _ := http.NewRequest(http.MethodPost,
 			"http://github.com/acme/myrepo.git/git-receive-pack",
 			bytes.NewReader(body))
@@ -2071,7 +2071,7 @@ func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			t.Errorf("nexus3 ref: want 200, got %d", resp.StatusCode)
+			t.Errorf("nexus ref: want 200, got %d", resp.StatusCode)
 		}
 	})
 
@@ -2087,7 +2087,7 @@ func TestT2_AC2_UnconfiguredDefaultAllowsOnlyNexus3(t *testing.T) {
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("non-nexus3 ref: want 403, got %d", resp.StatusCode)
+			t.Errorf("non-nexus ref: want 403, got %d", resp.StatusCode)
 		}
 	})
 }
@@ -2141,7 +2141,7 @@ func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
 		AllowedHosts:    []string{"github.com"},
 		Broker:          broker,
 		AllowedRepo:     "acme/myrepo",
-		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		AllowedBranches: []string{"refs/heads/nexus/**"},
 		OnEgress:        collect,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -2167,7 +2167,7 @@ func TestT2_AC3_OnEgressEmitsRecords(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 
-	// Trigger a branch allowlist deny (refs/heads/main is not in refs/heads/nexus3/**).
+	// Trigger a branch allowlist deny (refs/heads/main is not in refs/heads/nexus/**).
 	plainClient := proxyClient(proxyServer.URL)
 	body := buildPktLines([]string{"refs/heads/main"})
 	req, _ := http.NewRequest(http.MethodPost,
@@ -2410,21 +2410,21 @@ func TestD38_GraphQL_MutationWithWrongRepoIDDenied(t *testing.T) {
 
 // TestRefMatchesGlob_DoubleStarNamespace verifies that a "/**" pattern matches
 // refs at any depth under the namespace prefix, and denies refs outside it.
-// This is the D-PD-03 fix: refs/heads/nexus3/** must cover
-// refs/heads/nexus3/<slug>/<id> (2 levels deep).
+// This is the D-PD-03 fix: refs/heads/nexus/** must cover
+// refs/heads/nexus/<slug>/<id> (2 levels deep).
 func TestRefMatchesGlob_DoubleStarNamespace(t *testing.T) {
-	pattern := "refs/heads/nexus3/**"
+	pattern := "refs/heads/nexus/**"
 	cases := []struct {
 		ref  string
 		want bool
 		desc string
 	}{
-		{"refs/heads/nexus3/my-motive/abc123", true, "2-level nexus3 ref (D-PD-03 convention)"},
-		{"refs/heads/nexus3/foo", true, "1-level nexus3 ref"},
-		{"refs/heads/nexus3/a/b/c", true, "3-level nexus3 ref"},
+		{"refs/heads/nexus/my-motive/abc123", true, "2-level nexus ref (D-PD-03 convention)"},
+		{"refs/heads/nexus/foo", true, "1-level nexus ref"},
+		{"refs/heads/nexus/a/b/c", true, "3-level nexus ref"},
 		{"refs/heads/main", false, "non-namespace ref"},
 		{"refs/heads/rogue", false, "rogue ref"},
-		{"refs/heads/nexus3-evil/foo", false, "lookalike prefix, no slash boundary"},
+		{"refs/heads/nexus-evil/foo", false, "lookalike prefix, no slash boundary"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
@@ -2439,17 +2439,17 @@ func TestRefMatchesGlob_DoubleStarNamespace(t *testing.T) {
 // TestRefMatchesGlob_SingleStarKeptPathMatchSemantics verifies that an
 // explicit single-segment "*" pattern retains path.Match behaviour (no
 // cross-slash matching) so operator overrides like
-// "refs/heads/nexus3/e2e/*" still work correctly.
+// "refs/heads/nexus/e2e/*" still work correctly.
 func TestRefMatchesGlob_SingleStarKeptPathMatchSemantics(t *testing.T) {
-	pattern := "refs/heads/nexus3/e2e/*"
+	pattern := "refs/heads/nexus/e2e/*"
 	cases := []struct {
 		ref  string
 		want bool
 		desc string
 	}{
-		{"refs/heads/nexus3/e2e/run1", true, "single-segment match"},
-		{"refs/heads/nexus3/e2e/run1/sub", false, "two-segment: * must not cross /"},
-		{"refs/heads/nexus3/other/run1", false, "wrong namespace segment"},
+		{"refs/heads/nexus/e2e/run1", true, "single-segment match"},
+		{"refs/heads/nexus/e2e/run1/sub", false, "two-segment: * must not cross /"},
+		{"refs/heads/nexus/other/run1", false, "wrong namespace segment"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {

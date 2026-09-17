@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 func init() {
@@ -21,14 +21,14 @@ func init() {
 	})
 	Register(Command{
 		Name:    "config-ssh",
-		Summary: "Write an SSH config stanza for a sandbox (ProxyCommand via nexus3 ssh --stdio)",
+		Summary: "Write an SSH config stanza for a sandbox (ProxyCommand via nexus ssh --stdio)",
 		Run:     runConfigSSH,
 	})
 }
 
 // ── ssh ───────────────────────────────────────────────────────────────────────
 
-// runSSH is the registered Run function for "nexus3 ssh [--stdio] <ref>".
+// runSSH is the registered Run function for "nexus ssh [--stdio] <ref>".
 // With --stdio it dials vsock port 22 on the guest and splices stdin/stdout,
 // making it suitable as an SSH ProxyCommand.
 func runSSH(ctx context.Context, args []string, _ *Output) error {
@@ -104,7 +104,7 @@ func runSSHStdio(ctx context.Context, ref string, svc *service.Service, stdin io
 
 // ── config-ssh ────────────────────────────────────────────────────────────────
 
-// runConfigSSH is the registered Run function for "nexus3 config-ssh <ref>".
+// runConfigSSH is the registered Run function for "nexus config-ssh <ref>".
 func runConfigSSH(ctx context.Context, args []string, out *Output) error {
 	if len(args) != 1 {
 		return &UsageError{Msg: "config-ssh: usage: config-ssh <sandbox-ref>"}
@@ -146,7 +146,7 @@ func runConfigSSHWithHome(ctx context.Context, ref string, svc *service.Service,
 	}
 
 	handle := sb.Handle()
-	hostAlias := "nexus3-" + strings.ReplaceAll(handle, "/", "-")
+	hostAlias := "nexus-" + strings.ReplaceAll(handle, "/", "-")
 
 	sshDir := filepath.Join(homeDir, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
@@ -156,7 +156,7 @@ func runConfigSSHWithHome(ctx context.Context, ref string, svc *service.Service,
 	configPath := filepath.Join(sshDir, "config")
 
 	// Check for an existing stanza by scanning for our marker comment.
-	marker := "# nexus3 sandbox: " + handle
+	marker := "# nexus sandbox: " + handle
 	if existing, err := os.ReadFile(configPath); err == nil {
 		scanner := bufio.NewScanner(strings.NewReader(string(existing)))
 		for scanner.Scan() {
@@ -178,7 +178,7 @@ func runConfigSSHWithHome(ctx context.Context, ref string, svc *service.Service,
 	stanza := fmt.Sprintf(`
 %s
 Host %s
-    ProxyCommand nexus3 ssh --stdio %s
+    ProxyCommand nexus ssh --stdio %s
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 `, marker, hostAlias, handle)

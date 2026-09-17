@@ -13,9 +13,9 @@ import (
 
 // ── exec seam fake ────────────────────────────────────────────────────────────
 
-// nexus3Bin is the sentinel the recorder uses for calls that went through
-// runHostCLI (the nexus3 host binary), as opposed to the herdr binary path.
-const nexus3Bin = "<nexus3>"
+// nexusBin is the sentinel the recorder uses for calls that went through
+// runHostCLI (the nexus host binary), as opposed to the herdr binary path.
+const nexusBin = "<nexus>"
 
 type hostCall struct {
 	bin  string
@@ -47,7 +47,7 @@ func installHostCLIRecorder(t *testing.T, canned map[string]string) *hostCLIReco
 	}
 	origHost, origHerdr := runHostCLI, runHerdrCLI
 	runHostCLI = func(_ context.Context, argv ...string) (string, error) {
-		return record(nexus3Bin, argv)
+		return record(nexusBin, argv)
 	}
 	runHerdrCLI = func(_ context.Context, herdrBin string, argv ...string) (string, error) {
 		return record(herdrBin, argv)
@@ -134,8 +134,8 @@ func TestDelegateWorktreeCreate_TakesHerdrWorktreeSandboxPath(t *testing.T) {
 	want := []hostCall{
 		{bin: "/fake/herdr", args: []string{"workspace", "list"}},
 		{bin: "/fake/herdr", args: []string{"worktree", "create", "--workspace", "wPARENT", "--branch", "feat/x", "--no-focus"}},
-		{bin: nexus3Bin, args: []string{"herdr", "worktree-sandbox", "wNEW"}},
-		{bin: nexus3Bin, args: []string{"herdr", "list"}},
+		{bin: nexusBin, args: []string{"herdr", "worktree-sandbox", "wNEW"}},
+		{bin: nexusBin, args: []string{"herdr", "list"}},
 		{bin: "/fake/herdr", args: []string{"worktree", "list", "--json"}},
 	}
 	if len(rec.calls) != len(want) {
@@ -148,7 +148,7 @@ func TestDelegateWorktreeCreate_TakesHerdrWorktreeSandboxPath(t *testing.T) {
 		}
 	}
 	if rec.calls[2].bin != rec.calls[3].bin {
-		t.Errorf("nexus3 calls used different bins: %q vs %q", rec.calls[2].bin, rec.calls[3].bin)
+		t.Errorf("nexus calls used different bins: %q vs %q", rec.calls[2].bin, rec.calls[3].bin)
 	}
 
 	wantData := map[string]string{
@@ -197,7 +197,7 @@ func TestDelegateWorktreeCreate_VerbMatchesHerdrHook(t *testing.T) {
 		t.Fatalf("no `herdr worktree-sandbox` call recorded; calls=%+v", rec.calls)
 	}
 	if !argsEqual(call.args[:2], []string{"herdr", "worktree-sandbox"}) {
-		t.Errorf("nexus3 call args[0:2] = %q, want [herdr worktree-sandbox]", call.args[:2])
+		t.Errorf("nexus call args[0:2] = %q, want [herdr worktree-sandbox]", call.args[:2])
 	}
 	for i, c := range rec.calls {
 		if containsToken(c.args, "--auto") {
@@ -407,7 +407,7 @@ func TestDelegateAgentDispatch_PrependsStandingOrders(t *testing.T) {
 	if !strings.HasSuffix(delivered, "X") {
 		t.Fatalf("delivered brief does not end with caller brief:\n%s", delivered)
 	}
-	if delivered == "X" || !strings.Contains(standingOrders, "isolated nexus3 microVM") {
+	if delivered == "X" || !strings.Contains(standingOrders, "isolated nexus microVM") {
 		t.Fatalf("standing orders missing or empty")
 	}
 }
@@ -434,7 +434,7 @@ const teardownBindingLines = "label=x\tworkspace_id=wOTHER\thandle=repo/other\ts
 	"label=x\tworkspace_id=wNEW\thandle=repo/branch\tsandbox_id=sb-1\tpane_id=\n"
 
 // Bound ref: teardown reverses delegate_worktree_create through herdr and
-// must NOT run `nexus3 sandbox rm` (the hook already reaped the sandbox).
+// must NOT run `nexus sandbox rm` (the hook already reaped the sandbox).
 func TestDelegateTeardown_BoundWorkspace_RemovesViaHerdr(t *testing.T) {
 	rec, data, text, isErr := runDelegateTeardown(t, map[string]string{
 		"herdr list":      teardownBindingLines,
@@ -483,7 +483,7 @@ func TestDelegateTeardown_BoundBySandboxIDPrefix(t *testing.T) {
 	}
 }
 
-// Unbound ref: no herdr workspace to close, so only `nexus3 sandbox rm` runs.
+// Unbound ref: no herdr workspace to close, so only `nexus sandbox rm` runs.
 func TestDelegateTeardown_Unbound_FallsBackToSandboxRm(t *testing.T) {
 	rec, data, text, isErr := runDelegateTeardown(t, map[string]string{
 		"herdr list": teardownBindingLines,
@@ -508,7 +508,7 @@ func TestDelegateTeardown_Unbound_FallsBackToSandboxRm(t *testing.T) {
 }
 
 // Hook did not reap: the sandbox is still listed after the herdr remove, so
-// teardown falls back to `nexus3 sandbox rm` and still reports success.
+// teardown falls back to `nexus sandbox rm` and still reports success.
 func TestDelegateTeardown_StillListed_FallsBackToSandboxRm(t *testing.T) {
 	rec, data, text, isErr := runDelegateTeardown(t, map[string]string{
 		"herdr list":      teardownBindingLines,

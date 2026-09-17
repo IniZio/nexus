@@ -1,6 +1,6 @@
 package cli
 
-// TBD-PD-32 / TBR-PD-19: `nexus3 sandbox create --agent <name>` is how a user
+// TBD-PD-32 / TBR-PD-19: `nexus sandbox create --agent <name>` is how a user
 // asks for a sandbox that runs a credentialed agent. Ruled 2026-08-19: the flag
 // implies the detached supervisor, and the agent cannot be switched in place.
 
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func TestParseSandboxCreate_Agent(t *testing.T) {
@@ -153,7 +153,7 @@ func TestApplyUserGlobalConfig(t *testing.T) {
 	// writeConfig writes a minimal config.yaml with the given agent value.
 	writeConfig := func(t *testing.T, xdgDir, agent string) {
 		t.Helper()
-		cfgDir := filepath.Join(xdgDir, "nexus3")
+		cfgDir := filepath.Join(xdgDir, "nexus")
 		if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 			t.Fatal(err)
 		}
@@ -249,7 +249,7 @@ func TestApplyUserGlobalConfig(t *testing.T) {
 	// with the given memory_max value (0 = omit the field).
 	writeMemoryMaxConfig := func(t *testing.T, xdgDir string, memoryMax int) {
 		t.Helper()
-		cfgDir := filepath.Join(xdgDir, "nexus3")
+		cfgDir := filepath.Join(xdgDir, "nexus")
 		if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 			t.Fatal(err)
 		}
@@ -324,7 +324,7 @@ func TestApplyUserGlobalConfig(t *testing.T) {
 func TestSandboxCreate_NoBootPath_PersistsAgentName(t *testing.T) {
 	writeConfig := func(t *testing.T, xdgDir, agent string) {
 		t.Helper()
-		cfgDir := filepath.Join(xdgDir, "nexus3")
+		cfgDir := filepath.Join(xdgDir, "nexus")
 		if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 			t.Fatal(err)
 		}

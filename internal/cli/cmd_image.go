@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func init() {
@@ -117,7 +117,7 @@ func runImageWithService(ctx context.Context, args []string, out *Output, svc *s
 func runImageBuild(ctx context.Context, args []string, out *Output, svc *service.ImageService) error {
 	fs := flag.NewFlagSet("image build", flag.ContinueOnError)
 	workspace := fs.String("workspace", "", "path to workspace root containing .nexus/Containerfile (default: cwd)")
-	ref := fs.String("ref", "", "human-readable tag stamped on the image, e.g. nexus3-base:20260807 (optional)")
+	ref := fs.String("ref", "", "human-readable tag stamped on the image, e.g. nexus-base:20260807 (optional)")
 	base := fs.String("base", "debian:bookworm-slim", "OCI base image reference")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "image build: " + err.Error()}
@@ -269,7 +269,7 @@ func runImagePrune(ctx context.Context, args []string, out *Output, svc *service
 	return nil
 }
 
-const pruneSweepSkippedMsg = "builder-template sweep skipped: nexus3-agent binary not found"
+const pruneSweepSkippedMsg = "builder-template sweep skipped: nexus-agent binary not found"
 
 var (
 	imagePruneHeaders    = []string{"DIGEST", "REF", "KIND", "SIZE"}
@@ -307,16 +307,16 @@ func shortDigest(d string) string {
 	return d
 }
 
-// builderAgentTag resolves the host nexus3-agent binary the way `sandbox create
+// builderAgentTag resolves the host nexus-agent binary the way `sandbox create
 // --file` does and returns its image.BuilderAgentTag; "" when it cannot be found.
 func builderAgentTag() string {
-	agentBin, err := exec.LookPath("nexus3-agent")
+	agentBin, err := exec.LookPath("nexus-agent")
 	if err != nil {
 		kernelPath, kerr := resolveKernelPath()
 		if kerr != nil {
 			return ""
 		}
-		agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus3-agent")
+		agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus-agent")
 	}
 	agentBytes, err := os.ReadFile(agentBin)
 	if err != nil {
@@ -339,7 +339,7 @@ func toImageInfoJSON(img domain.Image) imageInfoJSON {
 
 // newImageService constructs an ImageService for production use.
 //
-// Cache root: $XDG_STATE_HOME/nexus3/images (via store.DefaultRoot).
+// Cache root: $XDG_STATE_HOME/nexus/images (via store.DefaultRoot).
 // Builder: nil — buildkitd connectivity is wired in a separate integration
 // slice. BuildImage returns service.ErrNoBuilder until that slice is merged.
 //

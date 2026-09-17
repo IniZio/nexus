@@ -59,7 +59,7 @@ func (s *sizeVerifiedFS) noteErr(err error) { s.noteErrFn(err) }
 // cancels the Solve context and is retrievable via Err.
 //
 // Use newSizeVerifiedSet + Wrap when all local mounts (context, dockerfile,
-// nexus3agent) must share the same cancellation: the first violation in any
+// nexusagent) must share the same cancellation: the first violation in any
 // mount tears down the whole Solve and surfaces a descriptive error naming the
 // violating file path.
 type sizeVerifiedSet struct {

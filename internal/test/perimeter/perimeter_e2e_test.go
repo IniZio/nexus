@@ -24,7 +24,7 @@ package perimetertest
 // The test skips (never fails) when any of the following is absent:
 //   - /dev/kvm accessible (KVM required for cloud-hypervisor)
 //   - cloud-hypervisor binary (CLOUD_HYPERVISOR_BIN env or default path)
-//   - kernel image (NEXUS3_KERNEL env or images/kernel/vmlinux-x86_64)
+//   - kernel image (NEXUS_KERNEL env or images/kernel/vmlinux-x86_64)
 //   - /dev/net/tun accessible (CAP_NET_ADMIN required for TAP creation)
 //
 // # Running
@@ -49,10 +49,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/perimeter"
 )
 
 // ── defaults ──────────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ func skipUnlessCHBin(t *testing.T) string {
 
 func skipUnlessKernel(t *testing.T) string {
 	t.Helper()
-	kernel := os.Getenv("NEXUS3_KERNEL")
+	kernel := os.Getenv("NEXUS_KERNEL")
 	if kernel == "" {
 		// Resolve relative to the repo root (two levels up from internal/test/perimeter).
 		_, thisFile, _, _ := runtime.Caller(0)
@@ -98,7 +98,7 @@ func skipUnlessKernel(t *testing.T) string {
 		kernel = filepath.Join(repoRoot, periDefaultKernel)
 	}
 	if _, err := os.Stat(kernel); err != nil {
-		t.Skipf("skipping: kernel not found at %s (set NEXUS3_KERNEL)", kernel)
+		t.Skipf("skipping: kernel not found at %s (set NEXUS_KERNEL)", kernel)
 	}
 	return kernel
 }

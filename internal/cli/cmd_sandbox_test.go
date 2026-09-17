@@ -12,15 +12,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vmcfg"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1142,7 +1142,7 @@ func TestCeilingBelowBootIsRejected(t *testing.T) {
 
 // ── kernel preflight ──────────────────────────────────────────────────────────
 
-// TestResolveKernelPath_EnvVar_Valid verifies that NEXUS3_KERNEL_PATH pointing
+// TestResolveKernelPath_EnvVar_Valid verifies that NEXUS_KERNEL_PATH pointing
 // at a real file is returned as-is without searching defaults.
 func TestResolveKernelPath_EnvVar_Valid(t *testing.T) {
 	dir := t.TempDir()
@@ -1150,7 +1150,7 @@ func TestResolveKernelPath_EnvVar_Valid(t *testing.T) {
 	if err := os.WriteFile(kernel, []byte("fake"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", kernel)
+	t.Setenv("NEXUS_KERNEL_PATH", kernel)
 
 	got, err := resolveKernelPath()
 	if err != nil {
@@ -1162,18 +1162,18 @@ func TestResolveKernelPath_EnvVar_Valid(t *testing.T) {
 }
 
 // TestResolveKernelPath_EnvVar_Missing verifies that a non-existent
-// NEXUS3_KERNEL_PATH value returns an error that names the env var and the
+// NEXUS_KERNEL_PATH value returns an error that names the env var and the
 // missing path.
 func TestResolveKernelPath_EnvVar_Missing(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/no/such/kernel/vmlinux-x86_64")
+	t.Setenv("NEXUS_KERNEL_PATH", "/no/such/kernel/vmlinux-x86_64")
 
 	_, err := resolveKernelPath()
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error does not mention NEXUS3_KERNEL_PATH: %q", msg)
+	if !strings.Contains(msg, "NEXUS_KERNEL_PATH") {
+		t.Errorf("error does not mention NEXUS_KERNEL_PATH: %q", msg)
 	}
 	if !strings.Contains(msg, "/no/such/kernel/vmlinux-x86_64") {
 		t.Errorf("error does not name the missing path: %q", msg)
@@ -1181,10 +1181,10 @@ func TestResolveKernelPath_EnvVar_Missing(t *testing.T) {
 }
 
 // TestResolveKernelPath_NoEnv_SearchedPathsListed verifies that when
-// NEXUS3_KERNEL_PATH is unset and no default exists, the error lists the
+// NEXUS_KERNEL_PATH is unset and no default exists, the error lists the
 // searched candidate paths so the operator knows what to set.
 func TestResolveKernelPath_NoEnv_SearchedPathsListed(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "")
+	t.Setenv("NEXUS_KERNEL_PATH", "")
 
 	_, err := resolveKernelPath()
 	if err == nil {
@@ -1194,8 +1194,8 @@ func TestResolveKernelPath_NoEnv_SearchedPathsListed(t *testing.T) {
 	}
 	msg := err.Error()
 	// Error must name the env var so the operator knows what to set.
-	if !strings.Contains(msg, "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error does not mention NEXUS3_KERNEL_PATH: %q", msg)
+	if !strings.Contains(msg, "NEXUS_KERNEL_PATH") {
+		t.Errorf("error does not mention NEXUS_KERNEL_PATH: %q", msg)
 	}
 	// Error must list at least one searched path.
 	if !strings.Contains(msg, "images/kernel/vmlinux-x86_64") {
@@ -1209,11 +1209,11 @@ func TestResolveKernelPath_NoEnv_SearchedPathsListed(t *testing.T) {
 // moves capture before the kernel check fails loudly.
 //
 // Method: install testWorkspaceSpecHook to detect if the workspace block was
-// entered. With a bad NEXUS3_KERNEL_PATH, the hook must never fire — the
+// entered. With a bad NEXUS_KERNEL_PATH, the hook must never fire — the
 // function must return the kernel error first.
 func TestKernelPreflight_BeforeWorkspaceCapture(t *testing.T) {
-	// Point NEXUS3_KERNEL_PATH at a path that does not exist.
-	t.Setenv("NEXUS3_KERNEL_PATH", filepath.Join(t.TempDir(), "no-such-kernel"))
+	// Point NEXUS_KERNEL_PATH at a path that does not exist.
+	t.Setenv("NEXUS_KERNEL_PATH", filepath.Join(t.TempDir(), "no-such-kernel"))
 
 	// Arm the workspace spec hook. If it fires, the workspace block ran —
 	// which means kernel validation did NOT happen first.
@@ -1239,8 +1239,8 @@ func TestKernelPreflight_BeforeWorkspaceCapture(t *testing.T) {
 		t.Fatal("expected kernel-not-found error, got nil")
 	}
 	// The error must be about the kernel, not about an image or workspace.
-	if !strings.Contains(err.Error(), "NEXUS3_KERNEL_PATH") {
-		t.Errorf("expected NEXUS3_KERNEL_PATH in error; got: %v", err)
+	if !strings.Contains(err.Error(), "NEXUS_KERNEL_PATH") {
+		t.Errorf("expected NEXUS_KERNEL_PATH in error; got: %v", err)
 	}
 	// The workspace block must NOT have been entered — proves ordering.
 	if workspaceEntered {
@@ -1422,7 +1422,7 @@ func TestAgentCfg_Rm_NoVolumeNoPanic(t *testing.T) {
 func TestApplyUserGlobalConfig_AgentsList_SetsPrimaryAndExtras(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfgDir := filepath.Join(dir, "nexus3")
+	cfgDir := filepath.Join(dir, "nexus")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -1449,7 +1449,7 @@ func TestApplyUserGlobalConfig_AgentsList_SetsPrimaryAndExtras(t *testing.T) {
 func TestApplyUserGlobalConfig_AgentsList_AbsentFallsBackToSingular(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfgDir := filepath.Join(dir, "nexus3")
+	cfgDir := filepath.Join(dir, "nexus")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -1476,7 +1476,7 @@ func TestApplyUserGlobalConfig_AgentsList_AbsentFallsBackToSingular(t *testing.T
 func TestApplyUserGlobalConfig_AgentsList_UnknownNameRejects(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfgDir := filepath.Join(dir, "nexus3")
+	cfgDir := filepath.Join(dir, "nexus")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -1501,7 +1501,7 @@ func TestApplyUserGlobalConfig_AgentsList_UnknownNameRejects(t *testing.T) {
 func TestApplyUserGlobalConfig_AgentsList_FlagWins(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfgDir := filepath.Join(dir, "nexus3")
+	cfgDir := filepath.Join(dir, "nexus")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}

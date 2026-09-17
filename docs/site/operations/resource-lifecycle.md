@@ -1,15 +1,15 @@
 ---
 title: "Resource Lifecycle"
-description: "Normative ownership and reclamation contract for all host resources nexus3 manages"
+description: "Normative ownership and reclamation contract for all host resources nexus manages"
 ---
 
 # Resource Lifecycle
 
-> **Contract scope.** This page is the normative specification that R1/R2/R3/R4 slices are measured against. It defines which resources nexus3 owns, who must free them, and how orphans are detected and reclaimed. Where the current implementation does not yet satisfy a requirement, that requirement is badged; unbadged requirements are implemented and verified.
+> **Contract scope.** This page is the normative specification that R1/R2/R3/R4 slices are measured against. It defines which resources nexus owns, who must free them, and how orphans are detected and reclaimed. Where the current implementation does not yet satisfy a requirement, that requirement is badged; unbadged requirements are implemented and verified.
 
 ```sh
-nexus3 reap           # report orphaned resources (dry-run)
-nexus3 reap --apply   # delete orphans
+nexus reap           # report orphaned resources (dry-run)
+nexus reap --apply   # delete orphans
 ```
 
 ## Normative requirements
@@ -18,7 +18,7 @@ The key words MUST, MUST NOT, SHOULD, and MAY carry RFC 2119 meaning throughout 
 
 ### Ownership and freeing
 
-**RL-1** — nexus3 MUST classify every host resource it creates as either *system-owned* (lifecycle tied to a sandbox ULID) or *user-owned* (lifecycle governed exclusively by the user). System-owned resources are the reaper's domain; user-owned resources MUST NOT be touched by the reaper or by `nexus3 rm`.
+**RL-1** — nexus MUST classify every host resource it creates as either *system-owned* (lifecycle tied to a sandbox ULID) or *user-owned* (lifecycle governed exclusively by the user). System-owned resources are the reaper's domain; user-owned resources MUST NOT be touched by the reaper or by `nexus rm`.
 
 **RL-2** — For every system-owned resource, a single component MUST be designated responsible for freeing it. Where that component is not yet identified the resource is unowned and the gap MUST be tracked as an open defect.
 
@@ -26,7 +26,7 @@ The key words MUST, MUST NOT, SHOULD, and MAY carry RFC 2119 meaning throughout 
 
 ### Reap CLI
 
-**RL-4** — `nexus3 reap` MUST be a no-op (dry run) by default. Deletion MUST require the explicit `--apply` flag. A reap invocation without `--apply` MUST print a human-readable report of what would be deleted and exit 0.
+**RL-4** — `nexus reap` MUST be a no-op (dry run) by default. Deletion MUST require the explicit `--apply` flag. A reap invocation without `--apply` MUST print a human-readable report of what would be deleted and exit 0.
 
 ### Intent-before-materialize and the create lease
 
@@ -51,15 +51,15 @@ The key words MUST, MUST NOT, SHOULD, and MAY carry RFC 2119 meaning throughout 
 
 ### IID socket reclamation <Badge type="warning" text="partial" />
 
-**RL-11** — The IID socket (`<socketDir>/<ULID>.iid`) MUST be removed as part of sandbox teardown. The cleanup site is `clearState()` at `driver.go:484`, which calls `os.Remove(d.iidPath(id))` on driver stop alongside the API socket and vsock. `ResourceIndex` enumerates `.iid` files as `KindSocketIID` (`resource_index.go:174-176`). A residual is open: three-to-five-day-old `.iid`/`.vsock`/`.sock` triples persist on this host with no store record, yet `nexus3 reap` reports zero socket-kind orphans. Why `reap` classifies no socket resources despite `ResourceIndex` enumerating them is an open question tracked for R1.
+**RL-11** — The IID socket (`<socketDir>/<ULID>.iid`) MUST be removed as part of sandbox teardown. The cleanup site is `clearState()` at `driver.go:484`, which calls `os.Remove(d.iidPath(id))` on driver stop alongside the API socket and vsock. `ResourceIndex` enumerates `.iid` files as `KindSocketIID` (`resource_index.go:174-176`). A residual is open: three-to-five-day-old `.iid`/`.vsock`/`.sock` triples persist on this host with no store record, yet `nexus reap` reports zero socket-kind orphans. Why `reap` classifies no socket resources despite `ResourceIndex` enumerating them is an open question tracked for R1.
 
 ### Builder-supervisor directory reclamation <Badge type="warning" text="partial" />
 
-**RL-12** — The builder-supervisor ULID-named working directory (`<stateRoot>/builder-supervisors/<ULID>/`) MUST be removed when the builder supervisor exits or when its owning sandbox is removed. The reaper reclaims this directory via `deleteResource()` at `reap.go:307-311`: when a `KindBuilderSupervisor` resource is classified orphaned, `deleteResource` calls `os.RemoveAll(res.Path)`. The scanner at `resource_index.go:188-206` enumerates `<stateRoot>/builder-supervisors/` and emits `KindBuilderSupervisor` entries keyed by parsed ULID. **Neither trigger in this requirement is implemented.** There is no `os.RemoveAll` anywhere in `internal/supervisor/`, so the directory survives `StopSupervisor` + `WaitForExit`; and `Service.Remove` (`service.go:714-840`) calls `closeSupervisor` (`:741`), `store.Delete` (`:763`), `ReapDiskCopy` (`:778`), `ReapShadowDisks` (`:779`), `removeSupervisorStateDir` (`:797`) and `detachVolumeLocked` (`:817`) without touching `builder-supervisors/`. Note that the state-dir removal at `:797` covers the *perimeter* supervisor's `supervisors/<ULID>/` (RL-18), not the builder supervisor's directory — the two are separate trees and only the first is torn down with the sandbox. The sole reclaimer is `deleteResource()` under an operator-invoked `nexus3 reap --apply` — reclamation is manual, not automatic. The `kill -9` path is additionally untested.
+**RL-12** — The builder-supervisor ULID-named working directory (`<stateRoot>/builder-supervisors/<ULID>/`) MUST be removed when the builder supervisor exits or when its owning sandbox is removed. The reaper reclaims this directory via `deleteResource()` at `reap.go:307-311`: when a `KindBuilderSupervisor` resource is classified orphaned, `deleteResource` calls `os.RemoveAll(res.Path)`. The scanner at `resource_index.go:188-206` enumerates `<stateRoot>/builder-supervisors/` and emits `KindBuilderSupervisor` entries keyed by parsed ULID. **Neither trigger in this requirement is implemented.** There is no `os.RemoveAll` anywhere in `internal/supervisor/`, so the directory survives `StopSupervisor` + `WaitForExit`; and `Service.Remove` (`service.go:714-840`) calls `closeSupervisor` (`:741`), `store.Delete` (`:763`), `ReapDiskCopy` (`:778`), `ReapShadowDisks` (`:779`), `removeSupervisorStateDir` (`:797`) and `detachVolumeLocked` (`:817`) without touching `builder-supervisors/`. Note that the state-dir removal at `:797` covers the *perimeter* supervisor's `supervisors/<ULID>/` (RL-18), not the builder supervisor's directory — the two are separate trees and only the first is torn down with the sandbox. The sole reclaimer is `deleteResource()` under an operator-invoked `nexus reap --apply` — reclamation is manual, not automatic. The `kill -9` path is additionally untested.
 
 ### Detached perimeter supervisor tracking <Badge type="danger" text="not built" />
 
-**RL-13** — When a detached perimeter supervisor is spawned via `SpawnDetached()` during `nexus3 orca create`, its PID and socket path MUST be persisted in the sandbox record and checked by `recover`. Currently `recover` does not inspect `SupervisorPID` for orphaned processes; a killed nexus3 parent leaves the supervisor process running without any recovery path. Detection MAY use `kill(PID, 0)` → ESRCH to distinguish live from dead.
+**RL-13** — When a detached perimeter supervisor is spawned via `SpawnDetached()` during `nexus orca create`, its PID and socket path MUST be persisted in the sandbox record and checked by `recover`. Currently `recover` does not inspect `SupervisorPID` for orphaned processes; a killed nexus parent leaves the supervisor process running without any recovery path. Detection MAY use `kill(PID, 0)` → ESRCH to distinguish live from dead.
 
 ### Perimeter-supervisor state directory <Badge type="tip" text="built" />
 
@@ -79,7 +79,7 @@ Covered by `statedir_lifetime_test.go`, which drives the real `Service.Remove`, 
 
 **RL-19** <Badge type="tip" text="built" /> — The per-sandbox MITM CA certificate and private key MUST be persisted inside the state directory when the perimeter mints them, MUST be re-seeded into the replacement perimeter on the crash-recovery path, and MUST NOT outlive the sandbox (D-HSH-18).
 
-Without this, `kill -9 <supervisor>` + `nexus3 recover` restored plain networking but every in-guest TLS session broke, because the CA existed only in the dead supervisor's memory and travelled only in `handoff.Payload.CA` — which a crashed process never sent. Guest-side re-import was measured and rejected: a long-running Node process reads `NODE_EXTRA_CA_CERTS` **once, at process startup**, so no re-import can reach the already-running in-guest agent.
+Without this, `kill -9 <supervisor>` + `nexus recover` restored plain networking but every in-guest TLS session broke, because the CA existed only in the dead supervisor's memory and travelled only in `handoff.Payload.CA` — which a crashed process never sent. Guest-side re-import was measured and rejected: a long-running Node process reads `NODE_EXTRA_CA_CERTS` **once, at process startup**, so no re-import can reach the already-running in-guest agent.
 
 - **Written** by `startSupervisor` (`service.go`) right after `mitm.New`, via `statedir.SaveCA` — write-temp-then-`fsync`-then-`rename`, so a crash mid-write can never leave a half pair for the recovery path to trip over. One file holding both PEM blocks, because two files can diverge.
 - **Read** by `reacquireSeedInput` (`internal/supervisor/reacquire.go`) on the `RunReacquire` crash path, which hands it to `StartPerimeterOnly` as a `service.CASeed`. The replacement perimeter keeps signing with the anchor the guest already trusts, so recovery is transparent to a running in-guest process.
@@ -91,7 +91,7 @@ Covered by `internal/core/statedir/ca_test.go` (round-trip through the real `mit
 
 ### Fork shadow-disk correlation <Badge type="tip" text="built" />
 
-**RL-14** <Badge type="tip" text="built" /> — Shadow disk copies created during `nexus3 fork` MUST be classified as owned by the child sandbox record, not orphaned. **The producer exists** — an earlier note here recorded it as unconfirmed because `Service.Fork` contains no shadow handling, but the copy is made one layer down: `ForkFrom` copies every parent extra disk and shadow disks ARE extra disks, so `ChildExtraDiskPath` (`internal/core/driver/cloudhypervisor/fork.go:108`) yields `<childULID>-<parentSafeHandle>.shadow.<name>.ext4`. `diskname.ShadowDiskSafeHandle` returns that whole composite, which matches no sandbox handle, so handle correlation alone orphans a live fork child's dependency tree permanently. Resolved by `forkChildShadowOwner`: every `-` position in the safeHandle is offered to `ParseSandboxID` (the ULID's own string form contains a `-`, and a parent handle may contain more, so no single split works) and the child is looked up in the record map. Ownership still requires a LIVE child record — once the child is gone its copies are reclaimable like anything else. Covered by `TestReap_ShadowDisk_ForkChildCopyIsOwned` and `..._ForkChildCopyReclaimedWhenChildGone`.
+**RL-14** <Badge type="tip" text="built" /> — Shadow disk copies created during `nexus fork` MUST be classified as owned by the child sandbox record, not orphaned. **The producer exists** — an earlier note here recorded it as unconfirmed because `Service.Fork` contains no shadow handling, but the copy is made one layer down: `ForkFrom` copies every parent extra disk and shadow disks ARE extra disks, so `ChildExtraDiskPath` (`internal/core/driver/cloudhypervisor/fork.go:108`) yields `<childULID>-<parentSafeHandle>.shadow.<name>.ext4`. `diskname.ShadowDiskSafeHandle` returns that whole composite, which matches no sandbox handle, so handle correlation alone orphans a live fork child's dependency tree permanently. Resolved by `forkChildShadowOwner`: every `-` position in the safeHandle is offered to `ParseSandboxID` (the ULID's own string form contains a `-`, and a parent handle may contain more, so no single split works) and the child is looked up in the record map. Ownership still requires a LIVE child record — once the child is gone its copies are reclaimable like anything else. Covered by `TestReap_ShadowDisk_ForkChildCopyIsOwned` and `..._ForkChildCopyReclaimedWhenChildGone`.
 
 ### Snapshot ULID relationship and reap coverage <Badge type="danger" text="not built" />
 
@@ -123,8 +123,8 @@ Four-column table: creator, responsible freer, parseable owner key, abnormal-ter
 | Sandbox record | `create.go:628 store.Create()` | `service.go:694 store.Delete()` | YES `sandboxes/<ULID>/record.json` | Survives intentionally; record is the handle on all other resources; `recover`'s universe. |
 | Network namespace | `ch_netns.go:136 StartNetnsRuntime()` clone | Kernel auto-reclaim on last process exit | NONE (in-kernel) | **KERNEL-GUARANTEED** incl. SIGKILL; no orphan possible. |
 | Guest TAP / Host TAP / L2 bridge | `ch_netns.go:333 createTapBridge()` in netns child | Kernel with netns; fallback `ch_net.go:297 deleteTapBridge()` | PARTIAL — first 5 bytes of ULID as 10 hex: `nx3g-/nx3h-/nx3b-<10hex>` | **KERNEL-GUARANTEED** auto-reclaim on netns death. |
-| CH VMM child process group | `process.go:115 spawnVMM()` | `teardownSandboxNet` → `NetnsRuntime.Stop()` → `Kill(-childPgid, SIGKILL)` | YES child PID in driver in-process `nets` map | **UNVERIFIED-ASSUMPTION:** orphan survives if parent nexus3 is killed before teardown. `Observe()` reports Absent; `recover` marks stopped but does NOT kill orphan. R1/R2. |
-| CH API socket | `driver.go:Start()` | `driver.go:482 clearState()` `os.Remove` | YES `/run/user/<uid>/nexus3/sb-<ULID>.sock` | ORPHANED if killed before `clearState()`. |
+| CH VMM child process group | `process.go:115 spawnVMM()` | `teardownSandboxNet` → `NetnsRuntime.Stop()` → `Kill(-childPgid, SIGKILL)` | YES child PID in driver in-process `nets` map | **UNVERIFIED-ASSUMPTION:** orphan survives if parent nexus is killed before teardown. `Observe()` reports Absent; `recover` marks stopped but does NOT kill orphan. R1/R2. |
+| CH API socket | `driver.go:Start()` | `driver.go:482 clearState()` `os.Remove` | YES `/run/user/<uid>/nexus/sb-<ULID>.sock` | ORPHANED if killed before `clearState()`. |
 | VSock socket | `driver.go:Start()` | `driver.go:483 clearState()` `os.Remove` | YES `.../sb-<ULID>.vsock` | ORPHANED if killed before `clearState()`. |
 | IID socket | `driver.go:Start()` (presumed) | `driver.go:484 clearState()` `os.Remove` **CODE-VERIFIED** | YES `.../sb-<ULID>.iid` | `clearState()` removes on normal driver stop. Stale `.iid` triples (3–5 days old, no store record) persist on host; `reap` reports zero socket orphans — open question for R1 (RL-11). |
 | Detached perimeter supervisor | `supervisor.go SpawnDetached()` from orca create | `service.go:741 closeSupervisor()` → Stop + waitExit | PID in `domain.Sandbox.SupervisorPID`; sock in `SupervisorSock` | **UNVERIFIED-ASSUMPTION:** orphan survives if parent exits before `closeSupervisor()`. `recover` does NOT check `SupervisorPID`. R1/R2 (see RL-13). |
@@ -132,8 +132,8 @@ Four-column table: creator, responsible freer, parseable owner key, abnormal-ter
 | Builder supervisor (ephemeral) | `builder_supervisor_driver.go:133 SpawnDetached(Ephemeral:true)` | `deleteResource()` `reap.go:307` via `os.RemoveAll` **CODE-VERIFIED** | YES `builder-supervisors/<ULID>/` | Watchdog-pipe path exits cleanly via `supervisor.go StopSupervisor()` + WaitForExit. Reap reclaims directory via `os.RemoveAll`. Kill -9 scenario untested (RL-12). |
 | Shadow disk (handle-keyed CoW) | `cli/shadowdisk.go:117 buildShadowDiskSpecs()` | `disk.go:67 ReapShadowDisks()` ← `service.go:710` | YES (B1) `<safeHandle>.shadow.<name>.ext4`, safeHandle = ReplaceAll(Handle,"/","_") | B1: owned when handle matches live record, else orphan. Legacy `.shadow.ext4`: unconditionally orphan. Lease-protected by a **handle-keyed shadow intent** (`<safeHandle>.shadow-intent.json`), published before the first disk byte on create and before `ForkFrom` on fork/restore; the ULID create intent cannot cover these because the reaper correlates them by handle (RL-17). Fork/restore copies are named `<childID>-<parentSafeHandle>.shadow.<name>.ext4` and are owned via `forkChildShadowOwner` once the child record commits (RL-14). |
 | Cgroups | **UNVERIFIED** — CH may or may not create them | UNKNOWN | UNKNOWN | **UNVERIFIED.** R1 to audit (see RL-16). |
-| Named volume disk | `volume store` | **user** — `nexus3 volume rm <name>` | YES `volumes/<name>/disk.ext4` | **USER-OWNED.** Structurally excluded from reap (RL-10). Never deleted by nexus3 tooling except explicit user command. |
-| Named volume data dir | `volume store` | **user** — `nexus3 volume rm <name>` | YES `volumes/<name>/data/` | **USER-OWNED.** Structurally excluded from reap (RL-10). |
+| Named volume disk | `volume store` | **user** — `nexus volume rm <name>` | YES `volumes/<name>/disk.ext4` | **USER-OWNED.** Structurally excluded from reap (RL-10). Never deleted by nexus tooling except explicit user command. |
+| Named volume data dir | `volume store` | **user** — `nexus volume rm <name>` | YES `volumes/<name>/data/` | **USER-OWNED.** Structurally excluded from reap (RL-10). |
 
 TAP interfaces, bridge, and the network namespace are in-kernel resources named with the first 10 hex characters of the sandbox ULID. They are auto-reclaimed by the kernel when the Cloud Hypervisor process group dies — even under SIGKILL. The reaper does not target them; for correlation purposes, enumerate `ip link` entries matching `nx3[ghb]-<hex>` and strip the prefix.
 
@@ -143,15 +143,15 @@ Named volumes (`volume_disk` and `volume_dir`) are user-owned resources that liv
 
 ### Volume detach on sandbox rm <Badge type="warning" text="partial" />
 
-`nexus3 rm` detaches a sandbox's named volumes but **never** deletes their backing files (D-PD-87). The volume persists until the user explicitly removes it with `nexus3 volume rm <name>` or reclaims detached volumes with `nexus3 volume prune`.
+`nexus rm` detaches a sandbox's named volumes but **never** deletes their backing files (D-PD-87). The volume persists until the user explicitly removes it with `nexus volume rm <name>` or reclaims detached volumes with `nexus volume prune`.
 
-The detach is **incomplete**, which is why this section is badged. Observed live on 2026-08-19: after `nexus3 rm` removed both owning sandboxes, `nexus3 volume rm <name>` still failed with `volume in use: attached to <removed-sandbox-id>` — an attachment record naming a sandbox that no longer exists. `nexus3 volume prune`'s dry-run correctly classified the same volumes as detached, so the stale record blocks `volume rm` specifically; clearing it required `nexus3 volume prune --apply --include-detached`. Whether this is a deliberate deferral of D-PD-87's detach semantics or a defect in the `rm` cleanup path is undetermined (TBD-PD-22).
+The detach is **incomplete**, which is why this section is badged. Observed live on 2026-08-19: after `nexus rm` removed both owning sandboxes, `nexus volume rm <name>` still failed with `volume in use: attached to <removed-sandbox-id>` — an attachment record naming a sandbox that no longer exists. `nexus volume prune`'s dry-run correctly classified the same volumes as detached, so the stale record blocks `volume rm` specifically; clearing it required `nexus volume prune --apply --include-detached`. Whether this is a deliberate deferral of D-PD-87's detach semantics or a defect in the `rm` cleanup path is undetermined (TBD-PD-22).
 
 See [Volume commands](/cli/volume-commands) for the full volume lifecycle.
 
 ### Agent config overlay volume <Badge type="tip" text="built" />
 
-`nexus3 create --agent <name>` silently provisions a 2 GiB named ext4 volume (`<proj>__<handle>__agentcfg`) and attaches it to the sandbox. The volume backs the writable upper layer of an overlayfs mounted at `/root/.claude` inside the guest. Moving the upper layer off the root disk makes it governor-visible (the root `/dev/vda` is never enrolled in `ResizableDiskIndices`). The lower layer is a read-only virtiofs share of the host's curated Claude config; it is host-backed and consumes zero guest disk.
+`nexus create --agent <name>` silently provisions a 2 GiB named ext4 volume (`<proj>__<handle>__agentcfg`) and attaches it to the sandbox. The volume backs the writable upper layer of an overlayfs mounted at `/root/.claude` inside the guest. Moving the upper layer off the root disk makes it governor-visible (the root `/dev/vda` is never enrolled in `ResizableDiskIndices`). The lower layer is a read-only virtiofs share of the host's curated Claude config; it is host-backed and consumes zero guest disk.
 
 Boot **fails closed** (aborts with a hard error) when the volume is absent and no prior upper-layer data is found on the root disk. The fail-closed path prevents a new agent sandbox from silently losing session transcripts, todos, and stats to the ungrowable root disk. The sole exception is a pre-existing sandbox created before this provisioning was introduced: if root-disk data is found at the old path, boot degrades gracefully (D-RAM-11) and emits a structured `slog.Warn`; no non-destructive drain to a named volume exists yet (D-RAM-15).
 
@@ -188,11 +188,11 @@ The process-kill test (`R3`) confirms the code path executes but is **not a powe
 
 ## Reap
 
-`nexus3 reap` reclaims orphaned host resources. It is **always a dry-run by default** (RL-4); nothing is deleted without `--apply`.
+`nexus reap` reclaims orphaned host resources. It is **always a dry-run by default** (RL-4); nothing is deleted without `--apply`.
 
 ```sh
-nexus3 reap           # report only
-nexus3 reap --apply   # delete orphans
+nexus reap           # report only
+nexus reap --apply   # delete orphans
 ```
 
 ### How reap works
@@ -216,7 +216,7 @@ Enumeration was cleared as the culprit — a probe enumerated 5, 129, 130 and 20
 
 ### In-flight creates (intent lease)
 
-A create materializes its disk **before** it commits the store record — a multi-second copy for a multi-GiB image. During that window the disk has no record, and no process carries the ULID in its command line (the creator is the `nexus3` CLI itself; the VMM is not launched until afterwards), so the `/proc` gate below cannot see it. The reaper would classify a live create's disk as an orphan and delete it.
+A create materializes its disk **before** it commits the store record — a multi-second copy for a multi-GiB image. During that window the disk has no record, and no process carries the ULID in its command line (the creator is the `nexus` CLI itself; the VMM is not launched until afterwards), so the `/proc` gate below cannot see it. The reaper would classify a live create's disk as an orphan and delete it.
 
 The create-intent file therefore carries an exclusive `flock(2)` **lease**, taken before the intent becomes discoverable and released only after the record is committed:
 
@@ -237,11 +237,11 @@ Every creation path takes **two** leases, because the reaper asks two different 
 
 Neither substitutes for the other, and that is the whole point: `.raw` is correlated by ULID and shadow disks by handle, so a single intent cannot answer both questions. Treating them as one is what produced TBD-PD-25 and TBD-PD-38 — the same bug in two places.
 
-`nexus3 create` publishes both (the shadow intent in the CLI, before the first disk is materialised; the ULID intent inside `CreateAndBoot`). `nexus3 fork` and `nexus3 restore` publish both per child via `leaseForkChildren`, before `ForkFrom` runs, and release each pair only after that child's `store.Create` commits. Fork children's workspace disks are named `<childID>-workspace.ext4` (ULID-keyed) and are covered by the first intent.
+`nexus create` publishes both (the shadow intent in the CLI, before the first disk is materialised; the ULID intent inside `CreateAndBoot`). `nexus fork` and `nexus restore` publish both per child via `leaseForkChildren`, before `ForkFrom` runs, and release each pair only after that child's `store.Create` commits. Fork children's workspace disks are named `<childID>-workspace.ext4` (ULID-keyed) and are covered by the first intent.
 
 #### Fork with named volumes <Badge type="warning" text="partial" />
 
-`nexus3 fork` refuses when the parent has any attached named volume (D-PD-96, TBR-PD-15 pending design).
+`nexus fork` refuses when the parent has any attached named volume (D-PD-96, TBR-PD-15 pending design).
 
 Two residuals remain on both create and fork. `ResourceIndex.List()` is a `readdir`, not an atomic directory snapshot, so a scan can in principle observe a `.raw` dirent while having already passed the slot where its `.create-intent.json` landed, yielding a disk with no lease to probe. And an intent file that cannot be read at all (for example one left mode-0600 by another uid) keeps its sandbox's disks indefinitely, as described above.
 
@@ -284,9 +284,9 @@ Two shadow-disk hazards follow from handle correlation. **Both are now closed**;
 
 - **On create — closed.** A shadow disk is materialized before the sandbox record that will own it. A handle-keyed shadow intent (`disks/<safeHandle>.shadow-intent.json`) is published before the first disk is written and leased for the whole window; `Reap` probes it and `classifyShadowDisk` consults the resulting in-flight map first. The ULID-keyed create-intent lease (D-PD-73) could never have covered this — it answers a question about a ULID, and shadow disks are correlated by handle. See RL-17.
 
-- **On fork and restore — closed.** Forked children's workspace disks are named `<childID>-workspace.ext4` (D-PD-80(b)) and are ULID-keyed, so the standard liveness gate owns them. Their shadow copies are named `<childID>-<parentSafeHandle>.shadow.<name>.ext4`, which matches no sandbox handle; `classifyShadowDisk` falls back to parsing the child ULID out of that composite and resolving it against the record map, so a live child owns its copies (RL-14). The fork window itself is covered too: `leaseForkChildren` publishes a handle-keyed shadow intent per child before `ForkFrom` writes anything, released only after that child's record commits (TBD-PD-38). `nexus3 restore` was the wider of the two exposures — it had no intent leases of any kind — and now takes the same pair.
+- **On fork and restore — closed.** Forked children's workspace disks are named `<childID>-workspace.ext4` (D-PD-80(b)) and are ULID-keyed, so the standard liveness gate owns them. Their shadow copies are named `<childID>-<parentSafeHandle>.shadow.<name>.ext4`, which matches no sandbox handle; `classifyShadowDisk` falls back to parsing the child ULID out of that composite and resolving it against the record map, so a live child owns its copies (RL-14). The fork window itself is covered too: `leaseForkChildren` publishes a handle-keyed shadow intent per child before `ForkFrom` writes anything, released only after that child's record commits (TBD-PD-38). `nexus restore` was the wider of the two exposures — it had no intent leases of any kind — and now takes the same pair.
 
-The recommended parallel-dev approach sidesteps shadow disks entirely: use `--mount-named` volumes instead. The mechanism is a **hard refusal, not a skip** — `nexus3 fork` refuses outright when the parent has any attached named volume, of either kind (D-PD-96, TBR-PD-15 pending design; asserted by `fork_uniform_volume_refusal_test.go`). Because no fork of a volume-carrying sandbox occurs at all, no shadow disk copies are created and the correlation hazard never arises. Note the consequence: a sandbox using named volumes cannot currently be forked.
+The recommended parallel-dev approach sidesteps shadow disks entirely: use `--mount-named` volumes instead. The mechanism is a **hard refusal, not a skip** — `nexus fork` refuses outright when the parent has any attached named volume, of either kind (D-PD-96, TBR-PD-15 pending design; asserted by `fork_uniform_volume_refusal_test.go`). Because no fork of a volume-carrying sandbox occurs at all, no shadow disk copies are created and the correlation hazard never arises. Note the consequence: a sandbox using named volumes cannot currently be forked.
 
 ### What reap does not touch
 
@@ -327,7 +327,7 @@ It errs toward refusing rather than toward filling the disk, which is the right 
 
 `--force` skips the check on `sandbox create`, `run`, `fork` and `restore`. It exists for exactly these cases.
 
-Fork is the opposite: every file it copies already exists, so its projection is measured rather than estimated. Fork is also the largest allocator nexus3 has — an N-way fork of a 5 GiB parent needs 5N GiB — and it was entirely unguarded until this landed.
+Fork is the opposite: every file it copies already exists, so its projection is measured rather than estimated. Fork is also the largest allocator nexus has — an N-way fork of a 5 GiB parent needs 5N GiB — and it was entirely unguarded until this landed.
 
 ### What is not covered
 
@@ -337,21 +337,21 @@ Named volume backing files are outside the projection entirely — volume sizes 
 
 ## Kernel preflight
 
-All sandbox-creation entry points (`nexus3 create`, `nexus3 run`, `nexus3 orca`) call `resolveKernelPath()` before any store or VM setup. If `NEXUS3_KERNEL_PATH` is unset or the file does not exist, creation fails immediately with a legible error. Without this preflight, Cloud Hypervisor's own error is the opaque `"Cannot open kernel file"`.
+All sandbox-creation entry points (`nexus create`, `nexus run`, `nexus orca`) call `resolveKernelPath()` before any store or VM setup. If `NEXUS_KERNEL_PATH` is unset or the file does not exist, creation fails immediately with a legible error. Without this preflight, Cloud Hypervisor's own error is the opaque `"Cannot open kernel file"`.
 
 ## Container Image Visibility (one-time setup)
 
-The `nexus3-base` container image is hosted on the GitHub Container Registry (GHCR) at
-`ghcr.io/inizio/nexus3-base`. The first push from a `GITHUB_TOKEN` in CI creates the
+The `nexus-base` container image is hosted on the GitHub Container Registry (GHCR) at
+`ghcr.io/inizio/nexus-base`. The first push from a `GITHUB_TOKEN` in CI creates the
 package as **private** — anonymous pulls are denied, which breaks `herdr plugin install`
 for users who have not authenticated to GHCR.
 
 **One-time manual step (performed once per repo/org):**
 
-1. Navigate to <https://github.com/users/IniZio/packages/container/nexus3-base/settings>
+1. Navigate to <https://github.com/users/IniZio/packages/container/nexus-base/settings>
    (or the org equivalent if the repo is under an org).
 2. Under "Danger Zone", change the package visibility to **Public**.
-3. Link the package to the `nexus3` repository so the package appears on the repo page.
+3. Link the package to the `nexus` repository so the package appears on the repo page.
 
 This step cannot be automated with `GITHUB_TOKEN` — the GitHub Packages API requires
 a PAT with `write:packages` scope and org-level approval to change package visibility.

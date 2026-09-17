@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netstack"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
 )
 
 // BuilderDriver is the subset of driver capabilities required by [BuildInVM].
@@ -132,7 +132,7 @@ func BuildInVM(
 	// discover and re-own the VM by reading this record. It is unconditionally
 	// deleted on every exit path — success, failure, panic, context
 	// cancellation — because the builder is ephemeral and must not appear in
-	// `nexus3 sandbox list` beyond its own lifetime.
+	// `nexus sandbox list` beyond its own lifetime.
 	//
 	// Defer ordering (LIFO): delete-record is registered FIRST so it executes
 	// LAST, after panicSafeStop. This guarantees the VM is already stopped
@@ -231,7 +231,7 @@ func BuildInVM(
 	// driver.NetworkHook. The production CLI driver does NOT — it delegates to
 	// a detached supervisor that owns the perimeter itself, driven by the
 	// transient record's Envelope set above. Do not read this block as the
-	// thing that gives the builder its egress; for `nexus3 sandbox create
+	// thing that gives the builder its egress; for `nexus sandbox create
 	// --file` it never executes.
 	var perimCancel context.CancelFunc
 	if hook, ok := drv.(driver.NetworkHook); ok {
@@ -272,7 +272,7 @@ func BuildInVM(
 
 	// ── 1.5. Wait for the builder VM agent to be reachable ───────────────────
 	// drv.Start returns when the VMM API socket is ready, not when the guest
-	// has fully booted and the nexus3-agent vsock listener is accepting
+	// has fully booted and the nexus-agent vsock listener is accepting
 	// connections. Attempting the exec RPC before the listener is up causes an
 	// immediate EOF. Poll until the agent is reachable or the context expires.
 	if waitErr := waitForBuilderAgent(ctx, drv, id); waitErr != nil {
@@ -289,7 +289,7 @@ func BuildInVM(
 	}
 
 	// ── 2. Run the in-guest build ─────────────────────────────────────────────
-	// Exec nexus3-agent --builder-role inside the VM. The builder role
+	// Exec nexus-agent --builder-role inside the VM. The builder role
 	// (internal/core/agent/builder_role_linux.go) mounts /dev/vdb, starts
 	// buildkitd, solves the Containerfile, writes the rootfs ext4 to /dev/vdc,
 	// then calls syscall.Sync(). The exec blocks until the role completes.
@@ -443,12 +443,12 @@ func guestBuild(ctx context.Context, execFn GuestExecFn, cacheDisks []CacheDiskS
 // guestSync execs "sync" inside the VM to flush all pending writes to the
 // virtio-blk backends. Called by the Lifecycle before VMM stop.
 //
-// The builder VM runs nexus3-agent as PID 1 (init=/sbin/nexus3-agent) so its
+// The builder VM runs nexus-agent as PID 1 (init=/sbin/nexus-agent) so its
 // process environment has no PATH from the kernel. Use the absolute path to
 // the busybox sync applet to avoid exec.LookPath failures.
 func guestSync(ctx context.Context, execFn GuestExecFn) error {
 	// Try absolute paths first (avoids exec.LookPath relying on os.Getenv("PATH")
-	// which is empty when nexus3-agent is PID 1).
+	// which is empty when nexus-agent is PID 1).
 	for _, syncBin := range []string{"/bin/sync", "/usr/bin/sync", "sync"} {
 		exitCode, err := execFn(ctx, []string{syncBin}, nil)
 		if err != nil {
@@ -503,7 +503,7 @@ var _ io.Writer = (*sbuilder)(nil)
 //   - "ResourceExhausted"        — gRPC status code buildkit returns for ENOSPC
 //
 // The bare "/var/lib/buildkit" path clause was removed: the export scratch path
-// is now /var/lib/buildkit/nexus3-export, so any error mentioning that path
+// is now /var/lib/buildkit/nexus-export, so any error mentioning that path
 // (including ErrRootfsHollow) would have been mislabeled "cache disk full".
 // The two genuine ENOSPC signals above cover all real disk-full cases.
 func wrapOutOfSpaceErr(err error) error {

@@ -1,4 +1,4 @@
-// Package volumestore manages named volumes for the nexus3 sandbox system.
+// Package volumestore manages named volumes for the nexus sandbox system.
 //
 // Volumes live at <stateRoot>/volumes/<name>/ — a sibling directory to the
 // sandbox disks directory.  ResourceIndex.List() in internal/core/service never
@@ -34,8 +34,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/diskfloor"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/diskfloor"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 const (
@@ -103,7 +103,7 @@ type VolumeStore struct {
 }
 
 // New returns a VolumeStore rooted at root.
-// root is typically ~/.local/state/nexus3/volumes.
+// root is typically ~/.local/state/nexus/volumes.
 func New(root string) *VolumeStore {
 	return &VolumeStore{root: root}
 }

@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // diskWarnEnv isolates runSandboxCreate from the host: a fake kernel so the
 // booted path is reachable, empty state/config roots, and a PATH with no
-// nexus3-agent so the --file branch stops at "read agent binary" right after
+// nexus-agent so the --file branch stops at "read agent binary" right after
 // the disk guard (the first step past the guard that touches a real artefact).
 func diskWarnEnv(t *testing.T) []string {
 	t.Helper()
@@ -21,7 +21,7 @@ func diskWarnEnv(t *testing.T) []string {
 	if err := os.WriteFile(kernel, []byte("not-a-kernel"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", kernel)
+	t.Setenv("NEXUS_KERNEL_PATH", kernel)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
@@ -65,7 +65,7 @@ func TestSandboxCreate_DiskWarn_BelowFloorRefusesBeforeBuild(t *testing.T) {
 		FreeBytes:  4 << 30,
 		FloorBytes: diskWarnFloor,
 		BelowFloor: true,
-		Hints:      []string{"nexus3 image prune", "nexus3 reap"},
+		Hints:      []string{"nexus image prune", "nexus reap"},
 	})
 	svc := newTestService(t)
 	out, _, stderr := capture(false)
@@ -88,7 +88,7 @@ func TestSandboxCreate_DiskWarn_BelowFloorRefusesBeforeBuild(t *testing.T) {
 		service.DiskCategoryImageCache, "40.0 GiB",
 		"Free: 4.0 GiB (floor 15.0 GiB)",
 		"below the builder floor",
-		"Next: nexus3 image prune; nexus3 reap",
+		"Next: nexus image prune; nexus reap",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stderr missing %q; got:\n%s", want, got)

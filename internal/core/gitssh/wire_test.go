@@ -7,7 +7,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/gitssh"
+	"github.com/IniZio/nexus/internal/core/gitssh"
 )
 
 func TestWriteReadRequest_RoundTrip(t *testing.T) {

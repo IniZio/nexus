@@ -19,17 +19,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // Proves Part 2: SeedLoop exits after maxAttempts when seeders always fail.
@@ -167,9 +167,9 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 	}
 	t.Logf("base image ready: digest=%s", img.Digest)
 
-	t.Log("building nexus3 binary …")
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	t.Log("building nexus binary …")
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	socketDir, err := os.MkdirTemp("/tmp", "sv-s4-sock-")
 	if err != nil {
@@ -292,7 +292,7 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 			DiskPath:   diskPath,
 			// CredsFile deliberately absent: proves zero-cred even in live mode.
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		ReadyTimeout: 5 * time.Minute,
 	}
 	pid, _, err := supervisor.SpawnDetached(spawnCfg)
@@ -368,7 +368,7 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 		t.Logf("PASS (c): AC-7 zero-cred-in-guest: no real token material found")
 	}
 
-	// (d) D-M4 mutation guard: shell-profile drop-in must seed /etc/profile.d/nexus3-cred.sh
+	// (d) D-M4 mutation guard: shell-profile drop-in must seed /etc/profile.d/nexus-cred.sh
 	profContent, profCode := execGuest("cat " + service.GuestShellProfilePath)
 	if profCode != 0 {
 		t.Errorf("D-M4 FAIL (d): shell-profile drop-in absent from guest at %s (exit %d)\n"+
@@ -400,9 +400,9 @@ func TestSupervisorS4LiveEgress(t *testing.T) {
 			"SKIP TestSupervisorS4LiveEgress: dedicated cred store absent at %q\n"+
 				"Operator steps to prove AC-5 live 200:\n"+
 				"  1. In a DEDICATED terminal (NOT your main claude.ai login):\n"+
-				"       nexus3 auth login --force\n"+
+				"       nexus auth login --force\n"+
 				"     (writes dedicated OAuth session — do NOT reuse main login)\n"+
-				"  2. export NEXUS3_DEDICATED_CRED_STORE=%s\n"+
+				"  2. export NEXUS_DEDICATED_CRED_STORE=%s\n"+
 				"  3. TMPDIR=/tmp go test -tags integration -count=1 \\\n"+
 				"         -run TestSupervisorS4LiveEgress \\\n"+
 				"         ./internal/test/selfhost/ -v -timeout 30m",
@@ -441,8 +441,8 @@ func TestSupervisorS4LiveEgress(t *testing.T) {
 	}
 	t.Logf("base image: %s", img.Digest)
 
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	socketDir, err := os.MkdirTemp("/tmp", "sv-s4live-sock-")
 	if err != nil {
@@ -566,7 +566,7 @@ func TestSupervisorS4LiveEgress(t *testing.T) {
 			DiskPath:   diskPath,
 			CredsFile:  storePath, // live OAuth creds; Refresher exchanges refresh_token
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		ReadyTimeout: 5 * time.Minute,
 	}
 	pid, _, err := supervisor.SpawnDetached(spawnCfg)
@@ -615,15 +615,15 @@ func TestSupervisorS4LiveEgress(t *testing.T) {
 	// (A) AC-5 node HTTPS to api.anthropic.com: MITM intercepts, swaps placeholder→real bearer
 	// Debug: verify cert file and cred.env before node probe
 	debugOut, _ := execGuest("debug-cert",
-		`ls -la /usr/local/share/ca-certificates/nexus3-mitm.crt /run/nexus3/cred.env 2>&1 && `+
-			`head -1 /run/nexus3/cred.env && `+
-			`openssl x509 -in /usr/local/share/ca-certificates/nexus3-mitm.crt -noout -subject 2>&1 | head -1`,
+		`ls -la /usr/local/share/ca-certificates/nexus-mitm.crt /run/nexus/cred.env 2>&1 && `+
+			`head -1 /run/nexus/cred.env && `+
+			`openssl x509 -in /usr/local/share/ca-certificates/nexus-mitm.crt -noout -subject 2>&1 | head -1`,
 		15)
 	t.Logf("debug cert/env: %s", truncateS4(debugOut, 400))
 
 	t.Log("AC-5 assertion A: node HTTPS api.anthropic.com/v1/models → expect 200 …")
-	// Source /run/nexus3/cred.env so NODE_EXTRA_CA_CERTS and placeholder are inherited by node
-	nodeHTTPScript := `set -a; . /run/nexus3/cred.env; node -e "
+	// Source /run/nexus/cred.env so NODE_EXTRA_CA_CERTS and placeholder are inherited by node
+	nodeHTTPScript := `set -a; . /run/nexus/cred.env; node -e "
 const https = require('https');
 const token = process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN || '';
 const opts = {
@@ -648,8 +648,8 @@ req.end();
 	if httpCode != "200" {
 		t.Errorf("AC-5 FAIL (A): api.anthropic.com/v1/models returned HTTP %q (expected 200)\n"+
 			"  If 401: the refresh_token in %s is stale.\n"+
-			"  Fix: run `nexus3 auth login --force` in a fresh DEDICATED terminal,\n"+
-			"       then re-export NEXUS3_DEDICATED_CRED_STORE and rerun the test.",
+			"  Fix: run `nexus auth login --force` in a fresh DEDICATED terminal,\n"+
+			"       then re-export NEXUS_DEDICATED_CRED_STORE and rerun the test.",
 			httpCode, storePath)
 	} else {
 		t.Logf("PASS (A): api.anthropic.com/v1/models → HTTP %s", httpCode)

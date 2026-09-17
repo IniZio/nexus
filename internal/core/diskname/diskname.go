@@ -1,4 +1,4 @@
-// Package diskname provides pure-string predicates for nexus3 disk filename
+// Package diskname provides pure-string predicates for nexus disk filename
 // conventions. It has no dependencies beyond the standard library and may be
 // imported by any package in the stack without creating import cycles.
 package diskname

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/config"
 )
 
 // ---- Load / parse tests ----
@@ -46,7 +46,7 @@ egress:
     - host: api.github.com
       paths: ["/repos/owner/myrepo/**", "/user"]
 sandbox:
-  image: nexus3-agent-base
+  image: nexus-agent-base
   memory: 8192
   vcpus: 6
   mounts: [".:/work"]
@@ -75,8 +75,8 @@ sandbox:
 	if len(cfg.Egress.Policy[0].Paths) == 0 {
 		t.Fatalf("egress.policy[0].paths: want non-empty, got empty")
 	}
-	if cfg.Sandbox.Image != "nexus3-agent-base" {
-		t.Fatalf("sandbox.image: want nexus3-agent-base, got %q", cfg.Sandbox.Image)
+	if cfg.Sandbox.Image != "nexus-agent-base" {
+		t.Fatalf("sandbox.image: want nexus-agent-base, got %q", cfg.Sandbox.Image)
 	}
 	if cfg.Sandbox.Memory != 8192 {
 		t.Fatalf("sandbox.memory: want 8192, got %d", cfg.Sandbox.Memory)
@@ -174,7 +174,7 @@ func TestLoad_MissingVersion_HardError(t *testing.T) {
 	content := `egress:
   allow: ["proxy.golang.org"]
 sandbox:
-  image: nexus3-agent-base
+  image: nexus-agent-base
 `
 	writeConfigAt(t, dir, config.ConfigRelPath, content)
 
@@ -534,14 +534,14 @@ func TestResolveMounts_EmptySlice(t *testing.T) {
 // ---- JSON Schema drift test ----
 
 // TestSchemaCoversAllStructFields reads the JSON Schema at
-// docs/schema/nexus3.schema.json and verifies that every Go struct field
+// docs/schema/nexus.schema.json and verifies that every Go struct field
 // (identified by its yaml tag) has a counterpart in the schema's property
 // definitions. This test FAILS when a field is added to a Go struct without
 // updating the schema — preventing the schema from silently rotting into a lie.
 //
-// The schema path is relative to this package: ../../../docs/schema/nexus3.schema.json.
+// The schema path is relative to this package: ../../../docs/schema/nexus.schema.json.
 func TestSchemaCoversAllStructFields(t *testing.T) {
-	schemaPath := filepath.Join("..", "..", "..", "docs", "schema", "nexus3.schema.json")
+	schemaPath := filepath.Join("..", "..", "..", "docs", "schema", "nexus.schema.json")
 	data, err := os.ReadFile(schemaPath)
 	if err != nil {
 		t.Fatalf("cannot read JSON schema at %s: %v — create the schema or fix the path", schemaPath, err)
@@ -586,7 +586,7 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 	// Top-level fields: "version", "egress", "sandbox".
 	for _, name := range []string{"version", "egress", "sandbox"} {
 		if _, ok := topProps[name]; !ok {
-			t.Errorf("schema missing top-level property %q — add it to docs/schema/nexus3.schema.json", name)
+			t.Errorf("schema missing top-level property %q — add it to docs/schema/nexus.schema.json", name)
 		}
 	}
 
@@ -594,7 +594,7 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 	egressProps := props(schema, "properties", "egress", "properties")
 	for _, name := range yamlFields(reflect.TypeOf(config.EgressConfig{})) {
 		if _, ok := egressProps[name]; !ok {
-			t.Errorf("schema missing egress property %q — add it to docs/schema/nexus3.schema.json", name)
+			t.Errorf("schema missing egress property %q — add it to docs/schema/nexus.schema.json", name)
 		}
 	}
 
@@ -602,7 +602,7 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 	sandboxProps := props(schema, "properties", "sandbox", "properties")
 	for _, name := range yamlFields(reflect.TypeOf(config.SandboxConfig{})) {
 		if _, ok := sandboxProps[name]; !ok {
-			t.Errorf("schema missing sandbox property %q — add it to docs/schema/nexus3.schema.json", name)
+			t.Errorf("schema missing sandbox property %q — add it to docs/schema/nexus.schema.json", name)
 		}
 	}
 
@@ -614,7 +614,7 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 	knownTopLevel := map[string]bool{"version": true, "egress": true, "sandbox": true}
 	for key := range topProps {
 		if !knownTopLevel[key] {
-			t.Errorf("schema has unknown top-level property %q — remove it from docs/schema/nexus3.schema.json or add to the Go config struct", key)
+			t.Errorf("schema has unknown top-level property %q — remove it from docs/schema/nexus.schema.json or add to the Go config struct", key)
 		}
 	}
 
@@ -875,7 +875,7 @@ func TestEgressSecrets_Absent_ZeroValue(t *testing.T) {
 // config that still carries this key must be updated, and the strict
 // decoder surfaces the error rather than silently ignoring it.
 func TestParse_Branches_TopLevelKeyIsRejected(t *testing.T) {
-	data := []byte("version: 1\nbranches:\n  allowed: [refs/heads/nexus3/**]\n")
+	data := []byte("version: 1\nbranches:\n  allowed: [refs/heads/nexus/**]\n")
 	_, err := config.Parse(data)
 	if err == nil {
 		t.Error("Parse accepted a top-level 'branches' key; want an error (key is unknown after de-abstraction)")

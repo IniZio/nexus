@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // fakeBuildkitClient is the test double for builder.BuildkitClient.
@@ -45,7 +45,7 @@ func (f *fakeBuildkitClient) Solve(_ context.Context, req builder.SolveRequest, 
 	}
 	// Write a placeholder agent so the tree is not empty.
 	if err := os.WriteFile(
-		filepath.Join(outDir, "sbin", "nexus3-agent"),
+		filepath.Join(outDir, "sbin", "nexus-agent"),
 		[]byte("fake-agent-binary"),
 		0755,
 	); err != nil {
@@ -72,7 +72,7 @@ func setupWorkspace(t *testing.T, cfContent string) string {
 // setupAgentBinary writes a fake agent binary to a temp file and returns its path.
 func setupAgentBinary(t *testing.T) string {
 	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "nexus3-agent-*")
+	f, err := os.CreateTemp(t.TempDir(), "nexus-agent-*")
 	if err != nil {
 		t.Fatalf("setupAgentBinary: %v", err)
 	}
@@ -140,8 +140,8 @@ func TestBuild_HappyPath(t *testing.T) {
 	if fake.LastReq.AgentPath == "" {
 		t.Error("SolveRequest.AgentPath is empty")
 	}
-	// Boot contract: agent must be installed at /sbin/nexus3-agent.
-	const wantInstall = "/sbin/nexus3-agent"
+	// Boot contract: agent must be installed at /sbin/nexus-agent.
+	const wantInstall = "/sbin/nexus-agent"
 	if fake.LastReq.AgentInstallPath != wantInstall {
 		t.Errorf("SolveRequest.AgentInstallPath = %q, want %q (boot contract: init=%s)",
 			fake.LastReq.AgentInstallPath, wantInstall, wantInstall)
@@ -225,7 +225,7 @@ func TestBuild_MissingAgentBinary(t *testing.T) {
 	}
 	cfg := builder.Config{
 		BuildkitdAddr:   "unix:///run/buildkit/buildkitd.sock",
-		AgentBinaryPath: "/nonexistent/path/nexus3-agent",
+		AgentBinaryPath: "/nonexistent/path/nexus-agent",
 		ImageKind:       domain.KindBase,
 	}
 	b := builder.NewWithClient(cfg, fake, cache)
@@ -334,8 +334,8 @@ func TestBuild_WorkspaceDirThreaded(t *testing.T) {
 }
 
 // TestBuild_AgentLayerPreserved verifies that after the WorkspaceDir context
-// extension the appended agent layer still targets /sbin/nexus3-agent.
-// This is the boot contract: the kernel command line passes init=/sbin/nexus3-agent.
+// extension the appended agent layer still targets /sbin/nexus-agent.
+// This is the boot contract: the kernel command line passes init=/sbin/nexus-agent.
 func TestBuild_AgentLayerPreserved(t *testing.T) {
 	if !builder.Mke2fsAvailable() {
 		t.Skip("mke2fs not available; install e2fsprogs to run this test")
@@ -356,7 +356,7 @@ func TestBuild_AgentLayerPreserved(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	const wantInstall = "/sbin/nexus3-agent"
+	const wantInstall = "/sbin/nexus-agent"
 	if fake.LastReq.AgentInstallPath != wantInstall {
 		t.Errorf("SolveRequest.AgentInstallPath = %q, want %q (boot contract: init=%s)",
 			fake.LastReq.AgentInstallPath, wantInstall, wantInstall)

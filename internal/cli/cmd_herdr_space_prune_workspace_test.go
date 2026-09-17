@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // fakePruneSvc is a herdrSpacePruneLister that also implements
@@ -26,11 +26,11 @@ func TestHerdrSpacePrune_WorkspaceScoped_ReapsOnlyNamedBinding(t *testing.T) {
 	root := t.TempDir()
 
 	closed := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:repo/closed", HerdrWorkspaceID: "wCLOSED",
+		SpaceLabel: "nexus:repo/closed", HerdrWorkspaceID: "wCLOSED",
 		SandboxHandle: "repo/closed", SandboxID: "sb-closed", WorktreeManaged: true,
 	}
 	other := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:repo/other", HerdrWorkspaceID: "wOTHER",
+		SpaceLabel: "nexus:repo/other", HerdrWorkspaceID: "wOTHER",
 		SandboxHandle: "repo/other", SandboxID: "sb-other", WorktreeManaged: true,
 	}
 	for _, b := range []HerdrSpaceBinding{closed, other} {
@@ -71,7 +71,7 @@ func TestHerdrSpacePrune_WorkspaceScoped_DryRunTouchesNothing(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:repo/dry", HerdrWorkspaceID: "wDRY",
+		SpaceLabel: "nexus:repo/dry", HerdrWorkspaceID: "wDRY",
 		SandboxHandle: "repo/dry", SandboxID: "sb-dry", WorktreeManaged: true,
 	}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
@@ -98,7 +98,7 @@ func TestHerdrSpacePrune_WorkspaceScoped_UnknownWorkspaceIsNoop(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	b := HerdrSpaceBinding{
-		SpaceLabel: "nexus3:repo/keep", HerdrWorkspaceID: "wKEEP",
+		SpaceLabel: "nexus:repo/keep", HerdrWorkspaceID: "wKEEP",
 		SandboxHandle: "repo/keep", SandboxID: "sb-keep", WorktreeManaged: true,
 	}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {

@@ -610,7 +610,7 @@ func TestStartNetnsControlServer_RefusesEmptySandboxID(t *testing.T) {
 // the child binds — they are the same function, so a drift here would break
 // re-acquisition silently.
 func TestControlSocketPath_DerivedFromSandboxID(t *testing.T) {
-	dir := "/run/nexus3/netns-control"
+	dir := "/run/nexus/netns-control"
 	id := "sbx0123456789ab"
 	if got, want := ControlSocketPath(dir, id), filepath.Join(dir, "netns-control-"+id+".sock"); got != want {
 		t.Fatalf("ControlSocketPath = %q, want %q", got, want)

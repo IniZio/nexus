@@ -52,7 +52,7 @@ type SourceTransform func(profile AgentProfile) (CredentialSource, error)
 //
 // OAuth / rotating-chain agents (CredentialFormatNone, e.g. claude-code) set
 // DefaultFromPathFn and ImportFromPathFn instead of ImportFn. These two fields
-// are CLI-only: they support the `nexus3 auth login --from <path>` import
+// are CLI-only: they support the `nexus auth login --from <path>` import
 // route. They are ignored by [NewCredentialSourceForProfile] (which returns
 // nil, nil for [CredentialFormatNone] via an early-return) and by [ImportCred]
 // (which must not be called for [CredentialFormatNone]).

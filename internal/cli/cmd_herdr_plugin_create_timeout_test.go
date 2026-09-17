@@ -14,11 +14,11 @@ import (
 // number picked in isolation.
 //
 // Measured live on this host on 2026-08-31, through the UNBOUNDED
-// `nexus3 create --file` path (no herdrWorktreeCreateTimeout in effect), with
+// `nexus create --file` path (no herdrWorktreeCreateTimeout in effect), with
 // a cold buildkit LAYER cache (caches/buildkit.ext4 wiped first — a cold
 // fingerprint over a warm layer cache is fast and does not reproduce this):
 //   - a mid-size Next.js monorepo: 120s
-//   - nexus3:                      152s
+//   - nexus:                      152s
 //
 // herdrWorktreeCreateTimeout must stay comfortably above the worse of the
 // two (152s) or the exact self-sustaining cache-poison loop this slice fixes
@@ -32,7 +32,7 @@ const herdrColdBuildFloor = 152 * time.Second
 
 func TestHerdrWorktreeCreateTimeout_AboveMeasuredColdBuildFloor(t *testing.T) {
 	if herdrWorktreeCreateTimeout <= herdrColdBuildFloor {
-		t.Fatalf("herdrWorktreeCreateTimeout (%v) must exceed the measured cold-build floor (%v; see herdrColdBuildFloor doc comment for the 2026-08-31 Next.js-monorepo/nexus3 measurements) — "+
+		t.Fatalf("herdrWorktreeCreateTimeout (%v) must exceed the measured cold-build floor (%v; see herdrColdBuildFloor doc comment for the 2026-08-31 Next.js-monorepo/nexus measurements) — "+
 			"a value at or below this reopens the self-sustaining buildkit cache-poison loop (build overruns bound -> SIGKILL -> unclean death -> dirty-marker wipe -> next attempt starts cold)",
 			herdrWorktreeCreateTimeout, herdrColdBuildFloor)
 	}
@@ -69,7 +69,7 @@ func TestHerdrWorktreeCreateLockTimeout_ExceedsWorstCaseCreate(t *testing.T) {
 //	Restore:   remove the line → GREEN
 func TestWorktreeSandboxCreateSubprocess_DefaultKillSemantics(t *testing.T) {
 	// Fake XDG_STATE_HOME so newSandboxService() creates a real FileStore in a
-	// temp dir. store.DefaultRoot() returns XDG_STATE_HOME+"/nexus3" and
+	// temp dir. store.DefaultRoot() returns XDG_STATE_HOME+"/nexus" and
 	// store.NewFileStore creates the directory, so no pre-mkdir needed.
 	storeBase := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", storeBase)

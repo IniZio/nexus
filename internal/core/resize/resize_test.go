@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // ── Compile-time interface satisfaction ──────────────────────────────────────
@@ -33,7 +33,7 @@ import (
 // These blank-identifier assignments fail at compile time if any fake below
 // stops satisfying the interface, which proves the interface shapes are
 // implementable by ordinary structs that import nothing from
-// internal/core/driver or cmd/nexus3-agent (AR0-AC2).
+// internal/core/driver or cmd/nexus-agent (AR0-AC2).
 
 var _ resize.MemoryResizer = (*fakeMemoryResizer)(nil)
 var _ resize.CPUResizer = (*fakeCPUResizer)(nil)
@@ -579,7 +579,7 @@ func TestNoDriverImport(t *testing.T) {
 	// This test is intentionally trivial: its value is documentation and the
 	// explicit compile-time assertions above (var _ Interface = (*fake)(nil)).
 	// The machine-checkable proof is `go list -deps` emitting no
-	// internal/core/driver, cmd/nexus3-agent, internal/supervisor, or
+	// internal/core/driver, cmd/nexus-agent, internal/supervisor, or
 	// internal/core/service paths.
 	_ = errors.New // ensure errors is used (imported for malformed-input tests)
 }

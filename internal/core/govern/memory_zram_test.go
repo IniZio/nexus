@@ -25,11 +25,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // liveZramSample constructs the exact sample measured 2026-08-30 inside sandbox
-// nexus3/nexus3-create-orphan-leak-reap:
+// nexus/nexus-create-orphan-leak-reap:
 //
 //	MemTotal:     1543912 kB  (1 543 847 936 bytes)
 //	MemAvailable:  616516 kB  → ratio 0.399 — healthy, above 0.20 grow threshold

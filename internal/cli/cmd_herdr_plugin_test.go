@@ -12,13 +12,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // newTestHerdrService builds an in-memory service for herdr plugin tests.
@@ -100,7 +100,7 @@ func TestSealEnv_stripsHerdr(t *testing.T) {
 		"HERDR_PANE_ID=pane-123",
 		"HERDR_WORKSPACE_ID=ws-456",
 		"HERDR_ENV=1",
-		"NEXUS3_WORKSPACE=proj/box",
+		"NEXUS_WORKSPACE=proj/box",
 		"HOME=/home/user",
 		"PATH=/usr/bin:/bin",
 	}
@@ -112,7 +112,7 @@ func TestSealEnv_stripsHerdr(t *testing.T) {
 		}
 	}
 
-	wantPresent := []string{"NEXUS3_WORKSPACE=proj/box", "HOME=/home/user", "PATH=/usr/bin:/bin"}
+	wantPresent := []string{"NEXUS_WORKSPACE=proj/box", "HOME=/home/user", "PATH=/usr/bin:/bin"}
 	for _, want := range wantPresent {
 		found := false
 		for _, kv := range sealed {
@@ -193,7 +193,7 @@ func TestHerdrPluginDoctor(t *testing.T) {
 }
 
 // TestHerdrPluginLogs verifies "__herdr-plugin logs" delegates to the real
-// `nexus3 log` implementation (runLog) rather than the old stub message.
+// `nexus log` implementation (runLog) rather than the old stub message.
 func TestHerdrPluginLogs(t *testing.T) {
 	_, sb, stateDir := newLogTestSandbox(t)
 	writeLog(t, stateDir, "hello\nworld\n")
@@ -537,7 +537,7 @@ func TestHerdrReadMountSpec_Invalid_Error(t *testing.T) {
 }
 
 func TestHerdrReadMountSpec_NonExistentHost_Error(t *testing.T) {
-	_, err := herdrReadMountSpec(bufio.NewScanner(strings.NewReader("/nonexistent-nexus3-test-path:/work\n")))
+	_, err := herdrReadMountSpec(bufio.NewScanner(strings.NewReader("/nonexistent-nexus-test-path:/work\n")))
 	if err == nil {
 		t.Fatal("non-existent host path: expected error, got nil")
 	}
@@ -556,7 +556,7 @@ func TestHerdrPluginCreate_MountWired(t *testing.T) {
 	if err := os.WriteFile(fakeKernel, []byte("fake"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", fakeKernel)
+	t.Setenv("NEXUS_KERNEL_PATH", fakeKernel)
 
 	// Intercept the subprocess and capture args; return non-zero exit so we
 	// stop before herdrPluginSpaceCreate (which needs a real svc).
@@ -589,7 +589,7 @@ func TestHerdrPluginCreate_MountEmpty_NoFlag(t *testing.T) {
 	if err := os.WriteFile(fakeKernel, []byte("fake"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", fakeKernel)
+	t.Setenv("NEXUS_KERNEL_PATH", fakeKernel)
 
 	var capturedArgs []string
 	old := herdrExecCommandContext
@@ -615,7 +615,7 @@ func TestHerdrPluginCreate_MountInvalid_ErrorBeforeExec(t *testing.T) {
 	if err := os.WriteFile(fakeKernel, []byte("fake"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", fakeKernel)
+	t.Setenv("NEXUS_KERNEL_PATH", fakeKernel)
 
 	execCalled := false
 	old := herdrExecCommandContext
@@ -652,13 +652,13 @@ func (fakeNewTabGetter) Get(context.Context, string) (domain.Sandbox, error) {
 	return domain.Sandbox{}, nil
 }
 
-// TestHerdrNewTab_BindingFound asserts that when a nexus3 binding exists for
+// TestHerdrNewTab_BindingFound asserts that when a nexus binding exists for
 // the focused workspace ID, herdrPluginNewTab opens a guest-shell pane via
 // `herdr plugin pane open` and does NOT call `herdr tab create`.
 func TestHerdrNewTab_BindingFound(t *testing.T) {
 	storeRoot := t.TempDir()
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:test-sb",
+		SpaceLabel:       "nexus:test-sb",
 		HerdrWorkspaceID: "wAA",
 		SandboxHandle:    "test/sb",
 		SandboxID:        "sb-test",
@@ -693,7 +693,7 @@ func TestHerdrNewTab_BindingFound(t *testing.T) {
 	}
 }
 
-// TestHerdrNewTab_NoBinding asserts that when no nexus3 binding exists for the
+// TestHerdrNewTab_NoBinding asserts that when no nexus binding exists for the
 // workspace ID, herdrPluginNewTab calls `herdr tab create --workspace <id>
 // --focus` and does NOT open a guest pane.
 func TestHerdrNewTab_NoBinding(t *testing.T) {

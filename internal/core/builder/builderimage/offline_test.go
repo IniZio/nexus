@@ -30,11 +30,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/builder/builderimage"
 )
 
 // fakeAgentBytesOffline is a minimal non-empty agent binary placeholder.
-var fakeAgentBytesOffline = []byte("#!/bin/sh\necho nexus3-agent-fake\n")
+var fakeAgentBytesOffline = []byte("#!/bin/sh\necho nexus-agent-fake\n")
 
 // TestEnsureBuilderImage_CachedOffline verifies that when the ext4 image for a
 // given digest is already on disk, EnsureBuilderImage returns immediately

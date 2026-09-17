@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/image"
 )
 
 // digestOf computes the sha256 digest of content and returns a domain.Digest.
@@ -34,7 +34,7 @@ func makeImage(content []byte) (domain.Image, io.Reader) {
 	d := digestOf(content)
 	img := domain.Image{
 		Digest:    d,
-		Ref:       "nexus3-test:latest",
+		Ref:       "nexus-test:latest",
 		Kind:      domain.KindBase,
 		Size:      int64(len(content)),
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
@@ -141,7 +141,7 @@ func TestPutGetRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	c := newCache(t)
 
-	content := []byte("hello nexus3 image cache")
+	content := []byte("hello nexus image cache")
 	img, r := makeImage(content)
 
 	if err := c.Put(ctx, img, r); err != nil {

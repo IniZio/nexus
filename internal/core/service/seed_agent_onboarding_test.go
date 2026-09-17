@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // spyExecer is a test double for GuestExecer that captures argv and stdin,

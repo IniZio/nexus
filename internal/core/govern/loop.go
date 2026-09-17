@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // Clock abstracts wall time for testability. All time-dependent code in the
@@ -50,7 +50,7 @@ func (f axisEvalFunc) Evaluate(ctx context.Context) { f(ctx) }
 // without a RAM headroom check.
 //
 // Single-tenant design: OLD-nexus maintains a workspaceID-keyed map of states
-// for N workspaces. nexus3 drops the map entirely — one Governor per supervisor
+// for N workspaces. nexus drops the map entirely — one Governor per supervisor
 // process, one sandbox per supervisor, no workspaceID parameters anywhere
 // (D-DC-12).
 //
@@ -264,7 +264,7 @@ func (g *Governor) acceptSample(ctx context.Context, sample resize.Sample) {
 // on every Poll call, sends a SampleRequest, and decodes the SampleResponse.
 //
 // There is no OLD-nexus equivalent: OLD used event-driven guest→host push;
-// nexus3 uses host→guest polling so no host-side hybrid-vsock listener is
+// nexus uses host→guest polling so no host-side hybrid-vsock listener is
 // needed.
 type vsockTelemetry struct {
 	dialer driver.GuestDialer

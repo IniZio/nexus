@@ -12,8 +12,8 @@ package service
 import (
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func TestSandboxHasMITMProxy(t *testing.T) {

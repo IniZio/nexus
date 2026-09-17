@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/recovery"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/recovery"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // newAdoptableTestFixture builds a store + fake driver with one sandbox
@@ -108,7 +108,7 @@ func TestRunRecoverWith_ProductionWiring_SurfacesAdoptable(t *testing.T) {
 
 // TestRunRecoverWith_HumanMode_ReportsAdoptable is AC-8's actual acceptance
 // bar: "reported as needing adoption rather than as plainly running" — on
-// the surface an operator actually sees. `nexus3 recover` defaults to human
+// the surface an operator actually sees. `nexus recover` defaults to human
 // mode (--json is opt-in), and EmitSuccess's human-mode branch
 // (output.go:88-99) prints only the bare "recovery complete: examined N
 // sandbox(es)" summary — the exact symptom line quoted in the ticket for the
@@ -134,7 +134,7 @@ func TestRunRecoverWith_HumanMode_ReportsAdoptable(t *testing.T) {
 		t.Errorf("human-mode output does not mention sandbox id %s; got:\n%s", sb.ID, got)
 	}
 	if !strings.Contains(got, string(recovery.OutcomeAdoptable)) {
-		t.Errorf("human-mode output does not mention %q; an operator running plain `nexus3 recover` "+
+		t.Errorf("human-mode output does not mention %q; an operator running plain `nexus recover` "+
 			"would see only the bare summary count, not that this sandbox needs adoption; got:\n%s",
 			recovery.OutcomeAdoptable, got)
 	}
@@ -153,10 +153,10 @@ func newReacquirableTestFixture(t *testing.T) (store.Store, driver.Driver, domai
 		rec.NetnsChildPID = 4242
 		rec.NetnsChildPGID = 4242
 		rec.NetnsChildStartTime = 987654
-		rec.GuestTapName = "nx3h-0102030405"
-		rec.CHAPISocket = "/tmp/nexus3/x.sock"
-		rec.NetnsControlSocket = "/tmp/nexus3/netns-control/x.sock"
-		rec.NetnsControlToken = "/tmp/nexus3/netns-control/x.token"
+		rec.GuestTapName = "nxh-0102030405"
+		rec.CHAPISocket = "/tmp/nexus/x.sock"
+		rec.NetnsControlSocket = "/tmp/nexus/netns-control/x.sock"
+		rec.NetnsControlToken = "/tmp/nexus/netns-control/x.token"
 		return nil
 	}); err != nil {
 		t.Fatalf("Update sandbox with netns identity: %v", err)
@@ -273,8 +273,8 @@ func TestRunRecoverWith_HealthySandbox_NotSpawnedAgainst(t *testing.T) {
 	sb := domain.Sandbox{
 		ID: domain.NewSandboxID(), Name: "healthy", Project: "ac8",
 		State:              domain.Running,
-		NetnsControlSocket: "/tmp/nexus3/netns-control/x.sock",
-		NetnsControlToken:  "/tmp/nexus3/netns-control/x.token",
+		NetnsControlSocket: "/tmp/nexus/netns-control/x.sock",
+		NetnsControlToken:  "/tmp/nexus/netns-control/x.token",
 	}
 	if err := st.Create(ctx, sb); err != nil {
 		t.Fatalf("Create: %v", err)

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/gitssh"
+	"github.com/IniZio/nexus/internal/core/gitssh"
 )
 
 func buildPktLineRef(old, new_, ref string) []byte {
@@ -161,7 +161,7 @@ func TestRelayE2E_UploadPack(t *testing.T) {
 	conn := runRelayOnPipe(t, gitssh.RelayConfig{
 		SandboxID:       "test-sandbox",
 		Allowlist:       allowlist,
-		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		AllowedBranches: []string{"refs/heads/nexus/**"},
 		SSHAuthSock:     agentSock,
 		SSHExec:         fakeSSH,
 	})
@@ -226,8 +226,8 @@ func TestRelayRefusalIsPktLineERR(t *testing.T) {
 	if !strings.HasPrefix(payload, "ERR ") {
 		t.Errorf("pkt-line payload does not start with \"ERR \": %q", payload)
 	}
-	if !strings.Contains(payload, "nexus3:") {
-		t.Errorf("pkt-line payload does not contain \"nexus3:\": %q", payload)
+	if !strings.Contains(payload, "nexus:") {
+		t.Errorf("pkt-line payload does not contain \"nexus:\": %q", payload)
 	}
 }
 
@@ -305,7 +305,7 @@ func TestRelayReceivePack_ServerSpeaksFirst(t *testing.T) {
 	conn := runRelayOnPipe(t, gitssh.RelayConfig{
 		SandboxID:       "test-sandbox",
 		Allowlist:       allowlist,
-		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		AllowedBranches: []string{"refs/heads/nexus/**"},
 		SSHAuthSock:     agentSock,
 		SSHExec:         fakeSSH,
 	})
@@ -322,7 +322,7 @@ func TestRelayReceivePack_ServerSpeaksFirst(t *testing.T) {
 
 	zeros40 := strings.Repeat("0", 40)
 	ones40 := strings.Repeat("1", 40)
-	if _, err := conn.Write(buildPktLineRef(zeros40, ones40, "refs/heads/nexus3/proof")); err != nil {
+	if _, err := conn.Write(buildPktLineRef(zeros40, ones40, "refs/heads/nexus/proof")); err != nil {
 		t.Fatalf("write pkt-line: %v", err)
 	}
 	if _, err := conn.Write(pktFlush); err != nil {
@@ -365,7 +365,7 @@ func TestRelayReceivePack_RefBlocked(t *testing.T) {
 	conn := runRelayOnPipe(t, gitssh.RelayConfig{
 		SandboxID:       "test-sandbox",
 		Allowlist:       allowlist,
-		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		AllowedBranches: []string{"refs/heads/nexus/**"},
 		SSHAuthSock:     agentSock,
 		SSHExec:         fakeSSH,
 	})
@@ -420,7 +420,7 @@ func TestRelayReceivePack_RefBlocked_SidebandWrapped(t *testing.T) {
 	conn := runRelayOnPipe(t, gitssh.RelayConfig{
 		SandboxID:       "test-sandbox",
 		Allowlist:       []gitssh.AllowedRepo{{SSHHost: "git@github.com", OwnerRepo: "example-org/example-app"}},
-		AllowedBranches: []string{"refs/heads/nexus3/**"},
+		AllowedBranches: []string{"refs/heads/nexus/**"},
 		SSHAuthSock:     agentSock,
 		SSHExec:         fakeSSH,
 	})
@@ -466,7 +466,7 @@ func TestRelayReceivePack_RefBlocked_SidebandWrapped(t *testing.T) {
 	if _, err := fmt.Sscanf(string(inner[:4]), "%04x", &innerLen); err != nil || innerLen != len(inner) {
 		t.Fatalf("inner pkt-line length %q does not cover inner (%d bytes): %v", inner[:4], len(inner), err)
 	}
-	if !strings.HasPrefix(string(inner[4:]), "ERR nexus3: refused: ref refs/heads/main") {
+	if !strings.HasPrefix(string(inner[4:]), "ERR nexus: refused: ref refs/heads/main") {
 		t.Errorf("inner payload is not the ERR refusal: %q", inner[4:])
 	}
 }

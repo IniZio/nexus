@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/agent/wire"
+	"github.com/IniZio/nexus/internal/core/agent/wire"
 )
 
 // buildWirePullStream writes payloads as Data(Stdout) frames followed by an
@@ -40,7 +40,7 @@ func ptrInt64(v int64) *int64 { return &v }
 // TestCopyPull_OkFile proves the happy path: correct bytes land in dst and
 // no error is returned when declaredBytes matches the received count.
 func TestCopyPull_OkFile(t *testing.T) {
-	payload := []byte("nexus3 pull unit test")
+	payload := []byte("nexus pull unit test")
 	rd := buildWirePullStream(t, [][]byte{payload})
 	var dst bytes.Buffer
 	if err := copyPull(rd, &dst, ptrInt64(int64(len(payload))), false, "/guest/src.txt"); err != nil {

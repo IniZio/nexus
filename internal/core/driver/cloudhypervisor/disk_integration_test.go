@@ -8,7 +8,7 @@ package cloudhypervisor
 // # Test
 //
 //   - TestDiskBoot: builds a minimal ext4 image containing a static
-//     nexus3-agent binary at /sbin/nexus3-agent, boots it THROUGH the driver
+//     nexus-agent binary at /sbin/nexus-agent, boots it THROUGH the driver
 //     (not by calling cloud-hypervisor directly), and asserts that the guest
 //     agent is reachable over vsock via drv.DialGuest.
 //
@@ -37,9 +37,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // diskTestSunPathMax is the usable sun_path limit for AF_UNIX sockets on Linux.
@@ -92,7 +92,7 @@ func main() {
 
 // buildRootfsForDisk creates a minimal rootfs directory tree for disk boot:
 //
-//	/sbin/nexus3-agent  — the agent binary (PID-1 init)
+//	/sbin/nexus-agent  — the agent binary (PID-1 init)
 //	/bin/hello          — tiny "hello-from-disk" binary for Exec probing
 //	/dev/               — empty; agent mounts devtmpfs here
 //	/proc/              — empty; agent mounts procfs here
@@ -111,7 +111,7 @@ func buildRootfsForDisk(t *testing.T, agentBin, helloBin string) string {
 	}
 
 	for _, pair := range [][2]string{
-		{agentBin, filepath.Join(rootfs, "sbin", "nexus3-agent")},
+		{agentBin, filepath.Join(rootfs, "sbin", "nexus-agent")},
 		{helloBin, filepath.Join(rootfs, "bin", "hello")},
 	} {
 		data, err := os.ReadFile(pair[0])
@@ -198,12 +198,12 @@ func waitForAgentReady(t *testing.T, drv *CHDriver, id domain.SandboxID, timeout
 // and verifies the guest agent is reachable over vsock via DialGuest.
 //
 // Boot path:
-//  1. Compile nexus3-agent (static Linux/amd64) as PID-1 init.
+//  1. Compile nexus-agent (static Linux/amd64) as PID-1 init.
 //  2. Compile a tiny "hello-from-disk" binary for Exec probing.
-//  3. Assemble a minimal rootfs (sbin/nexus3-agent, bin/hello, empty mount points).
+//  3. Assemble a minimal rootfs (sbin/nexus-agent, bin/hello, empty mount points).
 //  4. Pack it into a raw ext4 image with mke2fs -d.
 //  5. Boot via driver.Start with DiskImagePath set — NOT by calling CH directly.
-//     Driver uses cmdline "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0".
+//     Driver uses cmdline "root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0".
 //  6. Wait for the vsock socket to appear (agent has bound its listeners).
 //  7. Dial the agent via drv (implements GuestDialer) and run Exec /bin/hello.
 //  8. Assert "hello-from-disk" appears in stdout.
@@ -215,7 +215,7 @@ func TestDiskBoot(t *testing.T) {
 	skipUnlessMke2fs(t)
 
 	// build binaries
-	agentBin := buildNexus3Agent(t)
+	agentBin := buildNexusAgent(t)
 	helloBin := buildHelloBinForDisk(t)
 
 	// assemble rootfs
@@ -245,7 +245,7 @@ func TestDiskBoot(t *testing.T) {
 		// Setting DiskImagePath activates virtio-blk disk boot. The driver
 		// adds a Disks entry with image_type=raw and substitutes the
 		// disk-boot default cmdline when Cmdline is empty:
-		//   root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0
+		//   root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0
 		DiskImagePath:    ext4Path,
 		SerialOutputPath: serialPath,
 		VCPUs:            1,

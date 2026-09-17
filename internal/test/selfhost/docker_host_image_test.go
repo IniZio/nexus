@@ -3,11 +3,11 @@
 package selfhost
 
 // docker_host_image_test.go — KVM-gated full-boot test for the
-// examples/nexus3-in-docker example image.
+// examples/nexus-in-docker example image.
 //
-// Proves that the nexus3 host daemon runs correctly inside a Docker container,
+// Proves that the nexus host daemon runs correctly inside a Docker container,
 // boots a microVM, builds a trivial Containerfile, and executes a command in
-// the guest — the same end-to-end path documented in examples/nexus3-in-docker/README.md.
+// the guest — the same end-to-end path documented in examples/nexus-in-docker/README.md.
 //
 // # Skip conditions
 //
@@ -19,7 +19,7 @@ package selfhost
 // # Running
 //
 //	TMPDIR=/tmp go test -tags integration \
-//	    -run TestExampleNexus3InDocker_BootsMicroVM \
+//	    -run TestExampleNexusInDocker_BootsMicroVM \
 //	    ./internal/test/selfhost/ -v -timeout 30m
 
 import (
@@ -32,11 +32,11 @@ import (
 	"time"
 )
 
-// TestExampleNexus3InDocker_BootsMicroVM builds the nexus3-host image using
-// examples/nexus3-in-docker/build.sh, runs the documented full-boot recipe
+// TestExampleNexusInDocker_BootsMicroVM builds the nexus-host image using
+// examples/nexus-in-docker/build.sh, runs the documented full-boot recipe
 // (fresh container-owned volumes, minimal caps), and asserts that
-// `nexus3 exec` returns "built" and "Linux" from inside the guest.
-func TestExampleNexus3InDocker_BootsMicroVM(t *testing.T) {
+// `nexus exec` returns "built" and "Linux" from inside the guest.
+func TestExampleNexusInDocker_BootsMicroVM(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping: -short set — docker build + VM boot takes several minutes")
 	}
@@ -49,7 +49,7 @@ func TestExampleNexus3InDocker_BootsMicroVM(t *testing.T) {
 		t.Skip("skipping: docker not in PATH")
 	}
 	if _, err := exec.LookPath("virtiofsd"); err != nil {
-		t.Skip("skipping: virtiofsd not in PATH — required by examples/nexus3-in-docker/build.sh")
+		t.Skip("skipping: virtiofsd not in PATH — required by examples/nexus-in-docker/build.sh")
 	}
 
 	// ── locate repo root ───────────────────────────────────────────────────────
@@ -62,10 +62,10 @@ func TestExampleNexus3InDocker_BootsMicroVM(t *testing.T) {
 	// ── test-scoped Docker resource names ─────────────────────────────────────
 
 	const (
-		imageTag    = "nexus3-host:citest"
+		imageTag    = "nexus-host:citest"
 		stateVol    = "n3state_citest"
 		workVol     = "n3work_citest"
-		containerID = "nexus3-dockertest"
+		containerID = "nexus-dockertest"
 	)
 
 	// Clean up all Docker resources on exit, even on failure.
@@ -77,14 +77,14 @@ func TestExampleNexus3InDocker_BootsMicroVM(t *testing.T) {
 
 	// ── build the image via the example's build.sh ─────────────────────────────
 
-	t.Log("building nexus3-host image via examples/nexus3-in-docker/build.sh …")
+	t.Log("building nexus-host image via examples/nexus-in-docker/build.sh …")
 
 	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancelBuild()
 
-	// build.sh hardcodes the tag nexus3-host:latest; re-tag after the build.
+	// build.sh hardcodes the tag nexus-host:latest; re-tag after the build.
 	buildCmd := exec.CommandContext(buildCtx, "bash",
-		fmt.Sprintf("%s/examples/nexus3-in-docker/build.sh", repoRoot),
+		fmt.Sprintf("%s/examples/nexus-in-docker/build.sh", repoRoot),
 	)
 	buildCmd.Dir = repoRoot
 	var buildOut bytes.Buffer
@@ -96,11 +96,11 @@ func TestExampleNexus3InDocker_BootsMicroVM(t *testing.T) {
 	}
 	t.Logf("build.sh succeeded")
 
-	// Re-tag nexus3-host:latest → test-scoped tag so a concurrent real user's
-	// nexus3-host:latest is not clobbered.
-	tagCmd := exec.Command("docker", "tag", "nexus3-host:latest", imageTag)
+	// Re-tag nexus-host:latest → test-scoped tag so a concurrent real user's
+	// nexus-host:latest is not clobbered.
+	tagCmd := exec.Command("docker", "tag", "nexus-host:latest", imageTag)
 	if out, err := tagCmd.CombinedOutput(); err != nil {
-		t.Fatalf("docker tag nexus3-host:latest %s: %v\n%s", imageTag, err, out)
+		t.Fatalf("docker tag nexus-host:latest %s: %v\n%s", imageTag, err, out)
 	}
 
 	// ── create fresh volumes ───────────────────────────────────────────────────
@@ -114,22 +114,22 @@ func TestExampleNexus3InDocker_BootsMicroVM(t *testing.T) {
 
 	// ── full boot: build + start + exec ───────────────────────────────────────
 
-	t.Log("running nexus3 create / start / exec inside container …")
+	t.Log("running nexus create / start / exec inside container …")
 
 	bootCtx, cancelBoot := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancelBoot()
 
 	// The shell script mirrors the documented "full boot" run recipe from
-	// examples/nexus3-in-docker/README.md.
+	// examples/nexus-in-docker/README.md.
 	// Use /bin/bash explicitly — /bin/sh on debian:bookworm-slim is dash,
 	// which does not support -o pipefail.
 	bootScript := `
 set -euo pipefail
 mkdir -p /work/src/.nexus /work/tmp /work/rt
 printf 'FROM alpine:3.20\nRUN echo built > /marker\n' > /work/src/.nexus/Containerfile
-nexus3 create ephemeral/demo --file /work/src
-nexus3 start ephemeral/demo
-nexus3 exec ephemeral/demo -- sh -c 'cat /marker && uname -sr'
+nexus create ephemeral/demo --file /work/src
+nexus start ephemeral/demo
+nexus exec ephemeral/demo -- sh -c 'cat /marker && uname -sr'
 `
 
 	runArgs := []string{
@@ -141,7 +141,7 @@ nexus3 exec ephemeral/demo -- sh -c 'cat /marker && uname -sr'
 		"--cap-add", "SYS_ADMIN",
 		"-e", "TMPDIR=/work/tmp",
 		"-e", "XDG_RUNTIME_DIR=/work/rt",
-		"-v", stateVol + ":/root/.local/state/nexus3",
+		"-v", stateVol + ":/root/.local/state/nexus",
 		"-v", workVol + ":/work",
 		"--entrypoint", "/bin/bash",
 		imageTag,
@@ -170,7 +170,7 @@ nexus3 exec ephemeral/demo -- sh -c 'cat /marker && uname -sr'
 		t.Errorf("expected 'Linux' in exec output (from uname -sr); got:\n%s", output)
 	}
 
-	t.Log("TestExampleNexus3InDocker_BootsMicroVM PASSED")
+	t.Log("TestExampleNexusInDocker_BootsMicroVM PASSED")
 }
 
 // runDockerClean runs a docker command, ignoring errors (cleanup best-effort).

@@ -30,13 +30,13 @@ type BaselinePhaseConfig struct {
 	// NoTruncationObserved for a configuration that differs from production.
 	ExpectedBackend StateBackend
 	// Runner is the build runner. Nil uses RunBuild (production default).
-	// Set to a fake in tests to avoid real nexus3/VM invocations.
+	// Set to a fake in tests to avoid real nexus/VM invocations.
 	Runner BuildRunner
 }
 
 // RunBaselinePhase executes a single sequential baseline run:
 //  1. Snapshots existing logs/
-//  2. Runs one nexus3 build with cache-miss gate
+//  2. Runs one nexus build with cache-miss gate
 //  3. Parses the Stage A manifest from the build log
 //  4. Runs Stage B size + hash probes on the packed ext4 artifact
 //  5. Prints and returns the RunResult
@@ -77,11 +77,11 @@ func RunBaselinePhase(ctx context.Context, cfg BaselinePhaseConfig) (RunResult, 
 	}
 
 	// Populate provenance early — recorded even if a HIF probe follows.
-	nexus3Bin := cfg.Build.nexus3Bin()
-	if p, err := exec.LookPath(nexus3Bin); err == nil {
-		nexus3Bin = p
+	nexusBin := cfg.Build.nexusBin()
+	if p, err := exec.LookPath(nexusBin); err == nil {
+		nexusBin = p
 	}
-	PopulateProvenance(&result, cfg.Build.AgentBin, nexus3Bin)
+	PopulateProvenance(&result, cfg.Build.AgentBin, nexusBin)
 
 	if hif != nil {
 		// Cache-miss gate fired or build failed — cannot observe anything valid.
@@ -150,12 +150,12 @@ func printRunResult(r RunResult) {
 	}
 	fmt.Printf("\n=== REPRO VERDICT: %s (label=%s elapsed=%v%s backend=%s%s) ===\n",
 		v, r.Label, r.Elapsed.Round(time.Second), diskStr, r.StateBackend, runIDStr)
-	if r.Nexus3BinPath != "" {
-		sha := r.Nexus3SHA256
+	if r.NexusBinPath != "" {
+		sha := r.NexusSHA256
 		if len(sha) > 16 {
 			sha = sha[:16] + "..."
 		}
-		fmt.Printf("  [nexus3]   %s  sha256=%s\n", r.Nexus3BinPath, sha)
+		fmt.Printf("  [nexus]   %s  sha256=%s\n", r.NexusBinPath, sha)
 	}
 	if r.AgentBinPath != "" {
 		sha := r.AgentBinSHA256

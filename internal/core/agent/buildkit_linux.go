@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder"
 )
 
 const (
@@ -43,7 +43,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	}
 
 	// ── Step 1: mount kernel pseudo-FSes ─────────────────────────────────────
-	// The nexus3-agent runs as PID 1; no init system mounts /proc, /sys etc.
+	// The nexus-agent runs as PID 1; no init system mounts /proc, /sys etc.
 	// These mounts are idempotent — already-mounted targets log and continue.
 	mountKernelFS()
 
@@ -98,7 +98,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	// the ring reader (feedRingFromReader) cannot get EOF while buildkitd is
 	// alive, which prevents the Exit frame from ever reaching the host.
 	// G2's shell script uses the same pattern: > /tmp/bkd.log 2>&1 &
-	bkLogPath := "/tmp/nexus3-bkd.log"
+	bkLogPath := "/tmp/nexus-bkd.log"
 	bkLogFile, err := os.Create(bkLogPath)
 	if err != nil {
 		return fmt.Errorf("in-guest build: create bkd log: %w", err)
@@ -178,8 +178,8 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	}
 	log.Printf("in-guest build: buildkitd ready")
 
-	// ── Step 6: build rootfs via nexus3 BuildkitClient ────────────────────────
-	// Reuse the existing nexus3 buildkit seam — NewBuildkitClient + Solve.
+	// ── Step 6: build rootfs via nexus BuildkitClient ────────────────────────
+	// Reuse the existing nexus buildkit seam — NewBuildkitClient + Solve.
 	// The local buildkitd is addressed via its Unix socket.
 	bkClient, err := builder.NewBuildkitClient("unix://" + sockPath)
 	if err != nil {
@@ -201,7 +201,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	// we fall back to the rootfs /tmp. We do NOT fall back to the RAM tmpfs —
 	// that is the thing we are removing.
 	const buildkitCacheMountPath = "/var/lib/buildkit"
-	const exportScratchDir = buildkitCacheMountPath + "/nexus3-export"
+	const exportScratchDir = buildkitCacheMountPath + "/nexus-export"
 	exportBase := "" // empty → os.TempDir() = rootfs /tmp (fallback)
 	if mkErr := os.MkdirAll(exportScratchDir, 0o700); mkErr == nil {
 		exportBase = exportScratchDir
@@ -210,7 +210,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		log.Printf("in-guest build: WARNING: cannot create export scratch on cache disk (%v); falling back to rootfs /tmp", mkErr)
 	}
 
-	rootfsDir, err := os.MkdirTemp(exportBase, "nexus3-inguestbuild-rootfs-")
+	rootfsDir, err := os.MkdirTemp(exportBase, "nexus-inguestbuild-rootfs-")
 	if err != nil {
 		return fmt.Errorf("in-guest build: mkdir rootfs: %w", err)
 	}
@@ -218,9 +218,9 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 
 	// Prototype finding (2026-08): apt-heavy images (e.g. ubuntu:24.04 with
 	// docker.io + docker-compose-v2) routinely exceed the old 25-minute limit.
-	// Default raised to 45 minutes; override via NEXUS3_BUILD_SOLVE_TIMEOUT.
+	// Default raised to 45 minutes; override via NEXUS_BUILD_SOLVE_TIMEOUT.
 	solveTimeout := solveBuildTimeout()
-	log.Printf("in-guest build: solve timeout %v (set NEXUS3_BUILD_SOLVE_TIMEOUT to override)", solveTimeout)
+	log.Printf("in-guest build: solve timeout %v (set NEXUS_BUILD_SOLVE_TIMEOUT to override)", solveTimeout)
 	solveCtx, solveCancel := context.WithTimeout(ctx, solveTimeout)
 	defer solveCancel()
 
@@ -228,7 +228,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		BaseRef:            baseRef,
 		ContainerfileBytes: opts.ContainerfileBytes,
 		AgentPath:          opts.AgentPath,
-		AgentInstallPath:   "/sbin/nexus3-agent",
+		AgentInstallPath:   "/sbin/nexus-agent",
 		WorkspaceDir:       opts.ContextDir, // vdb mount point; empty means no user context files
 		ToolRecipe:         opts.ToolRecipe,
 		TargetArch:         opts.TargetArch,
@@ -275,7 +275,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	// An intermittent export bug silently caps files > 32 MiB to exactly 32 MiB.
 	// The agent binary is the ideal canary: its exact source size is known and
 	// any mismatch proves corruption. Fail the build here so it is retried.
-	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", opts.AgentPath); err != nil {
+	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus-agent", opts.AgentPath); err != nil {
 		fmt.Fprintf(os.Stderr, "in-guest build: %v\n", err)
 		return fmt.Errorf("in-guest build: %w", err)
 	}
@@ -289,7 +289,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 }
 
 // mountKernelFS mounts the kernel pseudo-filesystems needed by buildkitd and
-// runc. The nexus3-agent runs as PID 1 so no init system does this setup.
+// runc. The nexus-agent runs as PID 1 so no init system does this setup.
 // Errors are non-fatal: already-mounted targets return EBUSY which is logged
 // and skipped.
 func mountKernelFS() {
@@ -375,7 +375,7 @@ func findRuncBinary() (string, error) {
 
 // findMke2fs returns the absolute path to mke2fs by probing well-known
 // locations. exec.LookPath relies on os.Getenv("PATH"), which is empty when
-// the agent runs as PID 1 (init=/sbin/nexus3-agent); absolute-path probing
+// the agent runs as PID 1 (init=/sbin/nexus-agent); absolute-path probing
 // avoids that dependency.
 func findMke2fs() (string, error) {
 	candidates := []string{
@@ -396,10 +396,10 @@ func findMke2fs() (string, error) {
 }
 
 // solveBuildTimeout returns the buildkit solve timeout. It reads
-// NEXUS3_BUILD_SOLVE_TIMEOUT (a Go duration string, e.g. "60m"); when unset
+// NEXUS_BUILD_SOLVE_TIMEOUT (a Go duration string, e.g. "60m"); when unset
 // or unparseable it defaults to 45 minutes.
 func solveBuildTimeout() time.Duration {
-	if s := os.Getenv("NEXUS3_BUILD_SOLVE_TIMEOUT"); s != "" {
+	if s := os.Getenv("NEXUS_BUILD_SOLVE_TIMEOUT"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d > 0 {
 			return d
 		}
@@ -455,7 +455,7 @@ func runMke2fsInGuest(ctx context.Context, srcDir, imgPath string, sizeBytes int
 	}
 
 	// Locate mke2fs. exec.LookPath uses the PROCESS's os.Getenv("PATH"), not
-	// cmd.Env. When nexus3-agent runs as PID 1 (init=/sbin/nexus3-agent) the
+	// cmd.Env. When nexus-agent runs as PID 1 (init=/sbin/nexus-agent) the
 	// kernel provides no PATH, so LookPath("mke2fs") fails. Probe candidates
 	// with absolute paths instead.
 	mke2fsPath, err := findMke2fs()
@@ -467,7 +467,7 @@ func runMke2fsInGuest(ctx context.Context, srcDir, imgPath string, sizeBytes int
 	cmd := exec.CommandContext(ctx, mke2fsPath,
 		"-t", "ext4",
 		"-d", srcDir,
-		"-L", "nexus3-root",
+		"-L", "nexus-root",
 		"-U", "00000000-0000-0000-0000-000000000000", // deterministic UUID
 		"-E", "hash_seed=00000000-0000-0000-0000-000000000000",
 		imgPath,

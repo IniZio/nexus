@@ -43,12 +43,12 @@ const paneWorkingB = `● Read(internal/cli/cmd_herdr_plugin.go)
 // re-sampling brings it back. Only movement can see this one.
 const paneWorkingNoAffordanceA = `● Delegating to 3 subagents.
 
-  nexus3-slice-sandbox   running   0:41
+  nexus-slice-sandbox   running   0:41
 `
 
 const paneWorkingNoAffordanceB = `● Delegating to 3 subagents.
 
-  nexus3-slice-sandbox   running   0:42
+  nexus-slice-sandbox   running   0:42
 `
 
 // paneIdle is a finished agent at its prompt: static, no affordance, no

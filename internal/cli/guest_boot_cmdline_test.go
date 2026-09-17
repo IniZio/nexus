@@ -1,6 +1,6 @@
 package cli
 
-// The boot cmdline is built once by `nexus3 sandbox create` and again by the
+// The boot cmdline is built once by `nexus sandbox create` and again by the
 // detached supervisor that re-boots the same VM. Those were separate copies of
 // the same assembly logic; a difference between them brings the VM back missing
 // its mounts or its hostname, and nothing fails loudly when it happens.
@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/vmcfg"
 )
 
 func TestGuestBootCmdline_NoMounts(t *testing.T) {
@@ -194,7 +194,7 @@ func TestBootScratchDiskPresent_WorktreeShape(t *testing.T) {
 	}
 
 	// Non-workspace LiveMount must not trigger scratch.
-	nonWS := []domain.LiveMount{{HostPath: "/host/cfg", GuestPath: "/run/nexus3/agentcfg-lower"}}
+	nonWS := []domain.LiveMount{{HostPath: "/host/cfg", GuestPath: "/run/nexus/agentcfg-lower"}}
 	if bootScratchDiskPresent("", nonWS) {
 		t.Error("bootScratchDiskPresent must be false for a non-/workspace LiveMount")
 	}

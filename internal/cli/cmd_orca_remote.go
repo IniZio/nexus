@@ -1,17 +1,17 @@
 package cli
 
-// cmd_orca_remote.go — SSH transport for "nexus3 orca" subcommands.
+// cmd_orca_remote.go — SSH transport for "nexus orca" subcommands.
 //
-// When --remote <dest> is passed (or NEXUS3_REMOTE is set), orca create/
-// suspend/resume/destroy are forwarded over SSH to a remote nexus3 host.
-// The remote is invoked with NEXUS3_ORCA_REMOTE_INNER=1 so that the host-side
+// When --remote <dest> is passed (or NEXUS_REMOTE is set), orca create/
+// suspend/resume/destroy are forwarded over SSH to a remote nexus host.
+// The remote is invoked with NEXUS_ORCA_REMOTE_INNER=1 so that the host-side
 // invocation runs locally without recursing.
 //
 // For "create", the client re-writes the connection JSON so that:
 //   - ProxyCommand goes through the CLIENT-side SSH hop to reach the host,
-//     then calls `nexus3 ssh --stdio <sandboxID>` on the host.
+//     then calls `nexus ssh --stdio <sandboxID>` on the host.
 //   - IdentityFile is the ed25519 private key shipped from the host and stored
-//     locally under ~/.local/share/nexus3/orca/<instanceID>/id_ed25519.
+//     locally under ~/.local/share/nexus/orca/<instanceID>/id_ed25519.
 
 import (
 	"context"
@@ -118,13 +118,13 @@ func isAllDigits(s string) bool {
 // resolveOrcaRemote inspects args and environment to determine whether the orca
 // command should be forwarded to a remote host.
 //
-// If NEXUS3_ORCA_REMOTE_INNER == "1" we are the host-side inner invocation;
+// If NEXUS_ORCA_REMOTE_INNER == "1" we are the host-side inner invocation;
 // strip any --remote flag but always return remote=nil (force local execution).
 //
 // Otherwise, strip --remote <val> / --remote=<val> from args, collecting the
-// value. Precedence: --remote flag > NEXUS3_REMOTE env.
+// value. Precedence: --remote flag > NEXUS_REMOTE env.
 func resolveOrcaRemote(args []string) (remote *sshTarget, rest []string, err error) {
-	inner := os.Getenv("NEXUS3_ORCA_REMOTE_INNER") == "1"
+	inner := os.Getenv("NEXUS_ORCA_REMOTE_INNER") == "1"
 
 	var remoteVal string
 	rest = make([]string, 0, len(args))
@@ -150,9 +150,9 @@ func resolveOrcaRemote(args []string) (remote *sshTarget, rest []string, err err
 	}
 
 	// Client-side: --remote flag takes precedence over env.
-	// Treat an empty or whitespace-only NEXUS3_REMOTE as unset.
+	// Treat an empty or whitespace-only NEXUS_REMOTE as unset.
 	if remoteVal == "" {
-		remoteVal = strings.TrimSpace(os.Getenv("NEXUS3_REMOTE"))
+		remoteVal = strings.TrimSpace(os.Getenv("NEXUS_REMOTE"))
 	}
 	if remoteVal == "" {
 		return nil, rest, nil
@@ -167,7 +167,7 @@ func resolveOrcaRemote(args []string) (remote *sshTarget, rest []string, err err
 
 // ── remote create ─────────────────────────────────────────────────────────────
 
-// orcaCreateRemote runs "nexus3 orca create" on the remote host r, captures the
+// orcaCreateRemote runs "nexus orca create" on the remote host r, captures the
 // resulting orcaCreateResult JSON, re-writes the connection to route through the
 // SSH hop, ships the identity file locally, and emits the modified JSON on w.
 func orcaCreateRemote(ctx context.Context, w io.Writer, r *sshTarget) error {
@@ -176,7 +176,7 @@ func orcaCreateRemote(ctx context.Context, w io.Writer, r *sshTarget) error {
 		return fmt.Errorf("orca create: ORCA_VM_INSTANCE_ID is not set")
 	}
 
-	hostBin, err := resolveHostNexus3(ctx, r)
+	hostBin, err := resolveHostNexus(ctx, r)
 	if err != nil {
 		return fmt.Errorf("orca create --remote: %w", err)
 	}
@@ -211,7 +211,7 @@ func orcaCreateRemote(ctx context.Context, w io.Writer, r *sshTarget) error {
 			keyBytes = append(keyBytes, '\n')
 		}
 
-		localKeyDir := filepath.Join(os.Getenv("HOME"), ".local", "share", "nexus3", "orca", instanceID)
+		localKeyDir := filepath.Join(os.Getenv("HOME"), ".local", "share", "nexus", "orca", instanceID)
 		if mkErr := os.MkdirAll(localKeyDir, 0700); mkErr != nil {
 			return fmt.Errorf("orca create --remote: mkdir local key dir: %w", mkErr)
 		}
@@ -222,7 +222,7 @@ func orcaCreateRemote(ctx context.Context, w io.Writer, r *sshTarget) error {
 	}
 
 	// Rewrite connection: ProxyCommand goes through the SSH hop, then calls
-	// nexus3 ssh --stdio on the host (expanding %h to the sandbox ID).
+	// nexus ssh --stdio on the host (expanding %h to the sandbox ID).
 	res.Connection.Target.ProxyCommand = r.proxyPrefix() + " " + hostBin + " ssh --stdio %h"
 	if localKey != "" {
 		res.Connection.Target.IdentityFile = localKey
@@ -241,7 +241,7 @@ func orcaLifecycleRemote(ctx context.Context, verb string, r *sshTarget) error {
 		return fmt.Errorf("orca %s: ORCA_VM_INSTANCE_ID is not set", verb)
 	}
 
-	hostBin, err := resolveHostNexus3(ctx, r)
+	hostBin, err := resolveHostNexus(ctx, r)
 	if err != nil {
 		return fmt.Errorf("orca %s --remote: %w", verb, err)
 	}
@@ -253,31 +253,31 @@ func orcaLifecycleRemote(ctx context.Context, verb string, r *sshTarget) error {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// resolveHostNexus3 finds the nexus3 binary on the remote host by first trying
-// `command -v nexus3`, then falling back to well-known paths.
-func resolveHostNexus3(ctx context.Context, r *sshTarget) (string, error) {
-	out, err := sshCapture(ctx, r, "command -v nexus3 || true")
+// resolveHostNexus finds the nexus binary on the remote host by first trying
+// `command -v nexus`, then falling back to well-known paths.
+func resolveHostNexus(ctx context.Context, r *sshTarget) (string, error) {
+	out, err := sshCapture(ctx, r, "command -v nexus || true")
 	if err != nil {
-		return "", fmt.Errorf("resolve nexus3 on host: %w", err)
+		return "", fmt.Errorf("resolve nexus on host: %w", err)
 	}
 	if out != "" {
 		return out, nil
 	}
 	// Fall back to well-known paths.
 	out, err = sshCapture(ctx, r,
-		`for p in "$HOME/.local/bin/nexus3" /usr/local/bin/nexus3; do [ -x "$p" ] && { echo "$p"; break; }; done`)
+		`for p in "$HOME/.local/bin/nexus" /usr/local/bin/nexus; do [ -x "$p" ] && { echo "$p"; break; }; done`)
 	if err != nil {
-		return "", fmt.Errorf("resolve nexus3 on host (fallback): %w", err)
+		return "", fmt.Errorf("resolve nexus on host (fallback): %w", err)
 	}
 	if out == "" {
-		return "", fmt.Errorf("remote host: nexus3 binary not found")
+		return "", fmt.Errorf("remote host: nexus binary not found")
 	}
 	return out, nil
 }
 
 // buildOrcaEnvTokens builds the env token list for orca create forwarding.
-// Includes all ORCA_* env vars, NEXUS3_IMAGE, NEXUS3_DEDICATED_CRED_STORE (if
-// set), and NEXUS3_ORCA_REMOTE_INNER=1.
+// Includes all ORCA_* env vars, NEXUS_IMAGE, NEXUS_DEDICATED_CRED_STORE (if
+// set), and NEXUS_ORCA_REMOTE_INNER=1.
 func buildOrcaEnvTokens(includeAllOrca bool) []string {
 	var tokens []string
 	if includeAllOrca {
@@ -287,15 +287,15 @@ func buildOrcaEnvTokens(includeAllOrca bool) []string {
 			}
 		}
 	}
-	img := os.Getenv("NEXUS3_IMAGE")
+	img := os.Getenv("NEXUS_IMAGE")
 	if img == "" {
-		img = "nexus3-agent-base"
+		img = "nexus-agent-base"
 	}
-	tokens = append(tokens, "NEXUS3_IMAGE="+img)
-	if cred := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); cred != "" {
-		tokens = append(tokens, "NEXUS3_DEDICATED_CRED_STORE="+cred)
+	tokens = append(tokens, "NEXUS_IMAGE="+img)
+	if cred := os.Getenv("NEXUS_DEDICATED_CRED_STORE"); cred != "" {
+		tokens = append(tokens, "NEXUS_DEDICATED_CRED_STORE="+cred)
 	}
-	tokens = append(tokens, "NEXUS3_ORCA_REMOTE_INNER=1")
+	tokens = append(tokens, "NEXUS_ORCA_REMOTE_INNER=1")
 	return tokens
 }
 
@@ -304,15 +304,15 @@ func buildOrcaEnvTokens(includeAllOrca bool) []string {
 // forwarded (no full ORCA_* dump needed for lifecycle).
 func buildOrcaLifecycleEnvTokens(instanceID string) []string {
 	tokens := []string{"ORCA_VM_INSTANCE_ID=" + instanceID}
-	img := os.Getenv("NEXUS3_IMAGE")
+	img := os.Getenv("NEXUS_IMAGE")
 	if img == "" {
-		img = "nexus3-agent-base"
+		img = "nexus-agent-base"
 	}
-	tokens = append(tokens, "NEXUS3_IMAGE="+img)
-	if cred := os.Getenv("NEXUS3_DEDICATED_CRED_STORE"); cred != "" {
-		tokens = append(tokens, "NEXUS3_DEDICATED_CRED_STORE="+cred)
+	tokens = append(tokens, "NEXUS_IMAGE="+img)
+	if cred := os.Getenv("NEXUS_DEDICATED_CRED_STORE"); cred != "" {
+		tokens = append(tokens, "NEXUS_DEDICATED_CRED_STORE="+cred)
 	}
-	tokens = append(tokens, "NEXUS3_ORCA_REMOTE_INNER=1")
+	tokens = append(tokens, "NEXUS_ORCA_REMOTE_INNER=1")
 	return tokens
 }
 

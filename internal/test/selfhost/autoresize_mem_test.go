@@ -35,22 +35,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // diskBootCmdlineBase is the base kernel cmdline for a disk-booted sandbox.
-// Matches cmd/nexus3/cmd_sandbox.go's diskBootCmdlineBase constant.
-const diskBootCmdlineBase = "root=/dev/vda rw init=/sbin/nexus3-agent console=ttyS0"
+// Matches cmd/nexus/cmd_sandbox.go's diskBootCmdlineBase constant.
+const diskBootCmdlineBase = "root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0"
 
 // TestAutoResizeMemGrow is the AR-LIVE-MEM acceptance test.
 func TestAutoResizeMemGrow(t *testing.T) {
@@ -155,10 +155,10 @@ func TestAutoResizeMemGrow(t *testing.T) {
 	t.Logf("base image ready: digest=%s size=%.2f GiB",
 		img.Digest, float64(img.Size)/(1<<30))
 
-	// ── Step 3: build nexus3 binary for SpawnDetached ─────────────────────────
-	t.Log("building nexus3 binary …")
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	// ── Step 3: build nexus binary for SpawnDetached ─────────────────────────
+	t.Log("building nexus binary …")
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	// ── Step 4: CreateAndBoot — initial boot to populate disk ─────────────────
 	// MemoryMaxMiB=1024 causes the driver to insert memhp cmdline params and
@@ -255,7 +255,7 @@ func TestAutoResizeMemGrow(t *testing.T) {
 			Cmdline:          svCmdline,
 			HasWorkspaceDisk: false,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	}

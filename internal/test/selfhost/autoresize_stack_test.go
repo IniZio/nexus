@@ -29,17 +29,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // TestAutoResizeZRAMBeforeWorkload proves ZRAM swap is active before any
@@ -146,10 +146,10 @@ func TestAutoResizeZRAMBeforeWorkload(t *testing.T) {
 	}
 	t.Logf("base image ready: digest=%s size=%.2f GiB", img.Digest, float64(img.Size)/(1<<30))
 
-	// ── Step 3: build nexus3 binary for SpawnDetached ─────────────────────────
-	t.Log("building nexus3 binary …")
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	// ── Step 3: build nexus binary for SpawnDetached ─────────────────────────
+	t.Log("building nexus binary …")
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	// ── Step 4: CreateAndBoot — initial boot to populate disk ─────────────────
 	var diskPath string
@@ -253,7 +253,7 @@ func TestAutoResizeZRAMBeforeWorkload(t *testing.T) {
 			Cmdline:          svCmdline,
 			HasWorkspaceDisk: false,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	}
@@ -510,10 +510,10 @@ func TestAutoResizeTmpGrowsWithMemTotal(t *testing.T) {
 	}
 	t.Logf("base image ready: digest=%s size=%.2f GiB", img.Digest, float64(img.Size)/(1<<30))
 
-	// ── Step 3: build nexus3 binary for SpawnDetached ─────────────────────────
-	t.Log("building nexus3 binary …")
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	// ── Step 3: build nexus binary for SpawnDetached ─────────────────────────
+	t.Log("building nexus binary …")
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	// ── Step 4: CreateAndBoot — initial boot to populate disk ─────────────────
 	var diskPath string
@@ -613,7 +613,7 @@ func TestAutoResizeTmpGrowsWithMemTotal(t *testing.T) {
 			Cmdline:          svCmdline,
 			HasWorkspaceDisk: false,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		LogPath:      filepath.Join(stateDir, "supervisor.log"),
 		ReadyTimeout: 3 * time.Minute,
 	}
@@ -775,7 +775,7 @@ func TestAutoResizeTmpGrowsWithMemTotal(t *testing.T) {
 	t.Logf("EVIDENCE grownTmpBytes=%d (%d MiB)", grownTmpBytes, grownTmpBytes>>20)
 
 	// ── Assertion: /tmp grew with MemTotal ────────────────────────────────────
-	// The /tmp resizer (cmd/nexus3-agent/resize_tmp_linux.go) remounts /tmp
+	// The /tmp resizer (cmd/nexus-agent/resize_tmp_linux.go) remounts /tmp
 	// with size ≈ MemTotal/2 when MemTotal increases. We just need to see any
 	// growth; exact proportionality is tested separately.
 	if grownTmpBytes > firstTmpBytes {

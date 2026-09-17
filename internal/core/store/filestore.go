@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // currentSchemaVersion is the schema version written by this binary.
-// A record with a higher version was written by a newer nexus3 and must not be
+// A record with a higher version was written by a newer nexus and must not be
 // decoded — partially understanding a record is worse than refusing it.
 const currentSchemaVersion = 1
 
@@ -195,7 +195,7 @@ func (r record) toDomain() domain.Sandbox {
 
 // ErrSchemaTooNew is returned when a stored record has a schema version higher
 // than this binary supports. Reading such a record partially would silently drop
-// fields, which is worse than refusing it outright. Upgrade nexus3 to read it.
+// fields, which is worse than refusing it outright. Upgrade nexus to read it.
 type ErrSchemaTooNew struct {
 	Found int
 	Max   int
@@ -203,7 +203,7 @@ type ErrSchemaTooNew struct {
 
 func (e *ErrSchemaTooNew) Error() string {
 	return fmt.Sprintf(
-		"store: record has schema version %d but this binary supports up to %d; upgrade nexus3",
+		"store: record has schema version %d but this binary supports up to %d; upgrade nexus",
 		e.Found, e.Max,
 	)
 }
@@ -314,7 +314,7 @@ func (s *FileStore) Create(ctx context.Context, sb domain.Sandbox) error {
 // does not exist or its record cannot be decoded.
 //
 // Unlike List, Get fails loudly on a future-version record: a single targeted
-// lookup should surface the problem so the operator knows to upgrade nexus3.
+// lookup should surface the problem so the operator knows to upgrade nexus.
 func (s *FileStore) Get(ctx context.Context, id domain.SandboxID) (domain.Sandbox, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.Sandbox{}, err
@@ -337,7 +337,7 @@ func (s *FileStore) Get(ctx context.Context, id domain.SandboxID) (domain.Sandbo
 // sandboxes directory itself cannot be read.
 //
 // This diverges deliberately from Get, which fails loudly on future-version
-// records: nexus3 ls must remain usable even when one record was written by a
+// records: nexus ls must remain usable even when one record was written by a
 // newer binary.
 func (s *FileStore) List(ctx context.Context) ([]domain.Sandbox, error) {
 	if err := ctx.Err(); err != nil {
@@ -650,7 +650,7 @@ func syncDir(dir string) error {
 // readRecord performs a two-phase decode of the record at path.
 //
 // Phase 1 decodes only the schema version so that a future-version record
-// produces a clear "upgrade nexus3" error rather than a confusing JSON type
+// produces a clear "upgrade nexus" error rather than a confusing JSON type
 // error from an incompatible field. Phase 2 performs the full decode.
 func readRecord(path string) (record, error) {
 	data, err := os.ReadFile(path)

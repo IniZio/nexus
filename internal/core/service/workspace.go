@@ -3,7 +3,7 @@ package service
 import (
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // WorkspaceMountHostPath returns the host path of the first LiveMount whose

@@ -4,7 +4,7 @@ package builderimage
 
 // toolchain.go ensures the moby/buildkit-based builder rootfs has the
 // prerequisites required to run buildkitd and execute OCI builds inside a
-// nexus3 microVM.
+// nexus microVM.
 //
 // # Architecture: buildkit-executor-provides-userland
 //
@@ -26,7 +26,7 @@ package builderimage
 //   - A working glibc environment (moby/buildkit is a Debian-derived image)
 //   - buildkitd binary and its bundled runc (buildkit-runc)
 //   - Kernel support: cgroup v2, overlayfs or native snapshotter, proc, sysfs
-//   - Working network to pull FROM images (provided by the nexus3 perimeter)
+//   - Working network to pull FROM images (provided by the nexus perimeter)
 //
 // This file adds missing runtime prerequisites via [addToolchainLayers], called
 // as part of [EnsureBuilderImage], and exports [DiscoverBuildkitdPath] so
@@ -70,7 +70,7 @@ var buildctlCandidates = []string{
 
 // addToolchainLayers augments the extracted moby/buildkit rootfs staging
 // directory with the runtime prerequisites required for buildkitd to operate
-// inside a nexus3 microVM.
+// inside a nexus microVM.
 //
 // It creates directories that may be absent in the stock OCI image but are
 // required at VM runtime, and creates compatibility symlinks so that callers

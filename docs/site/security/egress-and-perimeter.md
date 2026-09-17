@@ -11,16 +11,16 @@ Every sandbox starts with no external network access. Outbound connections are e
 
 ```sh
 # Agent sandbox: api.anthropic.com and platform.claude.com are built-in
-nexus3 create my-agent
+nexus create my-agent
 
 # Add an extra host to the curated allowlist
-nexus3 create --allow-host registry.npmjs.org my-sandbox
+nexus create --allow-host registry.npmjs.org my-sandbox
 
 # Add a GitHub repo (host-side token; MITM swaps on egress)
-nexus3 create --repo owner/repo my-sandbox
+nexus create --repo owner/repo my-sandbox
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 The `--egress` flag selects the mode at creation time. `--allow-host` and `--repo` extend the allowlist for curated sandboxes.
 
@@ -80,8 +80,8 @@ For all non-Claude hosts — GitHub, MCP OAuth servers, custom API endpoints —
 1. At sandbox start, `SeedGuest` mints one high-entropy placeholder per allowed host and writes it into the guest:
 
    ```
-   NEXUS3_CRED_API_ANTHROPIC_COM_TOKEN=<64-hex placeholder>
-   NEXUS3_CRED_API_ANTHROPIC_COM_EXPIRES_AT=2099-12-31T23:59:59Z
+   NEXUS_CRED_API_ANTHROPIC_COM_TOKEN=<64-hex placeholder>
+   NEXUS_CRED_API_ANTHROPIC_COM_EXPIRES_AT=2099-12-31T23:59:59Z
    ```
 
 2. For **allowed hosts only**, the MITM proxy swaps `Authorization: Bearer <placeholder>` for the real current bearer on the wire. A placeholder sent to a non-allowed host is never swapped — it is useless off the allowlist.
@@ -98,7 +98,7 @@ For all non-Claude hosts — GitHub, MCP OAuth servers, custom API endpoints —
 
 ## Secret rotation
 
-Rotating a credential used via `--secret` takes effect for any sandbox created after the rotation — new sandboxes receive a fresh placeholder minted from the updated host credential. Running sandboxes hold the placeholder issued at start; stop and restart them to pick up the rotated value. The named secret store (`nexus3 secret set`) <Badge type="danger" text="not built" /> will provide the same guarantee once built: rotate once, the new value applies to all subsequently created sandboxes.
+Rotating a credential used via `--secret` takes effect for any sandbox created after the rotation — new sandboxes receive a fresh placeholder minted from the updated host credential. Running sandboxes hold the placeholder issued at start; stop and restart them to pick up the rotated value. The named secret store (`nexus secret set`) <Badge type="danger" text="not built" /> will provide the same guarantee once built: rotate once, the new value applies to all subsequently created sandboxes.
 
 ## GitHub and the request allowlist
 
@@ -108,7 +108,7 @@ On `github.com` itself, git smart-HTTP (`info/refs`, `git-upload-pack`, `git-rec
 
 These GitHub carve-outs are scoped to the host, not to the policy kind: they apply identically whether `github.com` / `api.github.com` are gated by the `--repo` built-in policy or by generic `paths` patterns from `.nexus/config.yaml` `egress.policy`. On `api.github.com` the carve-outs are `GET /` (the API root) and `POST /graphql` when the request body's `query` is exactly a `viewer { login }` selection — the two probes `gh auth status` makes — so `gh auth status` reports logged in from any policy-gated sandbox without the config listing `/graphql`. Every other GraphQL document, `POST` to an archive path, and smart-HTTP on a foreign repo remain 403.
 
-A host is either open or policy-gated, never both. `.nexus/config.yaml` may not list the same host under `egress.allow` (open passthrough) and under `egress.policy` or `egress.secrets[].hosts` (default-deny path allowlist, credential brokered). The policy layer takes precedence, so such an `allow` entry would be inert while the file claims open access; the config loader rejects it at parse time, case-insensitively, with `nexus3 config: host "<host>" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow`. Because public archive and release downloads are already permitted on policy-gated `github.com`, no `allow` entry is needed for release tarballs; `codeload.github.com` may still be listed under `allow` since it is never policy-gated.
+A host is either open or policy-gated, never both. `.nexus/config.yaml` may not list the same host under `egress.allow` (open passthrough) and under `egress.policy` or `egress.secrets[].hosts` (default-deny path allowlist, credential brokered). The policy layer takes precedence, so such an `allow` entry would be inert while the file claims open access; the config loader rejects it at parse time, case-insensitively, with `nexus config: host "<host>" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow`. Because public archive and release downloads are already permitted on policy-gated `github.com`, no `allow` entry is needed for release tarballs; `codeload.github.com` may still be listed under `allow` since it is never policy-gated.
 
 :::warning `gh pr create` is refused
 `gh pr create` uses GitHub's GraphQL API, which the perimeter denies (GraphQL default-deny). Create PRs with the REST form:
@@ -127,7 +127,7 @@ From inside a claude-code sandbox, git SSH remotes (`git@github.com:owner/repo.g
 
 ### How it works
 
-1. The `GIT_SSH_COMMAND` environment variable in the guest points at a `nexus3-agent` shim binary.
+1. The `GIT_SSH_COMMAND` environment variable in the guest points at a `nexus-agent` shim binary.
 2. When the guest runs `git push git@github.com:owner/repo`, the shim sends the SSH command over a vsock channel to the host relay.
 3. The host relay (`internal/supervisor/gitssh_relay.go`) verifies the request against the repo's `.nexus/config.yaml` egress policy, then execs the real `ssh` with the host's `SSH_AUTH_SOCK`.
 
@@ -138,13 +138,13 @@ The relay enforces two rules before forwarding:
 **Host + repo allowlist** — derived from `.nexus/config.yaml` `egress.policy`. A push to a repo not in the policy is refused immediately. The error written to git's stderr is:
 
 ```
-nexus3: refused by egress policy: <host> <owner/repo> not in .nexus/config.yaml egress.policy
+nexus: refused by egress policy: <host> <owner/repo> not in .nexus/config.yaml egress.policy
 ```
 
-**Branch allowlist** — on `git-receive-pack` (push) only, the relay parses the pkt-line ref negotiation and checks each ref against the sandbox's `AllowedBranches` (default: `refs/heads/nexus3/**`). A push to an out-of-allowlist ref is refused:
+**Branch allowlist** — on `git-receive-pack` (push) only, the relay parses the pkt-line ref negotiation and checks each ref against the sandbox's `AllowedBranches` (default: `refs/heads/nexus/**`). A push to an out-of-allowlist ref is refused:
 
 ```
-nexus3: refused: ref <refname> not in allowed branches
+nexus: refused: ref <refname> not in allowed branches
 ```
 
 Only `git-upload-pack` (fetch/clone) and `git-receive-pack` (push) are forwarded. Any other SSH command — including interactive shells, `sftp`, and flag-injection attempts like `-oProxyCommand=…` — is refused.

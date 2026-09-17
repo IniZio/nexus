@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // newSSHTestService builds a service with a FakeDriver and a temp file store.
@@ -223,13 +223,13 @@ func TestConfigSSH_writesStanza(t *testing.T) {
 	}
 
 	text := string(content)
-	if !strings.Contains(text, "# nexus3 sandbox: myproj/mybox") {
+	if !strings.Contains(text, "# nexus sandbox: myproj/mybox") {
 		t.Errorf("config missing marker line; got:\n%s", text)
 	}
-	if !strings.Contains(text, "Host nexus3-myproj-mybox") {
+	if !strings.Contains(text, "Host nexus-myproj-mybox") {
 		t.Errorf("config missing Host line; got:\n%s", text)
 	}
-	if !strings.Contains(text, "ProxyCommand nexus3 ssh --stdio myproj/mybox") {
+	if !strings.Contains(text, "ProxyCommand nexus ssh --stdio myproj/mybox") {
 		t.Errorf("config missing ProxyCommand line; got:\n%s", text)
 	}
 }
@@ -264,7 +264,7 @@ func TestConfigSSH_idempotent(t *testing.T) {
 	}
 
 	// Count occurrences of the marker.
-	count := strings.Count(string(content), "# nexus3 sandbox: myproj/mybox")
+	count := strings.Count(string(content), "# nexus sandbox: myproj/mybox")
 	if count != 1 {
 		t.Errorf("marker appears %d times, want 1; config:\n%s", count, string(content))
 	}

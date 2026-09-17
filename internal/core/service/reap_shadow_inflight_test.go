@@ -1,6 +1,6 @@
 package service_test
 
-// TBD-PD-25: `nexus3 reap --apply` running concurrently with `nexus3 create`
+// TBD-PD-25: `nexus reap --apply` running concurrently with `nexus create`
 // could delete a live sandbox's shadow disks.
 //
 // Two independent holes produced it:
@@ -23,8 +23,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // heldShadowIntent publishes a shadow intent for handle covering paths and
@@ -246,7 +246,7 @@ func TestResourceIndex_ShadowIntentIsItsOwnKind(t *testing.T) {
 	}
 }
 
-// RL-14: `nexus3 fork` copies every parent extra disk, and shadow disks ARE
+// RL-14: `nexus fork` copies every parent extra disk, and shadow disks ARE
 // extra disks, so each child gets
 // <childULID>-<parentSafeHandle>.shadow.<name>.ext4 (ChildExtraDiskPath).
 // That composite matches no sandbox handle, so handle correlation alone

@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // putBlob stores content under ref and returns the digest it landed on.
@@ -40,8 +40,8 @@ func refHolders(t *testing.T, c *Cache, ref string) []domain.Digest {
 
 // A ref names exactly one image: storing new content under a ref another entry
 // already holds must move the ref, not add a second holder. This is the defect
-// behind TBD-PD-36 — three entries all tagged nexus3-agent-base, so `--image
-// nexus3-agent-base` resolved to whichever the cache scan reached first.
+// behind TBD-PD-36 — three entries all tagged nexus-agent-base, so `--image
+// nexus-agent-base` resolved to whichever the cache scan reached first.
 func TestPut_RefTransfersToNewestHolder(t *testing.T) {
 	c, err := NewCache(t.TempDir())
 	if err != nil {

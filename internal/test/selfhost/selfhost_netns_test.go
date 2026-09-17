@@ -1,6 +1,6 @@
 // Package selfhost provides the netns re-exec sentinel for TestSelfHostE2E.
 //
-// StartNetnsRuntime re-execs this binary with NEXUS3_NETNS_RUN=1 inside a
+// StartNetnsRuntime re-execs this binary with NEXUS_NETNS_RUN=1 inside a
 // user+network namespace to host the cloud-hypervisor VMM and TAP/bridge
 // topology. Without TestMain checking for this sentinel, the re-exec'd binary
 // would try to run test functions instead of the netns child work — causing
@@ -15,7 +15,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 )
 
 // TestMain is the test binary entry point. It dispatches the netns re-exec

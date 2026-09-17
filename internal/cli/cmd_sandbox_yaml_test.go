@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/config"
 )
 
 // writeYaml writes a .nexus/config.yaml under dir and returns the file path.
@@ -73,7 +73,7 @@ func TestApplyProjectConfig_ConfigFieldsApplied(t *testing.T) {
 	writeGitRoot(t, dir)
 	writeYaml(t, dir, `version: 1
 sandbox:
-  image: nexus3-agent-base
+  image: nexus-agent-base
   memory: 8192
   vcpus: 6
 `)
@@ -84,8 +84,8 @@ sandbox:
 		t.Fatalf("applyProjectConfig: %v", err)
 	}
 
-	if f.imageRef != "nexus3-agent-base" {
-		t.Errorf("imageRef = %q, want %q", f.imageRef, "nexus3-agent-base")
+	if f.imageRef != "nexus-agent-base" {
+		t.Errorf("imageRef = %q, want %q", f.imageRef, "nexus-agent-base")
 	}
 	if f.memoryMiB != 8192 {
 		t.Errorf("memoryMiB = %d, want 8192", f.memoryMiB)

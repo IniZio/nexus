@@ -1,7 +1,7 @@
 name: Docs
 
 # Publishes the VitePress site under docs/site to GitHub Pages at
-# https://inizio.github.io/nexus3/.
+# https://inizio.github.io/nexus/.
 #
 # CI already builds the docs on every PR (ci.yml, job `docs-build`) — that job
 # is the gate. This workflow exists only to publish what landed on main, so it

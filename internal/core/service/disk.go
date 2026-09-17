@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // ReapDiskCopy removes all per-sandbox disk resources for id from diskDir:
@@ -25,7 +25,7 @@ func ReapDiskCopy(diskDir string, id domain.SandboxID) error {
 		}
 		// If defaultDiskDir fails, there is nothing to reap — the record is
 		// already deleted and the caller sees a successful remove. A future
-		// gc/prune pass can clean up any orphan in ~/.local/state/nexus3/disks.
+		// gc/prune pass can clean up any orphan in ~/.local/state/nexus/disks.
 	}
 	if diskDir == "" {
 		return nil
@@ -54,7 +54,7 @@ func ReapDiskCopy(diskDir string, id domain.SandboxID) error {
 	}
 	// Remove the A-MOUNT agent-config staging dir (<id>-agentcfg-lower). The CLI
 	// stages a curated, secret-free copy of the user's agent config here before
-	// boot and mounts it RO at /run/nexus3/agentcfg-lower; it is ID-keyed under
+	// boot and mounts it RO at /run/nexus/agentcfg-lower; it is ID-keyed under
 	// the disk dir precisely so this reap reclaims it. RemoveAll (not Remove):
 	// the staging path is a directory tree. A missing dir is not an error.
 	if err := os.RemoveAll(filepath.Join(diskDir, id.String()+"-agentcfg-lower")); err != nil {

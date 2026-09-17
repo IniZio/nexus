@@ -45,14 +45,14 @@ func TestGeneratedContainerfileGoSymlinks(t *testing.T) {
 // TestGeneratedContainerfileEtcEnvironment asserts that the generated
 // Containerfile writes /etc/environment using the DERIVED form (printf '%s=%s\n'
 // with shell-variable expansions of the ENV declarations, not re-typed literals).
-// This is required because nexus3-agent's readEtcEnvironment() merges
+// This is required because nexus-agent's readEtcEnvironment() merges
 // /etc/environment into every exec'd process env.
 //
 // Mutation test (verbatim):
 //
 //	Delete the "printf '%s=%s\n'" RUN block → test prints:
 //	  "generated Containerfile does not write /etc/environment via derived printf"
-//	  "generated Containerfile does not write /etc/profile.d/nexus3-go.sh"
+//	  "generated Containerfile does not write /etc/profile.d/nexus-go.sh"
 //	  "generated Containerfile does not include GOPATH in /etc/environment block"
 //	  "generated Containerfile does not include GOMODCACHE in /etc/environment block"
 func TestGeneratedContainerfileEtcEnvironment(t *testing.T) {
@@ -65,8 +65,8 @@ func TestGeneratedContainerfileEtcEnvironment(t *testing.T) {
 	if !strings.Contains(cf, "/etc/environment") {
 		t.Error("generated Containerfile does not reference /etc/environment")
 	}
-	if !strings.Contains(cf, "/etc/profile.d/nexus3-go.sh") {
-		t.Error("generated Containerfile does not write /etc/profile.d/nexus3-go.sh")
+	if !strings.Contains(cf, "/etc/profile.d/nexus-go.sh") {
+		t.Error("generated Containerfile does not write /etc/profile.d/nexus-go.sh")
 	}
 
 	// GOPATH and GOMODCACHE must appear in the printf block.

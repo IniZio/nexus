@@ -1,5 +1,5 @@
 // Package supervisor implements the detached per-sandbox supervisor for
-// nexus3's persistent-perimeter architecture.
+// nexus's persistent-perimeter architecture.
 //
 // # Architecture
 //
@@ -12,12 +12,12 @@
 //
 // The supervisor is launched as a detached process (Setsid) by the spawning
 // CLI so the perimeter survives after the spawning process exits. This is the
-// core invariant: in-guest egress continues after `nexus3 orca create` returns.
+// core invariant: in-guest egress continues after `nexus orca create` returns.
 //
 // # Subcommand dispatch
 //
-// The hidden `nexus3 __supervisor` subcommand is dispatched in
-// cmd/nexus3/main.go BEFORE the standard CLI routing, following the same
+// The hidden `nexus __supervisor` subcommand is dispatched in
+// cmd/nexus/main.go BEFORE the standard CLI routing, following the same
 // pattern as old-nexus's `__detached-supervisor`. The subcommand parses flags
 // and calls RunDetached.
 //
@@ -52,22 +52,22 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/govern"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/statedir"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/govern"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/statedir"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // HiddenSubcommand is the argv[1] token that runs a detached supervisor inside
-// the nexus3 binary. It is handled before CLI routing in cmd/nexus3/main.go.
+// the nexus binary. It is handled before CLI routing in cmd/nexus/main.go.
 const HiddenSubcommand = "__supervisor"
 
 // maxSeedAttempts is the upper bound on CA+agent seed attempts before the
@@ -84,7 +84,7 @@ type Config struct {
 	// State=Stopped). The supervisor calls svc.Start to boot it.
 	SandboxRef string
 
-	// StoreRoot is the FileStore root directory (the nexus3 state dir).
+	// StoreRoot is the FileStore root directory (the nexus state dir).
 	StoreRoot string
 
 	// StateDir is where supervisor.pid and supervisor.sock are written.
@@ -132,7 +132,7 @@ type Config struct {
 	BootVCPUs uint32
 
 	// NestedVirt enables KVM nested virtualisation in the guest VM so the
-	// guest can itself run hardware-accelerated VMs (e.g. `nexus3 create
+	// guest can itself run hardware-accelerated VMs (e.g. `nexus create
 	// --nested` inside a sandbox). The zero value (false) means nested-OFF.
 	//
 	// Security contract D-N3N-02: nested MUST be explicitly opt-in and
@@ -208,7 +208,7 @@ type Config struct {
 
 	// Cmdline is the full kernel command line to pass to cloud-hypervisor.
 	// When empty, the driver uses its disk-boot default ("root=/dev/vda rw
-	// init=/sbin/nexus3-agent console=ttyS0").
+	// init=/sbin/nexus-agent console=ttyS0").
 	//
 	// The supervisor reboots the VM independently of the CLI process that ran
 	// CreateAndBoot; it must carry the same cmdline that the CLI built, otherwise
@@ -282,7 +282,7 @@ func SockPath(stateDir string) string {
 }
 
 // RunDetached runs the long-lived detached supervisor for a single sandbox.
-// It is the entry point for `nexus3 __supervisor`. Blocks until SIGTERM,
+// It is the entry point for `nexus __supervisor`. Blocks until SIGTERM,
 // SIGINT, or a /supervisor/stop request is received, then stops the VM and
 // returns.
 //
@@ -613,7 +613,7 @@ func RunDetached(cfg Config) error {
 	_ = os.Remove(sockPath) // remove stale socket from a crash
 	binaryHash, hashErr := computeBinaryHash()
 	if hashErr != nil {
-		// Non-fatal: `nexus3 supervisor-upgrade`'s "already on the current
+		// Non-fatal: `nexus supervisor-upgrade`'s "already on the current
 		// binary" check degrades to "unknown, proceed" rather than blocking
 		// every other IPC verb over a hash failure.
 		slog.Warn("supervisor.binary_hash_failed", "err", hashErr)
@@ -693,7 +693,7 @@ func RunDetached(cfg Config) error {
 	// ── 5. Boot VM + start in-process perimeter ───────────────────────────────
 	//
 	// IMPORTANT: use the long-lived supervisor ctx, NOT a cancellable
-	// sub-context. StartNetnsRuntime uses exec.CommandContext(ctx, nexus3Binary)
+	// sub-context. StartNetnsRuntime uses exec.CommandContext(ctx, nexusBinary)
 	// for the netns child that hosts cloud-hypervisor. If that context is
 	// cancelled (e.g. a 5m boot-timeout sub-ctx cancelled right after Start
 	// returns), the goroutine installed by exec.CommandContext wakes up and
@@ -772,7 +772,7 @@ func RunDetached(cfg Config) error {
 	//
 	// Unlike the Anthropic refresher, MCP OAuth tokens cannot flow through
 	// ResolveEnvelopeSecrets: the bind's Env name is a synthetic placeholder
-	// (e.g. NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION) that is not set in the
+	// (e.g. NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION) that is not set in the
 	// detached supervisor's host environment, so the bind is silently dropped
 	// before applySecrets can call RegisterPlaceholder. We register the broker
 	// scope here directly from the refresh config so that:
@@ -887,7 +887,7 @@ func RunDetached(cfg Config) error {
 		var mcpServersForSeed map[string]json.RawMessage
 		var userMountsForSeed *service.UserMountManifest
 		for _, lm := range cfg.LiveMounts {
-			if lm.GuestPath == "/run/nexus3/agentcfg-lower" {
+			if lm.GuestPath == "/run/nexus/agentcfg-lower" {
 				agentCfgLowerGuestPath = lm.GuestPath
 				// Read the MCP servers map staged by cmd_sandbox into the same
 				// host-side config dir. Absent or malformed file is a silent skip:
@@ -944,7 +944,7 @@ func RunDetached(cfg Config) error {
 
 		caSeeder := service.NewAgentCACopySeeder(agentClient)
 		agentSeeder := service.NewAgentCopySeeder(agentClient)
-		// M2c seed: append NEXUS3_MCP_<SERVER>_AUTHORIZATION=Bearer <placeholder>
+		// M2c seed: append NEXUS_MCP_<SERVER>_AUTHORIZATION=Bearer <placeholder>
 		// lines for each MCP OAuth server registered in step 5b-mcp. The "Bearer "
 		// prefix is required so the expanded MCP header value is exactly
 		// "Bearer <placeholder>", matching swapAuthorization's input format.
@@ -1079,7 +1079,7 @@ func RunDetached(cfg Config) error {
 
 	// shutdownByVMDeath: the netns child exited unexpectedly — the VM is
 	// already gone. Reconcile the store record to Stopped/MemoryLost so that
-	// `nexus3 sandbox list` and `nexus3 recover` see the honest state rather
+	// `nexus sandbox list` and `nexus recover` see the honest state rather
 	// than a forever-running ghost. Skip the UNI-TEARDOWN below (svc.Stop /
 	// svc.Remove) — calling driver.Stop on a dead pgid is a no-op but would
 	// overwrite StopReason with "clean". Defers (pidfile, socket, ctx cancel)
@@ -1115,12 +1115,12 @@ func RunDetached(cfg Config) error {
 	//
 	//   Persistent (orca) mode:
 	//     svc.Stop leaves the record alive (State=Stopped) so that
-	//     `nexus3 sandbox list` continues to show the sandbox.
+	//     `nexus sandbox list` continues to show the sandbox.
 	//
 	//   Flock invariant:
 	//     Both svc.Stop and svc.Remove call driver.Stop inside store.Update,
 	//     which holds the per-sandbox exclusive flock. If the user concurrently
-	//     runs `nexus3 sandbox stop <id>`, the CLI's service.Stop also acquires
+	//     runs `nexus sandbox stop <id>`, the CLI's service.Stop also acquires
 	//     the flock via store.Update. Only one call proceeds; the other either
 	//     waits or — if the record is already Stopped — hits the lifecycle fast-
 	//     path rejection before touching the driver. CHDriver.Stop is idempotent
@@ -1308,18 +1308,18 @@ var seedOverlayClaudeConfigFn = seedOverlayClaudeConfig
 
 // agentCfgUpperDir is the persistent overlayfs upper dir for the /root/.claude
 // overlay. It lives on a sandbox-scoped named ext4 volume (mounted at
-// /var/lib/nexus3/agentcfg by herdrWorktreeSandboxCreateArgs) so it is
+// /var/lib/nexus/agentcfg by herdrWorktreeSandboxCreateArgs) so it is
 // governor-visible and can grow when Claude session state fills the upper
 // layer. Only removed when the sandbox itself is removed.
-const agentCfgUpperDir = "/var/lib/nexus3/agentcfg/upper"
+const agentCfgUpperDir = "/var/lib/nexus/agentcfg/upper"
 
 // agentCfgWorkDir is the overlayfs work dir for the /root/.claude overlay.
 // The kernel requires upper and work to share ONE filesystem — both live on
-// the named ext4 volume mounted at /var/lib/nexus3/agentcfg, satisfying that
+// the named ext4 volume mounted at /var/lib/nexus/agentcfg, satisfying that
 // constraint without pinning either to the root ext4 disk. It must be empty
 // at mount time. It is recreated fresh on every boot — it holds only
 // kernel-internal overlayfs state, not user data.
-const agentCfgWorkDir = "/var/lib/nexus3/agentcfg/work"
+const agentCfgWorkDir = "/var/lib/nexus/agentcfg/work"
 
 // agentCfgMountedMarker is a volume-independent sentinel written on the root
 // ext4 disk by Branch 1 of seedOverlayClaudeConfig on every successful named-
@@ -1327,7 +1327,7 @@ const agentCfgWorkDir = "/var/lib/nexus3/agentcfg/work"
 // that has successfully mounted before" from "brand-new sandbox without a
 // volume" — the former is a hard error; the latter is a configuration defect
 // (D-RAM-09 must have failed to provision).
-const agentCfgMountedMarker = "/var/lib/nexus3/.agentcfg-mounted"
+const agentCfgMountedMarker = "/var/lib/nexus/.agentcfg-mounted"
 
 // errAgentCfgDegraded is returned by seedOverlayClaudeConfig when Branch 2
 // fires: the named volume is absent but pre-existing data was found on the
@@ -1366,20 +1366,20 @@ func seedOverlayClaudeConfig(ctx context.Context, id domain.SandboxID, lowerGues
 	script := fmt.Sprintf(`set -eu
 mkdir -p /root/.claude
 # D-RAM-08: detect whether the named ext4 volume is mounted at
-# /var/lib/nexus3/agentcfg. Use stat device-number comparison — more portable
+# /var/lib/nexus/agentcfg. Use stat device-number comparison — more portable
 # than mountpoint(1), which may be absent in the base image.
-_mp_dev=$(stat -c '%%d' /var/lib/nexus3/agentcfg 2>/dev/null) || _mp_dev=""
-_par_dev=$(stat -c '%%d' /var/lib/nexus3 2>/dev/null) || { echo 'agentcfg: stat /var/lib/nexus3 failed' >&2; exit 1; }
+_mp_dev=$(stat -c '%%d' /var/lib/nexus/agentcfg 2>/dev/null) || _mp_dev=""
+_par_dev=$(stat -c '%%d' /var/lib/nexus 2>/dev/null) || { echo 'agentcfg: stat /var/lib/nexus failed' >&2; exit 1; }
 if [ -n "$_mp_dev" ] && [ "$_mp_dev" != "$_par_dev" ]; then
     # Branch 1: named volume mounted — happy path.
     mkdir -p %s
     # D-RAM-09 one-shot migration: move legacy agentcfg-upper (root ext4) into
     # the governor-visible named volume. Idempotent: old dir is removed after
     # copy+sync so subsequent boots skip this block.
-    if [ -d /var/lib/nexus3/agentcfg-upper ]; then
-        cp -a /var/lib/nexus3/agentcfg-upper/. %s/
+    if [ -d /var/lib/nexus/agentcfg-upper ]; then
+        cp -a /var/lib/nexus/agentcfg-upper/. %s/
         sync
-        rm -rf /var/lib/nexus3/agentcfg-upper
+        rm -rf /var/lib/nexus/agentcfg-upper
     fi
     # Work dir must be empty at mount time (overlayfs kernel-internal state).
     rm -rf %s
@@ -1388,16 +1388,16 @@ if [ -n "$_mp_dev" ] && [ "$_mp_dev" != "$_par_dev" ]; then
     # D-RAM-13: write a volume-independent marker on the root disk so Branch 3
     # can distinguish attach-failure (marker present) from a new sandbox (absent).
     touch %s
-elif [ -d /var/lib/nexus3/agentcfg-upper ] || [ -d %s ]; then
+elif [ -d /var/lib/nexus/agentcfg-upper ] || [ -d %s ]; then
     # Branch 2: volume absent but pre-existing data found — degrade to root ext4.
     # Pre-existing sandboxes created before D-RAM-09 have no named volume; losing
     # their /root/.claude overlay on restart would silently strand session state.
-    if [ -d /var/lib/nexus3/agentcfg-upper ]; then
-        _fb_upper=/var/lib/nexus3/agentcfg-upper
+    if [ -d /var/lib/nexus/agentcfg-upper ]; then
+        _fb_upper=/var/lib/nexus/agentcfg-upper
     else
         _fb_upper=%s
     fi
-    _fb_work=/var/lib/nexus3/agentcfg-work
+    _fb_work=/var/lib/nexus/agentcfg-work
     rm -rf "$_fb_work"
     mkdir -p "$_fb_upper" "$_fb_work"
     echo "agentcfg: named volume absent; degrading to root ext4 at $_fb_upper (D-RAM-11)" >&2
@@ -1408,7 +1408,7 @@ else
     if [ -f %s ]; then
         echo 'agentcfg: named volume was previously mounted but is now absent — attach failed; refusing to boot without named volume' >&2
     else
-        echo 'agentcfg: /var/lib/nexus3/agentcfg is not a mountpoint — named volume not attached; refusing to fall back to root ext4' >&2
+        echo 'agentcfg: /var/lib/nexus/agentcfg is not a mountpoint — named volume not attached; refusing to fall back to root ext4' >&2
     fi
     exit 1
 fi
@@ -1596,7 +1596,7 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 	if len(in.SourcePaths) > 0 {
 		// Credential-helper script: must be seeded before the gitconfig,
 		// because the gitconfig references the script by path
-		// (helper = !sh /usr/local/bin/nexus3-git-credential).
+		// (helper = !sh /usr/local/bin/nexus-git-credential).
 		// Non-fatal: git push will fail with "credential helper not found"
 		// rather than with a sandbox-fatal error.
 		if helperErr := seedGitCredentialHelperFn(ctx, id, in.CredentialHelperSeeder); helperErr != nil {
@@ -1769,7 +1769,7 @@ func registerMCPOAuthPlaceholders(broker *cred.Broker, sandboxID domain.SandboxI
 // buildMCPOAuthCredPayload builds KEY=Bearer <placeholder> lines for each
 // MCP OAuth server whose placeholder was minted by registerMCPOAuthPlaceholders.
 // The "Bearer " prefix is included so the expanded MCP header value
-// (Authorization: ${NEXUS3_MCP_<SERVER>_AUTHORIZATION}) is exactly
+// (Authorization: ${NEXUS_MCP_<SERVER>_AUTHORIZATION}) is exactly
 // "Bearer <placeholder>", matching the format swapAuthorization expects in the
 // MITM proxy. Real tokens are never present; the broker holds them host-side.
 //
@@ -1973,7 +1973,7 @@ func buildSupervisorDriverConfig(
 		FreePageReporting: true,
 		NestedVirt:        cfg.NestedVirt,
 		// ConsoleLogPath persists guest virtio-console output alongside supervisor.log.
-		// The netns child receives this via NEXUS3_NETNS_CONSOLE_LOG and drains CH
+		// The netns child receives this via NEXUS_NETNS_CONSOLE_LOG and drains CH
 		// stdout to this file, capped at 16 MiB to prevent unbounded growth.
 		ConsoleLogPath: filepath.Join(cfg.StateDir, "console.log"),
 	}

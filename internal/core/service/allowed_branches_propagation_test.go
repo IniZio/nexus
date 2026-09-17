@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
 )
 
 // TestAllowedBranches_DefaultPropagates verifies that when Envelope.AllowedBranches
@@ -22,10 +22,10 @@ func TestAllowedBranches_DefaultPropagates(t *testing.T) {
 		AllowedBranches: env.ResolvedAllowedBranches(),
 	}
 
-	// Default is the namespace pattern (D-PD-03 nexus3/<slug>/<id> at any depth);
+	// Default is the namespace pattern (D-PD-03 nexus/<slug>/<id> at any depth);
 	// see R2-branch-glob-depth — path.Match's single-segment "*" could not match
 	// the two-segment convention, so the default uses "**".
-	want := []string{"refs/heads/nexus3/**"}
+	want := []string{"refs/heads/nexus/**"}
 	if !reflect.DeepEqual(cfg.AllowedBranches, want) {
 		t.Errorf("mitm.Config.AllowedBranches from empty Envelope = %v; want %v",
 			cfg.AllowedBranches, want)

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 func seedDiskStateDir(t *testing.T) (stateDir string, orphanDisk string) {
@@ -85,8 +85,8 @@ func TestDiskUsage_JSON_RoundTrips(t *testing.T) {
 	if !rep.BelowFloor || rep.FreeBytes != 1<<30 {
 		t.Errorf("below_floor=%v free=%d, want below floor at 1 GiB free", rep.BelowFloor, rep.FreeBytes)
 	}
-	if len(rep.Hints) == 0 || rep.Hints[0] != "nexus3 reap" {
-		t.Errorf("hints=%v, want nexus3 reap first", rep.Hints)
+	if len(rep.Hints) == 0 || rep.Hints[0] != "nexus reap" {
+		t.Errorf("hints=%v, want nexus reap first", rep.Hints)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestDiskUsage_Human_ShowsTotalsAndFloorWarning(t *testing.T) {
 		t.Fatalf("disk usage: %v", err)
 	}
 	got := stdout.String()
-	for _, want := range []string{"CATEGORY", "RECLAIMABLE", "sandbox disks", "Reclaimable:", "Free: 1.0 GiB (floor 15.0 GiB)", "below the builder floor", "Next: nexus3 reap"} {
+	for _, want := range []string{"CATEGORY", "RECLAIMABLE", "sandbox disks", "Reclaimable:", "Free: 1.0 GiB (floor 15.0 GiB)", "below the builder floor", "Next: nexus reap"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("human output missing %q:\n%s", want, got)
 		}
@@ -139,6 +139,6 @@ func TestDisk_BareAndUnknownSubverbAreUsageErrors(t *testing.T) {
 
 func TestDisk_ExitCodeNonZeroWithoutSubverb(t *testing.T) {
 	if code := Run([]string{"disk"}); code == 0 {
-		t.Error("nexus3 disk exited 0, want non-zero")
+		t.Error("nexus disk exited 0, want non-zero")
 	}
 }

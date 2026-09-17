@@ -10,19 +10,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 func TestHerdrPluginCreate_MissingKernel_ErrorNamesInstall(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent/vmlinux")
+	t.Setenv("NEXUS_KERNEL_PATH", "/nonexistent/vmlinux")
 
 	err := herdrPluginCreate(context.Background(), strings.NewReader(""), &bytes.Buffer{}, nil, t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for missing kernel, got nil")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "nexus3 kernel install") && !strings.Contains(msg, "NEXUS3_KERNEL_PATH") {
-		t.Errorf("error should mention kernel install or NEXUS3_KERNEL_PATH, got: %s", msg)
+	if !strings.Contains(msg, "nexus kernel install") && !strings.Contains(msg, "NEXUS_KERNEL_PATH") {
+		t.Errorf("error should mention kernel install or NEXUS_KERNEL_PATH, got: %s", msg)
 	}
 }
 
@@ -31,7 +31,7 @@ func TestHerdrPluginCreate_BaseImageMissingUnreachable_ErrorNamesRemediation(t *
 	if err := os.WriteFile(f, []byte("fake"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", f)
+	t.Setenv("NEXUS_KERNEL_PATH", f)
 
 	orig1 := herdrBaseImageListFn
 	orig2 := herdrBaseImageRegistryReachableFn
@@ -57,7 +57,7 @@ func TestHerdrPluginCreate_BaseImageMissingReachable_ProceedsToCreate(t *testing
 	if err := os.WriteFile(f, []byte("fake"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", f)
+	t.Setenv("NEXUS_KERNEL_PATH", f)
 
 	orig1 := herdrBaseImageListFn
 	orig2 := herdrBaseImageRegistryReachableFn

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // ── probe helpers ─────────────────────────────────────────────────────────────
@@ -23,16 +23,16 @@ func workingLinuxProbes(binPath string) probes {
 	}
 }
 
-// ── NEXUS3_SUBSTRATE override tests ──────────────────────────────────────────
+// ── NEXUS_SUBSTRATE override tests ──────────────────────────────────────────
 
 func TestSelectWith_NoneEnv_NoDriver(t *testing.T) {
 	p := workingLinuxProbes("/usr/bin/cloud-hypervisor")
 	drv, serr := selectWith(p, "none")
 	if drv != nil {
-		t.Error("NEXUS3_SUBSTRATE=none: expected nil driver")
+		t.Error("NEXUS_SUBSTRATE=none: expected nil driver")
 	}
 	if serr == nil {
-		t.Fatal("NEXUS3_SUBSTRATE=none: expected non-nil SubstrateError")
+		t.Fatal("NEXUS_SUBSTRATE=none: expected non-nil SubstrateError")
 	}
 	if !errors.Is(serr, service.ErrNoSubstrate) {
 		t.Errorf("SubstrateError must wrap service.ErrNoSubstrate; errors.Is returned false")
@@ -45,10 +45,10 @@ func TestSelectWith_FakeEnv_Rejected(t *testing.T) {
 	p := workingLinuxProbes("/usr/bin/cloud-hypervisor")
 	drv, serr := selectWith(p, "fake")
 	if drv != nil {
-		t.Error("NEXUS3_SUBSTRATE=fake: expected nil driver")
+		t.Error("NEXUS_SUBSTRATE=fake: expected nil driver")
 	}
 	if serr == nil {
-		t.Fatal("NEXUS3_SUBSTRATE=fake: expected SubstrateError")
+		t.Fatal("NEXUS_SUBSTRATE=fake: expected SubstrateError")
 	}
 	if !strings.Contains(serr.Msg, "fake") {
 		t.Errorf("error message should name the rejected value; got: %s", serr.Msg)
@@ -174,8 +174,8 @@ func TestSelectWith_KVMPermissionDenied(t *testing.T) {
 // cleanly on machines without KVM or cloud-hypervisor so CI on non-KVM hosts
 // is not broken.
 func TestSelectSubstrate_PositivePath(t *testing.T) {
-	if v := os.Getenv("NEXUS3_SUBSTRATE"); v == "none" {
-		t.Skip("NEXUS3_SUBSTRATE=none: substrate disabled, skipping positive-path test")
+	if v := os.Getenv("NEXUS_SUBSTRATE"); v == "none" {
+		t.Skip("NEXUS_SUBSTRATE=none: substrate disabled, skipping positive-path test")
 	}
 	drv, serr := SelectSubstrate()
 	if serr != nil {
@@ -202,11 +202,11 @@ func TestSubstrateError_WrapsErrNoSubstrate(t *testing.T) {
 
 // TestSelectWith_MissingKernel_SubstrateError verifies that when the first
 // three checks (platform, binary, kvm) all pass but the kernel image is
-// missing, selectWith returns a SubstrateError that mentions NEXUS3_KERNEL_PATH
+// missing, selectWith returns a SubstrateError that mentions NEXUS_KERNEL_PATH
 // rather than producing a driver with an empty KernelPath that would fail
 // later at VM boot with an opaque "Cannot open kernel file" error.
 func TestSelectWith_MissingKernel_SubstrateError(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent-kernel-for-test/vmlinux")
+	t.Setenv("NEXUS_KERNEL_PATH", "/nonexistent-kernel-for-test/vmlinux")
 
 	p := workingLinuxProbes("/usr/bin/cloud-hypervisor")
 	drv, serr := selectWith(p, "")
@@ -216,8 +216,8 @@ func TestSelectWith_MissingKernel_SubstrateError(t *testing.T) {
 	if serr == nil {
 		t.Fatal("missing kernel: expected SubstrateError, got nil")
 	}
-	if !strings.Contains(serr.Msg, "NEXUS3_KERNEL_PATH") {
-		t.Errorf("SubstrateError.Msg should mention NEXUS3_KERNEL_PATH; got: %s", serr.Msg)
+	if !strings.Contains(serr.Msg, "NEXUS_KERNEL_PATH") {
+		t.Errorf("SubstrateError.Msg should mention NEXUS_KERNEL_PATH; got: %s", serr.Msg)
 	}
 	if !errors.Is(serr, service.ErrNoSubstrate) {
 		t.Errorf("SubstrateError must wrap service.ErrNoSubstrate")
@@ -229,7 +229,7 @@ func TestSelectWith_MissingKernel_SubstrateError(t *testing.T) {
 // appends a "kernel" CheckResult with OK=false (so cmd_doctor can report it)
 // and returns a nil driver.
 func TestRunAllChecks_MissingKernel_KernelCheckPresent(t *testing.T) {
-	t.Setenv("NEXUS3_KERNEL_PATH", "/nonexistent-kernel-for-test/vmlinux")
+	t.Setenv("NEXUS_KERNEL_PATH", "/nonexistent-kernel-for-test/vmlinux")
 
 	p := workingLinuxProbes("/usr/bin/cloud-hypervisor")
 	checks, drv := runAllChecks(p)
@@ -251,8 +251,8 @@ func TestRunAllChecks_MissingKernel_KernelCheckPresent(t *testing.T) {
 	if kernelCheck.OK {
 		t.Error("kernel check should be OK=false when the kernel is missing")
 	}
-	if !strings.Contains(kernelCheck.Detail, "NEXUS3_KERNEL_PATH") {
-		t.Errorf("kernel check detail should mention NEXUS3_KERNEL_PATH; got: %s", kernelCheck.Detail)
+	if !strings.Contains(kernelCheck.Detail, "NEXUS_KERNEL_PATH") {
+		t.Errorf("kernel check detail should mention NEXUS_KERNEL_PATH; got: %s", kernelCheck.Detail)
 	}
 	if kernelCheck.Remediation == "" {
 		t.Error("kernel check should have non-empty Remediation")
@@ -293,7 +293,7 @@ func TestRunAllChecks_BaseImage_Cached(t *testing.T) {
 	if err := os.WriteFile(kernelFile, []byte("fake"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+	t.Setenv("NEXUS_KERNEL_PATH", kernelFile)
 
 	p := probes{
 		goos:     "linux",
@@ -326,7 +326,7 @@ func TestRunAllChecks_BaseImage_MissingRegistryReachable(t *testing.T) {
 	if err := os.WriteFile(kernelFile, []byte("fake"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+	t.Setenv("NEXUS_KERNEL_PATH", kernelFile)
 
 	p := probes{
 		goos:     "linux",
@@ -365,7 +365,7 @@ func TestRunAllChecks_BaseImage_MissingRegistryUnreachable(t *testing.T) {
 	if err := os.WriteFile(kernelFile, []byte("fake"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NEXUS3_KERNEL_PATH", kernelFile)
+	t.Setenv("NEXUS_KERNEL_PATH", kernelFile)
 
 	p := probes{
 		goos:     "linux",

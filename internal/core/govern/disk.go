@@ -1,4 +1,4 @@
-// AR-DISK: disk grow axis for the nexus3 per-sandbox governor.
+// AR-DISK: disk grow axis for the nexus per-sandbox governor.
 //
 // This file implements the disk AxisEvaluator. It attaches to the Governor
 // via RegisterAxis and must NOT edit memory.go, loop.go, or govern_test.go —
@@ -14,7 +14,7 @@
 //
 // # Sparse-image pool-check design
 //
-// nexus3 uses sparse ext4 backing files. A naïve host free-space check against
+// nexus uses sparse ext4 backing files. A naïve host free-space check against
 // the sparse file's apparent size (os.FileInfo.Size) always passes because that
 // size equals the logical disk capacity, not the bytes actually written on the
 // host filesystem. The backing file can grow silently until the host runs out
@@ -46,7 +46,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // Disk axis control-law constants.
@@ -79,7 +79,7 @@ const (
 	diskBootDelay = 15 * time.Second
 )
 
-// DiskAxis is the disk grow axis of the nexus3 per-sandbox governor.
+// DiskAxis is the disk grow axis of the nexus per-sandbox governor.
 //
 // It is grow-only (disk shrink is not possible at runtime). One DiskAxis
 // manages exactly one disk identified by diskIndex (0-based index into

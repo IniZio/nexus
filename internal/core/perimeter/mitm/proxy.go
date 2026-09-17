@@ -44,8 +44,8 @@ import (
 	"github.com/elazarl/goproxy"
 	"golang.org/x/net/http2"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // Proxy is the per-sandbox L7 TLS-MITM proxy. It wraps a goproxy.ProxyHttpServer
@@ -135,15 +135,15 @@ type Config struct {
 
 	// AllowedBranches is the list of git ref patterns the proxy will permit
 	// on git-push receive-pack requests. Patterns follow git refspec glob
-	// syntax (e.g. "refs/heads/nexus3/*"). Enforcement is implemented in
+	// syntax (e.g. "refs/heads/nexus/*"). Enforcement is implemented in
 	// slice S1; this field is plumbing only — no filtering occurs here.
 	// The resolved default (when empty at the call site) is
-	// ["refs/heads/nexus3/*"] via domain.Envelope.ResolvedAllowedBranches.
+	// ["refs/heads/nexus/*"] via domain.Envelope.ResolvedAllowedBranches.
 	AllowedBranches []string
 
 	// OnEgress, when non-nil, is called for every L7 egress verdict emitted
 	// by this proxy. Wire it to the shared egress-decisions sink so
-	// `nexus3 egress log` shows a unified MITM+netfilter stream. The hook is
+	// `nexus egress log` shows a unified MITM+netfilter stream. The hook is
 	// called without any lock held; the caller is responsible for
 	// concurrent-write safety (e.g. a sync.Mutex in the closure).
 	OnEgress func(host, verdict, reason string, ts time.Time)
@@ -163,7 +163,7 @@ type Config struct {
 	// serving TLS interception with the SAME CA the guest already trusts —
 	// generating a fresh CA here would invalidate every certificate the
 	// guest has already pinned this boot (motive
-	// nexus3-host-supervisor-hotswap, handoff.Payload.CA). Either both must
+	// nexus-host-supervisor-hotswap, handoff.Payload.CA). Either both must
 	// be set or both left empty; New returns an error for a partial pair.
 	SeedCACertPEM []byte
 	SeedCAKeyPEM  []byte
@@ -442,7 +442,7 @@ func New(cfg Config) (*Proxy, error) {
 	// startSupervisor) always returns a non-empty list: the caller's explicit
 	// AllowedBranches, the worktree-derived single branch ref
 	// (service.resolveAllowedBranches, TBD-1), domain.UnresolvedBranchSentinel
-	// when that derivation failed, or the hardcoded ["refs/heads/nexus3/**"]
+	// when that derivation failed, or the hardcoded ["refs/heads/nexus/**"]
 	// default when no workspace was bound at all. An empty list here would mean
 	// misconfiguration and is therefore DENIED (fail-closed, see the loop
 	// below) to prevent silently allowing pushes to main.
@@ -650,7 +650,7 @@ func (p *Proxy) CACert() *x509.Certificate {
 }
 
 // CAKeyPair PEM-encodes this Proxy's CA certificate and private key. Used
-// only by the hot-swap handoff path (motive nexus3-host-supervisor-hotswap)
+// only by the hot-swap handoff path (motive nexus-host-supervisor-hotswap)
 // to carry the CA to a replacement supervisor so it can continue signing
 // leaf certificates the guest already trusts, instead of the replacement
 // minting a fresh CA that would invalidate every certificate the guest has
@@ -676,7 +676,7 @@ func (p *Proxy) CAKeyPair() (certPEM, keyPEM []byte, err error) {
 // concurrent use. Returns nothing (idempotent add).
 //
 // This is the plumbing for the supervisor IPC egress-allow verb (T5) and the
-// `nexus3 egress allow` CLI (T6).
+// `nexus egress allow` CLI (T6).
 func (p *Proxy) AllowHost(host string) {
 	p.allowSet.Add(host)
 }
@@ -727,8 +727,8 @@ func generateCA() (tls.Certificate, error) {
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			Organization: []string{"nexus3"},
-			CommonName:   "nexus3 per-sandbox MITM CA",
+			Organization: []string{"nexus"},
+			CommonName:   "nexus per-sandbox MITM CA",
 		},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(caLifetime),
@@ -1269,14 +1269,14 @@ func parseHex4(b []byte) (int, bool) {
 //
 // Two modes:
 //   - Trailing "/**": namespace-prefix match. The pattern
-//     "refs/heads/nexus3/**" matches "refs/heads/nexus3/foo",
-//     "refs/heads/nexus3/foo/bar", and any deeper path — i.e. any ref
-//     whose path starts with the prefix "refs/heads/nexus3/".  This is
-//     the D-PD-03 convention where sandbox refs live under the nexus3/
+//     "refs/heads/nexus/**" matches "refs/heads/nexus/foo",
+//     "refs/heads/nexus/foo/bar", and any deeper path — i.e. any ref
+//     whose path starts with the prefix "refs/heads/nexus/".  This is
+//     the D-PD-03 convention where sandbox refs live under the nexus/
 //     namespace at arbitrary depth.
 //   - All other patterns: path.Match semantics. A bare '*' never crosses
-//     a '/'.  "refs/heads/nexus3/*" matches "refs/heads/nexus3/foo" but
-//     NOT "refs/heads/nexus3/foo/bar".
+//     a '/'.  "refs/heads/nexus/*" matches "refs/heads/nexus/foo" but
+//     NOT "refs/heads/nexus/foo/bar".
 func refMatchesGlob(pattern, ref string) bool {
 	const doubleStarSuffix = "/**"
 	if strings.HasSuffix(pattern, doubleStarSuffix) {

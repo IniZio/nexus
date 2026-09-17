@@ -17,8 +17,8 @@ Resolves TBD-PD-10. Every cell is filled or explicitly marked **unknown-and-assi
 
 | # | Kind | Creator (file:func) | Freer (file:func) | Owner Key | Abnormal Termination |
 |---|------|---------------------|-------------------|-----------|----------------------|
-| D1 | **Ext4 sandbox disk copy (S-COW)** | `service/create.go:335` `cowExt4` | `service/disk.go:14` `ReapDiskCopy` called from `service.Remove:628` and `recovery/recover.go:309` (--rm path only) | YES: `~/.local/state/nexus3/disks/<ULID>.raw` | ORPHANED if process killed between `cowExt4` and `store.Create`. No record exists yet; resource is invisible to `recover` forever. |
-| D2 | **Workspace ext4 disk** | `service/create.go:383` `WorktreeToDisk` | Deferred `os.Remove` on create failure only. `service.Remove` does **not** call `ReapDiskCopy` for `-workspace.ext4` — the `.raw` removal at line 628 misses it. | YES: `~/.local/state/nexus3/disks/<ULID>-workspace.ext4` | ORPHANED on create kill-9 (defer does not run). Also LEAKED on successful `service.Remove` (gap: remove path does not clean `-workspace.ext4`). |
+| D1 | **Ext4 sandbox disk copy (S-COW)** | `service/create.go:335` `cowExt4` | `service/disk.go:14` `ReapDiskCopy` called from `service.Remove:628` and `recovery/recover.go:309` (--rm path only) | YES: `~/.local/state/nexus/disks/<ULID>.raw` | ORPHANED if process killed between `cowExt4` and `store.Create`. No record exists yet; resource is invisible to `recover` forever. |
+| D2 | **Workspace ext4 disk** | `service/create.go:383` `WorktreeToDisk` | Deferred `os.Remove` on create failure only. `service.Remove` does **not** call `ReapDiskCopy` for `-workspace.ext4` — the `.raw` removal at line 628 misses it. | YES: `~/.local/state/nexus/disks/<ULID>-workspace.ext4` | ORPHANED on create kill-9 (defer does not run). Also LEAKED on successful `service.Remove` (gap: remove path does not clean `-workspace.ext4`). |
 | D3 | **Builder cache disk** | `builder/cachedisk.go:71` `EnsureCacheDisk` | No automatic eviction; shared across all sandboxes using the same ecosystem. Must be manually pruned. | **NO:** named by ecosystem key (`caches/buildkit.ext4`). No ULID. | Survives indefinitely (intentional shared cache). |
 | D4 | **Builder image artifact** | `core/image/cache.go:141` `image.Cache.Put` | `core/image/cache.go:298` `image.Cache.Prune` (explicit only; no automatic eviction). | **NO:** named by content digest (`images/sha256/<sha256hex>/artifact` + `meta.json`). No ULID. | Survives until explicit Prune with a referenced-set that omits this digest. |
 | D5 | **Build-cache entries** | Unknown (builder/buildkit metadata, content hash–named dirs) | Unknown | **NO:** named by content hash (`build-cache/<sha256hex>/`). Orphaned `.lock` files observed without parent directories. | Unknown-and-assigned: R1 to investigate cleanup contract and owner relationship. |
@@ -28,7 +28,7 @@ Resolves TBD-PD-10. Every cell is filled or explicitly marked **unknown-and-assi
 
 | # | Kind | Creator | Freer | Owner Key | Abnormal Termination |
 |---|------|---------|-------|-----------|----------------------|
-| R1 | **Sandbox record** | `service/create.go:410` `store.Create` | `service/service.go:620` `store.Delete` via `service.Remove` | YES: `~/.local/state/nexus3/sandboxes/<ULID>/record.json` | Survives intentionally. The record IS the handle on all other resources. `recover` uses it as its universe. |
+| R1 | **Sandbox record** | `service/create.go:410` `store.Create` | `service/service.go:620` `store.Delete` via `service.Remove` | YES: `~/.local/state/nexus/sandboxes/<ULID>/record.json` | Survives intentionally. The record IS the handle on all other resources. `recover` uses it as its universe. |
 
 ### A.3 — Network Resources
 
@@ -38,30 +38,30 @@ Resolves TBD-PD-10. Every cell is filled or explicitly marked **unknown-and-assi
 | N2 | **Guest TAP interface** (`nx3g-<10hex>`) | `ch_netns.go:333` `createTapBridge` inside netns child | Kernel auto-reclaims with netns; `ch_net.go:292` `deleteTapBridge` is the explicit fallback | **PARTIAL:** first 5 bytes of ULID encoded as 10 lowercase hex chars in the interface name (`nx3g-<first-5B-of-ULID>`). Not the full ULID; collisions are theoretically possible but rare given ULID monotonicity. | Kernel auto-reclaims when netns child process group dies (even SIGKILL). |
 | N3 | **Host TAP interface** (`nx3h-<10hex>`) | Same as N2 | Same as N2 | **PARTIAL:** same 10-hex suffix as N2 | Same as N2 |
 | N4 | **L2 bridge interface** (`nx3b-<10hex>`) | Same as N2 | Same as N2 | **PARTIAL:** same 10-hex suffix as N2 | Same as N2 |
-| N5 | **CloudHypervisor VMM process** | `ch_netns.go:338` `spawnVMM` inside netns child | `teardownSandboxNet` → `NetnsRuntime.Stop()` → `Kill(-childPgid, SIGKILL)` | YES: child process group ID derived from `cmd.Process.Pid`; stored in driver's in-process `nets` map | Process may remain orphaned if parent nexus3 is killed before `teardownSandboxNet`. Next `Observe` call reports Absent (a VMM with no VM). `recover` then resolves record to stopped but does **not** kill the orphan VMM — that requires an explicit `drv.Stop`. |
+| N5 | **CloudHypervisor VMM process** | `ch_netns.go:338` `spawnVMM` inside netns child | `teardownSandboxNet` → `NetnsRuntime.Stop()` → `Kill(-childPgid, SIGKILL)` | YES: child process group ID derived from `cmd.Process.Pid`; stored in driver's in-process `nets` map | Process may remain orphaned if parent nexus is killed before `teardownSandboxNet`. Next `Observe` call reports Absent (a VMM with no VM). `recover` then resolves record to stopped but does **not** kill the orphan VMM — that requires an explicit `drv.Stop`. |
 
 ### A.4 — Unix Socket Files
 
-All socket files in `/run/user/1003/nexus3/` and `/tmp/nxvmb-*/`:
+All socket files in `/run/user/1003/nexus/` and `/tmp/nxvmb-*/`:
 
 | # | Kind | Creator | Freer | Owner Key | Abnormal Termination |
 |---|------|---------|-------|-----------|----------------------|
-| S1 | **CH API socket** | `driver.Start` → `StartNetnsRuntime`; socket path passed to CH | `driver.Stop` → `clearState()` → `os.Remove(socketPath)` (driver.go:425) | YES: `/run/user/1003/nexus3/sb-<ULID>.sock` | ORPHANED if process killed before `clearState`. File survives with no listener; next `Start` pre-flight should remove stale socket. |
-| S2 | **VSock socket file** | `driver.Start` | `driver.Stop` → `clearState()` → `os.Remove(vsockPath)` (driver.go:426) | YES: `/run/user/1003/nexus3/sb-<ULID>.vsock` | ORPHANED if process killed before `clearState`. |
-| S3 | **IID file** | `driver.Start` (presumably; stores instance_id) | **Unknown-and-assigned:** not cleaned by `recover` non-delete path or `service.Remove` directly. R1 to identify the cleanup site and add it if missing. | YES: `/run/user/1003/nexus3/sb-<ULID>.iid` | ORPHANED: 4 iid files observed on this host for 3 sandboxes with no records and 1 with no live process. |
+| S1 | **CH API socket** | `driver.Start` → `StartNetnsRuntime`; socket path passed to CH | `driver.Stop` → `clearState()` → `os.Remove(socketPath)` (driver.go:425) | YES: `/run/user/1003/nexus/sb-<ULID>.sock` | ORPHANED if process killed before `clearState`. File survives with no listener; next `Start` pre-flight should remove stale socket. |
+| S2 | **VSock socket file** | `driver.Start` | `driver.Stop` → `clearState()` → `os.Remove(vsockPath)` (driver.go:426) | YES: `/run/user/1003/nexus/sb-<ULID>.vsock` | ORPHANED if process killed before `clearState`. |
+| S3 | **IID file** | `driver.Start` (presumably; stores instance_id) | **Unknown-and-assigned:** not cleaned by `recover` non-delete path or `service.Remove` directly. R1 to identify the cleanup site and add it if missing. | YES: `/run/user/1003/nexus/sb-<ULID>.iid` | ORPHANED: 4 iid files observed on this host for 3 sandboxes with no records and 1 with no live process. |
 
 ### A.5 — Process Resources
 
 | # | Kind | Creator | Freer | Owner Key | Abnormal Termination |
 |---|------|---------|-------|-----------|----------------------|
-| P1 | **Detached perimeter supervisor** (orca path) | `supervisor.SpawnDetached` called from `orca/create` after VM ready | `service.Remove:598` `closeSupervisor` sends `/supervisor/stop`, then waits for exit | PID stored in `domain.Sandbox.SupervisorPID` (record field); supervisor socket in `SupervisorSock`. No named path encoding ULID. | Orphaned process if parent nexus3 exits unexpectedly. Detected via `kill(SupervisorPID, 0)` → ESRCH = gone. `recover` does not perform this check; R1/R2 to address. |
+| P1 | **Detached perimeter supervisor** (orca path) | `supervisor.SpawnDetached` called from `orca/create` after VM ready | `service.Remove:598` `closeSupervisor` sends `/supervisor/stop`, then waits for exit | PID stored in `domain.Sandbox.SupervisorPID` (record field); supervisor socket in `SupervisorSock`. No named path encoding ULID. | Orphaned process if parent nexus exits unexpectedly. Detected via `kill(SupervisorPID, 0)` → ESRCH = gone. `recover` does not perform this check; R1/R2 to address. |
 | P2 | **Builder supervisor process** (ephemeral) | `cli/builder_supervisor_driver.go:133` `supervisor.SpawnDetached(Ephemeral:true)` | `supervisorBuilderDriver.Stop` → `supervisor.StopSupervisor` + `WaitForExit` | YES: `builder-supervisors/<ULID>/` state directory (ULID-named). PID file and socket inside dir. | SIGKILL safety via watchdog pipe: CLI kill causes EOF on pipe → supervisor shuts down cleanly. On abrupt death (kill -9 of supervisor itself): pid file and sock removed by supervisor's defer, but the ULID-named **directory is not removed**. |
 
 ### A.6 — Cgroups
 
 | # | Kind | Creator | Freer | Owner Key | Abnormal Termination |
 |---|------|---------|-------|-----------|----------------------|
-| C1 | **Sandbox cgroup** | Unknown-and-assigned: no cgroup entries found under `/sys/fs/cgroup` for nexus3 on this host. CloudHypervisor may or may not create cgroups; R1 to verify. | Unknown | Unknown | Unknown |
+| C1 | **Sandbox cgroup** | Unknown-and-assigned: no cgroup entries found under `/sys/fs/cgroup` for nexus on this host. CloudHypervisor may or may not create cgroups; R1 to verify. | Unknown | Unknown | Unknown |
 
 ---
 
@@ -83,16 +83,16 @@ The one-off deletion does **not** close the underlying defect. The structural fa
 
 All sizes: **allocated** unless marked `(apparent)`.
 
-#### Disks directory (`~/.local/state/nexus3/disks/`)
+#### Disks directory (`~/.local/state/nexus/disks/`)
 
 | File | Allocated | Apparent | Status | Verdict |
 |------|-----------|----------|--------|---------|
-| `sb-06FZZX7V8XZM12YE7VTR7T8168.raw` | 120 MiB | 4 GiB | Record exists (state=`running`); no live CH process | Held by stale record. After `recover`: transitions to `stopped`, disk retained for potential restart. Not reclaimed without `nexus3 sandbox rm`. |
+| `sb-06FZZX7V8XZM12YE7VTR7T8168.raw` | 120 MiB | 4 GiB | Record exists (state=`running`); no live CH process | Held by stale record. After `recover`: transitions to `stopped`, disk retained for potential restart. Not reclaimed without `nexus sandbox rm`. |
 
 **Total allocated in disks/: 120 MiB (apparent: 4 GiB).**  
 The P13 large orphans have been manually deleted. The defect that created them is not fixed.
 
-#### Socket files (`/run/user/1003/nexus3/`)
+#### Socket files (`/run/user/1003/nexus/`)
 
 Ten files observed: 3 `.iid` files (Aug 12), 3 `.sock` files (Aug 12–14), 2 `.vsock` files (Aug 12), and the Aug 14 uni5 pair, plus 1 stale `.iid` (Aug 12 `sb-06FZCZC4DDVYN063QADZZ3V0PW`) with no sock/vsock sibling.
 
@@ -105,7 +105,7 @@ Ten files observed: 3 `.iid` files (Aug 12), 3 `.sock` files (Aug 12–14), 2 `.
 
 Socket files carry 0 bytes allocated (AF_UNIX socket nodes; negligible storage). The operational impact is invisible sockets with no listener that consume directory entries.
 
-#### Builder-supervisor directories (`~/.local/state/nexus3/builder-supervisors/`)
+#### Builder-supervisor directories (`~/.local/state/nexus/builder-supervisors/`)
 
 6 ULID-named empty directories:
 `sb-06FZZS2HTXTYBFAF6CZVV0Z8RW`, `sb-06FZZSE3F1V4NF7ET98QMA2P88`, `sb-06FZZTA4BHT3SE8SNPV978SYJ4`, `sb-06FZZVSHASWRH2WMVSTY6B7VV4`, `sb-06FZZW8B99SY9DDG5M31FG5GBW`, `sb-06FZZWWMYNRSBC9DPGXF7AAEZ0`.
@@ -180,7 +180,7 @@ For `Absent` + various record states:
 
 In the P15 incident the operator believed uni5 had no backing process. Investigation found PID 1451104 alive. `recover` (had it been run) would have called `drv.Observe()` → result Running → `applyAdopt` → record unchanged. This is correct. The misread was in manual inspection, not in `recover`.
 
-**Current state (2026-08-15):** uni5's record says `state=running`, but no CH process is alive. If `nexus3 recover` were run now, `drv.Observe()` would return Absent → `applyAbsent` → running+absent+no-removal-marker → transitions to `stopped` (memory_lost). The disk file (`sb-06FZZX7V8XZM12YE7VTR7T8168.raw`) would be **retained** (not reaped) because the non-delete path does not call `ReapDiskCopy`. The three socket/iid files in `/run/user/1003/nexus3/` for uni5 would also **remain**, because `recover`'s non-delete path does not call `drv.Stop` (which runs `clearState` → `os.Remove`).
+**Current state (2026-08-15):** uni5's record says `state=running`, but no CH process is alive. If `nexus recover` were run now, `drv.Observe()` would return Absent → `applyAbsent` → running+absent+no-removal-marker → transitions to `stopped` (memory_lost). The disk file (`sb-06FZZX7V8XZM12YE7VTR7T8168.raw`) would be **retained** (not reaped) because the non-delete path does not call `ReapDiskCopy`. The three socket/iid files in `/run/user/1003/nexus/` for uni5 would also **remain**, because `recover`'s non-delete path does not call `drv.Stop` (which runs `clearState` → `os.Remove`).
 
 ### C.3 — Structural gaps in `recover`'s scope
 
@@ -189,7 +189,7 @@ The following resource classes are permanently outside `recover`'s scope:
 | Gap | Description | Classification |
 |-----|-------------|----------------|
 | **No-record orphans** | Resources (disks, run-dir files, builder-supervisor dirs) that were materialized before `store.Create` ran are invisible to `recover`. `st.List()` only sees committed records. | Structural — requires `ResourceIndex` (R1) to address. |
-| **Run-dir cleanup on non-delete recovery** | When `recover` transitions `running → stopped`, it does NOT call `drv.Stop`. Socket and IID files in `/run/user/1003/nexus3/` are not cleaned up. | Gap in recover — scope of R2-AC2 to decide whether to fix or document. |
+| **Run-dir cleanup on non-delete recovery** | When `recover` transitions `running → stopped`, it does NOT call `drv.Stop`. Socket and IID files in `/run/user/1003/nexus/` are not cleaned up. | Gap in recover — scope of R2-AC2 to decide whether to fix or document. |
 | **Workspace disk reaping** | `service.Remove` calls `ReapDiskCopy` which removes `<ULID>.raw` but NOT `<ULID>-workspace.ext4`. Both are in `disks/`. | Gap — not addressed by recover; workspace disk can be leaked by successful Remove. |
 | **Builder supervisor dirs** | Empty ULID-named dirs in `builder-supervisors/` after supervisor exit are not cleaned up. `recover` never touches that directory. | Gap — requires reaper (R1). |
 
@@ -198,7 +198,7 @@ The following resource classes are permanently outside `recover`'s scope:
 **CONFIRMED: "the record is the only handle."**
 
 Evidence:
-- `recover.Recover()` calls `st.List()` as its only universe-enumeration step. No directory scan of `disks/`, `/run/user/1003/nexus3/`, or `builder-supervisors/` is performed.
+- `recover.Recover()` calls `st.List()` as its only universe-enumeration step. No directory scan of `disks/`, `/run/user/1003/nexus/`, or `builder-supervisors/` is performed.
 - A resource with no record is permanently invisible to every current reconciliation path.
 - The P13 class (829 tiny orphans) were created by `os.Truncate` before `store.Create`; they had no record and therefore no reclamation path.
 - Patching individual create failure sites cannot close this class: any unhandled panic or SIGKILL in the window between disk materialization and record commit produces a new orphan. The window is structurally present in `create.go:335–410`.

@@ -10,16 +10,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/fake"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/core/vmcfg"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vmcfg"
 )
 
 // nopProbe is a service.ProbeFunc that reports the guest as immediately ready.
@@ -99,8 +99,8 @@ func TestBuildOrcaConnectionJSON_Shape(t *testing.T) {
 	if tgt.Username != "root" {
 		t.Errorf("target.username: got %q, want %q", tgt.Username, "root")
 	}
-	if !strings.Contains(tgt.ProxyCommand, "nexus3 ssh --stdio") {
-		t.Errorf("target.proxyCommand %q must contain 'nexus3 ssh --stdio'", tgt.ProxyCommand)
+	if !strings.Contains(tgt.ProxyCommand, "nexus ssh --stdio") {
+		t.Errorf("target.proxyCommand %q must contain 'nexus ssh --stdio'", tgt.ProxyCommand)
 	}
 	// Orca expands %h → target.Host (sandboxID); confirm %h is present.
 	if !strings.Contains(tgt.ProxyCommand, "%h") {
@@ -245,7 +245,7 @@ func TestOrcaByInstanceID_Found(t *testing.T) {
 // TestOrcaCreate_JSONOutputShape exercises the JSON output of the idempotency
 // path: a sandbox with the instance's MotiveID already exists, so orcaCreate
 // returns its connection JSON immediately. Verifies schemaVersion, all required
-// fields, and that proxyCommand references nexus3 ssh --stdio.
+// fields, and that proxyCommand references nexus ssh --stdio.
 func TestOrcaCreate_JSONOutputShape(t *testing.T) {
 	svc := newTestOrcaService(t)
 	const instanceID = "orca-json-shape-test"
@@ -280,8 +280,8 @@ func TestOrcaCreate_JSONOutputShape(t *testing.T) {
 	if out.Connection.Target.Username != "root" {
 		t.Errorf("target.username: %q", out.Connection.Target.Username)
 	}
-	if !strings.Contains(out.Connection.Target.ProxyCommand, "nexus3 ssh --stdio") {
-		t.Errorf("proxyCommand %q missing 'nexus3 ssh --stdio'", out.Connection.Target.ProxyCommand)
+	if !strings.Contains(out.Connection.Target.ProxyCommand, "nexus ssh --stdio") {
+		t.Errorf("proxyCommand %q missing 'nexus ssh --stdio'", out.Connection.Target.ProxyCommand)
 	}
 	if !strings.HasPrefix(out.Connection.ProjectRoot, "/") {
 		t.Errorf("projectRoot %q not absolute", out.Connection.ProjectRoot)
@@ -371,7 +371,7 @@ func TestOrcaResume_ResolvesInstance(t *testing.T) {
 // is emitted as target.identityFile in the connection JSON, and that the path
 // matches the expected per-instance location.
 func TestBuildOrcaConnectionJSON_IdentityFile(t *testing.T) {
-	const privKeyPath = "/home/user/.local/share/nexus3/orca/inst-abc/id_ed25519"
+	const privKeyPath = "/home/user/.local/share/nexus/orca/inst-abc/id_ed25519"
 	result := buildOrcaConnectionJSON("inst-abc", "sb-1", "ws", "/repos/r", privKeyPath)
 
 	if result.Connection.Target.IdentityFile != privKeyPath {
@@ -675,14 +675,14 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 	// Realistic inputs matching what orcaCreate supplies.
 	const (
 		sandboxID  = "deadbeef01020304"
-		storeRoot  = "/var/lib/nexus3"
-		stateDir   = "/tmp/nexus3-sv-test"
+		storeRoot  = "/var/lib/nexus"
+		stateDir   = "/tmp/nexus-sv-test"
 		chBin      = "/usr/bin/cloud-hypervisor"
-		socketDir  = "/run/nexus3"
+		socketDir  = "/run/nexus"
 		kernelPath = "/boot/vmlinux"
-		diskPath   = "/var/lib/nexus3/deadbeef.raw"
-		wsDiskPath = "/var/lib/nexus3/deadbeef-ws.raw"
-		credsFile  = "/home/user/.nexus3/creds.json"
+		diskPath   = "/var/lib/nexus/deadbeef.raw"
+		wsDiskPath = "/var/lib/nexus/deadbeef-ws.raw"
+		credsFile  = "/home/user/.nexus/creds.json"
 	)
 	extraDiskPaths := []string{wsDiskPath}
 
@@ -758,7 +758,7 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 		t.Errorf("Cmdline %q does not contain --mem-ceiling; guest agent cannot set ZRAM size correctly", cfg.Config.Cmdline)
 	}
 	if !strings.Contains(cfg.Config.Cmdline, "--sandbox-handle=orca-myrepo") {
-		t.Errorf("Cmdline %q does not contain --sandbox-handle=orca-myrepo; guest hostname will be 'nexus3' not the sandbox name", cfg.Config.Cmdline)
+		t.Errorf("Cmdline %q does not contain --sandbox-handle=orca-myrepo; guest hostname will be 'nexus' not the sandbox name", cfg.Config.Cmdline)
 	}
 	// Assert the cmdline contains the exact PID1Args string that vmcfg.Resolve
 	// produces. This catches VALUE drift (orca producing a different string than

@@ -5,7 +5,7 @@
 //
 // A handoff is by construction an old binary talking to a new one, so the
 // [Payload] shape is a compatibility surface from day one (motive
-// nexus3-host-supervisor-hotswap, TBD-6). [CurrentVersion] is the version
+// nexus-host-supervisor-hotswap, TBD-6). [CurrentVersion] is the version
 // this binary produces and understands; [Offer] and [Accept] together
 // guarantee that a version the receiver does not understand is a resumable
 // failure for the sender (D-HSH-08): the outgoing supervisor keeps its

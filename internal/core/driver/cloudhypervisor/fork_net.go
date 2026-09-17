@@ -110,7 +110,7 @@ func rewriteConfigNetTap(configJSON []byte, oldTap, newTap string) ([]byte, erro
 }
 
 // errNoVsock is returned by findVsockPath when config.json has no "vsock"
-// field. This is unexpected for nexus3 VMs (all have a vsock device) but
+// field. This is unexpected for nexus VMs (all have a vsock device) but
 // allows callers to skip vsock path rewriting gracefully.
 var errNoVsock = errors.New("no vsock device configured in config.json")
 

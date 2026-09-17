@@ -14,7 +14,7 @@
 #                      runs builds, observes whether buildkit silently truncates
 #                      or propagates ENOSPC. Restores ext4 after each level.
 #   --fallback-branch Phase 6 — exportBase="" fallback branch (CONDITION 2 / AC-2):
-#                      injects /nexus3-export as a regular file in buildkit.ext4
+#                      injects /nexus-export as a regular file in buildkit.ext4
 #                      so os.MkdirAll fails and the export lands on /tmp instead.
 #                      Restores ext4 after all builds.
 #
@@ -24,7 +24,7 @@
 #     Files are pre-generated from /dev/urandom before any build and written
 #     into $WORKSPACE/testfiles/. Containerfile uses COPY to pull them in.
 #     This prevents sparse-file or zstd-dict shortcuts that zero-filled files
-#     could exploit. A real ELF binary (nexus3 CLI, ~41.6 MiB) is also
+#     could exploit. A real ELF binary (nexus CLI, ~41.6 MiB) is also
 #     included as file_elf — matching the original fault file type exactly.
 #
 #   FLAW 2 FIXED — pressure variants are now exercised:
@@ -44,27 +44,27 @@
 #   bytes, which differs from their expected sizes).
 #
 # HOW BUILDS ARE TRIGGERED
-#   `nexus3 image build` is not yet wired (returns ErrNoBuilder). The real
-#   build path is: nexus3 create <project>/<name> --file <workspace-dir>
+#   `nexus image build` is not yet wired (returns ErrNoBuilder). The real
+#   build path is: nexus create <project>/<name> --file <workspace-dir>
 #   which boots a builder VM, runs buildkitd inside it, and stores the
 #   resulting image. Each iteration writes a fresh Containerfile with a
 #   unique RUN line to bust buildkit's layer cache.
 #
 # DUAL-STAGE MEASUREMENT
 #   Stage A — in-guest rootfsDir, BEFORE mke2fs packs it (best-effort;
-#     nexus3 exec returns "sandbox not found" for builder VMs — documented).
+#     nexus exec returns "sandbox not found" for builder VMs — documented).
 #   Stage B — packed ext4 artifact, AFTER mke2fs (primary measurement).
 #
 # REQUIREMENTS
-#   nexus3 binary on PATH or NEXUS3 env var
+#   nexus binary on PATH or NEXUS env var
 #   debugfs (apt: e2fsprogs)
 #   jq, sha256sum
 #   A builder image must already exist (run at least one real
-#   `nexus3 create --file` build to provision the builder VM image).
+#   `nexus create --file` build to provision the builder VM image).
 set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-NEXUS3="${NEXUS3:-nexus3}"
+NEXUS="${NEXUS:-nexus}"
 ITERATIONS="${1:-10}"
 PRESSURE=0
 DISK_PRESSURE=0
@@ -78,13 +78,13 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$SCRIPT_DIR/workspace"
-IMAGE_STORE="${NEXUS3_STATE_DIR:-$HOME/.local/state/nexus3}/images/sha256"
+IMAGE_STORE="${NEXUS_STATE_DIR:-$HOME/.local/state/nexus}/images/sha256"
 BUILD_LOG_DIR="$SCRIPT_DIR/logs"
 VERIFY_TMPDIR="${TMPDIR:-/tmp}/repro-verify-$$"
 
-# Outer wall-clock cap passed via env to nexus3. Actual buildkitd solve
-# timeout is separate (NEXUS3_BUILD_SOLVE_TIMEOUT, default 10 min).
-export NEXUS3_BUILD_TASK_TIMEOUT="${NEXUS3_BUILD_TASK_TIMEOUT:-25m}"
+# Outer wall-clock cap passed via env to nexus. Actual buildkitd solve
+# timeout is separate (NEXUS_BUILD_SOLVE_TIMEOUT, default 10 min).
+export NEXUS_BUILD_TASK_TIMEOUT="${NEXUS_BUILD_TASK_TIMEOUT:-25m}"
 # bash timeout for the whole create call (slightly longer than above).
 BASH_BUILD_TIMEOUT=1800  # 30 min in seconds
 
@@ -98,9 +98,9 @@ FILE_POLL_TIMEOUT=180
 # Repro project/name prefix for created sandboxes.
 REPRO_PROJECT="repro"
 
-# Real ELF binary used as file_elf — matches original fault's nexus3-agent
+# Real ELF binary used as file_elf — matches original fault's nexus-agent
 # file type; size is determined at runtime by setup_test_files().
-REAL_ELF_SRC="${NEXUS3_REAL_ELF:-$HOME/.local/bin/nexus3}"
+REAL_ELF_SRC="${NEXUS_REAL_ELF:-$HOME/.local/bin/nexus}"
 
 # Expected file sizes — set statically for urandom files, file_elf set below.
 declare -A EXPECTED_SIZES=(
@@ -126,8 +126,8 @@ TEST_FILES=(file_8m file_31m file_32m file_33m file_40m file_64m file_200m file_
 HASH_VERIFIED_FILES=(file_32m file_elf)
 
 # In-guest export path (from internal/core/agent/buildkit_linux.go).
-GUEST_EXPORT_DIR="/var/lib/buildkit/nexus3-export"
-GUEST_ROOTFS_GLOB="${GUEST_EXPORT_DIR}/nexus3-inguestbuild-rootfs-*"
+GUEST_EXPORT_DIR="/var/lib/buildkit/nexus-export"
+GUEST_ROOTFS_GLOB="${GUEST_EXPORT_DIR}/nexus-inguestbuild-rootfs-*"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log() { echo "[$(date +'%H:%M:%S')] $*"; }
@@ -142,12 +142,12 @@ emit_fail() {
 }
 
 list_digests_sorted() {
-    # FIX 4(c): Capture nexus3 exit code separately so a command failure
+    # FIX 4(c): Capture nexus exit code separately so a command failure
     # returns a sentinel instead of empty string. Empty string is silently
     # coerced to "no images" by comm -13, turning every pre-existing digest
     # into a "new" one — before-only-dead is NOT caught by NO_NEW_IMAGE.
     local _out _ec=0
-    _out=$("$NEXUS3" --json image ls 2>/dev/null) || _ec=$?
+    _out=$("$NEXUS" --json image ls 2>/dev/null) || _ec=$?
     if [[ $_ec -ne 0 ]]; then
         echo "LIST_DIGESTS_FAILED"
         return 0
@@ -155,7 +155,7 @@ list_digests_sorted() {
     echo "$_out" | jq -r '.data.images[].digest' 2>/dev/null | sort || true
 }
 
-BUILDER_SUPERVISORS_DIR="${NEXUS3_STATE_DIR:-$HOME/.local/state/nexus3}/builder-supervisors"
+BUILDER_SUPERVISORS_DIR="${NEXUS_STATE_DIR:-$HOME/.local/state/nexus}/builder-supervisors"
 
 snapshot_builder_supervisors() {
     ls -1 "$BUILDER_SUPERVISORS_DIR" 2>/dev/null | sort || true
@@ -287,7 +287,7 @@ format_result() {
     echo "$line"
 }
 
-# stage_b_check_agent_size probes /sbin/nexus3-agent inside the packed ext4 image
+# stage_b_check_agent_size probes /sbin/nexus-agent inside the packed ext4 image
 # and compares its on-disk size against the host source binary. This is the ORIGINAL
 # FAULT SEAM: the 32 MiB truncation was observed on the agent binary, injected via
 # SolveRequest.AgentInstallPath in internal/core/agent/buildkit_linux.go. The
@@ -303,9 +303,9 @@ stage_b_check_agent_size() {
         echo "agent-size:$(emit_fail "no_host_ref,agent=${host_agent}")"
         return
     fi
-    local guest_size; guest_size=$(debugfs_size "$img" "/sbin/nexus3-agent")
+    local guest_size; guest_size=$(debugfs_size "$img" "/sbin/nexus-agent")
     if [[ "$guest_size" == "DEBUGFS_ERR" ]]; then
-        echo "agent-size:$(emit_fail "absent,path=/sbin/nexus3-agent,host=${host_size}")"
+        echo "agent-size:$(emit_fail "absent,path=/sbin/nexus-agent,host=${host_size}")"
         return
     fi
     if [[ "$guest_size" == "$host_size" ]]; then
@@ -362,8 +362,8 @@ stage_b_check_dc_size() {
 # ── Test-file setup ───────────────────────────────────────────────────────────
 # FLAW 1 FIX: Pre-generate incompressible test files from /dev/urandom.
 # Using COPY in Containerfile so file content is identical source→image.
-# file_elf is a real ELF binary (nexus3 CLI, ~41.6 MiB) matching the fault's
-# original file type (nexus3-agent, ~36 MiB, also an ELF).
+# file_elf is a real ELF binary (nexus CLI, ~41.6 MiB) matching the fault's
+# original file type (nexus-agent, ~36 MiB, also an ELF).
 setup_test_files() {
     local tf_dir="$WORKSPACE/testfiles"
     mkdir -p "$tf_dir"
@@ -480,7 +480,7 @@ RUN echo "=== apt: installing docker-compose-v2 ===" && \
 RUN dd if=/dev/urandom of=/usr/local/bin/run-produced-40m bs=1M count=40 2>/dev/null
 # COPY incompressible test files from build context (pre-generated from
 # /dev/urandom). file_elf is a real ELF binary -- matching the original
-# fault's nexus3-agent file type.
+# fault's nexus-agent file type.
 COPY testfiles/ /testfiles/
 # Store sha256 inside the image so Stage B can cross-reference.
 RUN sha256sum /testfiles/file_32m /testfiles/file_elf > /testfiles/.HASHES || true
@@ -537,7 +537,7 @@ EOF
 # ── Sandbox helpers ───────────────────────────────────────────────────────────
 find_sandbox_by_name() {
     local name="$1"
-    "$NEXUS3" --json ps 2>/dev/null \
+    "$NEXUS" --json ps 2>/dev/null \
         | jq -r --arg n "$name" \
           '.data.sandboxes[] | select(.name == $n) | .id' 2>/dev/null \
         | head -1 || true
@@ -546,9 +546,9 @@ find_sandbox_by_name() {
 cleanup_sandbox() {
     local sb_id="$1"
     [[ -z "$sb_id" ]] && return
-    "$NEXUS3" stop "$sb_id" 2>/dev/null || true
+    "$NEXUS" stop "$sb_id" 2>/dev/null || true
     sleep 2
-    "$NEXUS3" rm "$sb_id" 2>/dev/null || true
+    "$NEXUS" rm "$sb_id" 2>/dev/null || true
 }
 
 # ── Disk-pressure helpers (Phase 5) ──────────────────────────────────────────
@@ -558,7 +558,7 @@ cleanup_sandbox() {
 #
 # The fill file is written to /PRESSURE_FILL in the ext4 root. Multiple calls
 # overwrite the previous fill (rm first). Restore via restore_ext4_pressure.
-CACHE_EXT4="${NEXUS3_STATE_DIR:-$HOME/.local/state/nexus3}/caches/buildkit.ext4"
+CACHE_EXT4="${NEXUS_STATE_DIR:-$HOME/.local/state/nexus}/caches/buildkit.ext4"
 
 # repair_ext4: run e2fsck to fix dirty/inconsistent state left by a builder VM
 # that was killed without cleanly unmounting the filesystem. Must be called
@@ -595,7 +595,7 @@ ensure_buildkit_disk_size() {
     local min_gib="$1"
     local min_bytes=$(( min_gib * 1024 * 1024 * 1024 ))
     if [[ ! -f "$CACHE_EXT4" ]]; then
-        log "ensure_buildkit_disk_size: buildkit.ext4 not present -- skip (created on first nexus3 build)"
+        log "ensure_buildkit_disk_size: buildkit.ext4 not present -- skip (created on first nexus build)"
         return 0
     fi
     local current_bytes; current_bytes=$(stat -c '%s' "$CACHE_EXT4" 2>/dev/null || echo 0)
@@ -690,23 +690,23 @@ restore_ext4_pressure() {
 }
 
 # ── Fallback-branch helpers (Phase 6) ────────────────────────────────────────
-# Injects a regular FILE named /nexus3-export into buildkit.ext4 so that when
-# the guest tries os.MkdirAll("/var/lib/buildkit/nexus3-export", 0o700) it
+# Injects a regular FILE named /nexus-export into buildkit.ext4 so that when
+# the guest tries os.MkdirAll("/var/lib/buildkit/nexus-export", 0o700) it
 # gets ENOTDIR and falls back to os.TempDir() (/tmp on the guest rootfs).
 inject_nexus_export_blocker() {
     repair_ext4 || { log "inject_nexus_export_blocker: repair_ext4 failed — aborting"; return 1; }
-    # Remove any pre-existing /nexus3-export (file OR directory). debugfs rm
+    # Remove any pre-existing /nexus-export (file OR directory). debugfs rm
     # refuses to remove a non-empty directory; use unlink instead — it removes
     # the directory entry from the parent regardless of contents (orphans the
     # inode). A subsequent e2fsck -y cleans up the orphaned inode.
-    debugfs -w "$CACHE_EXT4" -R "unlink /nexus3-export" 2>&1 || true
+    debugfs -w "$CACHE_EXT4" -R "unlink /nexus-export" 2>&1 || true
     # Clean up orphaned inodes (including the unlinked dir tree) so the ext4
     # is in a consistent state before the write.
     e2fsck -y -f "$CACHE_EXT4" 2>&1 | tail -2 || true
     local tmp_blocker; tmp_blocker=$(mktemp)
-    echo "NEXUS3_EXPORT_BLOCKER" > "$tmp_blocker"
+    echo "NEXUS_EXPORT_BLOCKER" > "$tmp_blocker"
     local dout
-    if ! dout=$(debugfs -w "$CACHE_EXT4" -R "write $tmp_blocker /nexus3-export" 2>&1); then
+    if ! dout=$(debugfs -w "$CACHE_EXT4" -R "write $tmp_blocker /nexus-export" 2>&1); then
         log "inject_nexus_export_blocker: debugfs write failed: ${dout}"
         rm -f "$tmp_blocker"
         return 1
@@ -715,7 +715,7 @@ inject_nexus_export_blocker() {
     # Verify the blocker is a regular file (Type: regular), not a directory.
     # || true: grep exits 1 if no "Type:" match; without || true, set -e kills the script.
     local ftype
-    ftype=$(debugfs -R "stat /nexus3-export" "$CACHE_EXT4" 2>&1 | grep "Type:") || true
+    ftype=$(debugfs -R "stat /nexus-export" "$CACHE_EXT4" 2>&1 | grep "Type:") || true
     if echo "$ftype" | grep -q "regular"; then
         log "inject_nexus_export_blocker: injected — type: regular; MkdirAll will return ENOTDIR"
     else
@@ -727,10 +727,10 @@ inject_nexus_export_blocker() {
 restore_nexus_export_blocker() {
     repair_ext4 || true
     # Use unlink (not rm) — handles both regular file and directory cases.
-    debugfs -w "$CACHE_EXT4" -R "unlink /nexus3-export" 2>&1 || true
+    debugfs -w "$CACHE_EXT4" -R "unlink /nexus-export" 2>&1 || true
     # Clean up orphaned inodes left by unlink.
     e2fsck -y -f "$CACHE_EXT4" 2>&1 | tail -2 || true
-    log "restore_nexus_export_blocker: /nexus3-export removed and ext4 repaired"
+    log "restore_nexus_export_blocker: /nexus-export removed and ext4 repaired"
 }
 
 # ── Stage A: build-stderr manifest parser ────────────────────────────────────
@@ -804,23 +804,23 @@ parse_manifest_stage_a() {
         tokens+=("docker-compose=OK(${dc_msize}B)")
     fi
 
-    # Check nexus3-agent binary (original fault seam).
-    local agent_msize="${msizes[usr/sbin/nexus3-agent]:-}"
+    # Check nexus-agent binary (original fault seam).
+    local agent_msize="${msizes[usr/sbin/nexus-agent]:-}"
     local agent_exp; agent_exp=$(stat -c '%s' "$AGENT_BIN" 2>/dev/null || echo 0)
     # FIX 4(b): Guard agent_exp==0 (missing reference binary) the same way
     # stage_b_check_agent_size does at :290-296. Without this guard,
     # MANIFEST_FAIL(exp=0,got=N) would count as truncation evidence —
     # fabricated "TRUNCATION REPRODUCED" when the harness is misconfigured.
     if [[ "$agent_exp" -eq 0 ]]; then
-        tokens+=("nexus3-agent=$(emit_fail "no_host_ref,AGENT_BIN=${AGENT_BIN}")")
+        tokens+=("nexus-agent=$(emit_fail "no_host_ref,AGENT_BIN=${AGENT_BIN}")")
     elif [[ -z "$agent_msize" ]]; then
-        tokens+=("nexus3-agent=$(emit_fail "manifest_absent,file=nexus3-agent")")
+        tokens+=("nexus-agent=$(emit_fail "manifest_absent,file=nexus-agent")")
     elif [[ "$agent_msize" == "$agent_exp" ]]; then
-        tokens+=("nexus3-agent=OK(${agent_msize}B)")
+        tokens+=("nexus-agent=OK(${agent_msize}B)")
     elif [[ "$agent_msize" == "33554432" ]]; then
-        tokens+=("nexus3-agent=MANIFEST_FAIL(TRUNCATED_AT_32MiB,exp=${agent_exp})")
+        tokens+=("nexus-agent=MANIFEST_FAIL(TRUNCATED_AT_32MiB,exp=${agent_exp})")
     else
-        tokens+=("nexus3-agent=MANIFEST_FAIL(exp=${agent_exp},got=${agent_msize})")
+        tokens+=("nexus-agent=MANIFEST_FAIL(exp=${agent_exp},got=${agent_msize})")
     fi
 
     echo "Stage_A_manifest: ${tokens[*]}"
@@ -858,7 +858,7 @@ run_one_iteration() {
 
     log "=== ${label}: pre-build image list ==="
     local before; before=$(list_digests_sorted)
-    # FIX 4(c): before-only-dead guard. If nexus3 image ls fails BEFORE the
+    # FIX 4(c): before-only-dead guard. If nexus image ls fails BEFORE the
     # build, comm -13 returns every AFTER digest as "new" — Stage B then
     # measures a pre-existing image and can report all-PASS. Detect the
     # sentinel and count as harness integrity failure.
@@ -878,10 +878,10 @@ run_one_iteration() {
     echo "${iter_uid}" > "${WORKSPACE}/testfiles/.repro-uid"
 
     # shellcheck disable=SC2086
-    log "=== ${label}: starting build (timeout=${NEXUS3_BUILD_TASK_TIMEOUT}) build_flags='${extra_build_flags}' ==="
+    log "=== ${label}: starting build (timeout=${NEXUS_BUILD_TASK_TIMEOUT}) build_flags='${extra_build_flags}' ==="
     local t0; t0=$(date +%s)
     # shellcheck disable=SC2086
-    timeout "$BASH_BUILD_TIMEOUT" "$NEXUS3" create \
+    timeout "$BASH_BUILD_TIMEOUT" "$NEXUS" create \
         "${REPRO_PROJECT}/${sandbox_name}" \
         --file "$ws" \
         --no-user-mounts \
@@ -891,9 +891,9 @@ run_one_iteration() {
     log "=== ${label}: build pid=${build_pid} ==="
 
     # ── Wait for build + Stage A (build-stderr manifest) ─────────────────────
-    # DEFECT-3 FIX: the live nexus3 exec probe is DELETED. Every historical run
+    # DEFECT-3 FIX: the live nexus exec probe is DELETED. Every historical run
     # shows "Stage A -- file_200m not seen (exec: )" with empty exec output;
-    # nexus3 exec never worked against builder-VM sandboxes and produced zero
+    # nexus exec never worked against builder-VM sandboxes and produced zero
     # evidence across all sweeps. The probe is replaced with manifest parsing:
     # logRootfsSizeManifest (rootfs_manifest.go) writes file sizes to build
     # stderr immediately after Solve() and before the integrity gates -- non-racy
@@ -978,7 +978,7 @@ run_one_iteration() {
             log "  HashVerify: ${hash_line}"
             stage_b_line="${stage_b_line} | HashVerify:${hash_line}"
 
-            # Agent-size check: probe /sbin/nexus3-agent in the final ext4 image.
+            # Agent-size check: probe /sbin/nexus-agent in the final ext4 image.
             # This is the original fault seam — a different injection path from
             # the user COPY test files. Without this check the harness cannot
             # observe the historical truncation site.
@@ -999,7 +999,7 @@ run_one_iteration() {
             stage_b_line="${stage_b_line} | DockerCompose:${dc_check}"
 
             # Log buildkit cache disk block stats.
-            local cache_disk="${HOME}/.local/state/nexus3/caches/buildkit.ext4"
+            local cache_disk="${HOME}/.local/state/nexus/caches/buildkit.ext4"
             if [[ -f "$cache_disk" ]]; then
                 local bstats
                 bstats=$(debugfs -R "stats" "$cache_disk" 2>/dev/null \
@@ -1035,13 +1035,13 @@ run_one_iteration() {
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 log "repro harness — ITERATIONS=${ITERATIONS} PRESSURE=${PRESSURE}"
-log "NEXUS3_BUILD_TASK_TIMEOUT=${NEXUS3_BUILD_TASK_TIMEOUT}"
-log "nexus3 binary: $(command -v "$NEXUS3" 2>/dev/null || echo "NOT FOUND: set NEXUS3 env var")"
+log "NEXUS_BUILD_TASK_TIMEOUT=${NEXUS_BUILD_TASK_TIMEOUT}"
+log "nexus binary: $(command -v "$NEXUS" 2>/dev/null || echo "NOT FOUND: set NEXUS env var")"
 log "real ELF source: ${REAL_ELF_SRC} ($(stat -c '%s' "$REAL_ELF_SRC" 2>/dev/null || echo 'not found') bytes)"
 log "workspace: ${WORKSPACE}"
 log "image store: ${IMAGE_STORE}"
 
-for req in "$NEXUS3" debugfs jq sha256sum strings resize2fs; do
+for req in "$NEXUS" debugfs jq sha256sum strings resize2fs; do
     command -v "$req" > /dev/null 2>&1 || {
         echo "ERROR: required tool not found: ${req}"
         exit 1
@@ -1065,14 +1065,14 @@ fi
 
 # ── Agent-freshness precondition ──────────────────────────────────────────────
 # The builder image cache key is sha256(agentBytes)[:8]: a stale on-PATH
-# nexus3-agent silently reuses the old builder VM image, running code that
+# nexus-agent silently reuses the old builder VM image, running code that
 # predates both verifyAgentIntegrity and the rootfs-size-manifest guard.
 # Every run with a stale agent is VOID evidence — the harness cannot observe
 # the truncation even if it occurs. Hard-fail here so the operator cannot
 # accidentally produce a clean negative on a blind binary.
-AGENT_BIN="$(command -v nexus3-agent 2>/dev/null || true)"
+AGENT_BIN="$(command -v nexus-agent 2>/dev/null || true)"
 if [[ -z "$AGENT_BIN" ]]; then
-    echo "ERROR: nexus3-agent not found on PATH. Run 'make install-agent' from the repo root." >&2
+    echo "ERROR: nexus-agent not found on PATH. Run 'make install-agent' from the repo root." >&2
     exit 1
 fi
 # NOTE: grep -q exits early on first match, which sends SIGPIPE to strings.
@@ -1080,12 +1080,12 @@ fi
 # trips the gate. Disable pipefail in a subshell around each check so only
 # grep's exit code (0=found, 1=not found) governs the condition.
 if ! (set +o pipefail; strings "$AGENT_BIN" | grep -q 'rootfs-size-manifest'); then
-    echo "ERROR: on-PATH nexus3-agent (${AGENT_BIN}) predates the rootfs-size-manifest guard." >&2
+    echo "ERROR: on-PATH nexus-agent (${AGENT_BIN}) predates the rootfs-size-manifest guard." >&2
     echo "  Run 'make install-agent' from the repo root, then re-run this harness." >&2
     exit 1
 fi
 if ! (set +o pipefail; strings "$AGENT_BIN" | grep -q 'rootfs export truncated'); then
-    echo "ERROR: on-PATH nexus3-agent (${AGENT_BIN}) predates the verifyAgentIntegrity guard." >&2
+    echo "ERROR: on-PATH nexus-agent (${AGENT_BIN}) predates the verifyAgentIntegrity guard." >&2
     echo "  Run 'make install-agent' from the repo root, then re-run this harness." >&2
     exit 1
 fi
@@ -1138,7 +1138,7 @@ if [[ $PRESSURE -eq 1 ]]; then
     log "--- Phase 3: 3 concurrent builds (parallel ExporterLocal I/O pressure) ---"
     local_before=$(list_digests_sorted)
     # FIX 4(c): Phase 3 before-only-dead guard (same class as run_one_iteration).
-    # If nexus3 image ls fails BEFORE the builds, comm -13 returns every
+    # If nexus image ls fails BEFORE the builds, comm -13 returns every
     # post-build digest as "new" — Stage B would measure a pre-existing image.
     p3_before_failed=0
     if [[ "$local_before" == "LIST_DIGESTS_FAILED" ]]; then
@@ -1163,7 +1163,7 @@ if [[ $PRESSURE -eq 1 ]]; then
         done
         write_pressure_containerfile "$pws" "$slot"
 
-        timeout "$BASH_BUILD_TIMEOUT" "$NEXUS3" create \
+        timeout "$BASH_BUILD_TIMEOUT" "$NEXUS" create \
             "${REPRO_PROJECT}/pressure-${slot}" \
             --file "$pws" \
             --no-user-mounts \
@@ -1393,27 +1393,27 @@ fi
 
 # ── Phase 6: exportBase="" fallback branch ────────────────────────────────────
 # CONDITION 2 from AC-2 sweep: force os.MkdirAll(exportScratchDir) to fail by
-# pre-creating /nexus3-export as a regular FILE in the buildkit.ext4. The agent
+# pre-creating /nexus-export as a regular FILE in the buildkit.ext4. The agent
 # logs the warning and falls back to os.TempDir() = /tmp on the guest rootfs
 # (a DIFFERENT filesystem from the cache disk). This branch is exercised for the
 # first time here — every prior sweep took the happy path.
 #
 # After each build the blocker is re-injected because the guest agent may remove
-# and recreate /nexus3-export. (The defer RemoveAll removes the dir; it cannot
+# and recreate /nexus-export. (The defer RemoveAll removes the dir; it cannot
 # affect a pre-existing regular file, so re-injection is needed to be safe.)
 if [[ $FALLBACK_BRANCH -eq 1 ]]; then
     log "--- Phase 6: exportBase=fallback branch (CONDITION 2) ---"
-    log "Phase 6: injecting /nexus3-export regular-file blocker into buildkit.ext4"
+    log "Phase 6: injecting /nexus-export regular-file blocker into buildkit.ext4"
     inject_nexus_export_blocker
 
     # Verify blocker is in place (|| true: grep exits 1 if "Type:" not found; with
     # set -e + pipefail that would kill the script without || true).
-    blocker_check=$(debugfs -R "stat /nexus3-export" "$CACHE_EXT4" 2>&1 | grep "Type:" | head -1) || true
+    blocker_check=$(debugfs -R "stat /nexus-export" "$CACHE_EXT4" 2>&1 | grep "Type:" | head -1) || true
     log "Phase 6: blocker check: ${blocker_check:-not found}"
 
     FB_TRAP_SET=0
     cleanup_fallback() {
-        log "Phase 6 cleanup trap: restoring nexus3-export blocker..."
+        log "Phase 6 cleanup trap: restoring nexus-export blocker..."
         restore_nexus_export_blocker
     }
     trap cleanup_fallback EXIT
@@ -1421,7 +1421,7 @@ if [[ $FALLBACK_BRANCH -eq 1 ]]; then
     for (( fbi = 1; fbi <= 2; fbi++ )); do
         log "=== Phase 6 build ${fbi}: fallback to /tmp (exportBase='') ==="
         # Re-inject before each build: the previous build's agent may have
-        # removed /nexus3-export (via deferred RemoveAll on the *dir*, not the
+        # removed /nexus-export (via deferred RemoveAll on the *dir*, not the
         # file — but injecting fresh is cheap and safe).
         inject_nexus_export_blocker
         run_one_iteration "fb-$(printf '%02d' "$fbi")" "$fbi"

@@ -7,22 +7,22 @@ description: "What a sandbox is and how the pieces fit together"
 
 > A sandbox is a live Cloud Hypervisor microVM — isolated kernel, memory, and disk — driven by a single Go core.
 
-nexus3 boots, pauses, snapshots, forks, and removes sandboxes. The CLI and MCP server are thin surfaces over the same library core. The governing principle is **primitives, not workflow verbs**.
+nexus boots, pauses, snapshots, forks, and removes sandboxes. The CLI and MCP server are thin surfaces over the same library core. The governing principle is **primitives, not workflow verbs**.
 
 ```sh
-nexus3 create my-app --image nexus3-base
-nexus3 exec my-app -- go test ./...
-nexus3 exec my-app
-nexus3 stop my-app
+nexus create my-app --image nexus-base
+nexus exec my-app -- go test ./...
+nexus exec my-app
+nexus stop my-app
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 ## Pages in this section
 
 | Page | What it covers |
 |------|----------------|
-| [Sandbox model](sandbox-model.md) | The `Sandbox` entity — the one durable type in nexus3 |
+| [Sandbox model](sandbox-model.md) | The `Sandbox` entity — the one durable type in nexus |
 | [Lifecycle states](lifecycle-states.md) | The five states, every legal transition, and what is explicitly illegal |
 | [Execution substrate](execution-substrate.md) | Cloud Hypervisor, the `driver` seam, vsock, and the network hook |
 | [Guest agent](guest-agent.md) | The in-guest PID-1 agent: control plane, data plane, session reattach |
@@ -45,7 +45,7 @@ flowchart TD
     end
     CH -->|"vsock<br/>(control + data)"| AGENT
     subgraph GUEST["Guest VM"]
-        AGENT["nexus3-agent (PID 1)"]
+        AGENT["nexus-agent (PID 1)"]
         AGENT --> CTRL["gRPC control plane<br/>→ Exec / Signal / Copy"]
         AGENT --> DATA["clawk-framed data plane<br/>→ PTY / stdio / output ring"]
     end
@@ -56,7 +56,7 @@ flowchart TD
 - **One entity.** `Sandbox` is the only durable type. There is no separate VM, Project, or Workspace entity.
 - **No transient states.** An operation in flight holds a lease alongside the record; the record never enters an intermediate state.
 - **Custom agent, not a container runtime.** The agent is a thin Go binary baked into every image. It speaks a narrow bespoke gRPC protocol; it does not implement OCI or any container spec.
-- **Zero VMM code.** nexus3 drives Cloud Hypervisor over its REST API. It owns no hypervisor code.
+- **Zero VMM code.** nexus drives Cloud Hypervisor over its REST API. It owns no hypervisor code.
 - **Live mounts as source.** `--mount <host-path>:<guest-path>` mounts a host `git worktree` directory into the sandbox via virtiofs — bidirectional and live; edits inside appear on the host immediately. Fork and snapshot are refused on a live-mounted sandbox; N-way parallelism uses independent `create` calls, each with its own worktree.
 
 ## What sandboxes can do
@@ -71,12 +71,12 @@ flowchart TD
 
 ## Library composition
 
-nexus3 ships a thin custom guest agent (no OSS init provided exec/PTY/snapshot-reattach composable with an external microVM substrate) and offloads everything else:
+nexus ships a thin custom guest agent (no OSS init provided exec/PTY/snapshot-reattach composable with an external microVM substrate) and offloads everything else:
 
 | Concern | Library |
 |---|---|
 | VM execution (Linux) | Cloud Hypervisor |
-| macOS VM execution | Virtualization.framework via `nexus3-vzd` <Badge type="info" text="backlogged" /> |
+| macOS VM execution | Virtualization.framework via `nexus-vzd` <Badge type="info" text="backlogged" /> |
 | Guest networking / egress | gvproxy |
 | L7 MITM / TLS | goproxy + clawk CA |
 | Image build | BuildKit |

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	corestore "github.com/IniZio/nexus3/internal/core/store"
+	corestore "github.com/IniZio/nexus/internal/core/store"
 )
 
 // ErrStoreAbsent is returned by [LoadStore] when the store file does not exist.
@@ -17,7 +17,7 @@ import (
 // can use errors.Is(err, ErrStoreAbsent).
 var ErrStoreAbsent = errors.New("cred: dedicated credential store not found")
 
-// storeSchema is the on-disk JSON representation of nexus3's own OAuth
+// storeSchema is the on-disk JSON representation of nexus's own OAuth
 // material. It is unexported; callers interact through [DedicatedCredStore].
 type storeSchema struct {
 	// Token fields.
@@ -32,7 +32,7 @@ type storeSchema struct {
 	TokenEndpoint string `json:"token_endpoint"`
 }
 
-// DedicatedCredStore holds nexus3's own OAuth material for a single upstream
+// DedicatedCredStore holds nexus's own OAuth material for a single upstream
 // credential. It is the in-memory representation loaded from a host-disk store
 // file by [LoadStore].
 //

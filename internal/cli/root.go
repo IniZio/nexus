@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-// Run is the top-level entry point for the nexus3 CLI. args should be
+// Run is the top-level entry point for the nexus CLI. args should be
 // os.Args[1:]. Returns the exit code: 0 success, 1 operational failure,
 // 2 usage error.
 //
@@ -18,8 +18,8 @@ import (
 // that callers who build command lines programmatically do not need to know the
 // argument ordering constraint:
 //
-//	nexus3 --json version   ✓
-//	nexus3 version --json   ✓
+//	nexus --json version   ✓
+//	nexus version --json   ✓
 func Run(args []string) int {
 	// Scan for the global --json flag. Accept it at any position and strip it
 	// from the argument list before handing the remainder to the subcommand.
@@ -56,7 +56,7 @@ func Run(args []string) int {
 	}
 
 	// Cancel the command context on SIGINT or SIGTERM so subcommands can
-	// perform cooperative cleanup. RunEphemeral (used by "nexus3 run") relies
+	// perform cooperative cleanup. RunEphemeral (used by "nexus run") relies
 	// on context cancellation to trigger its deferred Remove call.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -83,7 +83,7 @@ func Run(args []string) int {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: nexus3 [--json] <command> [args...]")
+	fmt.Fprintln(w, "Usage: nexus [--json] <command> [args...]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
 	for _, cmd := range AllVisible() {

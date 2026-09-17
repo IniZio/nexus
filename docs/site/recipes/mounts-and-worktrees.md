@@ -22,13 +22,13 @@ git -C /data/repos/myrepo worktree add /data/repos/myrepo-dev1 feat/my-branch
 **2. Boot the sandbox with the worktree attached**
 
 ```sh
-nexus3 create myproject/dev-1 \
+nexus create myproject/dev-1 \
   --context /data/repos/myrepo-dev1 \
   --mount /data/repos/myrepo-dev1:/workspace/myrepo \
   --memory 8192
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 `--context` locates `.nexus/Containerfile` for the rootfs build. `--mount host-path:guest-path`
 (repeatable; add `:ro` for read-only) attaches the host directory as a live virtiofs mount at
@@ -42,10 +42,10 @@ When a host git worktree is mounted into the sandbox, git operations inside the 
 - The host's `~/.gitconfig` does **not** reach the guest unless you mount it explicitly:
 
   ```
-  nexus3 create myproject/dev-1 \
+  nexus create myproject/dev-1 \
     --mount /data/repos/myrepo:/workspace/myrepo \
     --mount ~/.gitconfig:/root/.gitconfig:ro \
-    --image nexus3-base:20260807
+    --image nexus-base:20260807
   ```
 
   This is optional — if the worktree's repo-local config already has the identity you want, no extra mount is needed.
@@ -53,9 +53,9 @@ When a host git worktree is mounted into the sandbox, git operations inside the 
 **3. Run work inside the sandbox**
 
 ```sh
-nexus3 exec myproject/dev-1 -- go test ./...
-nexus3 exec myproject/dev-1 -- git add -A
-nexus3 exec myproject/dev-1 -- git commit -m "feat: implement foo"
+nexus exec myproject/dev-1 -- go test ./...
+nexus exec myproject/dev-1 -- git add -A
+nexus exec myproject/dev-1 -- git commit -m "feat: implement foo"
 ```
 
 Every write inside the guest appears in the host worktree immediately — no sync step.
@@ -72,14 +72,14 @@ Multiple mounts are also supported — for example, a read-only shared config al
 source tree:
 
 ```sh
-nexus3 create myproject/dev-1 \
+nexus create myproject/dev-1 \
   --context /data/repos/myrepo \
   --mount /data/repos/myrepo:/workspace/myrepo \
   --mount /data/shared/secrets:/run/secrets:ro \
   --memory 8192
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create` and `--file`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 ---
 

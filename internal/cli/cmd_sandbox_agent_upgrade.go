@@ -2,7 +2,7 @@ package cli
 
 // sandbox agent-upgrade <handle> [--agent <path>] [--force] [--timeout <duration>]
 //
-// Hot-swaps the in-guest nexus3-agent binary without stopping the sandbox.
+// Hot-swaps the in-guest nexus-agent binary without stopping the sandbox.
 // Protocol:
 //  1. Read the replacement binary (--agent, or auto-located via LookPath).
 //  2. Push it to the guest via the existing Copy PUSH RPC with ExpectedBytes.
@@ -22,14 +22,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 func init() {
 	Register(Command{
 		Name:    "sandbox agent-upgrade",
-		Summary: "Hot-swap the in-guest nexus3-agent binary without stopping the sandbox",
+		Summary: "Hot-swap the in-guest nexus-agent binary without stopping the sandbox",
 		Run:     runSandboxAgentUpgrade,
 	})
 }
@@ -37,7 +37,7 @@ func init() {
 func runSandboxAgentUpgrade(ctx context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("sandbox agent-upgrade", flag.ContinueOnError)
 	var (
-		agentFlag   = fs.String("agent", "", "path to the replacement nexus3-agent binary (default: auto-locate via PATH)")
+		agentFlag   = fs.String("agent", "", "path to the replacement nexus-agent binary (default: auto-locate via PATH)")
 		forceFlag   = fs.Bool("force", false, "force upgrade even if active exec sessions exist (those sessions will be killed)")
 		timeoutFlag = fs.Duration("timeout", 30*time.Second, "maximum time to wait for the new agent to become ready")
 	)
@@ -54,11 +54,11 @@ func runSandboxAgentUpgrade(ctx context.Context, args []string, out *Output) err
 	agentBin := *agentFlag
 	if agentBin == "" {
 		var err error
-		agentBin, err = exec.LookPath("nexus3-agent")
+		agentBin, err = exec.LookPath("nexus-agent")
 		if err != nil {
 			return &CodedError{
 				Code: ErrCodeInternalError,
-				Msg:  "sandbox agent-upgrade: cannot locate nexus3-agent in PATH; use --agent <path>",
+				Msg:  "sandbox agent-upgrade: cannot locate nexus-agent in PATH; use --agent <path>",
 				Err:  err,
 			}
 		}

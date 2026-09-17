@@ -20,7 +20,7 @@ type GuestMemPhaseConfig struct {
 	// MemoryAxisMiB lists the BuilderMemoryMiB values to sweep. If nil, defaults are used.
 	MemoryAxisMiB []uint16
 	// Runner is the build runner. Nil uses RunBuild (production default).
-	// Set to a fake in tests to avoid real nexus3/VM invocations.
+	// Set to a fake in tests to avoid real nexus/VM invocations.
 	Runner BuildRunner
 }
 

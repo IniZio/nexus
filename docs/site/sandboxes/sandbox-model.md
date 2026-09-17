@@ -5,19 +5,19 @@ description: "Sandbox identity, labels, the envelope, and fork lineage"
 
 # Sandbox model
 
-> `Sandbox` is the one durable entity in nexus3 — everything else is a transient instantiation or an artifact of it.
+> `Sandbox` is the one durable entity in nexus — everything else is a transient instantiation or an artifact of it.
 
 A running VM, a snapshot, an image — none are first-class entities alongside `Sandbox`. When the VM dies, the record survives. When you fork, children are new `Sandbox` records with the same struct and lifecycle.
 
 ```sh
 # Create a sandbox — mints the Sandbox record and boots the VM
-nexus3 create my-app --image nexus3-base --label task-id=42
+nexus create my-app --image nexus-base --label task-id=42
 
 # Filter by label — AND-semantics across multiple --label flags
-nexus3 ps --label task-id=42
+nexus ps --label task-id=42
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
 ## The Sandbox struct
 
@@ -63,14 +63,14 @@ Fan-out exists precisely to create N sandboxes from identical inputs. Content-ad
 
 ## Labels
 
-Labels are arbitrary key=value pairs on a sandbox. The `--label KEY=VALUE` flag on `nexus3 create` and `nexus3 ps` is the primary way to attach intent to a sandbox and then select it from a fleet.
+Labels are arbitrary key=value pairs on a sandbox. The `--label KEY=VALUE` flag on `nexus create` and `nexus ps` is the primary way to attach intent to a sandbox and then select it from a fleet.
 
 ```sh
 # Attach labels at create time
-nexus3 create worker --label task-id=lint --label env=ci
+nexus create worker --label task-id=lint --label env=ci
 
 # Select by label
-nexus3 ps --label task-id=lint
+nexus ps --label task-id=lint
 ```
 
 ## Source model
@@ -87,10 +87,10 @@ A sandbox produced by `fork` is an **ordinary `Sandbox`** — same struct, same 
 
 ## Host vs. client
 
-The **host** is the machine running Cloud Hypervisor. The **client** is any machine that issues nexus3 commands — usually the same machine, but the seam is kept clean for remote use. The host owns the VMM process; the client speaks to the core library, which speaks to the driver, which drives the VMM.
+The **host** is the machine running Cloud Hypervisor. The **client** is any machine that issues nexus commands — usually the same machine, but the seam is kept clean for remote use. The host owns the VMM process; the client speaks to the core library, which speaks to the driver, which drives the VMM.
 
 ## What is NOT an entity
 
 - **VM** — the running instantiation is an internal field (`InstanceID`), not an entity.
-- **Workspace** — the term is retired. nexus3 has no `Workspace` type; a source tree mounted into a sandbox is a configuration detail on `Envelope`, not an entity.
+- **Workspace** — the term is retired. nexus has no `Workspace` type; a source tree mounted into a sandbox is a configuration detail on `Envelope`, not an entity.
 - **Project** (as an entity) — there is no `Project` record. Project is a string namespace on `Sandbox`.

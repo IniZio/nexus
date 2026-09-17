@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // ── Host identity resolution ──────────────────────────────────────────────────
@@ -94,8 +94,8 @@ func TestSandboxBranchName_Format(t *testing.T) {
 	labels := map[string]string{"motive": "my-feature-1"}
 	branch := SandboxBranchName(labels, id)
 
-	if !strings.HasPrefix(branch, "nexus3/") {
-		t.Errorf("branch does not start with 'nexus3/': %q", branch)
+	if !strings.HasPrefix(branch, "nexus/") {
+		t.Errorf("branch does not start with 'nexus/': %q", branch)
 	}
 	parts := strings.SplitN(branch, "/", 3)
 	if len(parts) != 3 {
@@ -119,7 +119,7 @@ func TestSandboxBranchName_Deterministic(t *testing.T) {
 func TestSandboxBranchName_DefaultSlug(t *testing.T) {
 	id := domain.NewSandboxID()
 	branch := SandboxBranchName(nil, id)
-	if !strings.HasPrefix(branch, "nexus3/default/") {
+	if !strings.HasPrefix(branch, "nexus/default/") {
 		t.Errorf("branch without motive label should use 'default' slug: %q", branch)
 	}
 }
@@ -165,7 +165,7 @@ func TestSeedGitIdentity_Payload(t *testing.T) {
 		if !strings.Contains(payload, wantEmail) {
 			t.Errorf("gitconfig payload missing user.email %q; got:\n%s", wantEmail, payload)
 		}
-		for _, forbidden := range []string{"nexus3-bot", "noreply.nexus3"} {
+		for _, forbidden := range []string{"nexus-bot", "noreply.nexus"} {
 			if strings.Contains(payload, forbidden) {
 				t.Errorf("gitconfig payload contains bot-pattern string %q (D-PD-02 reversed); payload:\n%s", forbidden, payload)
 			}
@@ -184,8 +184,8 @@ func TestSeedGitIdentity_Payload(t *testing.T) {
 		if !strings.Contains(payload, "sshCommand") {
 			t.Errorf("gitconfig payload missing core.sshCommand entry; got:\n%s", payload)
 		}
-		if !strings.Contains(payload, "/sbin/nexus3-agent git-ssh") {
-			t.Errorf("gitconfig payload missing '/sbin/nexus3-agent git-ssh' in sshCommand; got:\n%s", payload)
+		if !strings.Contains(payload, "/sbin/nexus-agent git-ssh") {
+			t.Errorf("gitconfig payload missing '/sbin/nexus-agent git-ssh' in sshCommand; got:\n%s", payload)
 		}
 		if strings.Contains(payload, "insteadOf") {
 			t.Errorf("gitconfig payload must not contain insteadOf SSH→HTTPS rewrites (retired); got:\n%s", payload)
@@ -312,7 +312,7 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 						"credential for every agent sandbox, giving any in-guest process a valid "+
 						"GitHub token. D-PD-22: the agent stays dark; only a dedicated human "+
 						"git VM may receive github.com. See D-PD-22 in "+
-						".nexus/docs/nexus3-parallel-dev-pr-flow/motive.md.",
+						".nexus/docs/nexus-parallel-dev-pr-flow/motive.md.",
 					h,
 				)
 			}
@@ -421,7 +421,7 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 			t.Errorf(
 				"SECURITY VIOLATION — N-AC1 / D-PD-22\n"+
 					"The agent credential env payload contains 'GITHUB'.\n\n"+
-					"This means a GitHub credential variable (e.g. NEXUS3_CRED_GITHUB_COM_TOKEN) "+
+					"This means a GitHub credential variable (e.g. NEXUS_CRED_GITHUB_COM_TOKEN) "+
 					"was emitted into the guest env file. Any in-guest process sourcing that file "+
 					"(e.g. the claude agent) would have a GitHub bearer token. The perimeter MITM "+
 					"would swap it for a real GitHub token on every outbound github.com request.\n\n"+
@@ -442,7 +442,7 @@ func TestBuildGitconfigPayload_SafeDirectory(t *testing.T) {
 	const (
 		name   = "Test Op"
 		email  = "op@example.com"
-		branch = "nexus3/default/ab12cd34"
+		branch = "nexus/default/ab12cd34"
 	)
 
 	t.Run("zero paths — no safe section", func(t *testing.T) {
@@ -565,7 +565,7 @@ func TestBuildGitconfigPayload_GitHubCredentialHelper(t *testing.T) {
 	const (
 		name   = "Test Op"
 		email  = "op@example.com"
-		branch = "nexus3/default/ab12cd34"
+		branch = "nexus/default/ab12cd34"
 	)
 	payload := string(buildGitconfigPayload(name, email, []string{"/work"}, branch))
 
@@ -650,7 +650,7 @@ func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
 		t.Skip("sh not in PATH; skipping shell helper behaviour test")
 	}
 
-	scriptFile := t.TempDir() + "/nexus3-git-credential"
+	scriptFile := t.TempDir() + "/nexus-git-credential"
 	if writeErr := os.WriteFile(scriptFile, []byte(GuestGitCredentialHelperScript), 0o755); writeErr != nil {
 		t.Fatalf("write helper script: %v", writeErr)
 	}
@@ -712,7 +712,7 @@ func TestGitCredentialHelper_EndToEnd(t *testing.T) {
 		t.Skip("sh not in PATH; skipping end-to-end credential helper test")
 	}
 
-	scriptFile := t.TempDir() + "/nexus3-git-credential"
+	scriptFile := t.TempDir() + "/nexus-git-credential"
 	if writeErr := os.WriteFile(scriptFile, []byte(GuestGitCredentialHelperScript), 0o755); writeErr != nil {
 		t.Fatalf("write helper script: %v", writeErr)
 	}
@@ -775,15 +775,15 @@ func TestGitCredentialHelper_EndToEnd(t *testing.T) {
 	})
 }
 
-// TestBuildGitconfigPayload_GitSSHShim verifies SSH shim routing via nexus3-agent.
+// TestBuildGitconfigPayload_GitSSHShim verifies SSH shim routing via nexus-agent.
 func TestBuildGitconfigPayload_GitSSHShim(t *testing.T) {
-	payload := string(buildGitconfigPayload("Ada Lovelace", "ada@example.com", []string{"/work"}, "nexus3/x/abc123"))
+	payload := string(buildGitconfigPayload("Ada Lovelace", "ada@example.com", []string{"/work"}, "nexus/x/abc123"))
 
 	if !strings.Contains(payload, "sshCommand") {
 		t.Fatalf("payload missing core.sshCommand; git SSH sessions will not route through the relay.\npayload:\n%s", payload)
 	}
-	if !strings.Contains(payload, "/sbin/nexus3-agent git-ssh") {
-		t.Errorf("payload sshCommand does not reference /sbin/nexus3-agent git-ssh.\npayload:\n%s", payload)
+	if !strings.Contains(payload, "/sbin/nexus-agent git-ssh") {
+		t.Errorf("payload sshCommand does not reference /sbin/nexus-agent git-ssh.\npayload:\n%s", payload)
 	}
 
 	for _, banned := range []string{

@@ -20,7 +20,7 @@
 # THE DETECTION RULE
 # ---------------------------------------------------------------------------
 #
-# Implemented from .claude/skills/nexus3-slice-sandbox/SKILL.md section 3b,
+# Implemented from .claude/skills/nexus-slice-sandbox/SKILL.md section 3b,
 # which is the authoritative statement of it. In brief, and in the order the
 # rules actually bind:
 #
@@ -103,7 +103,7 @@ HERDR_BIN="${HERDR_BIN:-herdr}"
 #   POLL_INTERVAL=10 the cost of a late-noticed stop is 10 s of waiting; the
 #                    cost of polling harder is a `herdr pane read` per pane per
 #                    interval across every watched slice.
-#   START_GRACE=180  `nexus3 herdr agent` alone allows 90 s just to reach the
+#   START_GRACE=180  `nexus herdr agent` alone allows 90 s just to reach the
 #                    claude prompt, and the agent then has to read its brief
 #                    before it repaints. 180 s is that with headroom.
 #   SETTLE_ROUNDS=2  extra not-working rounds required before declaring a stop.

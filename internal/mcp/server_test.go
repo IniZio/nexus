@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

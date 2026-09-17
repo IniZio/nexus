@@ -6,9 +6,9 @@ package cli
 //  1. Sandbox already exists → create not called (no-op)
 //  2. Sandbox absent → create called (MUTATION-PROOF: remove create call, this goes RED)
 //  3. Create error propagated correctly
-//  4. herdrSpaceLabelForRef always uses "nexus3:" prefix (colon load-bearing)
-//  5. Label "nexus3" (no colon — the operator's w8 workspace) never matches a
-//     colon-qualified lookup (HerdrSpaceGetByLabel with "nexus3:…")
+//  4. herdrSpaceLabelForRef always uses "nexus:" prefix (colon load-bearing)
+//  5. Label "nexus" (no colon — the operator's w8 workspace) never matches a
+//     colon-qualified lookup (HerdrSpaceGetByLabel with "nexus:…")
 //  6. A second ensure call with a now-existing sandbox does NOT call create again
 //     (idempotency: sequential calls are safe)
 //  7. Transient get error is propagated; create is NOT called (only store.ErrNotFound
@@ -29,8 +29,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── helper ─────────────────────────────────────────────────────────────────
@@ -115,31 +115,31 @@ func TestHerdrEnsureSandbox_PropagatesCreateError(t *testing.T) {
 // ── TestHerdrSpaceLabel_ColonIsRequired ────────────────────────────────────
 
 // TestHerdrSpaceLabel_ColonIsRequired: herdrSpaceLabelForRef always produces a
-// label of the form "nexus3:<ref>", never the bare string "nexus3".
+// label of the form "nexus:<ref>", never the bare string "nexus".
 //
 // This proves that a sandbox ref (however short) can never produce the label
-// used by operator workspace w8 (label "nexus3").
+// used by operator workspace w8 (label "nexus").
 func TestHerdrSpaceLabel_ColonIsRequired(t *testing.T) {
 	cases := []struct {
 		ref  string
 		want string
 	}{
-		{"proj/box", "nexus3:proj/box"},
-		{"a/b", "nexus3:a/b"},
+		{"proj/box", "nexus:proj/box"},
+		{"a/b", "nexus:a/b"},
 		// Single-segment handle — still gets the colon.
-		{"single", "nexus3:single"},
-		// The operator's w8 workspace label is "nexus3" — no ref maps to it.
-		// herdrSpaceLabelForRef("") = "nexus3:" (still has colon), not "nexus3".
-		{"", "nexus3:"},
+		{"single", "nexus:single"},
+		// The operator's w8 workspace label is "nexus" — no ref maps to it.
+		// herdrSpaceLabelForRef("") = "nexus:" (still has colon), not "nexus".
+		{"", "nexus:"},
 	}
 	for _, c := range cases {
 		got := herdrSpaceLabelForRef(c.ref)
 		if got != c.want {
 			t.Errorf("herdrSpaceLabelForRef(%q) = %q, want %q", c.ref, got, c.want)
 		}
-		// Extra safety: the produced label must never equal the bare "nexus3" string
+		// Extra safety: the produced label must never equal the bare "nexus" string
 		// (the operator's w8 workspace label).
-		if got == "nexus3" {
+		if got == "nexus" {
 			t.Errorf("herdrSpaceLabelForRef(%q) = %q which equals the operator's protected label", c.ref, got)
 		}
 	}
@@ -148,16 +148,16 @@ func TestHerdrSpaceLabel_ColonIsRequired(t *testing.T) {
 // ── TestHerdrSpaceLabel_OperatorWorkspaceNeverClaimed ─────────────────────
 
 // TestHerdrSpaceLabel_OperatorWorkspaceNeverClaimed: even if a binding with
-// label "nexus3" (the operator's w8 workspace, no colon) were somehow present
+// label "nexus" (the operator's w8 workspace, no colon) were somehow present
 // in the store, HerdrSpaceGetByLabel with any colon-qualified label can never
-// match it. This is the exact real-world shape: w8 label = "nexus3".
+// match it. This is the exact real-world shape: w8 label = "nexus".
 func TestHerdrSpaceLabel_OperatorWorkspaceNeverClaimed(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 
 	// Seed a binding with the operator's w8 label (no colon) directly into the store.
 	operatorBinding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3", // w8's exact label — PROTECTED
+		SpaceLabel:       "nexus", // w8's exact label — PROTECTED
 		HerdrWorkspaceID: "w8",
 		SandboxHandle:    "w8",
 		SandboxID:        "sb-operator",
@@ -167,8 +167,8 @@ func TestHerdrSpaceLabel_OperatorWorkspaceNeverClaimed(t *testing.T) {
 	}
 
 	// A colon-qualified lookup for any real sandbox must not find w8.
-	for _, ref := range []string{"proj/box", "a/b", "nexus3/sub"} {
-		label := herdrSpaceLabelForRef(ref) // always "nexus3:<ref>"
+	for _, ref := range []string{"proj/box", "a/b", "nexus/sub"} {
+		label := herdrSpaceLabelForRef(ref) // always "nexus:<ref>"
 		_, err := HerdrSpaceGetByLabel(ctx, root, label)
 		if !errors.Is(err, ErrHerdrSpaceNotFound) {
 			t.Errorf("lookup of %q found something in store; must not claim operator w8: err=%v", label, err)
@@ -176,7 +176,7 @@ func TestHerdrSpaceLabel_OperatorWorkspaceNeverClaimed(t *testing.T) {
 	}
 
 	// Verify the operator binding is still untouched.
-	got, err := HerdrSpaceGetByLabel(ctx, root, "nexus3")
+	got, err := HerdrSpaceGetByLabel(ctx, root, "nexus")
 	if err != nil {
 		t.Fatalf("operator binding was removed unexpectedly: %v", err)
 	}

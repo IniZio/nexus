@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func makeTestCreds(t *testing.T, dir string, expiresAt time.Time, accessToken, refreshToken string) string {

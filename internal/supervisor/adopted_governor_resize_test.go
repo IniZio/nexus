@@ -1,6 +1,6 @@
 package supervisor
 
-// TestAdoptedGovernorResizes proves AC-5 of the nexus3-host-supervisor-hotswap
+// TestAdoptedGovernorResizes proves AC-5 of the nexus-host-supervisor-hotswap
 // motive: the memory governor still resizes the guest after a supervisor
 // replacement.
 //
@@ -51,12 +51,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	cloudhypervisor "github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/domain"
+	cloudhypervisor "github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // ── Minimal fake store (all lookups return ErrNotFound) ─────────────────────

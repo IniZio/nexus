@@ -1,7 +1,7 @@
 package supervisor
 
 // handoff_runtime_predicate_test.go is the end-to-end proof for ticket 14
-// (motive nexus3-host-supervisor-hotswap): performHandoff's hasMITMProxy
+// (motive nexus-host-supervisor-hotswap): performHandoff's hasMITMProxy
 // argument is derived from the LIVE supervisor, and the derivation fails
 // CLOSED when a proxy exists whose CA cannot be encoded.
 //
@@ -33,11 +33,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/perimeter"
-	"github.com/IniZio/nexus3/internal/core/perimeter/mitm"
-	"github.com/IniZio/nexus3/internal/core/perimeter/netfilter"
-	"github.com/IniZio/nexus3/internal/supervisor/handoff"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter"
+	"github.com/IniZio/nexus/internal/core/perimeter/mitm"
+	"github.com/IniZio/nexus/internal/core/perimeter/netfilter"
+	"github.com/IniZio/nexus/internal/supervisor/handoff"
 )
 
 // rsaSeededCAPEM mints a self-signed CA backed by an *rsa.PrivateKey. Feeding
@@ -52,7 +52,7 @@ func rsaSeededCAPEM(t *testing.T) (certPEM, keyPEM []byte) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(2),
-		Subject:               pkix.Name{CommonName: "nexus3 handoff test rsa CA"},
+		Subject:               pkix.Name{CommonName: "nexus handoff test rsa CA"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,

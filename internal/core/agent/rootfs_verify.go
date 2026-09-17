@@ -28,7 +28,7 @@ const rootfsVerifyMaxZeroPct = 90
 // directory structure and inodes but lost file DATA. Booting such an image
 // fails at runtime with "exec format error" because every binary is empty.
 //
-// This is a fail-closed integrity guard: nexus3 previously cached and booted
+// This is a fail-closed integrity guard: nexus previously cached and booted
 // such images because nothing verified file contents between the buildkit
 // export and the ext4 conversion. Converting the silent corruption into a hard,
 // retryable build error is the confirmed-defect fix; the intermittent
@@ -54,7 +54,7 @@ func (e *ErrRootfsHollow) Error() string {
 // ErrRootfsTruncated reports that an exported rootfs file is shorter than its
 // source — the signature of a 32 MiB truncation observed intermittently in
 // the in-guest buildkit export path (files > 32 MiB silently capped to exactly
-// 33554432 bytes). The agent binary is the canary: nexus3 knows its exact
+// 33554432 bytes). The agent binary is the canary: nexus knows its exact
 // source size and can detect a mismatch before mke2fs packs the image.
 type ErrRootfsTruncated struct {
 	InRootfsPath string

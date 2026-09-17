@@ -92,7 +92,7 @@ func TestVerifyRootfsPopulated_JustBelowThresholdPasses(t *testing.T) {
 }
 
 // makeAgentFixture creates a source binary and an exported copy in a fake
-// rootfs under rootfsDir/sbin/nexus3-agent. srcSize and dstSize control byte
+// rootfs under rootfsDir/sbin/nexus-agent. srcSize and dstSize control byte
 // counts so callers can exercise truncation scenarios.
 func makeAgentFixture(t *testing.T, rootfsDir string, srcSize, dstSize int) (srcPath string) {
 	t.Helper()
@@ -100,11 +100,11 @@ func makeAgentFixture(t *testing.T, rootfsDir string, srcSize, dstSize int) (src
 	if err := os.MkdirAll(sbin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	srcPath = filepath.Join(t.TempDir(), "nexus3-agent-src")
+	srcPath = filepath.Join(t.TempDir(), "nexus-agent-src")
 	if err := os.WriteFile(srcPath, make([]byte, srcSize), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dst := filepath.Join(sbin, "nexus3-agent")
+	dst := filepath.Join(sbin, "nexus-agent")
 	if err := os.WriteFile(dst, make([]byte, dstSize), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestVerifyAgentIntegrity_TruncatedFails(t *testing.T) {
 	// Source 1000 B, export 512 B — mimics the >32 MiB → 32 MiB truncation.
 	srcPath := makeAgentFixture(t, rootfsDir, 1000, 512)
 
-	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", srcPath)
+	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus-agent", srcPath)
 	if err == nil {
 		t.Fatal("expected truncated agent to be rejected, got nil")
 	}
@@ -139,7 +139,7 @@ func TestVerifyAgentIntegrity_MatchingPasses(t *testing.T) {
 	rootfsDir := t.TempDir()
 	srcPath := makeAgentFixture(t, rootfsDir, 1000, 1000)
 
-	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", srcPath); err != nil {
+	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus-agent", srcPath); err != nil {
 		t.Fatalf("expected matching agent to pass, got: %v", err)
 	}
 }
@@ -148,7 +148,7 @@ func TestVerifyAgentIntegrity_MatchingPasses(t *testing.T) {
 // agentSourcePath is empty (no agent was requested in the build).
 func TestVerifyAgentIntegrity_EmptySourceSkips(t *testing.T) {
 	rootfsDir := t.TempDir()
-	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", ""); err != nil {
+	if err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus-agent", ""); err != nil {
 		t.Fatalf("expected skip on empty source, got: %v", err)
 	}
 }
@@ -161,7 +161,7 @@ func TestVerifyAgentIntegrity_SourceStatErrorFails(t *testing.T) {
 	// Place an exported binary so only the source stat can fail.
 	makeAgentFixture(t, rootfsDir, 100, 100)
 
-	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", "/nonexistent/path/nexus3-agent")
+	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus-agent", "/nonexistent/path/nexus-agent")
 	if err == nil {
 		t.Fatal("expected source stat error to fail closed (return non-nil), got nil")
 	}
@@ -171,13 +171,13 @@ func TestVerifyAgentIntegrity_SourceStatErrorFails(t *testing.T) {
 // stat path): before the fix, a missing exported binary returned nil (fail-open).
 // With the fix, any export-stat failure must return an error (fail-closed).
 func TestVerifyAgentIntegrity_ExportStatErrorFails(t *testing.T) {
-	srcPath := filepath.Join(t.TempDir(), "nexus3-agent-src")
+	srcPath := filepath.Join(t.TempDir(), "nexus-agent-src")
 	if err := os.WriteFile(srcPath, make([]byte, 100), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// rootfsDir has no sbin/nexus3-agent so the export stat will fail.
+	// rootfsDir has no sbin/nexus-agent so the export stat will fail.
 	rootfsDir := t.TempDir()
-	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus3-agent", srcPath)
+	err := verifyAgentIntegrity(rootfsDir, "/sbin/nexus-agent", srcPath)
 	if err == nil {
 		t.Fatal("expected export stat error to fail closed (return non-nil), got nil")
 	}

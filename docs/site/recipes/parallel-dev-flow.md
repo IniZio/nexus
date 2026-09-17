@@ -6,11 +6,11 @@ description: "Fan N independent sandboxes out over separate worktrees and run ta
 # Parallel development flow
 
 > Create git worktrees on the branches you choose, mount them into isolated sandboxes, run agents
-> concurrently, and integrate through ordinary git — nexus3 provides the isolation primitives only.
+> concurrently, and integrate through ordinary git — nexus provides the isolation primitives only.
 
 Each sandbox is fully isolated: separate disk, separate network namespace, separate vsock channel.
 Each mounts its own `git worktree` directory so commits inside the sandbox land directly on the
-host's worktree branch, with no nexus3 branch naming or identity seeding involved.
+host's worktree branch, with no nexus branch naming or identity seeding involved.
 
 ---
 
@@ -27,7 +27,7 @@ flowchart LR
 
 ## Step 1 — Create worktrees on the host
 
-nexus3 is git-unaware. You decide the branch names and worktree locations.
+nexus is git-unaware. You decide the branch names and worktree locations.
 
 ```sh
 git worktree add ../myrepo-task-42 -b feat/task-42
@@ -43,23 +43,23 @@ additional identity seeding is needed.
 ## Step 2 — Mount each worktree into a sandbox <Badge type="warning" text="partial" />
 
 ```sh
-nexus3 create myproject/task-42 \
-  --image nexus3-base:20260807 \
+nexus create myproject/task-42 \
+  --image nexus-base:20260807 \
   --mount /path/to/myrepo-task-42:/workspace/myrepo \
   --memory 4096 \
   --label task-id=42
 ```
 
-<Badge type="warning" text="partial" /> — current implementation uses `nexus3 sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
+<Badge type="warning" text="partial" /> — current implementation uses `nexus sandbox create`; see [CLI sandbox commands](/cli/sandbox-commands) for the mapping.
 
-For N sandboxes, loop over `nexus3 create`:
+For N sandboxes, loop over `nexus create`:
 
 ```sh
 for task in 42 43 44; do
   git worktree add ../myrepo-task-$task -b feat/task-$task
 
-  nexus3 create myproject/task-$task \
-    --image nexus3-base:20260807 \
+  nexus create myproject/task-$task \
+    --image nexus-base:20260807 \
     --mount /path/to/myrepo-task-$task:/workspace/myrepo \
     --memory 4096 \
     --label task-id=$task
@@ -71,14 +71,14 @@ done
 ## Step 3 — Exec the agent
 
 ```sh
-nexus3 exec myproject/task-42 -- /usr/local/bin/claude --task "fix the flaky test"
+nexus exec myproject/task-42 -- /usr/local/bin/claude --task "fix the flaky test"
 ```
 
 Fan out across all labelled sandboxes in parallel:
 
 ```sh
-for sb in $(nexus3 --json ps --label task-id | jq -r '.data.sandboxes[].handle'); do
-  nexus3 exec "$sb" -- /usr/local/bin/claude --task "fix the flaky test" &
+for sb in $(nexus --json ps --label task-id | jq -r '.data.sandboxes[].handle'); do
+  nexus exec "$sb" -- /usr/local/bin/claude --task "fix the flaky test" &
   # bound concurrency to available host memory
   while [ "$(jobs -r | wc -l)" -ge 2 ]; do wait -n; done
 done
@@ -91,7 +91,7 @@ wait
 
 Because the worktree is live-mounted, any `git commit` the agent makes inside the sandbox appears
 immediately in the host directory `/path/to/myrepo-task-42`. The commit is on `feat/task-42` — the
-branch the worktree was created on. nexus3 does not rename branches or inject a bot identity; the
+branch the worktree was created on. nexus does not rename branches or inject a bot identity; the
 repo-local `git config` inside the worktree applies as-is.
 
 ---
@@ -112,8 +112,8 @@ MITM proxy swaps the placeholder credential for a real one on GitHub requests th
 allowlist:
 
 ```sh
-nexus3 create myproject/task-42 \
-  --image nexus3-base:20260807 \
+nexus create myproject/task-42 \
+  --image nexus-base:20260807 \
   --mount /path/to/myrepo-task-42:/workspace/myrepo \
   --memory 4096 \
   --repo owner/myrepo \
@@ -152,7 +152,7 @@ gh api -X POST repos/<owner>/<repo>/pulls -f title="Fix flaky test (task 42)" -f
 Before a multi-sandbox session, check free space:
 
 ```sh
-df -h ~/.local/state/nexus3/
+df -h ~/.local/state/nexus/
 ```
 
 Rules of thumb (measured on a real compose monorepo):
@@ -167,8 +167,8 @@ Rules of thumb (measured on a real compose monorepo):
 Reclaim stale sandboxes before a multi-sandbox run:
 
 ```sh
-nexus3 ps
-nexus3 rm <stale-ref>
+nexus ps
+nexus rm <stale-ref>
 ```
 
 ---
@@ -177,9 +177,9 @@ nexus3 rm <stale-ref>
 
 - A `paused` sandbox must be resumed before it can be stopped or removed. The transition
   `paused → stopped` is illegal and returns an error.
-- `nexus3 run` is the ephemeral variant: creates, boots, executes, and removes in one command. Use
+- `nexus run` is the ephemeral variant: creates, boots, executes, and removes in one command. Use
   it for throwaway one-shot tasks; for the parallel flow you need the sandbox to persist across
-  multiple `exec` calls, so use `nexus3 create` instead.
+  multiple `exec` calls, so use `nexus create` instead.
 - Remove worktrees after the sandboxes that mount them are removed:
   `git worktree remove /path/to/myrepo-task-42`.
 

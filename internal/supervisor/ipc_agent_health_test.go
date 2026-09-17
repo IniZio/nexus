@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 // ── classifyAgentHealth: pure fail-closed classification ──────────────────
@@ -26,9 +26,9 @@ import (
 // a definite "nothing is there" refusal, and an ambiguous timeout that must
 // NOT be promoted to "gone".
 var (
-	errRefused = errors.New("cloudhypervisor: dial guest sb-1: connect vsock socket: dial unix /run/nexus3/sb-1.vsock: connect: connection refused")
-	errNoFile  = errors.New("cloudhypervisor: dial guest sb-1: connect vsock socket: dial unix /run/nexus3/sb-1.vsock: connect: no such file or directory")
-	errTimeout = errors.New("govern: decode sample response: resize/wire: decode envelope: read unix @->/run/nexus3/sb-1.vsock: i/o timeout")
+	errRefused = errors.New("cloudhypervisor: dial guest sb-1: connect vsock socket: dial unix /run/nexus/sb-1.vsock: connect: connection refused")
+	errNoFile  = errors.New("cloudhypervisor: dial guest sb-1: connect vsock socket: dial unix /run/nexus/sb-1.vsock: connect: no such file or directory")
+	errTimeout = errors.New("govern: decode sample response: resize/wire: decode envelope: read unix @->/run/nexus/sb-1.vsock: i/o timeout")
 	errEOF     = errors.New("cloudhypervisor: dial guest sb-1: read handshake reply: EOF (guest agent not yet listening on vsock port 1025 — VM may still be starting up)")
 )
 

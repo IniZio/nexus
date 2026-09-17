@@ -3,7 +3,7 @@
 #
 # herdr fires this hook when a worktree workspace is opened.  It auto-provisions
 # a sandbox for the new worktree workspace when the source workspace is already
-# nexus3-bound (the --auto conditional rule in herdrWorktreeSandbox).
+# nexus-bound (the --auto conditional rule in herdrWorktreeSandbox).
 #
 # HERDR_PLUGIN_EVENT_JSON payload (worktree_created, schema-verified):
 #   {"type":"worktree_created","workspace":{"workspace_id":"<id>",...},"worktree":{...}}
@@ -13,7 +13,7 @@
 # fall back to parsing workspace.workspace_id from HERDR_PLUGIN_EVENT_JSON via
 # jq when HERDR_WORKSPACE_ID is absent.  If neither is available, log and exit 0
 # (fail-open: never block herdr on a missing optional ID).
-SHIM="$(dirname "$0")/../nexus3-shim.sh"
+SHIM="$(dirname "$0")/../nexus-shim.sh"
 
 WS="${HERDR_WORKSPACE_ID:-}"
 if [ -z "$WS" ] && command -v jq >/dev/null 2>&1; then
@@ -34,9 +34,9 @@ fi
 # log and nowhere else.  Opening the pane first fixes both halves: the build is
 # visible while it runs, and pane.sh holds the pane open on failure.
 #
-# NEXUS3_WORKTREE_AUTO=1 carries the --auto predicate through to pane.sh, which
+# NEXUS_WORKTREE_AUTO=1 carries the --auto predicate through to pane.sh, which
 # is what keeps this hook conditional (bind when a sibling workspace in the
-# same repo is already nexus3-bound OR the checkout carries .nexus/config.yaml /
+# same repo is already nexus-bound OR the checkout carries .nexus/config.yaml /
 # .nexus/Containerfile; skip only when neither holds).
 #
 # Fail-open is preserved: if the pane cannot be opened we fall back to the old
@@ -44,12 +44,12 @@ fi
 # a missing SIGNAL, not a reason to skip the work.
 HERDR="${HERDR_BIN_PATH:-herdr}"
 if "$HERDR" plugin pane open \
-    --plugin nexus3 \
+    --plugin nexus \
     --entrypoint worktree-sandbox \
     --placement tab \
     --no-focus \
     --workspace "$WS" \
-    --env "NEXUS3_WORKTREE_AUTO=1"; then
+    --env "NEXUS_WORKTREE_AUTO=1"; then
     "$SHIM" herdr focus-changed --workspace "$WS" --only-if-focused || true
     exit 0
 fi

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/portfwd"
 )
 
 func TestRemoteStateReadCommand_SurvivesSSHArgvJoin(t *testing.T) {
@@ -74,7 +74,6 @@ func TestFilterToFocused(t *testing.T) {
 		t.Errorf("no focused workspace: want nil/empty, got %v", got)
 	}
 }
-
 
 type fakeLn struct {
 	ch      chan struct{}
@@ -279,7 +278,7 @@ func TestReadRemoteCombinedState_OneArgvNamesBothFiles(t *testing.T) {
 	var calls [][]string
 	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
 		calls = append(calls, argv)
-		return "{\"forwards\":[]}\n---nexus3-focus---\n", "", 0, nil
+		return "{\"forwards\":[]}\n---nexus-focus---\n", "", 0, nil
 	}
 	_, err := readRemoteCombinedStateWithRunner(context.Background(), "/fake.ctl", "myhost", fakeRunner)
 	if err != nil {
@@ -328,7 +327,7 @@ func TestReadRemoteCombinedState_ArgvContainsFocusStatePath(t *testing.T) {
 	var capturedArgv []string
 	fakeRunner := func(_ context.Context, argv []string) (string, string, int, error) {
 		capturedArgv = argv
-		return "{\"forwards\":[]}\n---nexus3-focus---\n", "", 0, nil
+		return "{\"forwards\":[]}\n---nexus-focus---\n", "", 0, nil
 	}
 	_, err := readRemoteCombinedStateWithRunner(context.Background(), "/fake.ctl", "myhost", fakeRunner)
 	if err != nil {
@@ -352,7 +351,7 @@ func TestReadRemoteCombinedState_ArgvContainsFocusStatePath(t *testing.T) {
 func TestParseRemoteCombinedState_FocusFilters(t *testing.T) {
 	fwdJSON := `{"forwards":[{"port":3000,"sandbox":"sb1","status":"live"},{"port":4000,"sandbox":"sb2","status":"live"}]}`
 	focusJSON := `{"workspace_id":"w1","sandbox_id":"sb1","session":"","updated_at":"` + time.Now().Format(time.RFC3339) + `"}`
-	input := fwdJSON + "\n---nexus3-focus---\n" + focusJSON
+	input := fwdJSON + "\n---nexus-focus---\n" + focusJSON
 
 	combined, err := parseRemoteCombinedState(input)
 	if err != nil {

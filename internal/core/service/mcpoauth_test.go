@@ -129,7 +129,7 @@ func TestBuildMCPOAuthBinds_TwoServers(t *testing.T) {
 	if gBind.Header != "Authorization" {
 		t.Errorf("glitchtip bind.Header = %q, want Authorization", gBind.Header)
 	}
-	wantGlitchEnv := syntheticMCPVar("glitchtip", "Authorization") // NEXUS3_MCP_GLITCHTIP_AUTHORIZATION
+	wantGlitchEnv := syntheticMCPVar("glitchtip", "Authorization") // NEXUS_MCP_GLITCHTIP_AUTHORIZATION
 	if gBind.Bind.Env != wantGlitchEnv {
 		t.Errorf("glitchtip Bind.Env = %q, want %q", gBind.Bind.Env, wantGlitchEnv)
 	}
@@ -144,7 +144,7 @@ func TestBuildMCPOAuthBinds_TwoServers(t *testing.T) {
 	if lBind.ServerName != "linear-server" {
 		t.Errorf("linear bind.ServerName = %q, want linear-server", lBind.ServerName)
 	}
-	wantLinearEnv := syntheticMCPVar("linear-server", "Authorization") // NEXUS3_MCP_LINEAR_SERVER_AUTHORIZATION
+	wantLinearEnv := syntheticMCPVar("linear-server", "Authorization") // NEXUS_MCP_LINEAR_SERVER_AUTHORIZATION
 	if lBind.Bind.Env != wantLinearEnv {
 		t.Errorf("linear Bind.Env = %q, want %q", lBind.Bind.Env, wantLinearEnv)
 	}

@@ -10,20 +10,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
-// TestHelperHoldsLock is a subprocess helper: when NEXUS3_TEST_LOCK_HELPER=1 it
-// acquires an exclusive flock on the lock file named by NEXUS3_TEST_LOCK_FILE,
+// TestHelperHoldsLock is a subprocess helper: when NEXUS_TEST_LOCK_HELPER=1 it
+// acquires an exclusive flock on the lock file named by NEXUS_TEST_LOCK_FILE,
 // prints "ready\n" to stdout (signalling the parent), then blocks forever.
 // The parent SIGKILLs this process to prove the kernel releases the lock.
 func TestHelperHoldsLock(t *testing.T) {
-	if os.Getenv("NEXUS3_TEST_LOCK_HELPER") != "1" {
+	if os.Getenv("NEXUS_TEST_LOCK_HELPER") != "1" {
 		t.Skip("subprocess helper mode not active")
 	}
-	path := os.Getenv("NEXUS3_TEST_LOCK_FILE")
+	path := os.Getenv("NEXUS_TEST_LOCK_FILE")
 	if path == "" {
-		t.Fatal("NEXUS3_TEST_LOCK_FILE not set")
+		t.Fatal("NEXUS_TEST_LOCK_FILE not set")
 	}
 	lk, err := store.OpenLock(path)
 	if err != nil {
@@ -58,8 +58,8 @@ func TestLockCrossProcess(t *testing.T) {
 	// Launch subprocess that acquires the lock and signals readiness.
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldsLock$", "-test.v")
 	cmd.Env = append(os.Environ(),
-		"NEXUS3_TEST_LOCK_HELPER=1",
-		"NEXUS3_TEST_LOCK_FILE="+lockFile,
+		"NEXUS_TEST_LOCK_HELPER=1",
+		"NEXUS_TEST_LOCK_FILE="+lockFile,
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -108,12 +108,12 @@ func TestLockCrossProcess(t *testing.T) {
 // this helper uses time.Sleep so the runtime stays alive while holding the lock.
 // The parent SIGKILLs this subprocess when done.
 func TestHelperHoldsLockForTryTest(t *testing.T) {
-	if os.Getenv("NEXUS3_TEST_LOCK_TRY_HELPER") != "1" {
+	if os.Getenv("NEXUS_TEST_LOCK_TRY_HELPER") != "1" {
 		t.Skip("subprocess helper mode not active")
 	}
-	path := os.Getenv("NEXUS3_TEST_LOCK_FILE")
+	path := os.Getenv("NEXUS_TEST_LOCK_FILE")
 	if path == "" {
-		t.Fatal("NEXUS3_TEST_LOCK_FILE not set")
+		t.Fatal("NEXUS_TEST_LOCK_FILE not set")
 	}
 	lk, err := store.OpenLock(path)
 	if err != nil {
@@ -155,8 +155,8 @@ func TestTryExclusive_deadline(t *testing.T) {
 	// causes a deadlock panic which exits the subprocess, releasing the lock.
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldsLockForTryTest$", "-test.v")
 	cmd.Env = append(os.Environ(),
-		"NEXUS3_TEST_LOCK_TRY_HELPER=1",
-		"NEXUS3_TEST_LOCK_FILE="+lockFile,
+		"NEXUS_TEST_LOCK_TRY_HELPER=1",
+		"NEXUS_TEST_LOCK_FILE="+lockFile,
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

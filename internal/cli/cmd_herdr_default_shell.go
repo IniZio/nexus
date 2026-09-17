@@ -16,14 +16,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/config"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // binary path to form the companion sidecar. A single source-of-truth constant
-const herdrSidecarSuffix = ".nexus3bin"
+const herdrSidecarSuffix = ".nexusbin"
 
 type herdrExecFn func(argv0 string, argv []string, envv []string) error
 
@@ -41,11 +41,11 @@ var herdrSkipInstallProbeForTest bool
 // herdrAutoCreateTimeout is the outer deadline for the auto-create subprocess
 const herdrAutoCreateTimeout = herdrWorktreeCreateLockTimeout + 30*time.Second
 
-// sidecar (line 3) by "nexus3 herdr install-default-shell --next <path>"; an
-const herdrGuestShellNextEnv = "NEXUS3_GUEST_SHELL_NEXT"
+// sidecar (line 3) by "nexus herdr install-default-shell --next <path>"; an
+const herdrGuestShellNextEnv = "NEXUS_GUEST_SHELL_NEXT"
 
 var herdrGuestShellArgsFn = func() []string {
-	if filepath.Base(os.Args[0]) != "nexus3-guest-shell" {
+	if filepath.Base(os.Args[0]) != "nexus-guest-shell" {
 		return nil
 	}
 	return os.Args[1:]
@@ -53,7 +53,7 @@ var herdrGuestShellArgsFn = func() []string {
 
 var herdrDefaultShellAutoCreateFn = herdrDefaultShellAutoCreate
 
-var herdrWtChildRunnerFn func(ctx context.Context, nexus3Bin string, argv []string) error = herdrWtChildRunner
+var herdrWtChildRunnerFn func(ctx context.Context, nexusBin string, argv []string) error = herdrWtChildRunner
 
 var herdrWtPaneListerFn func(ctx context.Context, workspaceID, ownPaneID string) (int, error) = herdrWtPaneLister
 
@@ -80,7 +80,7 @@ func herdrAutoCreatePredicateWith(
 		return false
 	}
 	// second arm the FIRST worktree of a repo never engaged here even though
-	return herdrRepoHasBoundSandbox(mainRepo, allBindings) || herdrRepoHasNexus3ConfigWith(worktreeRoot, statFn)
+	return herdrRepoHasBoundSandbox(mainRepo, allBindings) || herdrRepoHasNexusConfigWith(worktreeRoot, statFn)
 }
 
 func herdrLinkedWorktreeFromCwd(
@@ -116,7 +116,7 @@ func herdrLinkedWorktreeFromCwd(
 	return "", ""
 }
 
-func herdrRepoHasNexus3ConfigWith(dir string, statFn func(string) (os.FileInfo, error)) bool {
+func herdrRepoHasNexusConfigWith(dir string, statFn func(string) (os.FileInfo, error)) bool {
 	if dir == "" {
 		return false
 	}
@@ -172,7 +172,7 @@ func herdrMainRepoFromGitdir(content string) string {
 	return filepath.Dir(gitDir) // <main>
 }
 
-// "nexus3 herdr worktree-sandbox" output into. The two formulas MUST agree:
+// "nexus herdr worktree-sandbox" output into. The two formulas MUST agree:
 func herdrWtCreateLogPath(storeRoot, wsID string) string {
 	return filepath.Join(storeRoot, "herdr-wt-create-ws-"+wsID+".log")
 }
@@ -226,14 +226,14 @@ func herdrTailFileUntil(path string, w io.Writer, done <-chan struct{}, interval
 }
 
 // caller falls through to execHostShell (FAIL-OPEN).
-func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin string, w io.Writer) (HerdrSpaceBinding, bool) {
-	if nexus3Bin == "" {
+func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexusBin string, w io.Writer) (HerdrSpaceBinding, bool) {
+	if nexusBin == "" {
 		return HerdrSpaceBinding{}, false
 	}
-	fmt.Fprintf(w, "nexus3-guest-shell: linked worktree detected — waiting for / auto-creating the sandbox for workspace %s (a cold build can take a few minutes; the provisioning log streams below)...\n", wsID)
+	fmt.Fprintf(w, "nexus-guest-shell: linked worktree detected — waiting for / auto-creating the sandbox for workspace %s (a cold build can take a few minutes; the provisioning log streams below)...\n", wsID)
 	autoCtx, cancel := context.WithTimeout(ctx, herdrAutoCreateTimeout)
 	defer cancel()
-	cmd := herdrExecCommandContext(autoCtx, nexus3Bin, "herdr", "worktree-sandbox", "--auto", wsID)
+	cmd := herdrExecCommandContext(autoCtx, nexusBin, "herdr", "worktree-sandbox", "--auto", wsID)
 	cmd.Stdout = w
 	cmd.Stderr = w
 	tailStop := make(chan struct{})
@@ -249,7 +249,7 @@ func herdrDefaultShellAutoCreate(ctx context.Context, storeRoot, wsID, nexus3Bin
 	// A non-zero exit is REPORTED but is not by itself a verdict, because
 	// terms: no binding → (zero, false) → execHostShell, exactly as before.
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(w, "nexus3-guest-shell: auto-create: %v\n", err)
+		fmt.Fprintf(w, "nexus-guest-shell: auto-create: %v\n", err)
 	}
 	b, ok, _ := herdrDefaultShellLookup(storeRoot, wsID)
 	return b, ok
@@ -265,7 +265,7 @@ func herdrDefaultShellCore(
 	getenv func(string) string,
 	storeRoot string,
 	svc sandboxGetter, // nil → skip state check and cwd resolution, use /root
-	nexus3Bin string, // path to the nexus3 binary for re-exec
+	nexusBin string, // path to the nexus binary for re-exec
 	execFn herdrExecFn,
 ) error {
 	shellArgs := herdrGuestShellArgsFn()
@@ -282,7 +282,7 @@ func herdrDefaultShellCore(
 	execUnboundShell := func() error {
 		if next := herdrGuestShellNext(getenv); next != "" {
 			if err := execFn(next, append([]string{next}, shellArgs...), os.Environ()); err != nil {
-				slog.Warn("nexus3-guest-shell: chained guest shell exec failed; falling back to host shell", "next", next, "err", err)
+				slog.Warn("nexus-guest-shell: chained guest shell exec failed; falling back to host shell", "next", next, "err", err)
 				return execHostShell()
 			}
 			return nil
@@ -290,7 +290,7 @@ func herdrDefaultShellCore(
 		return execHostShell()
 	}
 
-	if getenv("NEXUS3_HOST_SHELL") != "" {
+	if getenv("NEXUS_HOST_SHELL") != "" {
 		return execHostShell()
 	}
 
@@ -322,21 +322,21 @@ func herdrDefaultShellCore(
 		// error (FAIL-OPEN toward the unbound shell).
 		if !herdrAutoCreatePredicateFn(allBindings) {
 			if herdrLinkedWorktreeReasonFn() {
-				fmt.Fprintf(os.Stderr, "nexus3-guest-shell: workspace %s has no nexus3 sandbox binding and its repo is neither nexus3-bound nor onboarded (.nexus/config.yaml); not a nexus3 space\n", wsID)
+				fmt.Fprintf(os.Stderr, "nexus-guest-shell: workspace %s has no nexus sandbox binding and its repo is neither nexus-bound nor onboarded (.nexus/config.yaml); not a nexus space\n", wsID)
 			}
 			return execUnboundShell()
 		}
 		var ok bool
-		binding, ok = herdrDefaultShellAutoCreateFn(ctx, storeRoot, wsID, nexus3Bin, os.Stderr)
+		binding, ok = herdrDefaultShellAutoCreateFn(ctx, storeRoot, wsID, nexusBin, os.Stderr)
 		if !ok {
-			fmt.Fprintf(os.Stderr, "nexus3-guest-shell: workspace %s still has no sandbox binding; opening host shell (retry: nexus3 herdr space-open-pane %s)\n", wsID, wsID)
+			fmt.Fprintf(os.Stderr, "nexus-guest-shell: workspace %s still has no sandbox binding; opening host shell (retry: nexus herdr space-open-pane %s)\n", wsID, wsID)
 			return execHostShell()
 		}
 	}
 
-	// nexus3 binary (e.g. sidecar missing after install). Fall back rather than
+	// nexus binary (e.g. sidecar missing after install). Fall back rather than
 	// exec'ing an empty path into a dead pane. (CRITICAL 1)
-	if nexus3Bin == "" {
+	if nexusBin == "" {
 		return execHostShell()
 	}
 
@@ -354,7 +354,7 @@ func herdrDefaultShellCore(
 			conn, dialErr := d.DialGuest(dialCtx, binding.SandboxHandle, driver.AgentControlPort)
 			cancel()
 			if dialErr != nil {
-				slog.Warn("nexus3-guest-shell: guest not dialable; falling back to host shell", "err", dialErr)
+				slog.Warn("nexus-guest-shell: guest not dialable; falling back to host shell", "err", dialErr)
 				return execHostShell()
 			}
 			conn.Close()
@@ -365,15 +365,15 @@ func herdrDefaultShellCore(
 	// FAIL-OPEN: execFn is syscall.Exec in production. If it returns — either
 	// because exec itself failed, or because a test seam replaced it — the
 	// process was NOT replaced. An exec failure is logged and execHostShell is
-	argv := []string{nexus3Bin, "exec", "--pty", "--cwd", cwd, binding.SandboxHandle, "/bin/bash", "--login"}
+	argv := []string{nexusBin, "exec", "--pty", "--cwd", cwd, binding.SandboxHandle, "/bin/bash", "--login"}
 
 	// pane-close SIGHUP (sent to the process group by herdr) so it can run
 	if binding.IsWorktreeManaged() {
-		return herdrWtSupervisedShell(ctx, nexus3Bin, binding, argv)
+		return herdrWtSupervisedShell(ctx, nexusBin, binding, argv)
 	}
 
-	if err := execFn(nexus3Bin, argv, os.Environ()); err != nil {
-		slog.Warn("nexus3-guest-shell: exec failed; falling back to host shell", "err", err)
+	if err := execFn(nexusBin, argv, os.Environ()); err != nil {
+		slog.Warn("nexus-guest-shell: exec failed; falling back to host shell", "err", err)
 		return execHostShell()
 	}
 	return nil
@@ -414,9 +414,9 @@ func herdrDefaultShellLookup(storeRoot, wsID string) (HerdrSpaceBinding, bool, e
 	return HerdrSpaceBinding{}, false, nil
 }
 
-// RunHerdrGuestShell is the argv[0]-dispatched entry point when the nexus3
-// binary is hard-linked as "nexus3-guest-shell" by
-// "nexus3 herdr install-default-shell". It wraps the resolution logic with a
+// RunHerdrGuestShell is the argv[0]-dispatched entry point when the nexus
+// binary is hard-linked as "nexus-guest-shell" by
+// "nexus herdr install-default-shell". It wraps the resolution logic with a
 // top-level panic recovery (CRITICAL 3): a panic anywhere in the resolution
 // path is caught here and the operator always gets a working host shell.
 //
@@ -425,7 +425,7 @@ func herdrDefaultShellLookup(storeRoot, wsID string) (HerdrSpaceBinding, bool, e
 func RunHerdrGuestShell() {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Warn("nexus3-guest-shell: panic; falling back to host shell", "panic", r)
+			slog.Warn("nexus-guest-shell: panic; falling back to host shell", "panic", r)
 			sh := os.Getenv("SHELL")
 			if sh == "" {
 				sh = "/bin/sh"
@@ -450,10 +450,10 @@ func RunHerdrGuestShell() {
 		storeRoot = ""
 	}
 
-	// Read the sidecar for the real nexus3 binary path and the stamped kernel
+	// Read the sidecar for the real nexus binary path and the stamped kernel
 	// path. CRITICAL 1: the hard link installs into ~/.local/bin which has no
-	// NEXUS3_KERNEL_PATH from the install-time-stamped value in the sidecar
-	nexus3Bin, kernelPath, nextShell := herdrReadSidecar()
+	// NEXUS_KERNEL_PATH from the install-time-stamped value in the sidecar
+	nexusBin, kernelPath, nextShell := herdrReadSidecar()
 	herdrApplyKernelPath(kernelPath, os.Getenv, os.Setenv)
 	herdrApplyGuestShellNext(nextShell, os.Getenv, os.Setenv)
 
@@ -462,8 +462,8 @@ func RunHerdrGuestShell() {
 		svc = s
 	}
 
-	if err := herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexus3Bin, herdrGuestShellExecFn); err != nil {
-		slog.Warn("nexus3-guest-shell: exec failed; retrying host shell", "err", err)
+	if err := herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexusBin, herdrGuestShellExecFn); err != nil {
+		slog.Warn("nexus-guest-shell: exec failed; retrying host shell", "err", err)
 	}
 	sh := os.Getenv("SHELL")
 	if sh == "" {
@@ -475,15 +475,15 @@ func RunHerdrGuestShell() {
 
 // This is the CRITICAL 1 fix in isolated form. It exists as a separate function
 // because the inline version had no test: disabling it left the entire suite
-// An explicit NEXUS3_KERNEL_PATH always wins — the operator's override must not
+// An explicit NEXUS_KERNEL_PATH always wins — the operator's override must not
 func herdrApplyKernelPath(kernelPath string, getenv func(string) string, setenv func(string, string) error) {
 	if kernelPath == "" {
 		return
 	}
-	if getenv("NEXUS3_KERNEL_PATH") != "" {
+	if getenv("NEXUS_KERNEL_PATH") != "" {
 		return
 	}
-	_ = setenv("NEXUS3_KERNEL_PATH", kernelPath)
+	_ = setenv("NEXUS_KERNEL_PATH", kernelPath)
 }
 
 // shell (sidecar line 3) unless the operator already set it in the environment.
@@ -496,11 +496,13 @@ func herdrApplyGuestShellNext(nextShell string, getenv func(string) string, sete
 
 // herdrReadSidecar reads the companion sidecar written by
 // Sidecar format (two newline-separated lines):
+//
 //	<kernel image path stamped at install time>   ← may be absent (old sidecar)
+//
 // The sidecar is necessary because os.Executable() inside the hard-linked
-// binary returns the hard link's own path. Using that as nexus3Bin would cause
+// binary returns the hard link's own path. Using that as nexusBin would cause
 // resolveKernelPath (CRITICAL 1): herdr opens panes from the user's home dir,
-func herdrReadSidecar() (nexus3Bin, kernelPath, nextShell string) {
+func herdrReadSidecar() (nexusBin, kernelPath, nextShell string) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", "", ""
@@ -509,21 +511,21 @@ func herdrReadSidecar() (nexus3Bin, kernelPath, nextShell string) {
 	if err != nil {
 		return "", "", ""
 	}
-	nexus3Bin, kernelPath, nextShell = herdrParseSidecar(data)
-	if nexus3Bin == "" {
+	nexusBin, kernelPath, nextShell = herdrParseSidecar(data)
+	if nexusBin == "" {
 		return "", "", ""
 	}
-	if _, err := os.Stat(nexus3Bin); err != nil {
+	if _, err := os.Stat(nexusBin); err != nil {
 		return "", "", "" // sidecar path stale; fail-open
 	}
-	return nexus3Bin, kernelPath, nextShell
+	return nexusBin, kernelPath, nextShell
 }
 
 // herdrParseSidecar splits the sidecar body into its three optional lines.
-func herdrParseSidecar(data []byte) (nexus3Bin, kernelPath, nextShell string) {
+func herdrParseSidecar(data []byte) (nexusBin, kernelPath, nextShell string) {
 	lines := strings.SplitN(strings.TrimRight(string(data), "\n"), "\n", 3)
 	if len(lines) >= 1 {
-		nexus3Bin = strings.TrimSpace(lines[0])
+		nexusBin = strings.TrimSpace(lines[0])
 	}
 	if len(lines) >= 2 {
 		kernelPath = strings.TrimSpace(lines[1])
@@ -531,7 +533,7 @@ func herdrParseSidecar(data []byte) (nexus3Bin, kernelPath, nextShell string) {
 	if len(lines) >= 3 {
 		nextShell = strings.TrimSpace(lines[2])
 	}
-	return nexus3Bin, kernelPath, nextShell
+	return nexusBin, kernelPath, nextShell
 }
 
 func runHerdrDefaultShell(ctx context.Context, _ []string, _ *Output) error {
@@ -545,21 +547,21 @@ func runHerdrDefaultShell(ctx context.Context, _ []string, _ *Output) error {
 		svc = s
 	}
 
-	nexus3Bin, err := os.Executable()
+	nexusBin, err := os.Executable()
 	if err != nil {
-		nexus3Bin = "" // guard in core falls to host shell
+		nexusBin = "" // guard in core falls to host shell
 	}
 
-	return herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexus3Bin, syscall.Exec)
+	return herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexusBin, syscall.Exec)
 }
 
-// ~/.local/bin/nexus3-guest-shell and writes a companion sidecar file with the
+// ~/.local/bin/nexus-guest-shell and writes a companion sidecar file with the
 // Hard link vs wrapper script:
 //   - No PATH lookup at runtime — the installed path IS the binary (CRITICAL 1).
 //   - Hard link survives rebuilds: "go build" creates a new inode; the hard
 //     link holds the installed inode until re-install (CRITICAL 2).
 //     which has a top-level panic recovery (CRITICAL 3).
-//   - The sidecar stores the real nexus3 binary path so the exec leg does not
+//   - The sidecar stores the real nexus binary path so the exec leg does not
 func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) error {
 	nextShell, writeConfig, err := herdrInstallDefaultShellParseArgs(args)
 	if err != nil {
@@ -583,7 +585,7 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 		return fmt.Errorf("install-default-shell: resolve own binary symlinks: %w", err)
 	}
 
-	installPath := filepath.Join(binDir, "nexus3-guest-shell")
+	installPath := filepath.Join(binDir, "nexus-guest-shell")
 	_ = os.Remove(installPath) // remove old file/link before installing
 
 	var configPath string
@@ -601,8 +603,8 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 		}
 		configBackupPath = bkp
 		if foreign != "" && nextShell == "" {
-			if filepath.Base(foreign) == "nexus3-guest-shell" {
-				fmt.Fprintf(out.w, "Note: existing default_shell is nexus3-guest-shell (%s); overwriting it.\n\n", foreign)
+			if filepath.Base(foreign) == "nexus-guest-shell" {
+				fmt.Fprintf(out.w, "Note: existing default_shell is nexus-guest-shell (%s); overwriting it.\n\n", foreign)
 			} else if st, stErr := os.Stat(foreign); stErr == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
 				nextShell = foreign
 			}
@@ -617,11 +619,11 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 		}
 	}
 
-	// Sidecar: two-line file storing the real nexus3 binary path (line 1) and
+	// Sidecar: two-line file storing the real nexus binary path (line 1) and
 	// breaking the cwd dependency in resolveKernelPath (CRITICAL 1). If kernel
 	// and the pane falls back to host shell — fail-open is preserved.
 	// Version skew: the hard link freezes the DECISION binary at install time;
-	// the sidecar always names the latest-built nexus3 for the EXEC leg. If the
+	// the sidecar always names the latest-built nexus for the EXEC leg. If the
 	// exec verb's CLI surface changes after a rebuild, the stale decision binary
 	sidecarPath := installPath + herdrSidecarSuffix
 	kernelLine := ""
@@ -642,13 +644,13 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 		if err := herdrInstallProbeCmd(installPath).Run(); err != nil {
 			_ = os.Remove(installPath)
 			_ = os.Remove(sidecarPath)
-			return fmt.Errorf("install-default-shell: probe failed — binary may be too old; rebuild nexus3 and retry: %w", err)
+			return fmt.Errorf("install-default-shell: probe failed — binary may be too old; rebuild nexus and retry: %w", err)
 		}
 	}
 
 	fmt.Fprintf(out.w, "Installed: %s\n\n", installPath)
 	if nextShell != "" {
-		fmt.Fprintf(out.w, "Chained guest shell (non-nexus3 panes): %s\n\n", nextShell)
+		fmt.Fprintf(out.w, "Chained guest shell (non-nexus panes): %s\n\n", nextShell)
 	}
 
 	if writeConfig {
@@ -780,7 +782,7 @@ func herdrWriteConfigTOML(configPath, installPath string) (changed bool, backupP
 	return true, "", "", nil
 }
 
-// shell for non-nexus3 panes) and --write-config (idempotently write config.toml).
+// shell for non-nexus panes) and --write-config (idempotently write config.toml).
 func herdrInstallDefaultShellParseArgs(args []string) (nextShell string, writeConfig bool, err error) {
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -805,8 +807,8 @@ func herdrInstallDefaultShellParseArgs(args []string) (nextShell string, writeCo
 	if st.IsDir() || st.Mode()&0o111 == 0 {
 		return "", false, fmt.Errorf("install-default-shell: --next %s: not an executable file", nextShell)
 	}
-	if filepath.Base(nextShell) == "nexus3-guest-shell" {
-		return "", false, fmt.Errorf("install-default-shell: --next %s: would chain nexus3-guest-shell to itself", nextShell)
+	if filepath.Base(nextShell) == "nexus-guest-shell" {
+		return "", false, fmt.Errorf("install-default-shell: --next %s: would chain nexus-guest-shell to itself", nextShell)
 	}
 	return nextShell, writeConfig, nil
 }
@@ -814,8 +816,8 @@ func herdrInstallDefaultShellParseArgs(args []string) (nextShell string, writeCo
 func herdrInstallProbeCmd(installPath string) *osexec.Cmd {
 	return &osexec.Cmd{
 		Path: installPath,
-		Args: []string{"nexus3-guest-shell"},
-		Env:  append(os.Environ(), "NEXUS3_HOST_SHELL=1", "SHELL=/bin/true"),
+		Args: []string{"nexus-guest-shell"},
+		Env:  append(os.Environ(), "NEXUS_HOST_SHELL=1", "SHELL=/bin/true"),
 	}
 }
 
@@ -840,10 +842,10 @@ func herdrCopyBinary(src, dst string) error {
 
 // ── wt/ supervised shell (Mechanism 2) ───────────────────────────────────────
 
-//	t+0ms    SIGHUP  → process group  (the child dies here)
-//	t+14ms   SIGHUP  → process group  (repeat)
-//	t+279ms  SIGTERM → process group  (killed the parent: only SIGHUP was armed)
-//	t+~515ms SIGKILL → process group  (uncatchable — see the detached reaper)
+// t+0ms    SIGHUP  → process group  (the child dies here)
+// t+14ms   SIGHUP  → process group  (repeat)
+// t+279ms  SIGTERM → process group  (killed the parent: only SIGHUP was armed)
+// t+~515ms SIGKILL → process group  (uncatchable — see the detached reaper)
 var herdrPaneCloseSignals = []os.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT}
 
 // the caller forks would also ignore the signal and never exit when herdr
@@ -860,21 +862,21 @@ func installParentSighupAbsorber() (stop func()) {
 
 // process survives pane-close (herdr sends SIGHUP to the process group) and
 // FAIL-OPEN contract: every error after the child exits is logged and
-func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding HerdrSpaceBinding, argv []string) error {
+func herdrWtSupervisedShell(ctx context.Context, nexusBin string, binding HerdrSpaceBinding, argv []string) error {
 	// Absorb SIGHUP via a Notify handler (NOT signal.Ignore) so the parent
 	stopSighup := installParentSighupAbsorber()
 	defer stopSighup()
 
-	if err := herdrWtChildRunnerFn(ctx, nexus3Bin, argv); err != nil {
+	if err := herdrWtChildRunnerFn(ctx, nexusBin, argv); err != nil {
 		// aborted, SIGHUP from pane-close, etc.).  Continue to the last-pane
-		slog.Warn("nexus3-guest-shell: wt/ child exited with error", "handle", binding.SandboxHandle, "err", err)
+		slog.Warn("nexus-guest-shell: wt/ child exited with error", "handle", binding.SandboxHandle, "err", err)
 	}
 
 	// because the store record can be left mid-mutation.  A setsid'd child is
 	// SIGKILL never reaches it.
 	// FAIL-OPEN: a spawn failure is logged and swallowed; the prune backstop
 	if err := herdrWtSpawnDetachedReapFn(binding); err != nil {
-		slog.Warn("nexus3-guest-shell: wt/ detached reap spawn failed; prune will catch it",
+		slog.Warn("nexus-guest-shell: wt/ detached reap spawn failed; prune will catch it",
 			"handle", binding.SandboxHandle, "err", err)
 	}
 	return nil
@@ -883,10 +885,10 @@ func herdrWtSupervisedShell(ctx context.Context, nexus3Bin string, binding Herdr
 // ── Detached wt/ reaper ──────────────────────────────────────────────────────
 
 const (
-	herdrWtReapHandleEnv    = "NEXUS3_WT_REAP_HANDLE"
-	herdrWtReapWorkspaceEnv = "NEXUS3_WT_REAP_WORKSPACE"
-	herdrWtReapPaneEnv      = "NEXUS3_WT_REAP_PANE"
-	herdrWtReapSandboxIDEnv = "NEXUS3_WT_REAP_SANDBOX_ID"
+	herdrWtReapHandleEnv    = "NEXUS_WT_REAP_HANDLE"
+	herdrWtReapWorkspaceEnv = "NEXUS_WT_REAP_WORKSPACE"
+	herdrWtReapPaneEnv      = "NEXUS_WT_REAP_PANE"
+	herdrWtReapSandboxIDEnv = "NEXUS_WT_REAP_SANDBOX_ID"
 )
 
 var herdrWtReapSettle = 1500 * time.Millisecond
@@ -916,16 +918,16 @@ func herdrWtSpawnDetachedReap(binding HerdrSpaceBinding) error {
 func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.File) *osexec.Cmd {
 	return &osexec.Cmd{
 		Path: self,
-		Args: []string{"nexus3-guest-shell"},
+		Args: []string{"nexus-guest-shell"},
 		Env: append(os.Environ(),
 			herdrWtReapHandleEnv+"="+binding.SandboxHandle,
 			herdrWtReapWorkspaceEnv+"="+binding.HerdrWorkspaceID,
 			herdrWtReapPaneEnv+"="+binding.GuestPaneID,
 			herdrWtReapSandboxIDEnv+"="+binding.SandboxID,
 		),
-		Stdin:  devNull,
-		Stdout: devNull,
-		Stderr: devNull,
+		Stdin:       devNull,
+		Stdout:      devNull,
+		Stderr:      devNull,
 		SysProcAttr: &syscall.SysProcAttr{Setsid: true},
 	}
 }
@@ -950,7 +952,7 @@ func runHerdrWtDetachedReap(ctx context.Context, binding HerdrSpaceBinding) {
 	remaining, err := herdrWtPaneListerFn(ctx, binding.HerdrWorkspaceID, binding.GuestPaneID)
 	if err != nil {
 		// FAIL-OPEN: herdr unreachable, parse error, etc.
-		slog.Warn("nexus3-guest-shell: wt/ pane-list failed; skipping teardown (prune will catch it)",
+		slog.Warn("nexus-guest-shell: wt/ pane-list failed; skipping teardown (prune will catch it)",
 			"handle", binding.SandboxHandle, "err", err)
 		return
 	}
@@ -961,10 +963,10 @@ func runHerdrWtDetachedReap(ctx context.Context, binding HerdrSpaceBinding) {
 	storeRoot, storeErr := store.DefaultRoot()
 	herdrBin, _ := resolveHerdrBin()
 	if storeErr != nil {
-		slog.Warn("nexus3-guest-shell: wt/ store root unavailable; falling back to VM-only reap",
+		slog.Warn("nexus-guest-shell: wt/ store root unavailable; falling back to VM-only reap",
 			"handle", binding.SandboxHandle, "err", storeErr)
 		if err := herdrWtSandboxRemoverFn(ctx, binding.SandboxHandle); err != nil {
-			slog.Warn("nexus3-guest-shell: wt/ sandbox rm failed; prune will catch it",
+			slog.Warn("nexus-guest-shell: wt/ sandbox rm failed; prune will catch it",
 				"handle", binding.SandboxHandle, "err", err)
 		}
 		return
@@ -986,7 +988,7 @@ var herdrWtTeardownFn = func(ctx context.Context, storeRoot, handle, herdrBin, s
 	}
 	if err := herdrSpaceTeardown(ctx, storeRoot, handle, deps, teardownOpts{failOpen: true, expectedSandboxID: sandboxID}); err != nil {
 		// herdrSpaceTeardown with failOpen:true never returns non-nil; belt-and-suspenders.
-		slog.Warn("nexus3-guest-shell: wt/ teardown error (swallowed)", "handle", handle, "err", err)
+		slog.Warn("nexus-guest-shell: wt/ teardown error (swallowed)", "handle", handle, "err", err)
 	}
 }
 

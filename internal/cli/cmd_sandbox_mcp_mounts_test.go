@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // TestBuildGuestMCPServers_MountMappedCommandRewritten drives the sandbox
@@ -22,7 +22,7 @@ func TestBuildGuestMCPServers_MountMappedCommandRewritten(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfgDir := filepath.Join(home, ".config", "nexus3")
+	cfgDir := filepath.Join(home, ".config", "nexus")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

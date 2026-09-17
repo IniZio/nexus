@@ -85,7 +85,7 @@ func TestHerdrBackfillRepoRoot_FillsEmpty(t *testing.T) {
 	ctx := context.Background()
 
 	seedBackfillBinding(t, root, HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:dev/alpha",
+		SpaceLabel:       "nexus:dev/alpha",
 		HerdrWorkspaceID: "w10",
 		SandboxHandle:    "dev/alpha",
 		SandboxID:        "sb-alpha",
@@ -131,7 +131,7 @@ func TestHerdrBackfillRepoRoot_DoesNotOverwriteNonEmpty(t *testing.T) {
 	ctx := context.Background()
 
 	seedBackfillBinding(t, root, HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:dev/beta",
+		SpaceLabel:       "nexus:dev/beta",
 		HerdrWorkspaceID: "w20",
 		SandboxHandle:    "dev/beta",
 		SandboxID:        "sb-beta",
@@ -175,7 +175,7 @@ func TestHerdrBackfillRepoRoot_SkipsUnknownWorkspace(t *testing.T) {
 	ctx := context.Background()
 
 	seedBackfillBinding(t, root, HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:old/stale",
+		SpaceLabel:       "nexus:old/stale",
 		HerdrWorkspaceID: "w99",
 		SandboxHandle:    "old/stale",
 		SandboxID:        "sb-stale",
@@ -214,7 +214,7 @@ func TestHerdrBackfillRepoRoot_HerdrFailure_NoPartialWrite(t *testing.T) {
 	ctx := context.Background()
 
 	seedBackfillBinding(t, root, HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:dev/gamma",
+		SpaceLabel:       "nexus:dev/gamma",
 		HerdrWorkspaceID: "w30",
 		SandboxHandle:    "dev/gamma",
 		SandboxID:        "sb-gamma",
@@ -297,7 +297,7 @@ func TestHerdrBackfillRepoRoot_RoundTrip_PredicateEngages(t *testing.T) {
 
 	// Seed a legacy binding with empty RepoRoot for workspace "w50".
 	seedBackfillBinding(t, root, HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:dev/main",
+		SpaceLabel:       "nexus:dev/main",
 		HerdrWorkspaceID: "w50",
 		SandboxHandle:    "dev/main",
 		SandboxID:        "sb-main",
@@ -351,7 +351,7 @@ func TestHerdrDefaultShellCore_UnboundNonWorktreeWorkspace_NoSpawn(t *testing.T)
 
 	// Seed one binding for a different workspace so the bindings file exists.
 	seedBackfillBinding(t, root, HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:dev/other",
+		SpaceLabel:       "nexus:dev/other",
 		HerdrWorkspaceID: "wOTHER",
 		SandboxHandle:    "dev/other",
 		SandboxID:        "sb-other",

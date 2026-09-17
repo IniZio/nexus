@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // Sentinel errors returned by Store implementations. Callers should use
@@ -109,16 +109,16 @@ type Store interface {
 	GetByMotive(ctx context.Context, motiveID string) ([]domain.Sandbox, error)
 }
 
-// DefaultRoot returns the default state directory for nexus3, following the
-// XDG Base Directory Specification: $XDG_STATE_HOME/nexus3 when set, otherwise
-// ~/.local/state/nexus3.
+// DefaultRoot returns the default state directory for nexus, following the
+// XDG Base Directory Specification: $XDG_STATE_HOME/nexus when set, otherwise
+// ~/.local/state/nexus.
 func DefaultRoot() (string, error) {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return filepath.Join(xdg, "nexus3"), nil
+		return filepath.Join(xdg, "nexus"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("store: resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".local", "state", "nexus3"), nil
+	return filepath.Join(home, ".local", "state", "nexus"), nil
 }

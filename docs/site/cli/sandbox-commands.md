@@ -1,6 +1,6 @@
 ---
 title: "Lifecycle commands"
-description: "Reference for nexus3 lifecycle verbs: create, ps, rm, start, stop, pause, resume"
+description: "Reference for nexus lifecycle verbs: create, ps, rm, start, stop, pause, resume"
 ---
 
 # Lifecycle commands
@@ -10,27 +10,27 @@ description: "Reference for nexus3 lifecycle verbs: create, ps, rm, start, stop,
 A sandbox is a Cloud Hypervisor microVM identified by `project/name`. Every lifecycle operation goes through `internal/core/service`; the CLI verbs here are thin wrappers.
 
 ::: tip Both spellings work <Badge type="tip" text="built" />
-The lifecycle verbs are spelled flat — `nexus3 create`, `nexus3 ps`, and so on. The grouped spelling is kept as an equivalent alias for existing scripts, the MCP tools and the herdr plugin:
+The lifecycle verbs are spelled flat — `nexus create`, `nexus ps`, and so on. The grouped spelling is kept as an equivalent alias for existing scripts, the MCP tools and the herdr plugin:
 
 | Flat (preferred) | Grouped (equivalent) |
 |---|---|
-| `nexus3 create` | `nexus3 sandbox create` |
-| `nexus3 ps` (or `nexus3 ls`) | `nexus3 sandbox list` |
-| `nexus3 rm` | `nexus3 sandbox rm` |
-| `nexus3 start` | `nexus3 sandbox start` |
-| `nexus3 stop` | `nexus3 sandbox stop` |
-| `nexus3 pause` | `nexus3 sandbox pause` |
-| `nexus3 resume` | `nexus3 sandbox resume` |
+| `nexus create` | `nexus sandbox create` |
+| `nexus ps` (or `nexus ls`) | `nexus sandbox list` |
+| `nexus rm` | `nexus sandbox rm` |
+| `nexus start` | `nexus sandbox start` |
+| `nexus stop` | `nexus sandbox stop` |
+| `nexus pause` | `nexus sandbox pause` |
+| `nexus resume` | `nexus sandbox resume` |
 
 They are not two implementations: each flat verb delegates to the same code path, so flags, exit codes and JSON envelopes are identical either way.
 :::
 
-## nexus3 create
+## nexus create
 
 Create a sandbox and boot it.
 
 ```
-nexus3 create <project>/<name> [flags]
+nexus create <project>/<name> [flags]
 ```
 
 | Flag | Type | Default | Description |
@@ -59,10 +59,10 @@ Auto-resize is unconditional: hotplug hardware is configured at create time and 
 
 ### Named volumes
 
-`--mount-named <name>:<guest-path>[:<options>]` attaches a named volume into the guest. Named volumes are user-owned and persist independently of any sandbox — `nexus3 rm` detaches them but never deletes their backing files.
+`--mount-named <name>:<guest-path>[:<options>]` attaches a named volume into the guest. Named volumes are user-owned and persist independently of any sandbox — `nexus rm` detaches them but never deletes their backing files.
 
 ```
-nexus3 create myproject/dev-1 \
+nexus create myproject/dev-1 \
   --image myapp-base:latest \
   --mount-named myapp-node_modules:/workspace/myapp/node_modules:kind=disk,size=10g \
   --mount-named myapp-docker:/var/lib/docker:kind=disk,size=20g \
@@ -83,7 +83,7 @@ Prefer `kind=disk` for dependency stores and build caches — block I/O is measu
 - `kind=disk`: one read-write attacher at a time; multiple read-only attachers are allowed simultaneously.
 - `kind=dir`: no attach-count restriction.
 
-Use `nexus3 volume rm <name>` to delete a volume explicitly, or `nexus3 volume prune` to reclaim detached volumes. See [Volume commands](/cli/volume-commands) for the full lifecycle.
+Use `nexus volume rm <name>` to delete a volume explicitly, or `nexus volume prune` to reclaim detached volumes. See [Volume commands](/cli/volume-commands) for the full lifecycle.
 
 For the agent skill that generates `--mount-named` fragments from project manifests (package.json, Cargo.toml, go.mod, etc.), see [AI agents](/ai-agents).
 
@@ -92,8 +92,8 @@ For the agent skill that generates `--mount-named` fragments from project manife
 `--mount <host-path>:<guest-path>[:ro]` mounts a host directory into the guest as a live virtiofs share. Edits inside the sandbox appear on the host immediately; no sync step is needed.
 
 ```
-nexus3 create myproject/dev-1 \
-  --image nexus3-base:20260807 \
+nexus create myproject/dev-1 \
+  --image nexus-base:20260807 \
   --mount /data/repos/myrepo:/workspace/myrepo \
   --memory 8192
 ```
@@ -111,7 +111,7 @@ Key differences from `--mount-named`:
 The host path must exist and be a directory; it is resolved to an absolute path. Repeatable:
 
 ```
-nexus3 create myproject/dev-1 \
+nexus create myproject/dev-1 \
   --mount /data/repos/myrepo:/workspace/myrepo \
   --mount /data/shared/secrets:/run/secrets:ro \
   --memory 8192
@@ -124,18 +124,18 @@ See [Mounts and worktrees](/recipes/mounts-and-worktrees) for the full worktree 
 `--service 'name:cmd[:readyprobe]'` declares a process that must be running before `create` returns. The create command blocks until all probes pass (30-second cap); if any probe has not passed, create fails and the sandbox is removed.
 
 ```
-nexus3 create myproject/dev-1 \
-  --image nexus3-base:20260807 \
+nexus create myproject/dev-1 \
+  --image nexus-base:20260807 \
   --service 'dockerd:dockerd:docker info' \
   --memory 8192
 ```
 
-## nexus3 ps
+## nexus ps
 
 List sandboxes, optionally filtered by label.
 
 ```
-nexus3 ps [--label KEY=VALUE] [--wide]
+nexus ps [--label KEY=VALUE] [--wide]
 ```
 
 | Flag | Type | Default | Description |
@@ -143,64 +143,64 @@ nexus3 ps [--label KEY=VALUE] [--wide]
 | `--label KEY=VALUE` | string | — | Filter by label (AND-matched when repeated) |
 | `--wide` | bool | false | Include per-sandbox disk allocation, uptime, and fleet-level leaked-resource count (requires `--label`) |
 
-`--wide` requires `--label`; without it the flag is rejected. Example: `nexus3 ps --label task-id=42 --wide`. Extra columns per sandbox: **ID**, **state**, **uptime** (formatted duration), **allocated disk** (sparse blocks × 512 bytes), **error**. Fleet totals: **total allocated** and **leaked resources**. (`--json` additionally carries `handle` and `uptime_seconds` fields in the machine-readable payload.)
+`--wide` requires `--label`; without it the flag is rejected. Example: `nexus ps --label task-id=42 --wide`. Extra columns per sandbox: **ID**, **state**, **uptime** (formatted duration), **allocated disk** (sparse blocks × 512 bytes), **error**. Fleet totals: **total allocated** and **leaked resources**. (`--json` additionally carries `handle` and `uptime_seconds` fields in the machine-readable payload.)
 
-## nexus3 rm
+## nexus rm
 
 Remove a sandbox (must be stopped first).
 
 ```
-nexus3 rm <id|prefix|project/name>
+nexus rm <id|prefix|project/name>
 ```
 
-## nexus3 start
+## nexus start
 
 Boot a stopped sandbox.
 
 ```
-nexus3 start <id|prefix|project/name>
+nexus start <id|prefix|project/name>
 ```
 
-## nexus3 stop
+## nexus stop
 
 Shut down a running sandbox.
 
 ```
-nexus3 stop <id|prefix|project/name>
+nexus stop <id|prefix|project/name>
 ```
 
-## nexus3 pause
+## nexus pause
 
 Pause a running sandbox (freeze in memory).
 
 ```
-nexus3 pause <id|prefix|project/name>
+nexus pause <id|prefix|project/name>
 ```
 
-## nexus3 resume
+## nexus resume
 
 Resume a paused sandbox.
 
 ```
-nexus3 resume <id|prefix|project/name>
+nexus resume <id|prefix|project/name>
 ```
 
-## nexus3 run <Badge type="tip" text="built" />
+## nexus run <Badge type="tip" text="built" />
 
 Create a sandbox, run a command, and remove the sandbox on exit. Cleanup is guaranteed even on SIGINT or exec error.
 
 ```
-nexus3 run [flags] <image-ref> -- <command> [args...]
+nexus run [flags] <image-ref> -- <command> [args...]
 ```
 
-`<image-ref>` may be a local image reference (built with `nexus3 image build`) **or** a standard OCI/Docker Hub reference such as `alpine:3.20` or `debian:bookworm-slim`. The local image store is checked first; if no match is found, the image is pulled from the registry on demand and cached by ref. Subsequent invocations with the same ref hit the cache — no re-pull.
+`<image-ref>` may be a local image reference (built with `nexus image build`) **or** a standard OCI/Docker Hub reference such as `alpine:3.20` or `debian:bookworm-slim`. The local image store is checked first; if no match is found, the image is pulled from the registry on demand and cached by ref. Subsequent invocations with the same ref hit the cache — no re-pull.
 
 ```
-nexus3 run debian:bookworm-slim -- cat /etc/debian_version
+nexus run debian:bookworm-slim -- cat /etc/debian_version
 ```
 
 ```
-nexus3 run alpine:3.20 -- sh -c 'echo hello; uname -r'
+nexus run alpine:3.20 -- sh -c 'echo hello; uname -r'
 ```
 
 | Flag | Type | Default | Description |
@@ -217,15 +217,15 @@ nexus3 run alpine:3.20 -- sh -c 'echo hello; uname -r'
 Labels are arbitrary key-value metadata stamped at creation. `create` accepts `--label KEY=VALUE`, repeatable:
 
 ```
-nexus3 create myproject/w1 --image nexus3-base:latest \
+nexus create myproject/w1 --image nexus-base:latest \
   --label task-id=42 --label role=worker
 ```
 
 `ps --label KEY=VALUE` filters by label, AND-matched when repeated:
 
 ```
-for sb in $(nexus3 --json ps --label task-id=42 | jq -r '.data.sandboxes[].handle'); do
-  nexus3 exec "$sb" -- git status
+for sb in $(nexus --json ps --label task-id=42 | jq -r '.data.sandboxes[].handle'); do
+  nexus exec "$sb" -- git status
 done
 ```
 

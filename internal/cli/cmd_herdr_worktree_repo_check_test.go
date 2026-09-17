@@ -4,7 +4,7 @@ package cli
 //
 // These tests pin the SINGLE MECHANISM invariant: both the dispatcher
 // (herdrAutoCreatePredicateWith) and the subprocess (herdrWorktreeSandboxRepoCheck)
-// must agree on "does this repo have a nexus3-bound sandbox?" for every input.
+// must agree on "does this repo have a nexus-bound sandbox?" for every input.
 // Enforced by TestHerdrRepoHasBoundSandbox_BothCallSitesAgree.
 
 import (
@@ -18,7 +18,7 @@ import (
 // scenario that failed before the fix:
 //
 //	AllWorkspaceIDs : w8, w3N, w3K, w3M, w3H, w3J  (workspaces opening worktrees)
-//	bound workspaces: wN, w36, w37, w33, w38, w34  (nexus3-created)
+//	bound workspaces: wN, w36, w37, w33, w38, w34  (nexus-created)
 //
 // Zero overlap → old workspace-ID iteration returned false even though the
 // repo had bound sandboxes. The new code uses RepoRoot matching and returns
@@ -33,8 +33,8 @@ func TestHerdrWorktreeSandboxRepoCheck_RepoRootMatch_Binds(t *testing.T) {
 	// A binding whose workspace ID is NOT among the workspace IDs that open
 	// worktrees — the historically disjoint set.
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:dev/space1",
-		HerdrWorkspaceID: "wN", // nexus3-created; never appears in open_workspace_id
+		SpaceLabel:       "nexus:dev/space1",
+		HerdrWorkspaceID: "wN", // nexus-created; never appears in open_workspace_id
 		SandboxHandle:    "dev/space1",
 		SandboxID:        "sb-space1",
 		RepoRoot:         mainRepo,
@@ -65,7 +65,7 @@ func TestHerdrWorktreeSandboxRepoCheck_NoRepoRootMatch_Skips(t *testing.T) {
 	worktreeMainRepo := t.TempDir()
 
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:other/proj",
+		SpaceLabel:       "nexus:other/proj",
 		HerdrWorkspaceID: "w36",
 		SandboxHandle:    "other/proj",
 		SandboxID:        "sb-other",
@@ -98,7 +98,7 @@ func TestHerdrWorktreeSandboxRepoCheck_NoRepoRootMatch_Skips(t *testing.T) {
 // filepath.Clean("") != "/home/user/repo"; the "." case is the decisive one.)
 func TestHerdrRepoHasBoundSandbox_EmptyRepoRoot_IsNoMatch(t *testing.T) {
 	legacy := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:legacy",
+		SpaceLabel:       "nexus:legacy",
 		HerdrWorkspaceID: "wLegacy",
 		SandboxHandle:    "legacy",
 		SandboxID:        "sb-legacy",
@@ -120,7 +120,7 @@ func TestHerdrRepoHasBoundSandbox_EmptyRepoRoot_IsNoMatch(t *testing.T) {
 
 	// Empty mainRepo is also NO MATCH even against a real binding.
 	real := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:real",
+		SpaceLabel:       "nexus:real",
 		HerdrWorkspaceID: "wReal",
 		SandboxHandle:    "real",
 		SandboxID:        "sb-real",
@@ -159,7 +159,7 @@ func TestHerdrRepoHasBoundSandbox_BothCallSitesAgree(t *testing.T) {
 	mainRepo := binding.RepoRoot
 
 	differentBinding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:unrelated",
+		SpaceLabel:       "nexus:unrelated",
 		HerdrWorkspaceID: "wUnrelated",
 		SandboxHandle:    "unrelated",
 		SandboxID:        "sb-unrelated",

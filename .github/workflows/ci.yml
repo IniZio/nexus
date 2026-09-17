@@ -33,11 +33,11 @@ jobs:
         run: make setup
 
       # TMPDIR=/tmp: long paths exceed the 107-byte AF_UNIX sun_path limit.
-      # make ci carries the memory-cap guards from CLAUDE.md; NEXUS3_ALLOW_UNCAPPED=1
+      # make ci carries the memory-cap guards from CLAUDE.md; NEXUS_ALLOW_UNCAPPED=1
       # skips systemd-run --user --scope, which is unavailable on GitHub runners.
       - name: Test
         env:
-          NEXUS3_ALLOW_UNCAPPED: "1"
+          NEXUS_ALLOW_UNCAPPED: "1"
         run: TMPDIR=/tmp make ci
 
       - name: Validate CLI examples in docs
@@ -141,20 +141,20 @@ jobs:
       # tag (herdr_l4_live_test.go, herdr_l4_contract_test.go, etc.) require a
       # running herdr daemon or /dev/kvm and are excluded by the -run filter.
       #
-      # NEXUS3_ALLOW_UNCAPPED=1: GitHub Actions does not provide a user systemd
+      # NEXUS_ALLOW_UNCAPPED=1: GitHub Actions does not provide a user systemd
       # instance, so systemd-run --user --scope fails. The CAPPED wrapper falls
       # back to choom-only when this variable is set. The memory concern that
       # motivates CAPPED on the dev host does not apply here because Tier 1 tests
       # boot no VMs.
       #
-      # NEXUS3_LIVE_REQUIRED=1: any liveSkip call in the Tier 1 tests converts to
+      # NEXUS_LIVE_REQUIRED=1: any liveSkip call in the Tier 1 tests converts to
       # t.Fatalf, ensuring a precondition failure is a red job, not a silent pass.
       - name: Run herdr-live Tier 1 tests
         env:
           TMPDIR: /tmp
-          NEXUS3_ALLOW_UNCAPPED: "1"
-          NEXUS3_LIVE_REQUIRED: "1"
-        run: make test-herdr-live GOTEST_ARGS='-v -run TestHerdrPluginManifest|TestHerdrPluginInstall|TestHerdrRefusalGuard|TestHerdrContract_WorkspaceListIsolated'
+          NEXUS_ALLOW_UNCAPPED: "1"
+          NEXUS_LIVE_REQUIRED: "1"
+        run: make test-herdr-live GOTEST_ARGS='-run TestHerdrPluginManifest|TestHerdrPluginInstall|TestHerdrRefusalGuard|TestHerdrContract_WorkspaceListIsolated'
 
   # ── Integration tag, Tier 1 ────────────────────────────────────────────────
   # The //go:build integration tag guarded 44 files that had NEVER run: before
@@ -185,7 +185,7 @@ jobs:
         with:
           go-version: "1.26"
 
-      # NEXUS3_ALLOW_UNCAPPED=1: GitHub Actions provides no user systemd
+      # NEXUS_ALLOW_UNCAPPED=1: GitHub Actions provides no user systemd
       # instance, so `systemd-run --user --scope` fails and CAPPED fails closed.
       # The wrapper falls back to choom-only when this is set. The memory
       # concern behind CAPPED does not apply here: Tier 1 boots no VMs.
@@ -194,10 +194,45 @@ jobs:
       - name: Run integration Tier 1
         env:
           TMPDIR: /tmp
-          NEXUS3_ALLOW_UNCAPPED: "1"
+          NEXUS_ALLOW_UNCAPPED: "1"
         run: make test-integration
 
-  # ── Example: nexus3-in-docker build smoke ─────────────────────────────────
+  # ── Proto drift check ─────────────────────────────────────────────────────
+  proto-check:
+    name: Proto drift check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install buf 1.72.0
+        run: |
+          set -eu
+          BUF_VERSION="1.72.0"
+          BUF_URL="https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          mkdir -p "${HOME}/.local/bin"
+          curl --fail --location --silent --show-error \
+            -o "${HOME}/.local/bin/buf" \
+            "${BUF_URL}"
+          chmod +x "${HOME}/.local/bin/buf"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Install protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+      - name: Regenerate proto and check for drift
+        run: |
+          make proto
+          git diff --exit-code -- internal/core/agent/agentpb proto
+
+  # ── Example: nexus-in-docker build smoke ─────────────────────────────────
   # Verifies that the CI-feasible Dockerfile stages still build correctly.
   # The full image cannot be built in CI because the virtiofsd-stage COPY
   # requires a host-staged binary absent on ubuntu-latest (virtiofsd has no
@@ -205,15 +240,15 @@ jobs:
   # KVM-gated Go test (internal/test/selfhost/docker_host_image_test.go, build
   # tag: integration) which runs only on dev/KVM machines.
   example-image-smoke:
-    name: Example image smoke (nexus3-in-docker)
+    name: Example image smoke (nexus-in-docker)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Smoke — go-builder stage (proves nexus3 binary compiles)
+      - name: Smoke — go-builder stage (proves nexus binary compiles)
         run: |
           docker build \
-            -f examples/nexus3-in-docker/Dockerfile \
+            -f examples/nexus-in-docker/Dockerfile \
             --target go-builder \
             -t n3-smoke-go \
             .
@@ -221,7 +256,7 @@ jobs:
       - name: Smoke — downloader stage (proves CH download URL + SHA-256 pin)
         run: |
           docker build \
-            -f examples/nexus3-in-docker/Dockerfile \
+            -f examples/nexus-in-docker/Dockerfile \
             --target downloader \
             -t n3-smoke-dl \
             .

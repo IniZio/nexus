@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // vmFsConfig is the JSON representation of a CH virtio-fs device in vm.create.
@@ -30,7 +30,7 @@ import (
 // Verified against cloud-hypervisor.yaml @ v52.0 schema:
 // FsConfig { required: [socket, tag], properties: { socket, tag, num_queues, ... } }
 //
-// NumQueues defaults to 1 in CH when omitted; nexus3 uses the default (omitempty).
+// NumQueues defaults to 1 in CH when omitted; nexus uses the default (omitempty).
 type vmFsConfig struct {
 	Tag       string `json:"tag"`
 	Socket    string `json:"socket"`
@@ -100,7 +100,7 @@ func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir strin
 		"--shared-dir", sharedDir,
 		"--socket-path", socketPath,
 		// "none" disables virtiofsd's own sandboxing (no user-namespace pivot),
-		// required when running without CAP_SYS_ADMIN. In nexus3 the sandbox
+		// required when running without CAP_SYS_ADMIN. In nexus the sandbox
 		// boundary is the VM itself; per-process isolation is not needed here.
 		"--sandbox", "none",
 		// Disable seccomp so virtiofsd starts in environments where the

@@ -22,7 +22,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // fakeReconciler is a minimal vmDeathReconciler for tests.
@@ -111,7 +111,7 @@ func TestVMDeath_ReconcileVMDeath_AdoptionFieldsCleared(t *testing.T) {
 		NetnsChildPID:       12345,
 		NetnsChildPGID:      12345,
 		NetnsChildStartTime: 9876543210,
-		GuestTapName:        "nx3g-test",
+		GuestTapName:        "nxg-test",
 		CHAPISocket:         "/tmp/ch.sock",
 	}}
 

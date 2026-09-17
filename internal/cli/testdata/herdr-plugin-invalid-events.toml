@@ -7,8 +7,8 @@
 #
 # Expected outcome: TestHerdrPluginManifest_EventNamesValid FAILS (RED) against
 # this fixture. If it passes, the test is not sensitive enough to catch D-HSH-20.
-id = "nexus3-test-fixture"
-name = "nexus3-test-fixture"
+id = "nexus-test-fixture"
+name = "nexus-test-fixture"
 version = "0.0.0"
 min_herdr_version = "0.7.4"
 description = "Mutation-proof fixture — invalid event name (underscore)."

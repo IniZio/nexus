@@ -4,7 +4,7 @@
 //
 // These tests verify the fix for the latent "no space left on device" bug:
 // the builder ext4 cache must be keyed on BOTH the OCI digest AND the
-// nexus3-agent binary, so that a grown or rebuilt agent produces a fresh
+// nexus-agent binary, so that a grown or rebuilt agent produces a fresh
 // image rather than reusing a stale one sized for a smaller agent.
 package builderimage_test
 
@@ -17,7 +17,7 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
-	"github.com/IniZio/nexus3/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/builder/builderimage"
 )
 
 // TestAgentCacheKey_DifferentAgentsDifferentPaths verifies that two calls with
@@ -32,8 +32,8 @@ func TestAgentCacheKey_DifferentAgentsDifferentPaths(t *testing.T) {
 
 	const fakeDigest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
-	agentV1 := []byte("#!/bin/sh\necho nexus3-agent-v1\n")
-	agentV2 := []byte("#!/bin/sh\necho nexus3-agent-v2-has-grown-considerably\n")
+	agentV1 := []byte("#!/bin/sh\necho nexus-agent-v1\n")
+	agentV2 := []byte("#!/bin/sh\necho nexus-agent-v2-has-grown-considerably\n")
 
 	img := buildMinimalOCIImage(t)
 
@@ -103,7 +103,7 @@ func TestAgentCacheKey_SameAgentCacheHit(t *testing.T) {
 
 	const fakeDigest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 
-	agent := []byte("#!/bin/sh\necho nexus3-agent-stable\n")
+	agent := []byte("#!/bin/sh\necho nexus-agent-stable\n")
 	img := buildMinimalOCIImage(t)
 
 	pullCount := 0

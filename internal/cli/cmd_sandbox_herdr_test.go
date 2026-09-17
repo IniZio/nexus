@@ -18,7 +18,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // fakeWorkspaceCloser records calls and optionally returns an error.
@@ -50,7 +50,7 @@ func TestSandboxRm_HerdrCascade_ClosesRecordedWorkspace(t *testing.T) {
 	// Write a herdr binding for the sandbox.
 	root := t.TempDir()
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:proj-cascade-box",
+		SpaceLabel:       "nexus:proj-cascade-box",
 		HerdrWorkspaceID: "wTEST",
 		SandboxHandle:    sb.Handle(),
 		SandboxID:        sb.ID.String(),
@@ -92,7 +92,7 @@ func TestSandboxRm_HerdrCascade_ToleratesHerdrFailure(t *testing.T) {
 
 	root := t.TempDir()
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:proj-tolerate-box",
+		SpaceLabel:       "nexus:proj-tolerate-box",
 		HerdrWorkspaceID: "wFAIL",
 		SandboxHandle:    sb.Handle(),
 		SandboxID:        sb.ID.String(),
@@ -143,7 +143,7 @@ func TestSandboxRm_HerdrCascade_DeletesBindingOnSuccess(t *testing.T) {
 
 	root := t.TempDir()
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:proj-delete-success-box",
+		SpaceLabel:       "nexus:proj-delete-success-box",
 		HerdrWorkspaceID: "wSUCCESS",
 		SandboxHandle:    sb.Handle(),
 		SandboxID:        sb.ID.String(),
@@ -212,7 +212,7 @@ func TestSandboxRm_HerdrCascade_IDPrefixResolvesAndCloses(t *testing.T) {
 
 	root := t.TempDir()
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:proj-prefix-box",
+		SpaceLabel:       "nexus:proj-prefix-box",
 		HerdrWorkspaceID: "wPREFIX",
 		SandboxHandle:    sb.Handle(),
 		SandboxID:        sb.ID.String(),
@@ -308,7 +308,7 @@ func TestHerdrSpaceTeardownOnRm_NoHerdr_BindingRetained(t *testing.T) {
 	root := t.TempDir()
 
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:proj-rm-no-herdr",
+		SpaceLabel:       "nexus:proj-rm-no-herdr",
 		HerdrWorkspaceID: "wNOHERDR",
 		SandboxHandle:    "proj/rm-no-herdr",
 		SandboxID:        "sb-nh",
@@ -358,7 +358,7 @@ func TestHerdrSpaceTeardownOnRm_DifferentSandboxID_WorkspaceRetained(t *testing.
 
 	// Binding belongs to sandbox sb-LIVE (workspace wLIVE).
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:proj-collide",
+		SpaceLabel:       "nexus:proj-collide",
 		HerdrWorkspaceID: "wLIVE",
 		SandboxHandle:    "proj/collide",
 		SandboxID:        "sb-LIVE",
@@ -405,7 +405,7 @@ func TestHerdrSpaceTeardownOnRm_MatchingSandboxID_WorkspaceClosed(t *testing.T) 
 	root := t.TempDir()
 
 	binding := HerdrSpaceBinding{
-		SpaceLabel:       "nexus3:proj-match",
+		SpaceLabel:       "nexus:proj-match",
 		HerdrWorkspaceID: "wMATCH",
 		SandboxHandle:    "proj/match",
 		SandboxID:        "sb-MATCH",

@@ -7,9 +7,9 @@ func TestHerdrSpaceLabelForRef(t *testing.T) {
 		ref  string
 		want string
 	}{
-		{"demo-orca-01", "nexus3:demo-orca-01"},
-		{"orca/demo-01", "nexus3:orca/demo-01"},
-		{"", "nexus3:"},
+		{"demo-orca-01", "nexus:demo-orca-01"},
+		{"orca/demo-01", "nexus:orca/demo-01"},
+		{"", "nexus:"},
 	}
 	for _, tc := range cases {
 		got := herdrSpaceLabelForRef(tc.ref)

@@ -34,15 +34,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // TestOrcaSupervisorWiring is the S2 acceptance proof. It mirrors orcaCreate's
@@ -84,10 +84,10 @@ func TestOrcaSupervisorWiring(t *testing.T) {
 	t.Logf("base image ready: digest=%s size=%.2f GiB",
 		img.Digest, float64(img.Size)/(1<<30))
 
-	// ── Step 2: build nexus3 binary for SpawnDetached ─────────────────────────
-	t.Log("building nexus3 binary …")
-	nexus3Bin := buildNexus3Bin(t)
-	t.Logf("nexus3 binary: %s", nexus3Bin)
+	// ── Step 2: build nexus binary for SpawnDetached ─────────────────────────
+	t.Log("building nexus binary …")
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
 
 	// ── Step 3: infrastructure dirs (short paths for AF_UNIX sun_path limit) ──
 	socketDir, err := os.MkdirTemp("/tmp", "orca-sv-sock-")
@@ -219,7 +219,7 @@ func TestOrcaSupervisorWiring(t *testing.T) {
 			KernelPath: kernelPath,
 			DiskPath:   diskPath,
 		},
-		Exe:          nexus3Bin,
+		Exe:          nexusBin,
 		ReadyTimeout: 5 * time.Minute,
 	}
 	pid, _, err := supervisor.SpawnDetached(spawnCfg)

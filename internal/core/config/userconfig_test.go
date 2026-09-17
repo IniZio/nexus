@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/config"
 )
 
 func TestLoadUserGlobal_AbsentFile(t *testing.T) {
@@ -22,7 +22,7 @@ func TestLoadUserGlobal_AbsentFile(t *testing.T) {
 func TestLoadUserGlobal_ValidFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfgDir := filepath.Join(dir, "nexus3")
+	cfgDir := filepath.Join(dir, "nexus")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestLoadUserGlobal_ValidFile(t *testing.T) {
 func TestLoadUserGlobal_ImageGCKnobs(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfgDir := filepath.Join(dir, "nexus3")
+	cfgDir := filepath.Join(dir, "nexus")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestLoadUserGlobal_ImageGCKnobs(t *testing.T) {
 func TestLoadUserGlobal_BuilderMemoryKnob(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfgDir := filepath.Join(dir, "nexus3")
+	cfgDir := filepath.Join(dir, "nexus")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestLoadUserGlobal_BuilderMemoryKnob(t *testing.T) {
 func TestLoadUserGlobal_MalformedFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfgDir := filepath.Join(dir, "nexus3")
+	cfgDir := filepath.Join(dir, "nexus")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}

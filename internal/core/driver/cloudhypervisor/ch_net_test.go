@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // newTestSocketpair creates an AF_UNIX SOCK_DGRAM socketpair for tests.
@@ -367,7 +367,7 @@ func TestApplySandboxNetSysctls_ForwardingHardFail(t *testing.T) {
 		return nil
 	}
 
-	err := applySandboxNetSysctls("nx3g-test", "nx3h-test", "nx3b-test")
+	err := applySandboxNetSysctls("nxg-test", "nxh-test", "nxb-test")
 	if err == nil {
 		t.Fatal("expected non-nil error from forwarding hard-fail, got nil")
 	}
@@ -394,7 +394,7 @@ func TestApplySandboxNetSysctls_DisableIPv6BestEffort(t *testing.T) {
 		return nil
 	}
 
-	err := applySandboxNetSysctls("nx3g-test", "nx3h-test", "nx3b-test")
+	err := applySandboxNetSysctls("nxg-test", "nxh-test", "nxb-test")
 	if err != nil {
 		t.Fatalf("expected nil error for best-effort disable_ipv6 failure, got: %v", err)
 	}

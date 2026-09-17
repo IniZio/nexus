@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // ── mock SandboxLister ────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ func writeVolMetaAndDisk(t *testing.T, root, name string, atts []volumestore.Vol
 
 // TestVolumeCreateDir_SuccessShape pins the kind=dir create success shape, and
 // documents the scope exclusion identified by
-// slice VOL-PREFLIGHT: nexus3 volume create intentionally does not run a
+// slice VOL-PREFLIGHT: nexus volume create intentionally does not run a
 // disk-space preflight (TBD-PD-26 / commit 48d1b82).
 //
 // For kind=dir the allocation is a mkdir — zero disk blocks. For kind=disk,

@@ -136,7 +136,7 @@ func TestIPCEgressAllow_NilCallback(t *testing.T) {
 // TestRequestEgressAllow_DeadSock verifies that RequestEgressAllow against a
 // non-existent socket path returns a clear, identifiable error. (T5-AC3)
 func TestRequestEgressAllow_DeadSock(t *testing.T) {
-	deadPath := filepath.Join(os.TempDir(), "nexus3-test-nonexistent-supervisor.sock")
+	deadPath := filepath.Join(os.TempDir(), "nexus-test-nonexistent-supervisor.sock")
 	// Ensure it doesn't accidentally exist.
 	_ = os.Remove(deadPath)
 

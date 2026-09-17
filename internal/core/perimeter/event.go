@@ -31,7 +31,7 @@ func (d *EgressDecision) UnmarshalJSON(b []byte) error {
 
 // EgressEvent is a structured event emitted by the MITM proxy and the
 // netfilter layer each time a connection attempt is evaluated. It is consumed
-// by the `nexus3 egress log` CLI and egress-monitor subscribers.
+// by the `nexus egress log` CLI and egress-monitor subscribers.
 //
 // Verdict reuses the existing [EgressDecision] enum (Allow/Deny). JSON
 // serialises Verdict as its string form ("allow" or "deny") via the

@@ -18,11 +18,11 @@ import (
 )
 
 // cacheHitThreshold is the minimum elapsed time for a build to be considered
-// a genuine run through the builder VM (not a nexus3 image-cache hit).
+// a genuine run through the builder VM (not a nexus image-cache hit).
 //
 // Measured values (2026-08-29, this host):
 //
-//	nexus3 FP-cache HIT (build-cache: hit — skipping builder VM):  5.2s
+//	nexus FP-cache HIT (build-cache: hit — skipping builder VM):  5.2s
 //	genuine build, COPY layer cached (only export+mke2fs run fresh): 30s
 //
 // The 20s threshold was chosen to sit in the 5–30 s gap:
@@ -41,17 +41,17 @@ const cacheHitThreshold = 20 * time.Second
 
 // BuildConfig holds configuration for one build run.
 type BuildConfig struct {
-	// Nexus3 is the path to the nexus3 binary. Defaults to "nexus3" on PATH.
-	Nexus3 string
+	// Nexus is the path to the nexus binary. Defaults to "nexus" on PATH.
+	Nexus string
 	// Workspace is the directory containing .nexus/Containerfile and testfiles/.
 	Workspace string
-	// Project is the nexus3 project name (e.g. "repro").
+	// Project is the nexus project name (e.g. "repro").
 	Project string
 	// SandboxName is the sandbox name within the project.
 	SandboxName string
-	// ImageStore is the path to ~/.local/state/nexus3/images/sha256.
+	// ImageStore is the path to ~/.local/state/nexus/images/sha256.
 	ImageStore string
-	// AgentBin is the host nexus3-agent binary path (may be empty).
+	// AgentBin is the host nexus-agent binary path (may be empty).
 	AgentBin string
 	// ElfSize is the expected byte size for file_elf (0 = unknown).
 	ElfSize int64
@@ -66,16 +66,16 @@ type BuildConfig struct {
 	// LogsDir is where per-run build logs are written.
 	LogsDir string
 	// BuilderMemoryMiB overrides the builder VM guest RAM (--builder-memory).
-	// Zero means use the nexus3 default (8192 MiB). Set this to 4096 on hosts
+	// Zero means use the nexus default (8192 MiB). Set this to 4096 on hosts
 	// where swap is exhausted and 8 GiB is not reliably available.
 	BuilderMemoryMiB uint16
 }
 
-func (c *BuildConfig) nexus3Bin() string {
-	if c.Nexus3 != "" {
-		return c.Nexus3
+func (c *BuildConfig) nexusBin() string {
+	if c.Nexus != "" {
+		return c.Nexus
 	}
-	return "nexus3"
+	return "nexus"
 }
 
 func (c *BuildConfig) buildTimeout() time.Duration {
@@ -85,7 +85,7 @@ func (c *BuildConfig) buildTimeout() time.Duration {
 	return 25 * time.Minute
 }
 
-// imageListOutput is the JSON shape of `nexus3 --json image ls`.
+// imageListOutput is the JSON shape of `nexus --json image ls`.
 type imageListOutput struct {
 	Data struct {
 		Images []struct {
@@ -94,16 +94,16 @@ type imageListOutput struct {
 	} `json:"data"`
 }
 
-// listDigests returns sorted image digests from `nexus3 --json image ls`.
+// listDigests returns sorted image digests from `nexus --json image ls`.
 // Never returns (nil, nil) — a command failure always returns a non-nil error.
-func listDigests(nexus3Bin string) ([]string, error) {
-	out, err := exec.Command(nexus3Bin, "--json", "image", "ls").Output()
+func listDigests(nexusBin string) ([]string, error) {
+	out, err := exec.Command(nexusBin, "--json", "image", "ls").Output()
 	if err != nil {
-		return nil, fmt.Errorf("nexus3 image ls: %w", err)
+		return nil, fmt.Errorf("nexus image ls: %w", err)
 	}
 	var parsed imageListOutput
 	if err := json.Unmarshal(out, &parsed); err != nil {
-		return nil, fmt.Errorf("nexus3 image ls: parse JSON: %w", err)
+		return nil, fmt.Errorf("nexus image ls: parse JSON: %w", err)
 	}
 	digests := make([]string, 0, len(parsed.Data.Images))
 	for _, img := range parsed.Data.Images {
@@ -134,10 +134,10 @@ func diffDigests(before, after []string) []string {
 //
 // Sentinel placement: .nexus/build-uid instead of testfiles/.repro-uid.
 //
-// The nexus3 build fingerprint (FP) is computed from ALL workspace files
+// The nexus build fingerprint (FP) is computed from ALL workspace files
 // (relpath, size, mtime). Writing any workspace file therefore changes the FP
-// and forces nexus3 to run a fresh solve every time — which is what we want
-// (bypass the nexus3 image cache so every run exercises the export path).
+// and forces nexus to run a fresh solve every time — which is what we want
+// (bypass the nexus image cache so every run exercises the export path).
 //
 // The buildkit COPY layer cache key, however, is computed from the SOURCE
 // files matching the COPY instruction ("COPY testfiles/ /testfiles/"). Files
@@ -152,8 +152,8 @@ func diffDigests(before, after []string) []string {
 // fully exhausted the resulting I/O pressure caused the builder VM to be
 // killed mid-solve (host OOM → cloud-hypervisor killed → vsock EOF).
 // minPreconditionFreeGiB is the host free-space floor checked before each build.
-// nexus3's own preflight requires 15 GiB; we add a 5 GiB buffer to catch
-// near-exhaustion that won't trigger the nexus3 preflight but can cause
+// nexus's own preflight requires 15 GiB; we add a 5 GiB buffer to catch
+// near-exhaustion that won't trigger the nexus preflight but can cause
 // ENOSPC during mke2fs packing or buildkit layer I/O.
 const minPreconditionFreeGiB = 20
 
@@ -214,7 +214,7 @@ type BuildResult struct {
 	RunID           string  // out-of-band run identifier injected into Containerfile
 }
 
-// RunBuild executes one nexus3 build and applies the cache-miss gate.
+// RunBuild executes one nexus build and applies the cache-miss gate.
 //
 // Returns:
 //   - (result, nil, nil)    — build ran, cache-miss gate passed; result.ImageFile is set
@@ -224,7 +224,7 @@ type BuildResult struct {
 // A probe that fires the cache-miss gate is always HarnessIntegrityFailure —
 // it is never NoTruncationObserved.
 func RunBuild(ctx context.Context, cfg BuildConfig, label string) (BuildResult, *ProbeResult, error) {
-	nx := cfg.nexus3Bin()
+	nx := cfg.nexusBin()
 
 	// 0a. Builder-sharing guard: ensure no other repro/* sandbox or builder VM
 	// is running before we start. Waits up to 15 min, then HIF.

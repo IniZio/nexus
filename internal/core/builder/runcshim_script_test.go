@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const shimCAPath = "/etc/nexus3/ca/ca-certificates.crt"
+const shimCAPath = "/etc/nexus/ca/ca-certificates.crt"
 
 // shimInjectedEnv is the env prefix the shim prepends, in order.
 var shimInjectedEnv = []string{
@@ -24,8 +24,8 @@ var shimInjectedEnv = []string{
 	"CARGO_HTTP_CAINFO=" + shimCAPath,
 	"NIX_SSL_CERT_FILE=" + shimCAPath,
 	"DENO_CERT=" + shimCAPath,
-	"WGETRC=/etc/nexus3/ca/wgetrc",
-	"APT_CONFIG=/etc/nexus3/ca/apt.conf",
+	"WGETRC=/etc/nexus/ca/wgetrc",
+	"APT_CONFIG=/etc/nexus/ca/apt.conf",
 }
 
 const fakeRuncScript = `#!/bin/sh
@@ -64,11 +64,11 @@ func newShimHarness(t *testing.T) *shimHarness {
 	h := &shimHarness{
 		t:        t,
 		root:     root,
-		shim:     filepath.Join(root, "nexus3-runc"),
+		shim:     filepath.Join(root, "nexus-runc"),
 		fake:     filepath.Join(root, "fake-runc"),
 		fakeOut:  filepath.Join(root, "fake.argv"),
 		fakeCfg:  filepath.Join(root, "fake.config.json"),
-		caCrt:    filepath.Join(root, "nexus3-mitm.crt"),
+		caCrt:    filepath.Join(root, "nexus-mitm.crt"),
 		sysCrt:   filepath.Join(root, "sys-ca-certificates.crt"),
 		trustDir: filepath.Join(root, "trust"),
 	}
@@ -109,10 +109,10 @@ func (h *shimHarness) run(cwd string, args ...string) []string {
 	cmd.Dir = cwd
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
-		"NEXUS3_RUNC=" + h.fake,
-		"NEXUS3_CA_CRT=" + h.caCrt,
-		"NEXUS3_SYS_BUNDLE=" + h.sysCrt,
-		"NEXUS3_TRUST_DIR=" + h.trustDir,
+		"NEXUS_RUNC=" + h.fake,
+		"NEXUS_CA_CRT=" + h.caCrt,
+		"NEXUS_SYS_BUNDLE=" + h.sysCrt,
+		"NEXUS_TRUST_DIR=" + h.trustDir,
 		"FAKE_OUT=" + h.fakeOut,
 		"FAKE_CFG=" + h.fakeCfg,
 	}
@@ -201,8 +201,8 @@ func assertStrings(t *testing.T, what string, got, want []string) {
 
 func (h *shimHarness) assertCAMount(m map[string]any) {
 	h.t.Helper()
-	if m["destination"] != "/etc/nexus3/ca" || m["type"] != "bind" || m["source"] != h.trustDir {
-		h.t.Fatalf("CA mount = %v, want destination=/etc/nexus3/ca type=bind source=%s", m, h.trustDir)
+	if m["destination"] != "/etc/nexus/ca" || m["type"] != "bind" || m["source"] != h.trustDir {
+		h.t.Fatalf("CA mount = %v, want destination=/etc/nexus/ca type=bind source=%s", m, h.trustDir)
 	}
 	opts, _ := m["options"].([]any)
 	want := []any{"rbind", "ro", "nosuid", "nodev"}
@@ -233,14 +233,14 @@ func (h *shimHarness) assertTrustDir() {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if string(wgetrc) != "ca_certificate=/etc/nexus3/ca/ca-certificates.crt\n" {
+	if string(wgetrc) != "ca_certificate=/etc/nexus/ca/ca-certificates.crt\n" {
 		h.t.Fatalf("wgetrc = %q", wgetrc)
 	}
 	apt, err := os.ReadFile(filepath.Join(h.trustDir, "apt.conf"))
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if string(apt) != "Acquire::https::CAInfo \"/etc/nexus3/ca/ca-certificates.crt\";\n" {
+	if string(apt) != "Acquire::https::CAInfo \"/etc/nexus/ca/ca-certificates.crt\";\n" {
 		h.t.Fatalf("apt.conf = %q", apt)
 	}
 }
@@ -355,7 +355,7 @@ func TestRuncShimScript_Idempotent(t *testing.T) {
 	cfg := readShimConfig(t, filepath.Join(dir, "config.json"))
 	ca := 0
 	for _, m := range shimMounts(t, cfg) {
-		if m["destination"] == "/etc/nexus3/ca" {
+		if m["destination"] == "/etc/nexus/ca" {
 			ca++
 		}
 	}

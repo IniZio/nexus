@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/gitssh"
+	"github.com/IniZio/nexus/internal/core/gitssh"
 )
 
 func TestParseCommand(t *testing.T) {

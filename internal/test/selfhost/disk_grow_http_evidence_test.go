@@ -37,16 +37,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/agent"
-	"github.com/IniZio/nexus3/internal/core/builder"
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/image"
-	"github.com/IniZio/nexus3/internal/core/lifecycle"
-	"github.com/IniZio/nexus3/internal/core/resize"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/image"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/resize"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // TestDiskGrowHTTPEvidence is the R-CHLIVE live proof for:
@@ -124,7 +124,7 @@ func TestDiskGrowHTTPEvidence(t *testing.T) {
 	t.Logf("workspace disk created: %s (%d MiB ext4, ExtraDisks[0] → /dev/vdb)", wsPath, initialMiB)
 
 	// ── Step 3: Build agent base image ───────────────────────────────────────
-	// BuildAgentBaseImage compiles a fresh nexus3-agent (CGO_ENABLED=0) and
+	// BuildAgentBaseImage compiles a fresh nexus-agent (CGO_ENABLED=0) and
 	// bakes it into an ext4 rootfs via Docker. Cache hits are common; a cold
 	// build takes ~10–20 min.
 	cache, err := image.NewCache(cacheRoot)

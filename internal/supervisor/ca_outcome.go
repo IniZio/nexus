@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/IniZio/nexus3/internal/core/statedir"
+	"github.com/IniZio/nexus/internal/core/statedir"
 )
 
 // CAOutcome is what a crash-path re-acquisition did with the MITM CA, as

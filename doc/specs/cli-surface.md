@@ -1,15 +1,15 @@
-# nexus3 CLI Surface Inventory
+# nexus CLI Surface Inventory
 
 Captured: 2026-09-07 from `internal/cli/` on branch `develop`.
-Purpose: authoritative inventory of nexus3's own CLI surface. The test `internal/cli/surface_inventory_test.go::TestVerbInventory` fails if the registry diverges from the golden list. `TestSpecCoversAllVisibleVerbs` fails if a visible verb is missing from this file. Both run under `make test`.
+Purpose: authoritative inventory of nexus's own CLI surface. The test `internal/cli/surface_inventory_test.go::TestVerbInventory` fails if the registry diverges from the golden list. `TestSpecCoversAllVisibleVerbs` fails if a visible verb is missing from this file. Both run under `make test`.
 
 ---
 
 ## Scope
 
-This file documents the full public CLI surface of nexus3 on this branch, including `fork`, `snapshot`, and `restore` (shipped as primitives).
+This file documents the full public CLI surface of nexus on this branch, including `fork`, `snapshot`, and `restore` (shipped as primitives).
 
-> **Historical note.** An earlier motive charter drafted this file as a parity target for a microsandbox-pivot repo and marked `fork`, `snapshot`, `restore`, `--nested`, and `supervisor-backfill-netns-identity` out-of-scope for that pivot. That pivot was superseded on 2026-08-15 by the strict-primitives turn; nexus3 is now the shipping repo and all verbs below are in-scope.
+> **Historical note.** An earlier motive charter drafted this file as a parity target for a microsandbox-pivot repo and marked `fork`, `snapshot`, `restore`, `--nested`, and `supervisor-backfill-netns-identity` out-of-scope for that pivot. That pivot was superseded on 2026-08-15 by the strict-primitives turn; nexus is now the shipping repo and all verbs below are in-scope.
 
 Rootless/zero-networking-privilege egress mode (old P1 design) and hosted-service/server mode are not exposed as top-level verbs; they influence `egress` internals only.
 
@@ -17,7 +17,7 @@ Rootless/zero-networking-privilege egress mode (old P1 design) and hosted-servic
 
 ## Hidden verbs (not public CLI surface)
 
-These are registered with `Hidden: true` and do not appear in `nexus3 --help`. They are plugin-private.
+These are registered with `Hidden: true` and do not appear in `nexus --help`. They are plugin-private.
 
 | Verb | Summary |
 |---|---|
@@ -62,7 +62,7 @@ On success prints `ok: <path>` plus version, image, containerfile (path or `(abs
 
 ### ## config-ssh
 
-Summary: Write an SSH config stanza for a sandbox (ProxyCommand via nexus3 ssh --stdio)
+Summary: Write an SSH config stanza for a sandbox (ProxyCommand via nexus ssh --stdio)
 
 No flags. Args: `<sandbox-ref>`
 
@@ -104,7 +104,7 @@ Delegates to `sandbox create`. Same flags:
 Summary: Report host disk usage by category (usage)
 
 Subverbs:
-- `usage` — what nexus3 owns under the state directory by category (allocated bytes), how much is unreferenced, free space vs the builder floor, and next actions (`image prune`, `reap`). No flags beyond global `--json`.
+- `usage` — what nexus owns under the state directory by category (allocated bytes), how much is unreferenced, free space vs the builder floor, and next actions (`image prune`, `reap`). No flags beyond global `--json`.
 
 ---
 
@@ -178,7 +178,7 @@ Subcommands: `build`, `list`, `rm`
 
 `image build` flags:
 - `--workspace string` — path to workspace root containing .nexus/Containerfile (default: cwd)
-- `--ref string` — human-readable tag, e.g. nexus3-base:20260807 (optional)
+- `--ref string` — human-readable tag, e.g. nexus-base:20260807 (optional)
 - `--base string` — OCI base image reference (default: debian:bookworm-slim)
 
 ---
@@ -188,9 +188,9 @@ Subcommands: `build`, `list`, `rm`
 Summary: Download and install the guest kernel image from a release
 
 Flags:
-- `--version string` — release version to download (default: CLI's own version; required for `-dev` builds unless `NEXUS3_RELEASE_BASE_URL` is set)
+- `--version string` — release version to download (default: CLI's own version; required for `-dev` builds unless `NEXUS_RELEASE_BASE_URL` is set)
 
-Downloads `vmlinux-x86_64` and its sha256 from `${NEXUS3_RELEASE_BASE_URL:-https://github.com/IniZio/nexus3/releases/download}/v<version>/`. Verifies the sha256 before install. Installs atomically (temp + rename) to `$XDG_DATA_HOME/nexus3/images/kernel/vmlinux-x86_64` (default: `~/.local/share/nexus3/images/kernel/vmlinux-x86_64`). Idempotent: exits 0 immediately when the installed file's checksum matches.
+Downloads `vmlinux-x86_64` and its sha256 from `${NEXUS_RELEASE_BASE_URL:-https://github.com/IniZio/nexus/releases/download}/v<version>/`. Verifies the sha256 before install. Installs atomically (temp + rename) to `$XDG_DATA_HOME/nexus/images/kernel/vmlinux-x86_64` (default: `~/.local/share/nexus/images/kernel/vmlinux-x86_64`). Idempotent: exits 0 immediately when the installed file's checksum matches.
 
 ---
 
@@ -320,10 +320,10 @@ Group verb; subcommands are the lifecycle operations. `sandbox create` flags mat
 
 ### ## sandbox agent-upgrade
 
-Summary: Upgrade the nexus3-agent binary running inside a live sandbox
+Summary: Upgrade the nexus-agent binary running inside a live sandbox
 
 Flags:
-- `--agent string` — path to replacement nexus3-agent binary (default: auto-locate via PATH)
+- `--agent string` — path to replacement nexus-agent binary (default: auto-locate via PATH)
 - `--force` — force upgrade even if active exec sessions exist (those sessions will be killed)
 - `--timeout duration` — maximum time to wait for the new agent to become ready (default 30s)
 
@@ -399,7 +399,7 @@ Args: `<sandbox-ref>`
 
 ### ## version
 
-Summary: Print the nexus3 version
+Summary: Print the nexus version
 
 No flags.
 
@@ -468,7 +468,7 @@ Subcommands and their flags:
 | `internal/test/selfhost/build_dogfood_test.go` | TestBuildDogfood | PORT |
 | `internal/test/selfhost/builder_vm_e2e_test.go` | TestBuilderVME2E | PORT |
 | `internal/test/selfhost/disk_grow_http_evidence_test.go` | TestDiskGrowHTTPEvidence | PORT |
-| `internal/test/selfhost/docker_host_image_test.go` | TestExampleNexus3InDocker_BootsMicroVM | PORT — nexus3-in-docker proven; adapt to new repo name |
+| `internal/test/selfhost/docker_host_image_test.go` | TestExampleNexusInDocker_BootsMicroVM | PORT — nexus-in-docker proven; adapt to new repo name |
 | `internal/test/selfhost/exec_pump_stress_test.go` | TestExecPumpStressRepro | PORT |
 | `internal/test/selfhost/herdr_hello_test.go` | TestHerdrHello | PORT |
 | `internal/test/selfhost/motive_dogfood_test.go` | TestMotiveDogfood | PORT |

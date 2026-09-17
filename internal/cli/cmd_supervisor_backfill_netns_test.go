@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
-	"github.com/IniZio/nexus3/internal/core/store"
-	"github.com/IniZio/nexus3/internal/supervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 // writeFakeSpawnSpec persists a minimal spawn.json under stateDir with
@@ -80,7 +80,7 @@ func TestBackfillNetnsIdentityCmd_AlreadyPresent_Refuses(t *testing.T) {
 		rec.NetnsChildPID = 4242
 		rec.NetnsChildPGID = 4242
 		rec.NetnsChildStartTime = 123456
-		rec.GuestTapName = "nx3g-test"
+		rec.GuestTapName = "nxg-test"
 		rec.CHAPISocket = "/tmp/fake.sock"
 		return nil
 	}); err != nil {
@@ -160,7 +160,7 @@ func TestBackfillNetnsIdentityCmd_HappyPath_PersistsIdentity(t *testing.T) {
 	socketDir := t.TempDir()
 	writeFakeSpawnSpec(t, stateDir, socketDir)
 	expectedAPISocket := socketDir + "/" + sb.ID.String() + ".sock"
-	pid := spawnFakeNetnsChildForCLI(t, expectedAPISocket, "nx3g-cli-test")
+	pid := spawnFakeNetnsChildForCLI(t, expectedAPISocket, "nxg-cli-test")
 	// Give the kernel a moment to fully populate /proc for the new pid
 	// before BackfillNetnsIdentity enumerates it (mirrors
 	// netns_backfill_test.go's own settle delay).
@@ -187,8 +187,8 @@ func TestBackfillNetnsIdentityCmd_HappyPath_PersistsIdentity(t *testing.T) {
 	if rec.NetnsChildStartTime == 0 {
 		t.Error("NetnsChildStartTime = 0, want nonzero")
 	}
-	if rec.GuestTapName != "nx3g-cli-test" {
-		t.Errorf("GuestTapName = %q, want %q", rec.GuestTapName, "nx3g-cli-test")
+	if rec.GuestTapName != "nxg-cli-test" {
+		t.Errorf("GuestTapName = %q, want %q", rec.GuestTapName, "nxg-cli-test")
 	}
 	if rec.CHAPISocket != expectedAPISocket {
 		t.Errorf("CHAPISocket = %q, want %q", rec.CHAPISocket, expectedAPISocket)

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IniZio/nexus3/internal/core/domain"
-	"github.com/IniZio/nexus3/internal/core/service"
-	"github.com/IniZio/nexus3/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // TestNamedDiskGuestMounts_deviceIndexing proves --mount-named kind=disk volumes
@@ -456,7 +456,7 @@ func TestParseMountLive_GitComponentAccepted_D_PD_99(t *testing.T) {
 // TestParseMountLive_HostNotDirectory verifies that a regular file is rejected
 // (virtiofs shares directories, not files).
 func TestParseMountLive_HostNotDirectory(t *testing.T) {
-	f, err := os.CreateTemp("", "nexus3-test-*")
+	f, err := os.CreateTemp("", "nexus-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
