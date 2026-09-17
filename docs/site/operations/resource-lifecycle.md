@@ -122,7 +122,7 @@ Four-column table: creator, responsible freer, parseable owner key, abnormal-ter
 | Snapshot directory | `artifact/store.go:66 Store.Write` | `artifact/store.go:188 Store.Remove(SnapshotID)` | PARTIAL — snapshot ID in name; ULID relationship **UNKNOWN-ASSIGNED** | Empty on audit host. R1 must verify naming encodes ULID for reap scanning (RL-15). |
 | Sandbox record | `create.go:628 store.Create()` | `service.go:694 store.Delete()` | YES `sandboxes/<ULID>/record.json` | Survives intentionally; record is the handle on all other resources; `recover`'s universe. |
 | Network namespace | `ch_netns.go:136 StartNetnsRuntime()` clone | Kernel auto-reclaim on last process exit | NONE (in-kernel) | **KERNEL-GUARANTEED** incl. SIGKILL; no orphan possible. |
-| Guest TAP / Host TAP / L2 bridge | `ch_netns.go:333 createTapBridge()` in netns child | Kernel with netns; fallback `ch_net.go:297 deleteTapBridge()` | PARTIAL — first 5 bytes of ULID as 10 hex: `nx3g-/nx3h-/nx3b-<10hex>` | **KERNEL-GUARANTEED** auto-reclaim on netns death. |
+| Guest TAP / Host TAP / L2 bridge | `ch_netns.go:333 createTapBridge()` in netns child | Kernel with netns; fallback `ch_net.go:297 deleteTapBridge()` | PARTIAL — first 5 bytes of ULID as 10 hex: `nxg-/nxh-/nxb-<10hex>` | **KERNEL-GUARANTEED** auto-reclaim on netns death. |
 | CH VMM child process group | `process.go:115 spawnVMM()` | `teardownSandboxNet` → `NetnsRuntime.Stop()` → `Kill(-childPgid, SIGKILL)` | YES child PID in driver in-process `nets` map | **UNVERIFIED-ASSUMPTION:** orphan survives if parent nexus is killed before teardown. `Observe()` reports Absent; `recover` marks stopped but does NOT kill orphan. R1/R2. |
 | CH API socket | `driver.go:Start()` | `driver.go:482 clearState()` `os.Remove` | YES `/run/user/<uid>/nexus/sb-<ULID>.sock` | ORPHANED if killed before `clearState()`. |
 | VSock socket | `driver.go:Start()` | `driver.go:483 clearState()` `os.Remove` | YES `.../sb-<ULID>.vsock` | ORPHANED if killed before `clearState()`. |
@@ -135,7 +135,7 @@ Four-column table: creator, responsible freer, parseable owner key, abnormal-ter
 | Named volume disk | `volume store` | **user** — `nexus volume rm <name>` | YES `volumes/<name>/disk.ext4` | **USER-OWNED.** Structurally excluded from reap (RL-10). Never deleted by nexus tooling except explicit user command. |
 | Named volume data dir | `volume store` | **user** — `nexus volume rm <name>` | YES `volumes/<name>/data/` | **USER-OWNED.** Structurally excluded from reap (RL-10). |
 
-TAP interfaces, bridge, and the network namespace are in-kernel resources named with the first 10 hex characters of the sandbox ULID. They are auto-reclaimed by the kernel when the Cloud Hypervisor process group dies — even under SIGKILL. The reaper does not target them; for correlation purposes, enumerate `ip link` entries matching `nx3[ghb]-<hex>` and strip the prefix.
+TAP interfaces, bridge, and the network namespace are in-kernel resources named with the first 10 hex characters of the sandbox ULID. They are auto-reclaimed by the kernel when the Cloud Hypervisor process group dies — even under SIGKILL. The reaper does not target them; for correlation purposes, enumerate `ip link` entries matching `nx[ghb]-<hex>` and strip the prefix.
 
 ## Named volumes
 

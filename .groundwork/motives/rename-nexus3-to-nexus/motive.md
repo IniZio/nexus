@@ -30,7 +30,7 @@ Path renames via `git mv`.
 
 - AC-1 `rg -i nexus3` over the repo, excluding `.git .claude .groundwork CHANGELOG.md plugins/claude/evals docs/site/node_modules third_party`, returns 0 lines.
 - AC-2 `make build`, `make vet`, `make test` (full untagged suite) exit 0.
-- AC-3 `doc/specs/_generated/index.json` carries `C-NEXUS`; the godog spec suite passes.
+- AC-3 `spec build` exits 0 and its output (`.groundwork/spec-build/index.json`, gitignored — the tool relocated from `doc/specs/_generated/`, which is deleted) carries `C-NEXUS` and no `C-NEXUS3`; the godog spec suite passes.
 - AC-4 Operator host: no `nexus3` processes, no old state dirs, `~/.local/bin/nexus` is the new build, `nexus-agent` is static, Claude plugin `nexus@nexus` installed and `nexus3@nexus3` removed, herdr plugin `nexus` installed.
 - AC-5 Live proof through herdr: a worktree sandbox is created with the renamed verb, an exec inside succeeds, the guest identifies `nexus-agent`, host state lives under `~/.local/state/nexus`, sandbox torn down via herdr.
 

@@ -129,7 +129,7 @@
     {
       "id": "S8-live-proof",
       "wave": 3,
-      "status": "pending",
+      "status": "complete",
       "kind": "impl",
       "desc": "Live proof through herdr: create a worktree sandbox with the renamed plugin verb, exec inside, confirm guest agent is nexus-agent and host state lives under ~/.local/state/nexus, tear down",
       "blocked_by": [
@@ -145,7 +145,9 @@
         "guest /proc/1/exe or agent log identifies nexus-agent",
         "~/.local/state/nexus contains the sandbox and ~/.local/state/nexus3 does not exist",
         "sandbox torn down via herdr verb"
-      ]
+      ],
+      "completed_at": "2026-09-17T14:52:32.372Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     },
     {
       "id": "S9-residual-sweep",
@@ -257,6 +259,72 @@
       ],
       "completed_at": "2026-09-17T14:46:30.038Z",
       "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S15-docs-nx3-prefix",
+      "wave": 4,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Docs: nx3g-/nx3h-/nx3b- -> nxg-/nxh-/nxb- in docs/site/operations/resource-lifecycle.md and any other user-facing doc; charter AC-3 wording -> .groundwork/spec-build",
+      "blocked_by": [
+        "S8-live-proof"
+      ],
+      "acceptance": [
+        "rg -n 'nx3[ghb]-' docs/site README.md doc/specs plugins returns 0 lines"
+      ],
+      "completed_at": "2026-09-17T15:06:45.605Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S16-growdisk-polish",
+      "wave": 4,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "GrowDisk: drop guest-leg rollback (keep CH-failure rollback), tests updated; parseBlkidType anchors on a standalone TYPE= key; runCollect releases the process; internal/core/image test for -tc filename; trim narrating comments in the four new/changed files",
+      "blocked_by": [
+        "S8-live-proof"
+      ],
+      "acceptance": [
+        "tests updated and green via make test for driver/cloudhypervisor, cmd/nexus-agent, internal/core/image",
+        "PTTYPE case covered by a test",
+        "make build/vet exit 0",
+        "nexus + nexus-agent reinstalled"
+      ],
+      "completed_at": "2026-09-17T15:12:30.574Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S17-base-image-restore",
+      "wave": 4,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Restore ghcr.io/inizio/nexus-base:latest in the nexus image store via the S11 local-registry path; identify what evicted it",
+      "blocked_by": [
+        "S8-live-proof"
+      ],
+      "acceptance": [
+        "nexus doctor base_image OK",
+        "report names the eviction path"
+      ],
+      "completed_at": "2026-09-17T15:10:20.079Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S18-pin-default-base",
+      "wave": 4,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Image GC pins the herdr default base image: DefaultPinnedBaseRefs / ReferencedDigestsPinned must keep ghcr.io/inizio/nexus-base (any tag, incl. the ldflags-stamped version tag) so AutoPruneAfterBuild and nexus image prune never evict it; test fails on the old pin list",
+      "blocked_by": [
+        "S17-base-image-restore"
+      ],
+      "acceptance": [
+        "unit test: a cached base entry with ref ghcr.io/inizio/nexus-base:latest survives ReferencedDigestsPinned/AutoPruneAfterBuild with no sandbox referencing it (red on old list)",
+        "make test for internal/core/service exit 0",
+        "make build/vet exit 0"
+      ],
+      "completed_at": "2026-09-17T15:14:30.454Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     }
   ],
   "write_token": "95fee6420d96bce6",
@@ -264,6 +332,6 @@
   "base_commit": "1cab7cc7343ee57ebed49854fe44626310b98463",
   "motive": "rename-nexus3-to-nexus",
   "gate": {
-    "seal": "0f7059afc3265bc31735484e11949ff6e4257e21a9195ad977f961c7168bb2f0"
+    "seal": "4e78c77956b267634073743859340a1764df436fae2e925184aec6f95601400c"
   }
 }
