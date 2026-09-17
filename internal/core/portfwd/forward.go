@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -130,35 +132,208 @@ func (f *Forwarder) Cancel(ctx context.Context, port uint16) error {
 	return err
 }
 
-func (f *Forwarder) Present(ctx context.Context, port uint16) (bool, error) {
-	stdout, _, code, err := f.Run(ctx, []string{"ss", "-ltn"})
+// Presence is the three-way answer to "is local :port bound?". A port bound
+// by our own ControlMaster (pid from `ssh -O check`) is a forward a previous
+// client left on the surviving master, not a foreign conflict.
+type Presence int
+
+const (
+	PresenceAbsent Presence = iota
+	PresenceOurs
+	PresenceForeign
+)
+
+func (p Presence) String() string {
+	switch p {
+	case PresenceAbsent:
+		return "absent"
+	case PresenceOurs:
+		return "ours"
+	default:
+		return "foreign"
+	}
+}
+
+var pidRe = regexp.MustCompile(`pid=(\d+)`)
+
+// MasterPID returns the ControlMaster pid reported by `ssh -O check`
+// ("Master running (pid=N)"), or 0 when no master is running.
+func (f *Forwarder) MasterPID(ctx context.Context) (int, error) {
+	_, stderr, code, err := f.Run(ctx, []string{
+		"ssh", "-O", "check",
+		"-o", "ControlPath=" + f.ControlPath,
+		f.SSHHost,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if code != 0 {
+		return 0, nil
+	}
+	m := pidRe.FindStringSubmatch(stderr)
+	if m == nil {
+		return 0, fmt.Errorf("ssh -O check: no pid in %q", strings.TrimSpace(stderr))
+	}
+	pid, _ := strconv.Atoi(m[1])
+	return pid, nil
+}
+
+func (f *Forwarder) Present(ctx context.Context, port uint16) (Presence, error) {
+	stdout, _, code, err := f.Run(ctx, []string{"ss", "-ltnp"})
 	if err == nil && code == 0 {
-		return portInOutput(stdout, port), nil
+		line, ok := portLine(stdout, port)
+		if !ok {
+			return PresenceAbsent, nil
+		}
+		return f.classifyOwner(ctx, ownerPIDsFromSS(line))
 	}
 	ssErr := err
 	if ssErr == nil {
-		ssErr = fmt.Errorf("ss -ltn: exit %d", code)
+		ssErr = fmt.Errorf("ss -ltnp: exit %d", code)
 	}
 	stdout2, _, code2, err2 := f.Run(ctx, []string{"netstat", "-an", "-p", "tcp"})
 	if err2 == nil && code2 == 0 {
-		return portInOutput(stdout2, port), nil
+		if _, ok := portLine(stdout2, port); !ok {
+			return PresenceAbsent, nil
+		}
+		lsofOut, _, lsofCode, lsofErr := f.Run(ctx, []string{
+			"lsof", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN", "-Fp",
+		})
+		if lsofErr != nil || lsofCode != 0 {
+			return PresenceForeign, nil
+		}
+		return f.classifyOwner(ctx, lsofFieldValues(lsofOut, 'p'))
 	}
 	netErr := err2
 	if netErr == nil {
 		netErr = fmt.Errorf("netstat -an -p tcp: exit %d", code2)
 	}
-	return false, fmt.Errorf("ss: %v; netstat: %v", ssErr, netErr)
+	return PresenceAbsent, fmt.Errorf("ss: %v; netstat: %v", ssErr, netErr)
+}
+
+func (f *Forwarder) classifyOwner(ctx context.Context, owners []int) (Presence, error) {
+	if len(owners) == 0 {
+		return PresenceForeign, nil
+	}
+	master, err := f.MasterPID(ctx)
+	if err != nil {
+		return PresenceForeign, err
+	}
+	for _, pid := range owners {
+		if master != 0 && pid == master {
+			return PresenceOurs, nil
+		}
+	}
+	return PresenceForeign, nil
+}
+
+// MasterForwards lists the local ports our ControlMaster is listening on —
+// its -L forwards — so a restarted client can adopt them. Empty when no
+// master is running.
+func (f *Forwarder) MasterForwards(ctx context.Context) ([]uint16, error) {
+	master, err := f.MasterPID(ctx)
+	if err != nil || master == 0 {
+		return nil, err
+	}
+	needle := fmt.Sprintf("pid=%d,", master)
+	stdout, _, code, err := f.Run(ctx, []string{"ss", "-ltnp"})
+	if err == nil && code == 0 {
+		var ports []uint16
+		for _, line := range strings.Split(stdout, "\n") {
+			if !strings.Contains(line, needle) {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 4 {
+				continue
+			}
+			if p, ok := trailingPort(fields[3], ':'); ok {
+				ports = appendUniquePort(ports, p)
+			}
+		}
+		return ports, nil
+	}
+	lsofOut, _, lsofCode, lsofErr := f.Run(ctx, []string{
+		"lsof", "-nP", "-a", "-p", strconv.Itoa(master), "-iTCP", "-sTCP:LISTEN", "-Fn",
+	})
+	if lsofErr != nil {
+		return nil, fmt.Errorf("ss: %v; lsof: %v", err, lsofErr)
+	}
+	if lsofCode != 0 {
+		return nil, nil
+	}
+	var ports []uint16
+	for _, line := range strings.Split(lsofOut, "\n") {
+		if !strings.HasPrefix(line, "n") {
+			continue
+		}
+		if p, ok := trailingPort(line[1:], ':'); ok {
+			ports = appendUniquePort(ports, p)
+		}
+	}
+	return ports, nil
+}
+
+func appendUniquePort(ports []uint16, p uint16) []uint16 {
+	for _, q := range ports {
+		if q == p {
+			return ports
+		}
+	}
+	return append(ports, p)
+}
+
+func trailingPort(addr string, sep byte) (uint16, bool) {
+	idx := strings.LastIndexByte(addr, sep)
+	if idx < 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(addr[idx+1:], 10, 16)
+	if err != nil {
+		return 0, false
+	}
+	return uint16(n), true
+}
+
+func ownerPIDsFromSS(line string) []int {
+	var pids []int
+	for _, m := range pidRe.FindAllStringSubmatch(line, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			pids = append(pids, n)
+		}
+	}
+	return pids
+}
+
+// lsofFieldValues parses `lsof -F` output: one field per line, the first
+// byte is the field tag.
+func lsofFieldValues(output string, tag byte) []int {
+	var vals []int
+	for _, line := range strings.Split(output, "\n") {
+		if len(line) < 2 || line[0] != tag {
+			continue
+		}
+		if n, err := strconv.Atoi(line[1:]); err == nil {
+			vals = append(vals, n)
+		}
+	}
+	return vals
 }
 
 func portInOutput(output string, port uint16) bool {
+	_, ok := portLine(output, port)
+	return ok
+}
+
+func portLine(output string, port uint16) (string, bool) {
 	colonNeedle := fmt.Sprintf(":%d", port)
 	dotNeedle := fmt.Sprintf(".%d", port)
 	for _, line := range strings.Split(output, "\n") {
 		if matchDotPort(line, dotNeedle) || matchColonPort(line, colonNeedle) {
-			return true
+			return line, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func matchColonPort(line, needle string) bool {

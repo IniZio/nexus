@@ -171,7 +171,11 @@ func Tick(ctx context.Context, stateDir string, managers map[string]*portfwd.Man
 			}
 		}
 		if _, ok := managers[m.SSHTarget]; !ok {
-			managers[m.SSHTarget] = portfwd.NewManager(fw)
+			mgr := portfwd.NewManager(fw)
+			if err := mgr.AdoptMasterForwards(ctx); err != nil {
+				slog.Warn("local-agent-startup: adopt master forwards", "target", m.SSHTarget, "err", err)
+			}
+			managers[m.SSHTarget] = mgr
 		}
 		if err := managers[m.SSHTarget].Reconcile(ctx, desired); err != nil {
 			slog.Warn("local-agent-startup: reconcile", "target", m.SSHTarget, "err", err)

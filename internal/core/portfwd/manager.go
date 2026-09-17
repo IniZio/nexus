@@ -79,11 +79,50 @@ func (m *Manager) saveApplied() {
 	}
 }
 
+// AdoptMasterForwards seeds the applied set with every port our ControlMaster
+// currently forwards that no applied.json entry covers. Those forwards were
+// left by a previous client (possibly one that never wrote applied.json);
+// adopting them under an unknown sandbox makes them cancellable by Reconcile.
+func (m *Manager) AdoptMasterForwards(ctx context.Context) error {
+	ports, err := m.fw.MasterForwards(ctx)
+	if err != nil {
+		return err
+	}
+	added := 0
+	for _, p := range ports {
+		if m.hasPort(p) {
+			continue
+		}
+		m.applied[fwdKey{port: p}] = struct{}{}
+		added++
+	}
+	if added > 0 {
+		slog.Info("portfwd: adopted forwards left on the control master", "count", added)
+		m.saveApplied()
+	}
+	return nil
+}
+
+func (m *Manager) hasPort(port uint16) bool {
+	for k := range m.applied {
+		if k.port == port {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 	desiredSet := make(map[fwdKey]struct{}, len(desired))
 	for _, l := range desired {
 		if l.Sandbox.Status == SandboxStatusRunning {
 			desiredSet[fwdKey{sandboxID: l.Sandbox.ID, port: l.Port}] = struct{}{}
+		}
+	}
+	for want := range desiredSet {
+		if _, ok := m.applied[fwdKey{port: want.port}]; ok && want.sandboxID != "" {
+			delete(m.applied, fwdKey{port: want.port})
+			m.applied[want] = struct{}{}
 		}
 	}
 	for key := range m.applied {
@@ -104,18 +143,22 @@ func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 		if _, ok := m.applied[key]; ok {
 			continue
 		}
-		present, err := m.fw.Present(ctx, l.Port)
+		presence, err := m.fw.Present(ctx, l.Port)
 		if err != nil {
 			return err
 		}
-		if present {
-			// Not in our applied set but port is bound — conflict with another process.
+		switch presence {
+		case PresenceForeign:
 			slog.Warn("portfwd: port in use by another process, forward skipped",
 				"port", l.Port, "sandbox", l.Sandbox.ID)
 			continue
-		}
-		if err := m.fw.Apply(ctx, l.Port); err != nil {
-			return err
+		case PresenceOurs:
+			slog.Info("portfwd: adopted forward already on the control master",
+				"port", l.Port, "sandbox", l.Sandbox.ID)
+		default:
+			if err := m.fw.Apply(ctx, l.Port); err != nil {
+				return err
+			}
 		}
 		m.applied[key] = struct{}{}
 	}

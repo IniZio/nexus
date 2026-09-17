@@ -158,7 +158,7 @@ func TestPresentArgv(t *testing.T) {
 	var calls [][]string
 	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, Run: seqRun(&calls, []runResp{{code: 0}})}
 	_, _ = f.Present(context.Background(), 80)
-	want := []string{"ss", "-ltn"}
+	want := []string{"ss", "-ltnp"}
 	if !argvEq(calls[0], want) {
 		t.Fatalf("present argv\n got  %v\n want %v", calls[0], want)
 	}
@@ -167,9 +167,9 @@ func TestPresentArgv(t *testing.T) {
 func TestPresentTrueIPv6(t *testing.T) {
 	ssOut := "Netid State Local Address:Port\ntcp LISTEN [::1]:45456 *:*"
 	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, Run: seqRun(nil, []runResp{{stdout: ssOut, code: 0}})}
-	ok, err := f.Present(context.Background(), 45456)
-	if err != nil || !ok {
-		t.Fatalf("want true,nil got %v,%v", ok, err)
+	p, err := f.Present(context.Background(), 45456)
+	if err != nil || p == PresenceAbsent {
+		t.Fatalf("want bound,nil got %v,%v", p, err)
 	}
 }
 
@@ -183,9 +183,9 @@ func TestPresentTrueIPv4(t *testing.T) {
 func TestPresentFalse(t *testing.T) {
 	ssOut := "Netid State Local Address:Port\ntcp LISTEN 127.0.0.1:22 0.0.0.0:*"
 	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, Run: seqRun(nil, []runResp{{stdout: ssOut, code: 0}})}
-	ok, err := f.Present(context.Background(), 45456)
-	if err != nil || ok {
-		t.Fatalf("want false,nil got %v,%v", ok, err)
+	p, err := f.Present(context.Background(), 45456)
+	if err != nil || p != PresenceAbsent {
+		t.Fatalf("want absent,nil got %v,%v", p, err)
 	}
 }
 
@@ -244,9 +244,9 @@ func TestPresentSSFailsFallback(t *testing.T) {
 			{stdout: macOut, code: 0},
 		}),
 	}
-	ok, err := f.Present(context.Background(), 45455)
-	if err != nil || !ok {
-		t.Fatalf("want true,nil after ss fail + netstat fallback; got %v,%v", ok, err)
+	p, err := f.Present(context.Background(), 45455)
+	if err != nil || p == PresenceAbsent {
+		t.Fatalf("want bound,nil after ss fail + netstat fallback; got %v,%v", p, err)
 	}
 }
 
@@ -260,11 +260,11 @@ func TestPresentBothUnavailableError(t *testing.T) {
 			{err: probeErr},
 		}),
 	}
-	ok, err := f.Present(context.Background(), 80)
+	p, err := f.Present(context.Background(), 80)
 	if err == nil {
 		t.Fatal("want non-nil error when both ss and netstat are unavailable")
 	}
-	if ok {
+	if p != PresenceAbsent {
 		t.Fatal("must not report present when probe failed")
 	}
 }

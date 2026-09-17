@@ -326,3 +326,65 @@ func TestParseRemoteCombinedState_FocusFilters(t *testing.T) {
 		t.Errorf("filter to sb1: got %v, want [{3000 sb1 live}]", filtered)
 	}
 }
+
+// F10 live scenario (Mac minion 2026-09-17): the client restarts while the
+// ControlMaster (pid 40518) survives with `-L 3000` from the previous client
+// and no applied.json exists. Focus A then B must cancel :3000.
+func TestTick_RestartAdoptsForwardLeftOnSurvivingMaster(t *testing.T) {
+	ctx := context.Background()
+	stateDir := t.TempDir()
+
+	machineJSON := `[{"id":"m1","target":"host1","enabled":true,"session":"s1"}]`
+	origExec := ExecCommandContext
+	ExecCommandContext = func(_ context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.Command("printf", "%s", machineJSON)
+	}
+	t.Cleanup(func() { ExecCommandContext = origExec })
+
+	tick := 0
+	fwds := RemoteForwardsState{Forwards: []RemoteForwardEntry{
+		{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
+		{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
+	}}
+	origReader := RemoteStateReader
+	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
+		tick++
+		sb := "sandbox-A"
+		if tick > 1 {
+			sb = "sandbox-B"
+		}
+		return &RemoteCombinedState{ForwardsState: fwds, FocusState: portfwd.FocusState{SandboxID: sb}}, nil
+	}
+	t.Cleanup(func() { RemoteStateReader = origReader })
+
+	var applied, cancelled []uint16
+	inner := makeFakeRun(&applied, &cancelled)
+	origRunner := ForwarderRunner
+	ForwarderRunner = func(ctx context.Context, argv []string) (string, string, int, error) {
+		if len(argv) >= 3 && argv[1] == "-O" && argv[2] == "check" {
+			return "", "Master running (pid=40518)\n", 0, nil
+		}
+		if argv[0] == "ss" {
+			return "LISTEN 0 128 127.0.0.1:3000 0.0.0.0:* users:((\"ssh\",pid=40518,fd=5))\n", "", 0, nil
+		}
+		return inner(ctx, argv)
+	}
+	t.Cleanup(func() { ForwarderRunner = origRunner })
+
+	managers := make(map[string]*portfwd.Manager)
+	if err := Tick(ctx, stateDir, managers); err != nil {
+		t.Fatalf("tick 1: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("tick 1: 3000 already on master must not be re-forwarded, got %v", applied)
+	}
+	if len(cancelled) != 0 {
+		t.Errorf("tick 1: want no cancels, got %v", cancelled)
+	}
+	if err := Tick(ctx, stateDir, managers); err != nil {
+		t.Fatalf("tick 2: %v", err)
+	}
+	if len(cancelled) != 1 || cancelled[0] != 3000 {
+		t.Errorf("tick 2: stale 3000 from the previous client must be cancelled on focus B, got %v", cancelled)
+	}
+}
