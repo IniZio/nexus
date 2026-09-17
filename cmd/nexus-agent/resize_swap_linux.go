@@ -51,10 +51,8 @@ var (
 	zramSwapActiveFunc = swapAlreadyActive
 	zramMeminfoPath    = "/proc/meminfo" // shared with resize_actuate_linux.go
 	zramProcSwapsPath  = "/proc/swaps"
-	zramExecFunc       = func(name string, args ...string) ([]byte, error) {
-		return exec.Command(name, args...).CombinedOutput()
-	}
-	zramWriteFileFunc = os.WriteFile
+	zramExecFunc       = execCollect
+	zramWriteFileFunc  = os.WriteFile
 )
 
 // setupZRAMSwap enables a compressed RAM-backed swap device so an allocation

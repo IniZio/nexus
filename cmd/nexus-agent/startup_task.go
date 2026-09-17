@@ -77,7 +77,7 @@ func runStartupHook(con *os.File) {
 		// environment from the kernel, so without this the hook's exec of docker,
 		// dockerd, etc. would fail with "executable file not found in $PATH".
 		cmd.Env = guestBaselineEnv(agentScratchDisk)
-		out, err := cmd.CombinedOutput()
+		out, err := execCollectCmd(cmd)
 		if len(out) > 0 {
 			consoleLog(con, "nexus-agent: startup hook output:\n%s", out)
 		}
@@ -126,7 +126,7 @@ func runBootTask(con *os.File, task bootspec.Task) {
 		}
 		// task.Env overrides baseline keys; envToMap handles KEY=VALUE pairs.
 		cmd.Env = mergeEnv(guestBaselineEnv(agentScratchDisk), envToMap(task.Env))
-		out, err := cmd.CombinedOutput()
+		out, err := execCollectCmd(cmd)
 		if len(out) > 0 {
 			consoleLog(con, "nexus-agent: boot task %q output:\n%s", label, out)
 		}

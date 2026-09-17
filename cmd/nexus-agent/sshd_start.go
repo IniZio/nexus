@@ -43,7 +43,7 @@ func startSSHD(con *os.File) {
 	}
 
 	// Ensure host keys exist (idempotent; fast if already present).
-	if out, err := exec.Command("ssh-keygen", "-A").CombinedOutput(); err != nil {
+	if out, err := execCollect("ssh-keygen", "-A"); err != nil {
 		consoleLog(con, "nexus-agent: sshd: ssh-keygen -A: %v: %s\n", err, out)
 		// Non-fatal — baked keys may already be present.
 	}

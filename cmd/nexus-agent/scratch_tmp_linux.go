@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 
@@ -25,7 +24,7 @@ var agentScratchDisk bool
 // Injectable seams for wipeMountScratchDisk; replaced in unit tests.
 var (
 	scratchMkfsFunc = func(dev string) ([]byte, error) {
-		return exec.Command("mkfs.ext4", "-q", "-F", dev).CombinedOutput()
+		return execCollect("mkfs.ext4", "-q", "-F", dev)
 	}
 	scratchUnmountFunc = syscall.Unmount
 	scratchMountFunc   = syscall.Mount

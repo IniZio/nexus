@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -283,7 +282,7 @@ func probeGatewayDNS(addr string, timeout time.Duration) error {
 // Failures are non-fatal: some commands may legitimately fail (e.g. "ip addr
 // add" when the address is already configured after a re-exec).
 func runNetCmd(con *os.File, name string, args ...string) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	out, err := execCollect(name, args...)
 	if err != nil {
 		consoleLog(con, "nexus-agent: network: %s %s: %v: %s\n",
 			name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))

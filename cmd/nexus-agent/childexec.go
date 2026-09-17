@@ -13,7 +13,10 @@ import (
 var oneShotReaper atomic.Pointer[SessionTable]
 
 func execCollect(name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
+	return execCollectCmd(exec.Command(name, args...))
+}
+
+func execCollectCmd(cmd *exec.Cmd) ([]byte, error) {
 	t := oneShotReaper.Load()
 	if t == nil {
 		return cmd.CombinedOutput()
