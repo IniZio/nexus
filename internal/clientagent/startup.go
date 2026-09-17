@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +44,8 @@ func ResolveHerdrBin() (string, error) {
 	return "", errors.New("herdr not found: HERDR_BIN_PATH is unset and no \"herdr\" binary is on PATH")
 }
 
+const TickInterval = time.Second
+
 var ExecCommandContext = exec.CommandContext
 
 func SanitizeSSHTarget(target string) string {
@@ -70,7 +73,7 @@ func RunStartup(ctx context.Context) error {
 		slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	}
 	managers := make(map[string]*portfwd.Manager)
-	tick := time.NewTicker(5 * time.Second)
+	tick := time.NewTicker(TickInterval)
 	defer tick.Stop()
 	for {
 		select {
@@ -86,6 +89,7 @@ func RunStartup(ctx context.Context) error {
 
 var RemoteStateReader = ReadRemoteCombinedState
 var ForwarderRunner portfwd.Runner = portfwd.OSRunner
+var ForwarderListenFunc func(string, string) (net.Listener, error)
 
 var prevFocusSandbox sync.Map
 
@@ -129,6 +133,7 @@ func Tick(ctx context.Context, stateDir string, managers map[string]*portfwd.Man
 			ControlPath: ctlPath,
 			SSHHost:     m.SSHTarget,
 			Run:         ForwarderRunner,
+			ListenFunc:  ForwarderListenFunc,
 		}
 		if err := fw.EnsureMaster(ctx); err != nil {
 			slog.Warn("local-agent-startup: ensure-master", "target", m.SSHTarget, "err", err)

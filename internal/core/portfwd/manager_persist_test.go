@@ -14,6 +14,7 @@ func makeMgrWithSock(sock string, resps []runResp) (*Manager, *[][]string) {
 		ControlPath: sock,
 		SSHHost:     testHost,
 		Run:         seqRun(&calls, resps),
+		ListenFunc:  noopListen,
 	}
 	return NewManager(fw), &calls
 }
@@ -37,7 +38,6 @@ func TestManagerPersistsOnApply(t *testing.T) {
 	sock := filepath.Join(dir, "test.ctl")
 	mgr, _ := makeMgrWithSock(sock, []runResp{
 		{code: 0},
-		{code: 0},
 	})
 	ref := SandboxRef{ID: "abc", Status: SandboxStatusRunning}
 	if err := mgr.Reconcile(context.Background(), []Listener{{Port: 3000, Sandbox: ref}}); err != nil {
@@ -53,6 +53,9 @@ func TestManagerPersistsOnApply(t *testing.T) {
 	}
 	if len(pa.Entries) != 1 || pa.Entries[0].SandboxID != "abc" || pa.Entries[0].Port != 3000 {
 		t.Fatalf("want [{abc 3000}], got %v", pa.Entries)
+	}
+	if pa.Entries[0].Kind != "local" {
+		t.Fatalf("want kind=local in persisted entry, got %q", pa.Entries[0].Kind)
 	}
 }
 

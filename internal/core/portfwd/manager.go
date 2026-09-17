@@ -7,14 +7,27 @@ import (
 	"os"
 )
 
+type appliedKind string
+
+const (
+	appliedKindLocal  appliedKind = "local"
+	appliedKindMaster appliedKind = "master"
+)
+
+type appliedEntry struct {
+	kind  appliedKind
+	local *LocalForward
+}
+
 type fwdKey struct {
 	sandboxID string
 	port      uint16
 }
 
 type persistedEntry struct {
-	SandboxID string `json:"sandbox_id"`
-	Port      uint16 `json:"port"`
+	SandboxID string      `json:"sandbox_id"`
+	Port      uint16      `json:"port"`
+	Kind      appliedKind `json:"kind,omitempty"`
 }
 
 type persistedApplied struct {
@@ -23,7 +36,7 @@ type persistedApplied struct {
 
 type Manager struct {
 	fw               *Forwarder
-	applied          map[fwdKey]struct{}
+	applied          map[fwdKey]*appliedEntry
 	persistPath      string
 	cancelWarnedPort map[uint16]struct{}
 }
@@ -33,7 +46,7 @@ type Manager struct {
 func NewManager(fw *Forwarder) *Manager {
 	m := &Manager{
 		fw:               fw,
-		applied:          make(map[fwdKey]struct{}),
+		applied:          make(map[fwdKey]*appliedEntry),
 		cancelWarnedPort: make(map[uint16]struct{}),
 	}
 	if fw.ControlPath != "" {
@@ -53,7 +66,11 @@ func (m *Manager) loadApplied() {
 		return
 	}
 	for _, e := range pa.Entries {
-		m.applied[fwdKey{sandboxID: e.SandboxID, port: e.Port}] = struct{}{}
+		k := e.Kind
+		if k == "" {
+			k = appliedKindMaster
+		}
+		m.applied[fwdKey{sandboxID: e.SandboxID, port: e.Port}] = &appliedEntry{kind: k}
 	}
 }
 
@@ -62,8 +79,8 @@ func (m *Manager) saveApplied() {
 		return
 	}
 	pa := persistedApplied{Entries: make([]persistedEntry, 0, len(m.applied))}
-	for k := range m.applied {
-		pa.Entries = append(pa.Entries, persistedEntry{SandboxID: k.sandboxID, Port: k.port})
+	for k, e := range m.applied {
+		pa.Entries = append(pa.Entries, persistedEntry{SandboxID: k.sandboxID, Port: k.port, Kind: e.kind})
 	}
 	data, err := json.Marshal(pa)
 	if err != nil {
@@ -95,7 +112,7 @@ func (m *Manager) AdoptMasterForwards(ctx context.Context) error {
 		if m.hasPort(p) {
 			continue
 		}
-		m.applied[fwdKey{port: p}] = struct{}{}
+		m.applied[fwdKey{port: p}] = &appliedEntry{kind: appliedKindMaster}
 		added++
 	}
 	if added > 0 {
@@ -114,6 +131,20 @@ func (m *Manager) hasPort(port uint16) bool {
 	return false
 }
 
+func (m *Manager) cancelEntry(ctx context.Context, key fwdKey, entry *appliedEntry) error {
+	if entry.kind == appliedKindLocal && entry.local != nil {
+		count := entry.local.ConnCount()
+		err := entry.local.Close()
+		slog.Info("portfwd: cancelled forward", "port", key.port, "kind", "local", "conns", count)
+		return err
+	}
+	err := m.fw.Cancel(ctx, key.port)
+	if err == nil {
+		slog.Info("portfwd: cancelled forward", "port", key.port, "kind", "master")
+	}
+	return err
+}
+
 func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 	desiredSet := make(map[fwdKey]struct{}, len(desired))
 	for _, l := range desired {
@@ -122,16 +153,16 @@ func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 		}
 	}
 	for want := range desiredSet {
-		if _, ok := m.applied[fwdKey{port: want.port}]; ok && want.sandboxID != "" {
+		if entry, ok := m.applied[fwdKey{port: want.port}]; ok && want.sandboxID != "" {
 			delete(m.applied, fwdKey{port: want.port})
-			m.applied[want] = struct{}{}
+			m.applied[want] = entry
 		}
 	}
-	for key := range m.applied {
+	for key, entry := range m.applied {
 		if _, ok := desiredSet[key]; !ok {
-			if err := m.fw.Cancel(ctx, key.port); err != nil {
+			if err := m.cancelEntry(ctx, key, entry); err != nil {
 				if _, warned := m.cancelWarnedPort[key.port]; !warned {
-					slog.Warn("portfwd: cancel forward failed, entry retained", "port", key.port, "err", err)
+					slog.Warn("portfwd: cancel forward failed, entry retained", "port", key.port, "kind", string(entry.kind), "err", err)
 					m.cancelWarnedPort[key.port] = struct{}{}
 				}
 				continue
@@ -161,21 +192,24 @@ func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 		case PresenceOurs:
 			slog.Info("portfwd: adopted forward already on the control master",
 				"port", l.Port, "sandbox", l.Sandbox.ID)
+			m.applied[key] = &appliedEntry{kind: appliedKindMaster}
 		default:
-			if err := m.fw.Apply(ctx, l.Port); err != nil {
+			lf, err := m.fw.Apply(ctx, l.Port)
+			if err != nil {
 				return err
 			}
+			slog.Info("portfwd: applied forward", "port", l.Port, "kind", "local")
+			m.applied[key] = &appliedEntry{kind: appliedKindLocal, local: lf}
 		}
-		m.applied[key] = struct{}{}
 	}
 	m.saveApplied()
 	return nil
 }
 
 func (m *Manager) TeardownSandbox(ctx context.Context, ref SandboxRef) error {
-	for key := range m.applied {
+	for key, entry := range m.applied {
 		if key.sandboxID == ref.ID {
-			if err := m.fw.Cancel(ctx, key.port); err != nil {
+			if err := m.cancelEntry(ctx, key, entry); err != nil {
 				return err
 			}
 			delete(m.applied, key)

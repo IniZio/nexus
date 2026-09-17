@@ -3,9 +3,12 @@ package clientagent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,6 +76,24 @@ func TestFilterToFocused(t *testing.T) {
 }
 
 
+type fakeLn struct {
+	ch      chan struct{}
+	onClose func()
+	once    sync.Once
+}
+
+func (fl *fakeLn) Accept() (net.Conn, error) { <-fl.ch; return nil, fmt.Errorf("closed") }
+func (fl *fakeLn) Close() error {
+	fl.once.Do(func() {
+		if fl.onClose != nil {
+			fl.onClose()
+		}
+		close(fl.ch)
+	})
+	return nil
+}
+func (fl *fakeLn) Addr() net.Addr { return &net.TCPAddr{} }
+
 func makeFakeRun(applied, cancelled *[]uint16) portfwd.Runner {
 	return func(_ context.Context, argv []string) (string, string, int, error) {
 		if len(argv) >= 3 && argv[1] == "-O" {
@@ -132,8 +153,18 @@ func TestTick_FocusScoping(t *testing.T) {
 	t.Cleanup(func() { RemoteStateReader = origReader })
 
 	var applied, cancelled []uint16
+	origListen := ForwarderListenFunc
+	ForwarderListenFunc = func(_, addr string) (net.Listener, error) {
+		_, portStr, _ := net.SplitHostPort(addr)
+		p, _ := strconv.ParseUint(portStr, 10, 16)
+		applied = append(applied, uint16(p))
+		return &fakeLn{ch: make(chan struct{}), onClose: func() { cancelled = append(cancelled, uint16(p)) }}, nil
+	}
+	t.Cleanup(func() { ForwarderListenFunc = origListen })
+
+	var ssApplied, ssCancelled []uint16
 	origRunner := ForwarderRunner
-	ForwarderRunner = makeFakeRun(&applied, &cancelled)
+	ForwarderRunner = makeFakeRun(&ssApplied, &ssCancelled)
 	t.Cleanup(func() { ForwarderRunner = origRunner })
 
 	managers := make(map[string]*portfwd.Manager)
@@ -193,8 +224,18 @@ func TestTick_UnboundFocusForwardsNothing(t *testing.T) {
 	t.Cleanup(func() { RemoteStateReader = origReader })
 
 	var applied, cancelled []uint16
+	origListen := ForwarderListenFunc
+	ForwarderListenFunc = func(_, addr string) (net.Listener, error) {
+		_, portStr, _ := net.SplitHostPort(addr)
+		p, _ := strconv.ParseUint(portStr, 10, 16)
+		applied = append(applied, uint16(p))
+		return &fakeLn{ch: make(chan struct{}), onClose: func() { cancelled = append(cancelled, uint16(p)) }}, nil
+	}
+	t.Cleanup(func() { ForwarderListenFunc = origListen })
+
+	var ssApplied, ssCancelled []uint16
 	origRunner := ForwarderRunner
-	ForwarderRunner = makeFakeRun(&applied, &cancelled)
+	ForwarderRunner = makeFakeRun(&ssApplied, &ssCancelled)
 	t.Cleanup(func() { ForwarderRunner = origRunner })
 
 	managers := make(map[string]*portfwd.Manager)
@@ -394,5 +435,11 @@ func TestTick_RestartAdoptsForwardLeftOnSurvivingMaster(t *testing.T) {
 	}
 	if len(cancelled) != 1 || cancelled[0] != 3000 {
 		t.Errorf("tick 2: stale 3000 from the previous client must be cancelled on focus B, got %v", cancelled)
+	}
+}
+
+func TestF18AC4_TickInterval1s(t *testing.T) {
+	if TickInterval != time.Second {
+		t.Fatalf("F18-AC4: TickInterval must be 1s, got %v", TickInterval)
 	}
 }

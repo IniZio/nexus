@@ -3,10 +3,14 @@ package portfwd
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type runResp struct {
@@ -112,34 +116,165 @@ func TestEnsureMasterWhenDead(t *testing.T) {
 	}
 }
 
-func TestApplyArgv(t *testing.T) {
-	var calls [][]string
-	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, Run: seqRun(&calls, []runResp{{code: 0}})}
-	if err := f.Apply(context.Background(), 3000); err != nil {
+type funcCloser struct{ fn func() error }
+
+func (fc *funcCloser) Close() error { return fc.fn() }
+
+func ephemeralPort(t *testing.T) uint16 {
+	t.Helper()
+	tmp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"ssh", "-O", "forward", "-L", "3000:127.0.0.1:3000", "-o", "ControlPath=" + testSock, testHost}
-	if !argvEq(calls[0], want) {
-		t.Fatalf("apply argv\n got  %v\n want %v", calls[0], want)
+	port := uint16(tmp.Addr().(*net.TCPAddr).Port)
+	tmp.Close()
+	return port
+}
+
+func TestF18AC1_ApplyBindsAndSpawnsProxyArgv(t *testing.T) {
+	port := ephemeralPort(t)
+
+	var mu sync.Mutex
+	var capturedArgv [][]string
+	runConn := func(argv []string, conn net.Conn) (io.Closer, <-chan struct{}, error) {
+		mu.Lock()
+		capturedArgv = append(capturedArgv, append([]string(nil), argv...))
+		mu.Unlock()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			buf := make([]byte, 4096)
+			for {
+				n, err := conn.Read(buf)
+				if n > 0 {
+					conn.Write(buf[:n])
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+		return &funcCloser{func() error { conn.Close(); return nil }}, done, nil
+	}
+
+	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, RunConn: runConn}
+	lf, err := f.Apply(context.Background(), port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf.Close()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(capturedArgv)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	argv := capturedArgv
+	mu.Unlock()
+	if len(argv) == 0 {
+		t.Fatal("AC1: no proxy spawned")
+	}
+	wantArgv := []string{"ssh", "-S", testSock, "-o", "BatchMode=yes",
+		"-W", fmt.Sprintf("127.0.0.1:%d", port), testHost}
+	if !argvEq(argv[0], wantArgv) {
+		t.Fatalf("AC1: argv\n got  %v\n want %v", argv[0], wantArgv)
+	}
+
+	msg := []byte("hello-pipe")
+	conn.SetDeadline(time.Now().Add(time.Second))
+	if _, err := conn.Write(msg); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, len(msg))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != string(msg) {
+		t.Fatalf("AC1: echo got %q want %q", buf, msg)
 	}
 }
 
-func TestApplySamePortInvariant(t *testing.T) {
-	var calls [][]string
-	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, Run: seqRun(&calls, []runResp{{code: 0}})}
-	if err := f.Apply(context.Background(), 8080); err != nil {
+func TestF18AC2_CloseEOFWithin100ms(t *testing.T) {
+	port := ephemeralPort(t)
+
+	runConn := func(argv []string, conn net.Conn) (io.Closer, <-chan struct{}, error) {
+		done := make(chan struct{})
+		go func() { defer close(done); io.Copy(io.Discard, conn) }()
+		return &funcCloser{func() error { return nil }}, done, nil
+	}
+	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, RunConn: runConn}
+	lf, err := f.Apply(context.Background(), port)
+	if err != nil {
 		t.Fatal(err)
 	}
-	for i, arg := range calls[0] {
-		if arg != "-L" || i+1 >= len(calls[0]) {
-			continue
-		}
-		if calls[0][i+1] != "8080:127.0.0.1:8080" {
-			t.Fatalf("same-port invariant violated: -L %q", calls[0][i+1])
-		}
-		return
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("no -L argument in apply argv")
+
+	wait := time.Now().Add(time.Second)
+	for time.Now().Before(wait) && lf.ConnCount() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lf.ConnCount() == 0 {
+		t.Fatal("AC2: connection never tracked")
+	}
+
+	lf.Close()
+
+	readDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := conn.Read(buf)
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("AC2: expected error after Close, got nil")
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatalf("AC2: got deadline timeout instead of close: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		conn.Close()
+		t.Fatal("AC2: conn did not get EOF within 100ms after Close")
+	}
+	conn.Close()
+
+	ln2, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("AC2: port not free after Close: %v", err)
+	}
+	ln2.Close()
+}
+
+func TestF18AC3_PresentOwnPidIsOurs(t *testing.T) {
+	myPID := os.Getpid()
+	ssOut := fmt.Sprintf("LISTEN 0 128 127.0.0.1:9900 0.0.0.0:* users:((\"nexus3\",pid=%d,fd=7))\n", myPID)
+	f := &Forwarder{ControlPath: testSock, SSHHost: testHost,
+		Run: seqRun(nil, []runResp{{stdout: ssOut, code: 0}})}
+	p, err := f.Present(context.Background(), 9900)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != PresenceOurs {
+		t.Fatalf("AC3: own pid must be PresenceOurs, got %v", p)
+	}
 }
 
 func TestCancelArgv(t *testing.T) {

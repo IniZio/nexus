@@ -7,12 +7,9 @@ import (
 
 // Mutation-pin: removing the Cancel block in Manager.Reconcile makes this fail.
 func TestReconcileCancel2PortsTo1(t *testing.T) {
-	mgr, calls := makeMgr([]runResp{
-		{code: 0}, // ss -ltn for Present(5001) → empty, not present
-		{code: 0}, // ssh -O forward for Apply(5001)
-		{code: 0}, // ss -ltn for Present(5002) → empty, not present
-		{code: 0}, // ssh -O forward for Apply(5002)
-		{code: 0}, // ssh -O cancel for Cancel(5002)
+	mgr, _ := makeMgr([]runResp{
+		{code: 0}, // Present(5001) → absent
+		{code: 0}, // Present(5002) → absent
 	})
 	ref := SandboxRef{ID: "sb1", Status: SandboxStatusRunning}
 
@@ -31,15 +28,8 @@ func TestReconcileCancel2PortsTo1(t *testing.T) {
 		t.Fatalf("reconcile(1 port): %v", err)
 	}
 
-	// Verify ssh -O cancel was issued for port 5002.
-	foundCancel := false
-	for _, argv := range *calls {
-		if len(argv) >= 3 && argv[1] == "-O" && argv[2] == "cancel" {
-			foundCancel = true
-			break
-		}
-	}
-	if !foundCancel {
-		t.Fatalf("expected ssh -O cancel for dropped port; all calls: %v", *calls)
+	entries := mgr.Applied()
+	if len(entries) != 1 || entries[0].Port != 5001 {
+		t.Fatalf("expected only port 5001 in Applied() after drop; got %v", entries)
 	}
 }

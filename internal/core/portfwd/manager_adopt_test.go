@@ -72,7 +72,6 @@ func TestReconcileCancelsAdoptedForwardWhenUndesired(t *testing.T) {
 		{stderr: checkStderr, code: 0},    // master pid
 		{code: 0},                         // cancel 3000
 		{code: 0},                         // Present(4000) -> absent
-		{code: 0},                         // forward 4000
 	})
 	refA := SandboxRef{ID: "A", Status: SandboxStatusRunning}
 	refB := SandboxRef{ID: "B", Status: SandboxStatusRunning}
@@ -195,8 +194,8 @@ func TestMasterForwardsMacOS(t *testing.T) {
 
 func TestReconcileCancelFailureRetainsAppliedEntry(t *testing.T) {
 	mgr, _ := makeMgr([]runResp{
-		{code: 0},
-		{code: 0},
+		{stdout: ssOwnedBy40518, code: 0},
+		{stderr: checkStderr, code: 0},
 		{code: 1, stderr: "cancel: no such forward"},
 	})
 	ref := SandboxRef{ID: "abc", Status: SandboxStatusRunning}
@@ -214,8 +213,8 @@ func TestReconcileCancelFailureRetainsAppliedEntry(t *testing.T) {
 
 func TestReconcileCancelFailureWarnOnce(t *testing.T) {
 	mgr, _ := makeMgr([]runResp{
-		{code: 0},
-		{code: 0},
+		{stdout: ssOwnedBy40518, code: 0},
+		{stderr: checkStderr, code: 0},
 		{code: 1, stderr: "fail"},
 		{code: 1, stderr: "fail"},
 	})
@@ -229,9 +228,8 @@ func TestReconcileCancelFailureWarnOnce(t *testing.T) {
 	if err := mgr.Reconcile(context.Background(), nil); err != nil {
 		t.Fatalf("second cancel failure: %v", err)
 	}
-	entries := mgr.Applied()
-	if len(entries) != 1 {
-		t.Fatalf("entry must be retained after repeated cancel failure; got %v", entries)
+	if len(mgr.Applied()) != 1 {
+		t.Fatalf("entry must be retained after repeated cancel failure; got %v", mgr.Applied())
 	}
 }
 

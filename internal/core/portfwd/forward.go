@@ -3,6 +3,7 @@ package portfwd
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
@@ -51,6 +52,8 @@ type Forwarder struct {
 	ControlPath string
 	SSHHost     string
 	Run         Runner
+	RunConn     ConnRunner
+	ListenFunc  func(string, string) (net.Listener, error)
 }
 
 func (f *Forwarder) MasterAlive(ctx context.Context) (bool, error) {
@@ -100,25 +103,18 @@ func (f *Forwarder) EnsureMaster(ctx context.Context) error {
 	return nil
 }
 
-func (f *Forwarder) Apply(ctx context.Context, port uint16) error {
-	spec := fmt.Sprintf("%d:127.0.0.1:%d", port, port)
-	applyArgv := []string{
-		"ssh", "-O", "forward",
-		"-L", spec,
-		"-o", "ControlPath=" + f.ControlPath,
-		f.SSHHost,
+func (f *Forwarder) Apply(ctx context.Context, port uint16) (*LocalForward, error) {
+	lf := &LocalForward{
+		ControlPath: f.ControlPath,
+		SSHHost:     f.SSHHost,
+		Port:        port,
+		RunConn:     f.RunConn,
+		ListenFunc:  f.ListenFunc,
 	}
-	_, applyStderr, code, err := f.Run(ctx, applyArgv)
-	if err != nil {
-		return err
+	if err := lf.Open(); err != nil {
+		return nil, fmt.Errorf("portfwd: local forward port %d: %w", port, err)
 	}
-	if code != 0 {
-		if s := strings.TrimSpace(applyStderr); s != "" {
-			return fmt.Errorf("ssh -O forward: exit %d %v: %s", code, applyArgv, s)
-		}
-		return fmt.Errorf("ssh -O forward: exit %d %v", code, applyArgv)
-	}
-	return nil
+	return lf, nil
 }
 
 func (f *Forwarder) Cancel(ctx context.Context, port uint16) error {
@@ -223,6 +219,12 @@ func (f *Forwarder) Present(ctx context.Context, port uint16) (Presence, error) 
 func (f *Forwarder) classifyOwner(ctx context.Context, owners []int) (Presence, error) {
 	if len(owners) == 0 {
 		return PresenceForeign, nil
+	}
+	myPID := os.Getpid()
+	for _, pid := range owners {
+		if pid == myPID {
+			return PresenceOurs, nil
+		}
 	}
 	master, err := f.MasterPID(ctx)
 	if err != nil {
