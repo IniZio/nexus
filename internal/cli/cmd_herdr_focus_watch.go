@@ -214,6 +214,7 @@ func tailHerdrServerLog(ctx context.Context, logPath string, ch chan<- string) {
 		if seekEnd {
 			n, _ := file.Seek(0, io.SeekEnd)
 			offset = n
+			lastReadTime = time.Now()
 		} else {
 			offset = 0
 		}

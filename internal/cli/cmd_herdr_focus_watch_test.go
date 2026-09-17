@@ -327,6 +327,87 @@ func TestFocusWatch_LogSource_AC2(t *testing.T) {
 	}
 }
 
+func TestFocusWatch_LogSource_NoReplayOnStart(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "focus.state")
+	storeRoot := filepath.Join(dir, "store")
+	fwdStateDir := filepath.Join(dir, "fwd")
+
+	srv := newFakeHerdrServer(t)
+	srv.snapshotID.Store("")
+	srv.serve(t)
+	logPath := filepath.Join(filepath.Dir(srv.SocketPath), "herdr-server.log")
+
+	lf, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	for i := range 50 {
+		fmt.Fprintf(lf, `2026-09-17T04:00:%02dZ  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="ok" workspace_id="hist%d"`+"\n", i%60, i)
+	}
+	lf.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go runHerdrFocusWatch(ctx, srv.SocketPath, "", storeRoot, statePath, fwdStateDir, 30*time.Second, io.Discard)
+
+	time.Sleep(1500 * time.Millisecond)
+
+	if _, err := os.Stat(statePath); err == nil {
+		s, _, _ := portfwd.ReadFocusState(statePath)
+		t.Fatalf("NoReplay: focus.state was written during history replay: workspace_id=%q", s.WorkspaceID)
+	}
+
+	appendLogLine(t, logPath, "NEW")
+	if !waitFocusState(t, statePath, "NEW", 2*time.Second) {
+		s, ok, _ := portfwd.ReadFocusState(statePath)
+		t.Fatalf("NoReplay: NEW not applied after append: ok=%v workspace_id=%q", ok, s.WorkspaceID)
+	}
+}
+
+func TestFocusWatch_LogSource_SameSizeTruncation(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "focus.state")
+	storeRoot := filepath.Join(dir, "store")
+	fwdStateDir := filepath.Join(dir, "fwd")
+
+	srv := newFakeHerdrServer(t)
+	srv.snapshotID.Store("")
+	srv.serve(t)
+	logPath := logFixturePath(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	go runHerdrFocusWatch(ctx, srv.SocketPath, "", storeRoot, statePath, fwdStateDir, 30*time.Second, io.Discard)
+
+	time.Sleep(150 * time.Millisecond)
+	appendLogLine(t, logPath, "W")
+	if !waitFocusState(t, statePath, "W", 2*time.Second) {
+		t.Fatal("SameSizeTrunc: initial W not applied")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	wLine := fmt.Sprintf(`2026-09-17T04:00:19.593634Z  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="ok" workspace_id=%q`+"\n", "W")
+	vLine := fmt.Sprintf(`2026-09-17T04:00:19.593634Z  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="ok" workspace_id=%q`+"\n", "V")
+	if len(wLine) != len(vLine) {
+		t.Fatalf("SameSizeTrunc: precondition failed: W line len %d != V line len %d", len(wLine), len(vLine))
+	}
+
+	rf, err := os.OpenFile(logPath, os.O_RDWR|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("open for trunc+rewrite: %v", err)
+	}
+	fmt.Fprint(rf, vLine)
+	rf.Close()
+
+	if !waitFocusState(t, statePath, "V", 2*time.Second) {
+		s, ok, _ := portfwd.ReadFocusState(statePath)
+		t.Fatalf("SameSizeTrunc: V not applied: ok=%v workspace_id=%q", ok, s.WorkspaceID)
+	}
+}
+
 func TestFocusWatch_LogSource_AC3(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "focus.state")
