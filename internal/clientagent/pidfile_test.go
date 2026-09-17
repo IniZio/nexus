@@ -45,9 +45,19 @@ func startManaged(t *testing.T, name string, args ...string) (pid int, exited <-
 	return cmd.Process.Pid, ch
 }
 
+func withProcs(t *testing.T, entries []procEntry) {
+	t.Helper()
+	orig := listProcesses
+	listProcesses = func(_ context.Context) ([]procEntry, error) {
+		return entries, nil
+	}
+	t.Cleanup(func() { listProcesses = orig })
+}
+
 func TestReapPrevious_KillsMatchingArgv(t *testing.T) {
 	pid, exited := startManaged(t, "bash", "-c", "exec -a 'nexus3-client herdr local-agent-startup' sleep 60")
 	waitVisible(t, pid)
+	withProcs(t, []procEntry{{Pid: pid, Argv: "nexus3-client herdr local-agent-startup"}})
 
 	if err := ReapPrevious(context.Background(), writeTempPid(t, pid)); err != nil {
 		t.Fatal(err)
@@ -63,6 +73,7 @@ func TestReapPrevious_KillsMatchingArgv(t *testing.T) {
 func TestReapPrevious_SkipsNonMatchingArgv(t *testing.T) {
 	pid, exited := startManaged(t, "sleep", "60")
 	waitVisible(t, pid)
+	withProcs(t, []procEntry{{Pid: pid, Argv: "sleep 60"}})
 
 	if err := ReapPrevious(context.Background(), writeTempPid(t, pid)); err != nil {
 		t.Fatal(err)
@@ -76,18 +87,21 @@ func TestReapPrevious_SkipsNonMatchingArgv(t *testing.T) {
 }
 
 func TestReapPrevious_ToleratesMissingPidfile(t *testing.T) {
+	withProcs(t, nil)
 	if err := ReapPrevious(context.Background(), filepath.Join(t.TempDir(), "no-such.pid")); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestReapPrevious_TolerateStalePid(t *testing.T) {
+	withProcs(t, nil)
 	if err := ReapPrevious(context.Background(), writeTempPid(t, 2000000)); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestReapPrevious_ToleratesUnparseablePidfile(t *testing.T) {
+	withProcs(t, nil)
 	f := filepath.Join(t.TempDir(), "local-agent.pid")
 	os.WriteFile(f, []byte("not-a-pid\n"), 0o644)
 	if err := ReapPrevious(context.Background(), f); err != nil {
@@ -98,12 +112,7 @@ func TestReapPrevious_ToleratesUnparseablePidfile(t *testing.T) {
 func TestReapPrevious_NoPidfile_KillsOrphanMatchingArgv(t *testing.T) {
 	pid, exited := startManaged(t, "bash", "-c", "exec -a 'nexus3-client herdr local-agent-startup' sleep 60")
 	waitVisible(t, pid)
-
-	orig := listProcesses
-	t.Cleanup(func() { listProcesses = orig })
-	listProcesses = func(_ context.Context) ([]procEntry, error) {
-		return []procEntry{{Pid: pid, Argv: "nexus3-client herdr local-agent-startup"}}, nil
-	}
+	withProcs(t, []procEntry{{Pid: pid, Argv: "nexus3-client herdr local-agent-startup"}})
 
 	missing := filepath.Join(t.TempDir(), "no-such.pid")
 	if err := ReapPrevious(context.Background(), missing); err != nil {
@@ -120,12 +129,7 @@ func TestReapPrevious_NoPidfile_KillsOrphanMatchingArgv(t *testing.T) {
 func TestReapPrevious_NoPidfile_SkipsForeignArgv(t *testing.T) {
 	pid, exited := startManaged(t, "sleep", "60")
 	waitVisible(t, pid)
-
-	orig := listProcesses
-	t.Cleanup(func() { listProcesses = orig })
-	listProcesses = func(_ context.Context) ([]procEntry, error) {
-		return []procEntry{{Pid: pid, Argv: "sleep 60"}}, nil
-	}
+	withProcs(t, []procEntry{{Pid: pid, Argv: "sleep 60"}})
 
 	missing := filepath.Join(t.TempDir(), "no-such.pid")
 	if err := ReapPrevious(context.Background(), missing); err != nil {
@@ -136,6 +140,16 @@ func TestReapPrevious_NoPidfile_SkipsForeignArgv(t *testing.T) {
 	case <-exited:
 		t.Fatalf("foreign-argv process pid %d was killed by ReapPrevious", pid)
 	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func TestReapPrevious_NeverScansRealTable(t *testing.T) {
+	entries, err := listProcesses(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("default test lister must return nothing; got %d entries", len(entries))
 	}
 }
 
