@@ -332,6 +332,11 @@
   "base_commit": "1cab7cc7343ee57ebed49854fe44626310b98463",
   "motive": "rename-nexus3-to-nexus",
   "gate": {
-    "seal": "4e78c77956b267634073743859340a1764df436fae2e925184aec6f95601400c"
+    "advisor": {
+      "verdict": "APPROVE",
+      "citation": "internal/core/service/image_gc_test.go:130 (mutation red); nexus doctor base_image OK; TMPDIR=/tmp make test rc=0 43 ok",
+      "commit": "c4a6a007dbeb013cf3cc5c19f7473ce9e85f3f03"
+    },
+    "seal": "08ceaaeb6afd8e6cc1abb8612408bae767c0aad77e00613b2cc587ee3df0f423"
   }
 }
