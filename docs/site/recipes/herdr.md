@@ -350,3 +350,14 @@ interactive client** on that herdr session. When a host TUI and a remote client
 are both attached, the host session's most recent workspace focus is the one
 the daemon reads; the remote client has no independent focus channel.
 :::
+
+::: info Mac remote-client focus on herdr 0.9.0
+herdr 0.9.0 does not reflect Mac remote-client focus changes in `session.snapshot`,
+`workspace.list`, `events.subscribe`, or any plugin hook. The host-side focus
+watcher works around this by tailing the session server log
+(`~/.config/herdr/sessions/<session>/herdr-server.log`, or
+`~/.config/herdr/herdr-server.log` for the default session) and parsing lines
+with `event="workspace.focus"` and `outcome="ok"`. This log-tail source is polled
+every 250ms; it is the authoritative source for remote-client focus until the
+upstream protocol exposes a per-client focus surface.
+:::

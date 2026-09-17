@@ -204,3 +204,178 @@ func TestFocusWatch_Reconnect(t *testing.T) {
 
 	srv.waitSubscribeCount(t, 2, 8*time.Second)
 }
+
+func logFixturePath(t *testing.T, srv *fakeHerdrServer) string {
+	t.Helper()
+	p := filepath.Join(filepath.Dir(srv.SocketPath), "herdr-server.log")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatalf("create fixture log: %v", err)
+	}
+	f.Close()
+	return p
+}
+
+func appendLogLine(t *testing.T, logPath, workspaceID string) {
+	t.Helper()
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open log for append: %v", err)
+	}
+	defer f.Close()
+	fmt.Fprintf(f, `2026-09-17T04:00:19.593634Z  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="ok" workspace_id=%q`+"\n", workspaceID)
+}
+
+func waitFocusState(t *testing.T, statePath, want string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		s, ok, err := portfwd.ReadFocusState(statePath)
+		if err == nil && ok && s.WorkspaceID == want {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+func TestFocusWatch_LogSource_AC1(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "focus.state")
+	storeRoot := filepath.Join(dir, "store")
+	fwdStateDir := filepath.Join(dir, "fwd")
+
+	srv := newFakeHerdrServer(t)
+	srv.snapshotID.Store("")
+	srv.serve(t)
+	logPath := logFixturePath(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go runHerdrFocusWatch(ctx, srv.SocketPath, "", storeRoot, statePath, fwdStateDir, 30*time.Second, io.Discard)
+
+	time.Sleep(100 * time.Millisecond)
+	appendLogLine(t, logPath, "W")
+
+	if !waitFocusState(t, statePath, "W", time.Second) {
+		s, ok, _ := portfwd.ReadFocusState(statePath)
+		t.Fatalf("AC1: focus.state not updated within 1s: ok=%v workspace_id=%q (want W)", ok, s.WorkspaceID)
+	}
+}
+
+func TestFocusWatch_LogSource_AC2(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rotate  func(logPath string)
+	}{
+		{
+			name: "truncate",
+			rotate: func(logPath string) {
+				if err := os.Truncate(logPath, 0); err != nil {
+					t.Errorf("truncate: %v", err)
+				}
+			},
+		},
+		{
+			name: "rename_create",
+			rotate: func(logPath string) {
+				if err := os.Rename(logPath, logPath+".old"); err != nil {
+					t.Errorf("rename: %v", err)
+				}
+				f, err := os.Create(logPath)
+				if err != nil {
+					t.Errorf("create new log: %v", err)
+					return
+				}
+				f.Close()
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			statePath := filepath.Join(dir, "focus.state")
+			storeRoot := filepath.Join(dir, "store")
+			fwdStateDir := filepath.Join(dir, "fwd")
+
+			srv := newFakeHerdrServer(t)
+			srv.snapshotID.Store("")
+			srv.serve(t)
+			logPath := logFixturePath(t, srv)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+
+			go runHerdrFocusWatch(ctx, srv.SocketPath, "", storeRoot, statePath, fwdStateDir, 30*time.Second, io.Discard)
+
+			time.Sleep(150 * time.Millisecond)
+			appendLogLine(t, logPath, "W")
+			if !waitFocusState(t, statePath, "W", 2*time.Second) {
+				t.Fatalf("AC2 %s: initial W not applied", tc.name)
+			}
+
+			time.Sleep(100 * time.Millisecond)
+			tc.rotate(logPath)
+			time.Sleep(100 * time.Millisecond)
+			appendLogLine(t, logPath, "V")
+
+			if !waitFocusState(t, statePath, "V", 2*time.Second) {
+				s, ok, _ := portfwd.ReadFocusState(statePath)
+				t.Fatalf("AC2 %s: V not applied after rotation: ok=%v workspace_id=%q", tc.name, ok, s.WorkspaceID)
+			}
+		})
+	}
+}
+
+func TestFocusWatch_LogSource_AC3(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "focus.state")
+	storeRoot := filepath.Join(dir, "store")
+	fwdStateDir := filepath.Join(dir, "fwd")
+
+	srv := newFakeHerdrServer(t)
+	srv.snapshotID.Store("")
+	srv.serve(t)
+	logPath := logFixturePath(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	go runHerdrFocusWatch(ctx, srv.SocketPath, "", storeRoot, statePath, fwdStateDir, 30*time.Second, io.Discard)
+
+	time.Sleep(150 * time.Millisecond)
+	appendLogLine(t, logPath, "W")
+	if !waitFocusState(t, statePath, "W", 2*time.Second) {
+		t.Fatal("AC3: initial W not applied")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	info1, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	mtime1 := info1.ModTime()
+
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	fmt.Fprintln(f, `2026-09-17T04:00:20Z  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="error" workspace_id="X"`)
+	fmt.Fprintln(f, `2026-09-17T04:00:20Z  INFO herdr::logging: unrelated line subsystem="other"`)
+	fmt.Fprintf(f, `2026-09-17T04:00:20Z  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="ok" workspace_id=%q`+"\n", "W")
+	f.Close()
+
+	time.Sleep(600 * time.Millisecond)
+
+	info2, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("stat after noise: %v", err)
+	}
+	if !info2.ModTime().Equal(mtime1) {
+		t.Errorf("AC3: mtime changed on noise/duplicate lines: before=%v after=%v", mtime1, info2.ModTime())
+	}
+	s, _, _ := portfwd.ReadFocusState(statePath)
+	if s.WorkspaceID != "W" {
+		t.Errorf("AC3: workspace_id changed: got %q want W", s.WorkspaceID)
+	}
+}

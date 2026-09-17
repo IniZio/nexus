@@ -2,12 +2,16 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"regexp"
+	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus3/internal/core/portfwd"
@@ -41,24 +45,32 @@ func runHerdrFocusWatchCmd(ctx context.Context, args []string, out *Output) erro
 	return runHerdrFocusWatch(ctx, socketPath, session, storeRoot, portfwd.FocusStatePath(), portfwd.StateDir(), pollEvery, out.w)
 }
 
-// runHerdrFocusWatch keeps focus.state current: seeds from session.snapshot,
-// streams workspace_focused events (reconnects with 1s→10s backoff), and polls
-// session.snapshot every pollEvery; writes focus.state only on ID change (mtime stable on no-op).
+// runHerdrFocusWatch keeps focus.state current via three sources: snapshot seed at startup,
+// events.subscribe stream (reconnects with 1s→10s backoff), and server log tail (250ms poll).
+// The snapshot poll writes only when it returns a non-empty id differing from focus.state;
+// it never overwrites a log-derived focus with "". Writes focus.state only on ID change.
 func runHerdrFocusWatch(ctx context.Context, socketPath, session, storeRoot, statePath, fwdStateDir string, pollEvery time.Duration, w io.Writer) error {
+	envSocketPath := socketPath
 	if socketPath == "" {
 		socketPath = herdrSocketPath(session)
 	}
-	var lastEventID string // dedup: skip consecutive equal event-stream IDs
-	applyID := func(workspaceID string) {
+
+	var lastEventID string
+	applyID := func(workspaceID, source string) {
+		fmt.Fprintf(os.Stderr, "focus-watch: apply workspace=%q source=%s\n", workspaceID, source)
 		herdrFocusChanged(ctx, workspaceID, false, storeRoot, statePath, fwdStateDir, session, socketPath, w) //nolint:errcheck
 	}
+
 	if id, err := herdrSnapshotFocusedID(ctx, socketPath); err == nil {
 		lastEventID = id
 		if id != "" {
-			applyID(id)
+			applyID(id, "snapshot")
 		}
 	}
+
 	evCh := make(chan string, 8)
+	logCh := make(chan string, 8)
+
 	go func() {
 		backoff := time.Second
 		for {
@@ -89,6 +101,9 @@ func runHerdrFocusWatch(ctx context.Context, socketPath, session, storeRoot, sta
 			}
 		}
 	}()
+
+	go tailHerdrServerLog(ctx, herdrServerLogPath(envSocketPath, session), logCh)
+
 	ticker := time.NewTicker(pollEvery)
 	defer ticker.Stop()
 	for {
@@ -98,7 +113,12 @@ func runHerdrFocusWatch(ctx context.Context, socketPath, session, storeRoot, sta
 		case id := <-evCh:
 			if id != lastEventID {
 				lastEventID = id
-				applyID(id)
+				applyID(id, "event")
+			}
+		case id := <-logCh:
+			if id != lastEventID {
+				lastEventID = id
+				applyID(id, "log")
 			}
 		case <-ticker.C:
 			snapID, err := herdrSnapshotFocusedID(ctx, socketPath)
@@ -113,8 +133,170 @@ func runHerdrFocusWatch(ctx context.Context, socketPath, session, storeRoot, sta
 			if ok {
 				diskID = cur.WorkspaceID
 			}
-			if snapID != diskID {
-				applyID(snapID)
+			if snapID != "" && snapID != diskID {
+				applyID(snapID, "snapshot")
+			}
+		}
+	}
+}
+
+// herdrServerLogPath returns the herdr session server log path, derived from the
+// socket directory when HERDR_SOCKET_PATH is set, else from the session name or default.
+func herdrServerLogPath(envSocketPath, session string) string {
+	if envSocketPath != "" {
+		return filepath.Join(filepath.Dir(envSocketPath), "herdr-server.log")
+	}
+	home, _ := os.UserHomeDir()
+	if session != "" {
+		return filepath.Join(home, ".config", "herdr", "sessions", session, "herdr-server.log")
+	}
+	return filepath.Join(home, ".config", "herdr", "herdr-server.log")
+}
+
+var (
+	reLogFocusEvent  = regexp.MustCompile(`event="workspace\.focus(?:ed)?"`)
+	reLogOutcomeOK   = regexp.MustCompile(`outcome="ok"`)
+	reLogWorkspaceID = regexp.MustCompile(`workspace_id="([^"]+)"`)
+)
+
+// parseFocusLogLine extracts a workspace id from a herdr-server.log structured log line
+// that records a successful workspace focus event. Returns "" for non-matching lines.
+func parseFocusLogLine(line string) string {
+	if !reLogFocusEvent.MatchString(line) {
+		return ""
+	}
+	if !reLogOutcomeOK.MatchString(line) {
+		return ""
+	}
+	m := reLogWorkspaceID.FindStringSubmatch(line)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// tailHerdrServerLog poll-reads logPath every 250ms, parses workspace.focus lines,
+// and sends matched workspace ids to ch. Starts at EOF (history not replayed).
+// Handles rotation (inode change), truncation (fd size < offset), and
+// truncation+regrowth to same size (fd mtime newer than last read) by reopening from start.
+// Retries every 2s on missing file, logging once.
+func tailHerdrServerLog(ctx context.Context, logPath string, ch chan<- string) {
+	var (
+		f               *os.File
+		offset          int64
+		pending         []byte
+		lastReadTime    time.Time
+		loggedMissing   bool
+		retryAfter      time.Time
+		nextOpenSeekEnd = true
+	)
+
+	tryOpen := func(seekEnd bool) bool {
+		if f != nil {
+			_ = f.Close()
+			f = nil
+		}
+		file, err := os.Open(logPath)
+		if err != nil {
+			if !loggedMissing {
+				fmt.Fprintf(os.Stderr, "focus-watch: server log %s unavailable, retrying\n", logPath)
+				loggedMissing = true
+			}
+			retryAfter = time.Now().Add(2 * time.Second)
+			return false
+		}
+		loggedMissing = false
+		if _, stErr := file.Stat(); stErr != nil {
+			_ = file.Close()
+			retryAfter = time.Now().Add(2 * time.Second)
+			return false
+		}
+		if seekEnd {
+			n, _ := file.Seek(0, io.SeekEnd)
+			offset = n
+		} else {
+			offset = 0
+		}
+		pending = pending[:0]
+		f = file
+		return true
+	}
+
+	tryOpen(true)
+
+	poll := time.NewTicker(250 * time.Millisecond)
+	defer poll.Stop()
+	buf := make([]byte, 32*1024)
+
+	for {
+		select {
+		case <-ctx.Done():
+			if f != nil {
+				_ = f.Close()
+			}
+			return
+		case <-poll.C:
+			if f == nil {
+				if time.Now().Before(retryAfter) {
+					continue
+				}
+				if tryOpen(nextOpenSeekEnd) {
+					nextOpenSeekEnd = true
+				}
+				continue
+			}
+			if fst, ferr := f.Stat(); ferr == nil {
+				if pathSt, perr := os.Stat(logPath); perr == nil {
+					var pathIno, fdIno uint64
+					if sys, ok := pathSt.Sys().(*syscall.Stat_t); ok {
+						pathIno = sys.Ino
+					}
+					if sys, ok := fst.Sys().(*syscall.Stat_t); ok {
+						fdIno = sys.Ino
+					}
+					rotated := pathIno != fdIno || fst.Size() < offset ||
+						(offset > 0 && fst.Size() == offset && fst.ModTime().After(lastReadTime))
+					if rotated {
+						nextOpenSeekEnd = false
+						if !tryOpen(false) {
+							continue
+						}
+						nextOpenSeekEnd = true
+					}
+				}
+			}
+			if f == nil {
+				continue
+			}
+			for {
+				n, readErr := f.Read(buf)
+				if n > 0 {
+					offset += int64(n)
+					lastReadTime = time.Now()
+					pending = append(pending, buf[:n]...)
+					for {
+						idx := bytes.IndexByte(pending, '\n')
+						if idx < 0 {
+							break
+						}
+						line := string(pending[:idx])
+						pending = pending[idx+1:]
+						if id := parseFocusLogLine(line); id != "" {
+							select {
+							case ch <- id:
+							case <-ctx.Done():
+								if f != nil {
+									_ = f.Close()
+								}
+								return
+							default:
+							}
+						}
+					}
+				}
+				if readErr != nil {
+					break
+				}
 			}
 		}
 	}

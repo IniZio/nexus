@@ -65,6 +65,17 @@ With these additions, nexus3-client can:
 
 Without them, the sole-interactive-client constraint is a permanent documentation caveat rather than a solvable problem.
 
+## Known vendor gap: remote-client focus not reflected in snapshot/list/subscribe/hooks
+
+herdr 0.9.0 logs workspace focus events from the Mac remote client to the session server log
+(`~/.config/herdr/herdr-server.log` or `~/.config/herdr/sessions/<s>/herdr-server.log`),
+but does NOT reflect them in `session.snapshot.focused_workspace_id`, `workspace.list`,
+`events.subscribe` delivery, or any plugin hook. nexus3 works around this by tailing the
+server log for lines matching `event="workspace.focus"` with `outcome="ok"` (see
+`tailHerdrServerLog` in `internal/cli/cmd_herdr_focus_watch.go`). This gap should be
+resolved upstream by making remote-client focus changes observable through the existing API
+surfaces, eliminating the log-tail workaround.
+
 ## Known vendor gap: plugin event hooks fire only for API-driven focus
 
 herdr 0.9.0 dispatches `[[events]]` hooks (including `workspace.focused`) only when a
