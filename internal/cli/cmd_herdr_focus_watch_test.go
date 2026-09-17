@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -493,6 +494,31 @@ func TestFocusWatch_LogCoalesce(t *testing.T) {
 	if !waitFocusState(t, statePath, "id19", 3*time.Second) {
 		s, ok, _ := portfwd.ReadFocusState(statePath)
 		t.Fatalf("LogCoalesce: last id not applied: ok=%v workspace_id=%q (want id19)", ok, s.WorkspaceID)
+	}
+}
+
+func TestFocusWatch_PidAlive(t *testing.T) {
+	cases := []struct {
+		name    string
+		cmdline []byte
+		err     error
+		want    bool
+	}{
+		{"nexus3 focus-watch", []byte("nexus3\x00herdr\x00focus-watch"), nil, true},
+		{"full path local-agent-startup", []byte("/home/x/.local/bin/nexus3\x00herdr\x00local-agent-startup"), nil, true},
+		{"unrelated bash", []byte("bash\x00-c\x00sleep"), nil, false},
+		{"read error", nil, errors.New("no such process"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			old := focusWatchReadCmdline
+			focusWatchReadCmdline = func(pid int) ([]byte, error) { return tc.cmdline, tc.err }
+			defer func() { focusWatchReadCmdline = old }()
+			got := focusWatchPidAlive(42)
+			if got != tc.want {
+				t.Errorf("focusWatchPidAlive = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

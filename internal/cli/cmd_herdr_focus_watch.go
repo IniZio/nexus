@@ -11,8 +11,10 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -359,12 +361,21 @@ func herdrSnapshotFocusedID(ctx context.Context, socketPath string) (string, err
 	return *resp.Result.FocusedWorkspaceID, nil
 }
 
+var focusWatchReadCmdline = func(pid int) ([]byte, error) {
+	if runtime.GOOS == "darwin" {
+		return exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
+	}
+	return os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+}
+
 var focusWatchPidAlive = func(pid int) bool {
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	cmdline, err := focusWatchReadCmdline(pid)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(cmdline), "focus-watch")
+	s := string(cmdline)
+	return strings.Contains(s, "nexus3") &&
+		(strings.Contains(s, "focus-watch") || strings.Contains(s, "local-agent-startup"))
 }
 
 func acquireFocusWatchPidfile(pidfilePath string) (bool, func(), error) {
