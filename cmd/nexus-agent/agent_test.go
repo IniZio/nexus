@@ -148,8 +148,7 @@ func TestExecStreamAndReattach(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", code)
 	}
 
-	// "NEXUS" is 6 bytes. Reconnect at offset 3 → expect "US3".
-	// Second connection at offset 3
+	// "NEXUS" is 5 bytes. Reconnect at offset 3 → expect "US".
 	conn2, w2, r2 := dialData(t, dataLis)
 
 	if err := w2.WriteHandshake(wire.Handshake{SessionID: "s-reattach", ResumeFromOffset: 3}); err != nil {
@@ -165,8 +164,8 @@ func TestExecStreamAndReattach(t *testing.T) {
 	frames2 := collectFrames(t, conn2, r2, 5*time.Second)
 
 	out2 := dataBytes(frames2)
-	if string(out2) != "US3" {
-		t.Fatalf("reattach offset 3: got %q, want \"US3\"", out2)
+	if string(out2) != "US" {
+		t.Fatalf("reattach offset 3: got %q, want \"US\"", out2)
 	}
 	if gotExit2, _ := hasExitFrame(frames2); !gotExit2 {
 		t.Fatal("expected Exit frame on reattach, not received")

@@ -5,11 +5,11 @@
 
 ---
 
-## 1. How Old Nexus Did It
+## 1. How old-nexus (the predecessor) Did It
 
 ### Disk format and cache mode
 
-Old nexus used a **qcow2 overlay disk** for its single workspace block device,
+old-nexus used a **qcow2 overlay disk** for its single workspace block device,
 not a raw ext4 image. The disk was configured at
 `nexus-clone-repro/packages/nexus/internal/vm/driver/cloudhypervisor/driver.go:31–41`:
 
@@ -26,9 +26,9 @@ diskFileName = "disk.qcow2"
 diskOverlayVirtualSize = int64(100 * 1024 * 1024 * 1024)
 ```
 
-The VMConfig `DiskConfig` struct in old nexus
+The VMConfig `DiskConfig` struct in old-nexus
 (`nexus-clone-repro/.../cloudhypervisor/types.go`) has **no `Direct` or
-`cache` field**. Old nexus never set O_DIRECT on any disk; all workspace I/O
+`cache` field**. old-nexus never set O_DIRECT on any disk; all workspace I/O
 flowed through the host page cache.
 
 The workspace was attached as:
@@ -42,7 +42,7 @@ disks := []DiskConfig{
 
 ### Runtime resize mechanism
 
-Old nexus did wire a disk auto-grow governor
+old-nexus did wire a disk auto-grow governor
 (`nexus-clone-repro/.../engine/workspace/disk_resize.go`). The governor
 called `GrowWorkspace` on the CH driver
 (`nexus-clone-repro/.../vm/driver/cloudhypervisor/driver_grow.go:26–65`),
@@ -54,7 +54,7 @@ which:
    DesiredSize: newSizeBytes})` — i.e. `PUT /api/v1/vm.resize-disk` with the
    field named **`desired_size`** in JSON.
 
-The `VMResizeDiskRequest` in old nexus
+The `VMResizeDiskRequest` in old-nexus
 (`nexus-clone-repro/.../vm/driver/cloudhypervisor/types.go:60–65`):
 
 ```go
@@ -65,7 +65,7 @@ type VMResizeDiskRequest struct {
 ```
 
 However, in practice the CH call almost always failed for qcow2 overlays with
-a backing file. The old nexus disk resize governor tracked this with an
+a backing file. The old-nexus disk resize governor tracked this with an
 `unsupported` flag
 (`nexus-clone-repro/.../engine/workspace/disk_resize.go:61–66`):
 
@@ -78,9 +78,9 @@ a backing file. The old nexus disk resize governor tracked this with an
 unsupported bool
 ```
 
-### What actually prevented disk ENOSPC in old nexus
+### What actually prevented disk ENOSPC in old-nexus
 
-Old nexus pre-allocated a **100 GiB virtual sparse qcow2 overlay at creation
+old-nexus pre-allocated a **100 GiB virtual sparse qcow2 overlay at creation
 time**. When CH rejected the runtime resize for a backed qcow2 overlay, the
 governor latched `unsupported = true` and silently fell back to relying on the
 pre-allocated 100 GiB headroom. The guest filesystem was always 100 GiB from
@@ -88,24 +88,24 @@ first boot; no runtime grow ever needed to succeed.
 
 ---
 
-## 2. Why Old Nexus Did Not Hit the Conflict
+## 2. Why old-nexus Did Not Hit the Conflict
 
 The conflict is between the host-OOM guard (O_DIRECT on ExtraDisks) and
-`vm.resize-disk`. Old nexus never had this conflict because:
+`vm.resize-disk`. old-nexus never had this conflict because:
 
-**Old nexus never used O_DIRECT.** All workspace I/O — including heavy Docker
-layer writes — flowed through the host page cache. Old nexus therefore DID
-carry the host-OOM risk that nexus was built to avoid. If old nexus had run
+**old-nexus never used O_DIRECT.** All workspace I/O — including heavy Docker
+layer writes — flowed through the host page cache. old-nexus therefore DID
+carry the host-OOM risk that nexus was built to avoid. If old-nexus had run
 the same buildkit-nested-build workload that produced the `pump: read frame:
 EOF` failure in nexus, it would likely have hit the same host-OOM wall.
 
-Old nexus dodged the conflict by **not having the guard**, which is not a
+old-nexus dodged the conflict by **not having the guard**, which is not a
 solution nexus can copy. The 100 GiB virtual-size approach succeeded there
 precisely because that workspace disk was buffered — but a buffered disk means
 heavy buildkit writes dirty the host page cache, which causes OOM under the
 nested-build workload that CH-RESIZE-400 was filed against.
 
-Additionally, old nexus's runtime disk resize was non-functional for the
+Additionally, old-nexus's runtime disk resize was non-functional for the
 qcow2 overlay (qcow2-with-backing-image is not resizable at runtime by CH),
 so the two features — O_DIRECT guard and runtime resize — simply never
 coexisted: each project had one or the other, never both.
@@ -176,7 +176,7 @@ in nexus, not a CH restriction on Direct-mode disks.
 
 The code comment in `driver_resize.go:230–233` attributes the 400 to
 Direct:true. That attribution is incorrect — a non-direct disk also returns
-400 when the same wrong field name is sent. The old nexus client used the
+400 when the same wrong field name is sent. The old-nexus client used the
 correct field name `"desired_size"` and its CH calls succeeded for raw disks.
 
 CH version pinned in nexus: **v52.0** (binary at
@@ -235,7 +235,7 @@ handler already implemented). Low complexity.
 ### Option B — Overprovision a large sparse backing file up front
 
 Pre-allocate ExtraDisks as large sparse ext4 images (e.g., 100 GiB) at
-sandbox creation, mirroring old nexus's 100 GiB qcow2 approach. The guest
+sandbox creation, mirroring old-nexus's 100 GiB qcow2 approach. The guest
 filesystem is created at full virtual size by `mke2fs` in-guest; because the
 file is sparse, the host only pays for actual written blocks.
 
@@ -327,7 +327,7 @@ corrected and the vsock guest-dialer is wired (second blocker in the same
 TODO block), disk auto-grow will work with the O_DIRECT host-OOM guard fully
 intact. No cache-mode changes or pre-provisioning workarounds are required.
 
-**UNVERIFIED**: The assertion that old nexus's vm.resize-disk calls on qcow2
+**UNVERIFIED**: The assertion that old-nexus's vm.resize-disk calls on qcow2
 overlays backed by a base image returned an "unsupported" error (vs. a
 different error) was inferred from the `unsupported bool` flag comment; the
 exact CH error response for backed-qcow2 resize was not reproduced live.

@@ -264,7 +264,7 @@ MemTotal:         496060 kB   ← after shrink (3 readings)
 
 2. **Cmdline params are required, not optional**: append `memhp_default_state=online memory_hotplug.online_policy=auto-movable` to every cmdline that carries a hotplug region. Leg 6 proves that omitting them causes vm.resize to silently succeed without the guest seeing any memory growth. The second param (`auto-movable`) is also required for the shrink path to work (Leg 7): movable-zoned blocks can be migrated out before unplug; non-movable blocks cannot.
 
-3. **Balloon coexistence and nested=true coexistence are both confirmed** (Legs 2, 3, 4). These were the two nexus-specific unknowns that OLD-nexus never exercised. No CH API changes are needed to accommodate them.
+3. **Balloon coexistence and nested=true coexistence are both confirmed** (Legs 2, 3, 4). These were the two nexus-specific unknowns that old-nexus (the predecessor) never exercised. No CH API changes are needed to accommodate them.
 
 4. **The shrink path works** (Leg 7 PASS). The design can offer shrink-back (cost optimisation) without requiring an additional feasibility spike. Whether to expose it in the governor is a policy decision, not a feasibility constraint.
 

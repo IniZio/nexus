@@ -55,7 +55,7 @@
     {
       "id": "S4-tests-cli",
       "wave": 1,
-      "status": "pending",
+      "status": "complete",
       "kind": "impl",
       "desc": "make test GOTEST_PKGS=./internal/cli/... ./cmd/... green after rename; fix name-assertion tests and testdata (herdr-plugin-*.toml, herdr-list.txt)",
       "blocked_by": [
@@ -66,12 +66,14 @@
       "acceptance": [
         "make test GOTEST_PKGS='./internal/cli/... ./cmd/...' exit 0 with output captured",
         "rg -i nexus3 internal/cli cmd returns 0 lines"
-      ]
+      ],
+      "completed_at": "2026-09-17T12:15:12.809Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     },
     {
       "id": "S5-tests-core",
       "wave": 1,
-      "status": "pending",
+      "status": "complete",
       "kind": "impl",
       "desc": "make test for every package outside internal/cli and cmd/ (internal/core/... internal/supervisor/... internal/clientagent/... internal/mcp/... internal/test/... etc) green after rename; fix name-assertion tests",
       "blocked_by": [
@@ -82,12 +84,14 @@
       "acceptance": [
         "make test GOTEST_PKGS=<all packages except ./internal/cli/... ./cmd/...> exit 0 with output captured",
         "no edits under internal/cli or cmd/"
-      ]
+      ],
+      "completed_at": "2026-09-17T12:14:54.182Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     },
     {
       "id": "S6-spec-regen",
       "wave": 1,
-      "status": "pending",
+      "status": "complete",
       "kind": "impl",
       "desc": "Regenerate doc/specs/_generated via the groundwork:spec build so index.json carries C-NEXUS; godog spec feature suite passes with renamed steps",
       "blocked_by": [
@@ -97,7 +101,9 @@
         "doc/specs/_generated/index.json contains C-NEXUS and not C-NEXUS3",
         "spec build command exit 0",
         "godog features under internal/test/spec pass (make test GOTEST_PKGS=./internal/test/spec/...)"
-      ]
+      ],
+      "completed_at": "2026-09-17T12:16:56.204Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     },
     {
       "id": "S7-host-cutover",
@@ -137,7 +143,7 @@
     {
       "id": "S9-residual-sweep",
       "wave": 1,
-      "status": "pending",
+      "status": "complete",
       "kind": "impl",
       "desc": "Sweep leftovers: images/README.md images/AGENT-REBUILD.md images/base/Containerfile images/builder/Containerfile nexus3->nexus; reword 'old nexus' contrast prose in docs/design/ch-resize-400-research.md, docs/design/auto-resize.md:267, doc/specs/per/PER-R-007.md to 'the predecessor (old-nexus)' so it no longer collides with the product name",
       "blocked_by": [
@@ -147,7 +153,9 @@
       "acceptance": [
         "repo-wide rg -i nexus3 excluding .git .claude .groundwork CHANGELOG.md plugins/claude/evals docs/site/node_modules doc/specs/_generated internal/test/repro/logs returns 0 files",
         "the three prose files no longer say 'old nexus'/'Old Nexus' bare"
-      ]
+      ],
+      "completed_at": "2026-09-17T12:16:26.926Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     }
   ],
   "write_token": "95fee6420d96bce6",
@@ -155,6 +163,6 @@
   "base_commit": "1cab7cc7343ee57ebed49854fe44626310b98463",
   "motive": "rename-nexus3-to-nexus",
   "gate": {
-    "seal": "d61146b0a49ea6060c8e796f96681f67730bbffd41aa4760d2eacbf42505fa56"
+    "seal": "ab114e662278a4f3e9300c072fe7df0f03ba340ecae738659bb31a097068d3bb"
   }
 }

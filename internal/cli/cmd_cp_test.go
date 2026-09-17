@@ -246,8 +246,8 @@ func TestRunCpWithSvc_PushFile_TarNotUsed(t *testing.T) {
 	if rec.got.ExpectedBytes == nil {
 		t.Fatal("ExpectedBytes is nil for single-file push; guard would be bypassed")
 	}
-	if *rec.got.ExpectedBytes != 6 { // len("nexus")
-		t.Errorf("ExpectedBytes = %d, want 6", *rec.got.ExpectedBytes)
+	if *rec.got.ExpectedBytes != 5 { // len("nexus")
+		t.Errorf("ExpectedBytes = %d, want 5", *rec.got.ExpectedBytes)
 	}
 	// Src must be non-nil and readable as plain bytes (not tar).
 	if rec.got.Src == nil {

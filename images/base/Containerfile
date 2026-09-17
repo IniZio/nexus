@@ -15,5 +15,5 @@ RUN echo 'ListenAddress 127.0.0.1' >> /etc/ssh/sshd_config && \
     echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && \
     ssh-keygen -A
 
-COPY nexus3-agent /sbin/nexus3-agent
-RUN chmod 0755 /sbin/nexus3-agent
+COPY nexus-agent /sbin/nexus-agent
+RUN chmod 0755 /sbin/nexus-agent
