@@ -3,6 +3,7 @@ package portfwd
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,6 +57,42 @@ func TestManagerPersistsOnApply(t *testing.T) {
 	}
 	if pa.Entries[0].Kind != "local" {
 		t.Fatalf("want kind=local in persisted entry, got %q", pa.Entries[0].Kind)
+	}
+}
+
+func TestManagerRestartRebindsLocalEntry(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "test.ctl")
+	data := `{"entries":[{"sandbox_id":"abc","port":3000,"kind":"local"}]}`
+	if err := os.WriteFile(sock+".applied.json", []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var listenCalled bool
+	var calls [][]string
+	fw := &Forwarder{
+		ControlPath: sock,
+		SSHHost:     testHost,
+		Run:         seqRun(&calls, []runResp{{code: 0}}),
+		ListenFunc: func(_, _ string) (net.Listener, error) {
+			listenCalled = true
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	mgr := NewManager(fw)
+
+	for _, e := range mgr.Applied() {
+		if e.Port == 3000 {
+			t.Fatalf("kind=local entry must not be loaded after restart; got %+v", e)
+		}
+	}
+
+	ref := SandboxRef{ID: "abc", Status: SandboxStatusRunning}
+	if err := mgr.Reconcile(context.Background(), []Listener{{Port: 3000, Sandbox: ref}}); err != nil {
+		t.Fatal(err)
+	}
+	if !listenCalled {
+		t.Fatalf("ListenFunc must be called on Reconcile after restart with local entry; calls=%v", calls)
 	}
 }
 

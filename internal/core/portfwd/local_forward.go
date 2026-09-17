@@ -1,11 +1,14 @@
 package portfwd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -16,13 +19,23 @@ func OSConnRunner(argv []string, conn net.Conn) (io.Closer, <-chan struct{}, err
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin = conn
 	cmd.Stdout = conn
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
 	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		cmd.Wait()
+		if err := cmd.Wait(); err != nil {
+			s := strings.TrimRight(stderrBuf.String(), "\n")
+			if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+				s = s[i+1:]
+			}
+			if s != "" {
+				slog.Warn("portfwd: ssh -W exited non-zero", "err", err, "stderr", s)
+			}
+		}
 		conn.Close()
 	}()
 	return &processKiller{cmd.Process}, done, nil
@@ -40,6 +53,7 @@ type LocalForward struct {
 	ListenFunc  func(string, string) (net.Listener, error)
 
 	mu       sync.Mutex
+	closed   bool
 	listener net.Listener
 	conns    []*liveConn
 }
@@ -100,6 +114,12 @@ func (lf *LocalForward) handleConn(conn net.Conn) {
 	}
 	lc := &liveConn{conn: conn, kill: kill}
 	lf.mu.Lock()
+	if lf.closed {
+		lf.mu.Unlock()
+		kill.Close()
+		conn.Close()
+		return
+	}
 	lf.conns = append(lf.conns, lc)
 	lf.mu.Unlock()
 	if done != nil {
@@ -121,6 +141,7 @@ func (lf *LocalForward) handleConn(conn net.Conn) {
 func (lf *LocalForward) Close() error {
 	lf.mu.Lock()
 	defer lf.mu.Unlock()
+	lf.closed = true
 	if lf.listener != nil {
 		lf.listener.Close()
 		lf.listener = nil

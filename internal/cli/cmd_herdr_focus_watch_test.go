@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -458,5 +459,69 @@ func TestFocusWatch_LogSource_AC3(t *testing.T) {
 	s, _, _ := portfwd.ReadFocusState(statePath)
 	if s.WorkspaceID != "W" {
 		t.Errorf("AC3: workspace_id changed: got %q want W", s.WorkspaceID)
+	}
+}
+
+func TestFocusWatch_LogCoalesce(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "focus.state")
+	storeRoot := filepath.Join(dir, "store")
+	fwdStateDir := filepath.Join(dir, "fwd")
+
+	srv := newFakeHerdrServer(t)
+	srv.snapshotID.Store("")
+	srv.serve(t)
+	logPath := logFixturePath(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	go runHerdrFocusWatch(ctx, srv.SocketPath, "", storeRoot, statePath, fwdStateDir, 30*time.Second, io.Discard)
+
+	time.Sleep(150 * time.Millisecond)
+
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	for i := range 20 {
+		id := fmt.Sprintf("id%02d", i)
+		fmt.Fprintf(f, `2026-09-17T04:00:%02dZ  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="ok" workspace_id=%q`+"\n", i%60, id)
+	}
+	f.Close()
+
+	if !waitFocusState(t, statePath, "id19", 3*time.Second) {
+		s, ok, _ := portfwd.ReadFocusState(statePath)
+		t.Fatalf("LogCoalesce: last id not applied: ok=%v workspace_id=%q (want id19)", ok, s.WorkspaceID)
+	}
+}
+
+func TestFocusWatch_PidfileDedup(t *testing.T) {
+	dir := t.TempDir()
+	pidfilePath := filepath.Join(dir, "focus-watch.pid")
+
+	fakePid := os.Getpid()
+	old := focusWatchPidAlive
+	focusWatchPidAlive = func(pid int) bool { return pid == fakePid }
+	defer func() { focusWatchPidAlive = old }()
+
+	if err := os.WriteFile(pidfilePath, []byte(fmt.Sprintf("%d\n", fakePid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	acquired, cleanup, err := acquireFocusWatchPidfile(pidfilePath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if acquired {
+		t.Fatal("must not acquire pidfile when a live holder exists")
+	}
+
+	data, _ := os.ReadFile(pidfilePath)
+	if !strings.Contains(string(data), fmt.Sprintf("%d", fakePid)) {
+		t.Error("pidfile must not be removed when live holder exists")
 	}
 }

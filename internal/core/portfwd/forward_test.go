@@ -528,6 +528,63 @@ func TestCancelZeroExitNoError(t *testing.T) {
 	}
 }
 
+type closerFunc func() error
+
+func (f closerFunc) Close() error { return f() }
+
+func TestLocalForward_HandleConnRaceWithClose(t *testing.T) {
+	ready := make(chan struct{})
+	unblock := make(chan struct{})
+	var killed sync.Mutex
+	var killedFlag bool
+
+	runner := ConnRunner(func(_ []string, conn net.Conn) (io.Closer, <-chan struct{}, error) {
+		close(ready)
+		<-unblock
+		done := make(chan struct{})
+		k := closerFunc(func() error {
+			killed.Lock()
+			killedFlag = true
+			killed.Unlock()
+			close(done)
+			return nil
+		})
+		return k, done, nil
+	})
+
+	lf := &LocalForward{
+		ControlPath: "/tmp/test-race.ctl",
+		SSHHost:     "host",
+		RunConn:     runner,
+	}
+
+	server, client := net.Pipe()
+	defer client.Close()
+
+	go lf.handleConn(server)
+	<-ready
+
+	lf.Close()
+	close(unblock)
+
+	time.Sleep(50 * time.Millisecond)
+
+	lf.mu.Lock()
+	count := len(lf.conns)
+	lf.mu.Unlock()
+
+	killed.Lock()
+	gotKilled := killedFlag
+	killed.Unlock()
+
+	if !gotKilled {
+		t.Error("kill must be called when handleConn races with Close")
+	}
+	if count != 0 {
+		t.Errorf("conns not empty after Close race: got %d", count)
+	}
+}
+
 func TestForwarderEnsureMasterUsesCanonicalArgv(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "test.ctl")

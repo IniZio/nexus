@@ -5,12 +5,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,6 +54,16 @@ func runHerdrFocusWatchCmd(ctx context.Context, args []string, out *Output) erro
 // The snapshot poll writes only when it returns a non-empty id differing from focus.state;
 // it never overwrites a log-derived focus with "". Writes focus.state only on ID change.
 func runHerdrFocusWatch(ctx context.Context, socketPath, session, storeRoot, statePath, fwdStateDir string, pollEvery time.Duration, w io.Writer) error {
+	pidfilePath := filepath.Join(filepath.Dir(fwdStateDir), "focus-watch.pid")
+	acquired, cleanup, err := acquireFocusWatchPidfile(pidfilePath)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: "focus-watch: pidfile: " + err.Error(), Err: err}
+	}
+	if !acquired {
+		return nil
+	}
+	defer cleanup()
+
 	envSocketPath := socketPath
 	if socketPath == "" {
 		socketPath = herdrSocketPath(session)
@@ -69,7 +83,7 @@ func runHerdrFocusWatch(ctx context.Context, socketPath, session, storeRoot, sta
 	}
 
 	evCh := make(chan string, 8)
-	logCh := make(chan string, 8)
+	logCh := make(chan string, 1)
 
 	go func() {
 		backoff := time.Second
@@ -180,7 +194,7 @@ func parseFocusLogLine(line string) string {
 // Handles rotation (inode change), truncation (fd size < offset), and
 // truncation+regrowth to same size (fd mtime newer than last read) by reopening from start.
 // Retries every 2s on missing file, logging once.
-func tailHerdrServerLog(ctx context.Context, logPath string, ch chan<- string) {
+func tailHerdrServerLog(ctx context.Context, logPath string, ch chan string) {
 	var (
 		f               *os.File
 		offset          int64
@@ -291,6 +305,14 @@ func tailHerdrServerLog(ctx context.Context, logPath string, ch chan<- string) {
 								}
 								return
 							default:
+								select {
+								case <-ch:
+								default:
+								}
+								select {
+								case ch <- id:
+								default:
+								}
 							}
 						}
 					}
@@ -335,6 +357,41 @@ func herdrSnapshotFocusedID(ctx context.Context, socketPath string) (string, err
 		return "", nil
 	}
 	return *resp.Result.FocusedWorkspaceID, nil
+}
+
+var focusWatchPidAlive = func(pid int) bool {
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(cmdline), "focus-watch")
+}
+
+func acquireFocusWatchPidfile(pidfilePath string) (bool, func(), error) {
+	if err := os.MkdirAll(filepath.Dir(pidfilePath), 0o700); err != nil {
+		return false, nil, err
+	}
+	for range 2 {
+		f, err := os.OpenFile(pidfilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			fmt.Fprintf(f, "%d\n", os.Getpid())
+			_ = f.Close()
+			return true, func() { os.Remove(pidfilePath) }, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return false, nil, err
+		}
+		data, readErr := os.ReadFile(pidfilePath)
+		if readErr == nil {
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if parseErr == nil && focusWatchPidAlive(pid) {
+				fmt.Fprintf(os.Stderr, "focus-watch: another instance is running (pid %d); exiting\n", pid)
+				return false, nil, nil
+			}
+		}
+		_ = os.Remove(pidfilePath)
+	}
+	return false, nil, fmt.Errorf("focus-watch: could not acquire pidfile %s", pidfilePath)
 }
 
 // herdrSubscribeWorkspaceFocused streams workspace_focused event workspace_ids to ch until EOF or ctx cancel.

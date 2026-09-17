@@ -70,6 +70,10 @@ func (m *Manager) loadApplied() {
 		if k == "" {
 			k = appliedKindMaster
 		}
+		if k == appliedKindLocal {
+			// Listener died with the previous process; drop so Reconcile re-binds it.
+			continue
+		}
 		m.applied[fwdKey{sandboxID: e.SandboxID, port: e.Port}] = &appliedEntry{kind: k}
 	}
 }
