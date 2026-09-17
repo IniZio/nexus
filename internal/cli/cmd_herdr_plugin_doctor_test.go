@@ -80,6 +80,26 @@ func TestHerdrProcessesCheck_DuplicateServer_Warns(t *testing.T) {
 	}
 }
 
+func TestHerdrProcessesCheck_EmptySession_ServerStop(t *testing.T) {
+	older := HerdrProc{PID: 100, Start: time.Unix(1000, 0), Kind: HerdrServer, Session: ""}
+	newer := HerdrProc{PID: 200, Start: time.Unix(2000, 0), Kind: HerdrServer, Session: ""}
+	lister := func(_ context.Context) ([]HerdrProc, error) {
+		return []HerdrProc{older, newer}, nil
+	}
+
+	cr := checkHerdrProcesses(context.Background(), lister)
+
+	if cr.OK {
+		t.Error("expected WARN for duplicate herdr server with empty session")
+	}
+	if !strings.Contains(cr.Remediation, "herdr server stop") {
+		t.Errorf("remediation must contain 'herdr server stop'; got: %s", cr.Remediation)
+	}
+	if strings.Contains(cr.Remediation, "--session  ") {
+		t.Errorf("remediation must not contain '--session  ' (double space); got: %s", cr.Remediation)
+	}
+}
+
 func TestHerdrProcessesCheck_SingleServer_OK(t *testing.T) {
 	lister := func(_ context.Context) ([]HerdrProc, error) {
 		return []HerdrProc{{PID: 100, Start: time.Unix(1000, 0), Kind: HerdrServer, Session: "agents"}}, nil

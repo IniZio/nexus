@@ -43,8 +43,12 @@ func checkHerdrProcesses(ctx context.Context, lister func(context.Context) ([]He
 		}
 		sort.Slice(group, func(i, j int) bool { return group[i].Start.Before(group[j].Start) })
 		for _, p := range group[:len(group)-1] {
+			stopCmd := fmt.Sprintf("herdr --session %s server stop", sess)
+			if sess == "" {
+				stopCmd = "herdr server stop"
+			}
 			remLines = append(remLines,
-				fmt.Sprintf("stale herdr server pid %d (session %s): kill %d; herdr --session %s server stop", p.PID, sess, p.PID, sess))
+				fmt.Sprintf("stale herdr server pid %d (session %s): kill %d; %s", p.PID, sess, p.PID, stopCmd))
 		}
 	}
 
