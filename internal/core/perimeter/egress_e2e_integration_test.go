@@ -110,7 +110,7 @@ func TestEgress_GuestOnWire_E2E(t *testing.T) {
 	assertCapEffClear(t, "pre-test")
 
 	// ── socket dir (short path for sun_path limit) ─────────────────────────────
-	socketDir, err := os.MkdirTemp("/tmp", "nx3-e2e-")
+	socketDir, err := os.MkdirTemp("/tmp", "nx-e2e-")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}

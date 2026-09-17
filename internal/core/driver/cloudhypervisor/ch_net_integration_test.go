@@ -28,7 +28,7 @@ func TestSandboxNet_NoLeakV4V6(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: /dev/net/tun not accessible: %v", err)
 	}
-	probereq, err := unix.NewIfreq("nx3-probe")
+	probereq, err := unix.NewIfreq("nx-probe")
 	if err != nil {
 		_ = unix.Close(probefd)
 		t.Skipf("skipping: NewIfreq: %v", err)

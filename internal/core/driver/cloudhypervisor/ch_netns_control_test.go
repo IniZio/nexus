@@ -53,7 +53,7 @@ func newTestConnPair(t *testing.T) (net.Conn, net.Conn) {
 // bound inside it fits within AF_UNIX's 108-byte sun_path limit.
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "nx3ctl")
+	dir, err := os.MkdirTemp("", "nxctl")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}

@@ -153,7 +153,7 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	// LiveMounts / VirtiofsdPath: forwarded so the supervisor re-attaches the
 	// virtiofs shares on every boot. Without these the supervisor boots the VM
 	// with no fs device and memory.shared=false, while the guest cmdline still
-	// carries --workspace-mount=nx3fs0:...:virtiofs — the guest agent then
+	// carries --workspace-mount=nxfs0:...:virtiofs — the guest agent then
 	// blocks forever on a mount tag that has no backing device and never
 	// listens on vsock, so every exec fails with "read handshake reply: EOF".
 	if cfg.VirtiofsdPath != "" {

@@ -76,7 +76,7 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 
 	// ── host share directories ──────────────────────────────────────────────────
 	// rwShare: read-write; also contains a .git directory (AC-6 / D-PD-99).
-	rwShare, err := os.MkdirTemp("/tmp", "nx3fs-rw-")
+	rwShare, err := os.MkdirTemp("/tmp", "nxfs-rw-")
 	if err != nil {
 		t.Fatalf("MkdirTemp rwShare: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 	}
 
 	// roShare: read-only share.
-	roShare, err := os.MkdirTemp("/tmp", "nx3fs-ro-")
+	roShare, err := os.MkdirTemp("/tmp", "nxfs-ro-")
 	if err != nil {
 		t.Fatalf("MkdirTemp roShare: %v", err)
 	}
@@ -112,8 +112,8 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 	serialPath := filepath.Join(socketDir, "serial.log")
 
 	liveMounts := []domain.LiveMount{
-		{HostPath: rwShare, GuestPath: "/mnt/rw", ReadOnly: false}, // virtiofs tag: nx3fs0
-		{HostPath: roShare, GuestPath: "/mnt/ro", ReadOnly: true},  // virtiofs tag: nx3fs1
+		{HostPath: rwShare, GuestPath: "/mnt/rw", ReadOnly: false}, // virtiofs tag: nxfs0
+		{HostPath: roShare, GuestPath: "/mnt/ro", ReadOnly: true},  // virtiofs tag: nxfs1
 	}
 
 	// Kernel cmdline: kernel params, " --" PID-1 boundary, then
@@ -122,8 +122,8 @@ func TestLiveVirtiofsE2E(t *testing.T) {
 	//   --workspace-mount=<tag>:<guestPath>:<fstype>:<ro>:<isWorkspace>:<resizable>
 	// 5-field (old) format is still accepted by the parser for backward compat.
 	cmdline := "console=ttyS0 panic=1 init=/init" +
-		" -- --workspace-mount=nx3fs0:/mnt/rw:virtiofs:false:false:false" +
-		" --workspace-mount=nx3fs1:/mnt/ro:virtiofs:true:false:false"
+		" -- --workspace-mount=nxfs0:/mnt/rw:virtiofs:false:false:false" +
+		" --workspace-mount=nxfs1:/mnt/ro:virtiofs:true:false:false"
 
 	drv, err := New(Config{
 		BinaryPath:       chBin,

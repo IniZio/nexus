@@ -82,7 +82,7 @@ func spawnPlainChild(t *testing.T) int {
 // whose starttime/pgid come from /proc and whose tap/socket come from the
 // candidate's own environ.
 func TestBackfillNetnsIdentity_HappyPath(t *testing.T) {
-	const wantSocket = "/tmp/nx3-backfill-test.sock"
+	const wantSocket = "/tmp/nx-backfill-test.sock"
 	const wantTap = "nxg-backfill"
 	pid := spawnFakeNetnsChild(t, wantSocket, wantTap)
 
@@ -133,7 +133,7 @@ func TestBackfillNetnsIdentity_ZeroCandidates_Refuses(t *testing.T) {
 	spawnPlainChild(t)
 	time.Sleep(20 * time.Millisecond)
 
-	_, err := BackfillNetnsIdentity(os.Getpid(), "/tmp/nx3-nonexistent.sock")
+	_, err := BackfillNetnsIdentity(os.Getpid(), "/tmp/nx-nonexistent.sock")
 	if err == nil {
 		t.Fatal("expected refusal for zero matching candidates, got nil")
 	}
@@ -146,7 +146,7 @@ func TestBackfillNetnsIdentity_ZeroCandidates_Refuses(t *testing.T) {
 // share one API socket in production) but it is exactly the shape the
 // identification predicate must not silently resolve by picking one.
 func TestBackfillNetnsIdentity_MultiCandidate_Refuses(t *testing.T) {
-	const wantSocket = "/tmp/nx3-backfill-multi.sock"
+	const wantSocket = "/tmp/nx-backfill-multi.sock"
 	spawnFakeNetnsChild(t, wantSocket, "nxg-a")
 	spawnFakeNetnsChild(t, wantSocket, "nxg-b")
 	time.Sleep(20 * time.Millisecond)
@@ -161,10 +161,10 @@ func TestBackfillNetnsIdentity_MultiCandidate_Refuses(t *testing.T) {
 // predicate: a real netns-shaped child of the right supervisor, but carrying
 // a DIFFERENT sandbox's API socket, must not be adopted for this sandbox.
 func TestBackfillNetnsIdentity_WrongAPISocket_Refuses(t *testing.T) {
-	spawnFakeNetnsChild(t, "/tmp/nx3-other-sandbox.sock", "nxg-other")
+	spawnFakeNetnsChild(t, "/tmp/nx-other-sandbox.sock", "nxg-other")
 	time.Sleep(20 * time.Millisecond)
 
-	_, err := BackfillNetnsIdentity(os.Getpid(), "/tmp/nx3-this-sandbox.sock")
+	_, err := BackfillNetnsIdentity(os.Getpid(), "/tmp/nx-this-sandbox.sock")
 	if err == nil {
 		t.Fatal("expected refusal when the only candidate's API socket belongs to a different sandbox, got nil")
 	}
@@ -173,7 +173,7 @@ func TestBackfillNetnsIdentity_WrongAPISocket_Refuses(t *testing.T) {
 // TestBackfillNetnsIdentity_RejectsInvalidArgs pins the argument-shape guard
 // (mirrors AdoptNetnsRuntime's own non-positive-pid rejection).
 func TestBackfillNetnsIdentity_RejectsInvalidArgs(t *testing.T) {
-	if _, err := BackfillNetnsIdentity(0, "/tmp/nx3-x.sock"); err == nil {
+	if _, err := BackfillNetnsIdentity(0, "/tmp/nx-x.sock"); err == nil {
 		t.Error("expected refusal for supervisorPID=0, got nil")
 	}
 	if _, err := BackfillNetnsIdentity(os.Getpid(), ""); err == nil {
@@ -197,7 +197,7 @@ func TestBackfillNetnsIdentity_RejectsInvalidArgs(t *testing.T) {
 // for backfilled identities specifically, this test would start passing a
 // bad adoption and must fail.
 func TestBackfillNetnsIdentity_ThenAdopt_StarttimeMismatch_Refuses(t *testing.T) {
-	const wantSocket = "/tmp/nx3-backfill-mismatch.sock"
+	const wantSocket = "/tmp/nx-backfill-mismatch.sock"
 	const wantTap = "nxg-mismatch"
 	spawnFakeNetnsChild(t, wantSocket, wantTap)
 	time.Sleep(20 * time.Millisecond)

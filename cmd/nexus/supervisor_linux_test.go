@@ -93,7 +93,7 @@ func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 	// argv the detached supervisor is actually launched with. The supervisor
 	// therefore booted every --mount sandbox with fs=null and
 	// memory.shared=false (confirmed live via CH vm.info) while the guest
-	// cmdline still asked to mount virtiofs tag nx3fs0 — the guest agent hung
+	// cmdline still asked to mount virtiofs tag nxfs0 — the guest agent hung
 	// at mount time and never listened on vsock, so `nexus exec` failed with
 	// "read handshake reply: EOF" on a create that reported success.
 	if !reflect.DeepEqual(got.LiveMounts, in.LiveMounts) {

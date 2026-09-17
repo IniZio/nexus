@@ -270,7 +270,7 @@ func TestSpawnVirtiofsdForMounts_RealBinary(t *testing.T) {
 
 // TestVmFsConfig_Marshal verifies vmFsConfig serialises to CH's FsConfig shape.
 func TestVmFsConfig_Marshal(t *testing.T) {
-	fs := vmFsConfig{Tag: "nx3fs0", Socket: "/run/nexus/id.vfs0"}
+	fs := vmFsConfig{Tag: "nxfs0", Socket: "/run/nexus/id.vfs0"}
 	b, err := json.Marshal(fs)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
@@ -279,8 +279,8 @@ func TestVmFsConfig_Marshal(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if v, _ := m["tag"].(string); v != "nx3fs0" {
-		t.Errorf("tag = %q, want nx3fs0", v)
+	if v, _ := m["tag"].(string); v != "nxfs0" {
+		t.Errorf("tag = %q, want nxfs0", v)
 	}
 	if _, present := m["num_queues"]; present {
 		t.Errorf("num_queues present when zero (want omitted); raw=%s", b)
@@ -289,7 +289,7 @@ func TestVmFsConfig_Marshal(t *testing.T) {
 
 // TestVmFsConfig_NumQueues verifies num_queues is emitted when non-zero.
 func TestVmFsConfig_NumQueues(t *testing.T) {
-	b, _ := json.Marshal(vmFsConfig{Tag: "nx3fs0", Socket: "/s", NumQueues: 4})
+	b, _ := json.Marshal(vmFsConfig{Tag: "nxfs0", Socket: "/s", NumQueues: 4})
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	if v, _ := m["num_queues"].(float64); int(v) != 4 {
@@ -316,8 +316,8 @@ func TestVmFsConfig_PresentWhenSet(t *testing.T) {
 	cfg := vmConfigWithNet{
 		vmConfig: vmConfig{Payload: vmPayloadConfig{Kernel: "/boot/vmlinux"}},
 		Fs: []vmFsConfig{
-			{Tag: "nx3fs0", Socket: "/run/n3/id.vfs0"},
-			{Tag: "nx3fs1", Socket: "/run/n3/id.vfs1"},
+			{Tag: "nxfs0", Socket: "/run/nexus/id.vfs0"},
+			{Tag: "nxfs1", Socket: "/run/nexus/id.vfs1"},
 		},
 	}
 	b, _ := json.Marshal(cfg)
@@ -332,11 +332,11 @@ func TestVmFsConfig_PresentWhenSet(t *testing.T) {
 // TestVirtiofsTag_SingleSourceOfTruth verifies the tag format. Brittle by design:
 // a format change here surfaces callers that hard-coded the old string.
 func TestVirtiofsTag_SingleSourceOfTruth(t *testing.T) {
-	if tag := VirtiofsTag(0); tag != "nx3fs0" {
-		t.Errorf("VirtiofsTag(0) = %q, want nx3fs0", tag)
+	if tag := VirtiofsTag(0); tag != "nxfs0" {
+		t.Errorf("VirtiofsTag(0) = %q, want nxfs0", tag)
 	}
-	if tag := VirtiofsTag(3); tag != "nx3fs3" {
-		t.Errorf("VirtiofsTag(3) = %q, want nx3fs3", tag)
+	if tag := VirtiofsTag(3); tag != "nxfs3" {
+		t.Errorf("VirtiofsTag(3) = %q, want nxfs3", tag)
 	}
 }
 

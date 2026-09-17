@@ -512,7 +512,7 @@ func TestParseMountLive_MalformedSpec(t *testing.T) {
 // if either side diverges from the shared helper the tag strings differ and
 // every live mount fails at boot with no actionable error.
 //
-// The expected tag is derived here as a concrete literal (fmt.Sprintf("nx3fs%d",
+// The expected tag is derived here as a concrete literal (fmt.Sprintf("nxfs%d",
 // i)) rather than by calling VirtiofsTag — so the test FAILS if VirtiofsTag
 // or liveMountsToGuestMounts changes the format, instead of silently passing
 // because both sides of the comparison call the same helper.
@@ -532,9 +532,9 @@ func TestLiveMountsToGuestMounts_TagAgreement(t *testing.T) {
 		// Derive expected tag as a concrete literal — NOT by calling VirtiofsTag.
 		// If VirtiofsTag changes its format, liveMountsToGuestMounts will produce
 		// a different string and this assertion will catch the divergence.
-		wantTag := fmt.Sprintf("nx3fs%d", i)
+		wantTag := fmt.Sprintf("nxfs%d", i)
 		if gm.Device != wantTag {
-			t.Errorf("mount[%d].Device = %q; want %q (VirtiofsTag format = \"nx3fs<idx>\")", i, gm.Device, wantTag)
+			t.Errorf("mount[%d].Device = %q; want %q (VirtiofsTag format = \"nxfs<idx>\")", i, gm.Device, wantTag)
 		}
 		if gm.FSType != "virtiofs" {
 			t.Errorf("mount[%d].FSType = %q; want %q", i, gm.FSType, "virtiofs")

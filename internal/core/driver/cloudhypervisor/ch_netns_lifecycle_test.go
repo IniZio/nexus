@@ -222,14 +222,15 @@ func countUniqueNetNS() int {
 	return len(seen)
 }
 
-// listHostNx3Ifaces returns any network interface names in /sys/class/net
-// whose names start with "nx3".
-func listHostNx3Ifaces() []string {
+// listHostNxIfaces returns network interface names in /sys/class/net
+// that start with any of the sandbox prefixes: nxg-, nxh-, nxb-.
+func listHostNxIfaces() []string {
 	entries, _ := os.ReadDir("/sys/class/net")
 	var found []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "nx3") {
-			found = append(found, e.Name())
+		n := e.Name()
+		if strings.HasPrefix(n, "nxg-") || strings.HasPrefix(n, "nxh-") || strings.HasPrefix(n, "nxb-") {
+			found = append(found, n)
 		}
 	}
 	return found
@@ -245,10 +246,10 @@ func listHostNx3Ifaces() []string {
 //	(c) Goroutine count returns to within tolerance of the pre-start baseline.
 //	(d) Open FD count returns to within tolerance of the pre-start baseline.
 //	(e) Unique network namespace count does not grow (no leaked netns).
-//	(f) No nx3-prefixed interfaces leaked into the host netns.
+//	(f) No sandbox-prefixed (nxg-/nxh-/nxb-) interfaces leaked into the host netns.
 func TestLifecycle_NormalStop_NoLeaks(t *testing.T) {
 	chBin, kernelPath := lcGuards(t)
-	socketDir := lcMakeSocketDir(t, "nx3-lc-noleak-")
+	socketDir := lcMakeSocketDir(t, "nx-lc-noleak-")
 	id := domain.NewSandboxID()
 	socketPath := filepath.Join(socketDir, "ch.sock")
 
@@ -256,9 +257,9 @@ func TestLifecycle_NormalStop_NoLeaks(t *testing.T) {
 	baselineGoroutines := runtime.NumGoroutine()
 	baselineFDs := countOpenFDs()
 	baselineNetNS := countUniqueNetNS()
-	baselineNx3 := listHostNx3Ifaces()
-	t.Logf("baseline: goroutines=%d fds=%d netns=%d nx3ifaces=%v",
-		baselineGoroutines, baselineFDs, baselineNetNS, baselineNx3)
+	baselineNxIfaces := listHostNxIfaces()
+	t.Logf("baseline: goroutines=%d fds=%d netns=%d nxifaces=%v",
+		baselineGoroutines, baselineFDs, baselineNetNS, baselineNxIfaces)
 
 	rt := lcBootCH(t, chBin, kernelPath, id, socketPath)
 	t.Cleanup(func() { rt.Stop() }) // safety net — idempotent via stopOnce
@@ -286,7 +287,7 @@ func TestLifecycle_NormalStop_NoLeaks(t *testing.T) {
 	finalGoroutines := runtime.NumGoroutine()
 	finalFDs := countOpenFDs()
 	finalNetNS := countUniqueNetNS()
-	finalNx3 := listHostNx3Ifaces()
+	finalNxIfaces := listHostNxIfaces()
 
 	// (a) CH grandchild gone — check via socket absent AND pid ESRCH (with
 	// tolerance for zombie cleanup delay: after the child dies, init reaps the
@@ -352,15 +353,15 @@ func TestLifecycle_NormalStop_NoLeaks(t *testing.T) {
 		t.Logf("PASS netns: delta=%d (zero or negative)", netnsDelta)
 	}
 
-	// (f) No nx3-prefixed interfaces in host netns.
-	t.Logf("nx3 ifaces: before=%v after=%v", baselineNx3, finalNx3)
-	for _, iface := range finalNx3 {
-		if !slices.Contains(baselineNx3, iface) {
-			t.Errorf("FAIL iface-leak: nx3 interface %q appeared in host netns after Stop", iface)
+	// (f) No sandbox-prefixed interfaces (nxg-/nxh-/nxb-) in host netns.
+	t.Logf("nx ifaces: before=%v after=%v", baselineNxIfaces, finalNxIfaces)
+	for _, iface := range finalNxIfaces {
+		if !slices.Contains(baselineNxIfaces, iface) {
+			t.Errorf("FAIL iface-leak: nx interface %q appeared in host netns after Stop", iface)
 		}
 	}
-	if len(finalNx3) == len(baselineNx3) {
-		t.Logf("PASS iface: no new nx3 interfaces in host netns (count=%d)", len(finalNx3))
+	if len(finalNxIfaces) == len(baselineNxIfaces) {
+		t.Logf("PASS iface: no new nx interfaces in host netns (count=%d)", len(finalNxIfaces))
 	}
 }
 
@@ -376,7 +377,7 @@ func TestLifecycle_NormalStop_NoLeaks(t *testing.T) {
 // (edge-10: Running + TriggerSubstrateLost → Stopped(memory_lost)).
 func TestLifecycle_Crash_MemoryLost(t *testing.T) {
 	chBin, kernelPath := lcGuards(t)
-	socketDir := lcMakeSocketDir(t, "nx3-lc-memlost-")
+	socketDir := lcMakeSocketDir(t, "nx-lc-memlost-")
 
 	// Socket name must match d.socketPath(id) = socketDir/id.String()+".sock".
 	id := domain.NewSandboxID()
@@ -517,7 +518,7 @@ func itoa(n int) string {
 // cmd.Wait() must collect it quickly — no block on the socketpair.
 func TestLifecycle_StopBounded(t *testing.T) {
 	chBin, kernelPath := lcGuards(t)
-	socketDir := lcMakeSocketDir(t, "nx3-lc-bounded-")
+	socketDir := lcMakeSocketDir(t, "nx-lc-bounded-")
 	id := domain.NewSandboxID()
 	socketPath := filepath.Join(socketDir, "ch.sock")
 
@@ -567,7 +568,7 @@ func TestLifecycle_StopBounded(t *testing.T) {
 // work without any Pdeathsig-delivered signal from the now-dead CH.
 func TestLifecycle_ExplicitKillNoPdeathsig(t *testing.T) {
 	chBin, kernelPath := lcGuards(t)
-	socketDir := lcMakeSocketDir(t, "nx3-lc-nopds-")
+	socketDir := lcMakeSocketDir(t, "nx-lc-nopds-")
 	id := domain.NewSandboxID()
 	socketPath := filepath.Join(socketDir, "ch.sock")
 
@@ -632,7 +633,7 @@ func TestLifecycle_ExplicitKillNoPdeathsig(t *testing.T) {
 // the fix is in place.
 func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
 	chBin, kernelPath := lcGuards(t)
-	socketDir := lcMakeSocketDir(t, "nx3-lc-ctxcancel-")
+	socketDir := lcMakeSocketDir(t, "nx-lc-ctxcancel-")
 	id := domain.NewSandboxID()
 	socketPath := filepath.Join(socketDir, "sb-ctx-cancel.sock")
 
@@ -725,7 +726,7 @@ func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
 func TestLifecycle_ConsoleLogCreated(t *testing.T) {
 	chBin, kernelPath := lcGuards(t)
 	initramfsPath := netnsSkipUnlessArtifact(t, "alpine-initramfs.cpio.gz")
-	socketDir := lcMakeSocketDir(t, "nx3-lc-consolelog-")
+	socketDir := lcMakeSocketDir(t, "nx-lc-consolelog-")
 	consolePath := filepath.Join(socketDir, "console.log")
 
 	drv, err := New(Config{
@@ -801,7 +802,7 @@ func TestLifecycle_ConsoleLogCreated(t *testing.T) {
 // The substitution count for the mutation is 1 (the single "_ = proc" line).
 func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {
 	chBin, kernelPath := lcGuards(t)
-	socketDir := lcMakeSocketDir(t, "nx3-lc-orphan-")
+	socketDir := lcMakeSocketDir(t, "nx-lc-orphan-")
 
 	id := domain.NewSandboxID()
 	socketPath := filepath.Join(socketDir, id.String()+".sock")

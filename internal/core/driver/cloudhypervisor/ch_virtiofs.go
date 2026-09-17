@@ -45,11 +45,11 @@ type vmFsConfig struct {
 // deriving the tag independently in either place causes a silent mismatch that fails
 // at boot with no actionable error.
 //
-// Tag format: "nx3fs<idx>" — unique within one VM's virtio device namespace.
-// Virtiofs tags are per-VM: two different VMs may both have a tag "nx3fs0" without
+// Tag format: "nxfs<idx>" — unique within one VM's virtio device namespace.
+// Virtiofs tags are per-VM: two different VMs may both have a tag "nxfs0" without
 // conflict.
 func VirtiofsTag(idx int) string {
-	return fmt.Sprintf("nx3fs%d", idx)
+	return fmt.Sprintf("nxfs%d", idx)
 }
 
 // virtiofsdSockPath returns the AF_UNIX socket path for the virtiofsd process
