@@ -43,12 +43,12 @@ type CheckResult struct {
 }
 
 type probes struct {
-	goos               string
-	lookPath           func(string) (string, error)
-	openKVM            func() error
-	listImages         func(context.Context) ([]domain.Image, error)
-	registryReachable  func(string) error
-	listHerdrProcs     func(context.Context) ([]HerdrProc, error)
+	goos              string
+	lookPath          func(string) (string, error)
+	openKVM           func() error
+	listImages        func(context.Context) ([]domain.Image, error)
+	registryReachable func(string) error
+	listHerdrProcs    func(context.Context) ([]HerdrProc, error)
 }
 
 func defaultProbes() probes {

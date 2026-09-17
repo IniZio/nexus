@@ -268,8 +268,8 @@ func TestFocusWatch_LogSource_AC1(t *testing.T) {
 
 func TestFocusWatch_LogSource_AC2(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		rotate  func(logPath string)
+		name   string
+		rotate func(logPath string)
 	}{
 		{
 			name: "truncate",
