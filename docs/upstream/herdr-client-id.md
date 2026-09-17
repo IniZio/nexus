@@ -64,3 +64,22 @@ With these additions, nexus3-client can:
 - Support multiple simultaneous remote clients without last-write-wins focus collisions.
 
 Without them, the sole-interactive-client constraint is a permanent documentation caveat rather than a solvable problem.
+
+## Known vendor gap: plugin event hooks fire only for API-driven focus
+
+herdr 0.9.0 dispatches `[[events]]` hooks (including `workspace.focused`) only when a
+workspace focus change originates from a programmatic API call (e.g. `workspace.focus`
+JSON-RPC method). Focus changes driven by a user clicking in the Mac remote client UI or
+switching workspaces in the host TUI update the session state — `workspace.list` and
+`api snapshot` reflect the new `focused_workspace_id` immediately — but no plugin event
+hook is invoked.
+
+**Impact on nexus3**: the `[[events]] on = "workspace.focused"` hook in
+`herdr-plugin.toml` is unreliable for tracking operator focus. nexus3 works around this
+with a long-lived `runHerdrFocusWatch` goroutine (started in `herdrPluginLocalAgentStartup`)
+that subscribes to the `events.subscribe` API stream — which DOES deliver all focus changes,
+including client-UI-originated ones — and maintains `focus.state` directly.
+
+**Filed**: this gap should be documented with the upstream herdr project; a plugin event
+hook that fires for all focus-change sources (not just API calls) would let nexus3 remove
+the watcher goroutine.

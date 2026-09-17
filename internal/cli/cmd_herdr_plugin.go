@@ -25,6 +25,7 @@ import (
 	"github.com/IniZio/nexus3/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus3/internal/core/image"
 	"github.com/IniZio/nexus3/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus3/internal/core/portfwd"
 	"github.com/IniZio/nexus3/internal/core/service"
 	"github.com/IniZio/nexus3/internal/core/store"
 	"github.com/IniZio/nexus3/internal/supervisor"
@@ -91,7 +92,7 @@ func herdrGroupVerbToPluginSub(sub string) (pluginSub string, known bool) {
 
 func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox|backfill-repo-root|local-agent-startup|version-check|focus-changed)"}
+		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox|backfill-repo-root|local-agent-startup|version-check|focus-changed|focus-watch)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -105,6 +106,8 @@ func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 		return herdrVersionCheck(ctx, rest, out.w)
 	case "focus-changed":
 		return runHerdrFocusChanged(ctx, rest, out)
+	case "focus-watch":
+		return runHerdrFocusWatchCmd(ctx, rest, out)
 	case "report-forward-status":
 		return runHerdrReportForwardStatus(ctx, rest, out)
 	}
@@ -4341,5 +4344,10 @@ func herdrWorktreeSandbox(
 // also builds into cmd/nexus3-client for macOS, where this package (and the
 // full nexus3 CLI) does not compile.
 func herdrPluginLocalAgentStartup(ctx context.Context) error {
+	if socketPath := os.Getenv("HERDR_SOCKET_PATH"); socketPath != "" {
+		storeRoot, _ := store.DefaultRoot()
+		go runHerdrFocusWatch(ctx, socketPath, os.Getenv("HERDR_SESSION"), //nolint:errcheck
+			storeRoot, portfwd.FocusStatePath(), portfwd.StateDir(), 5*time.Second, os.Stderr)
+	}
 	return clientagent.RunStartup(ctx)
 }

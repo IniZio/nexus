@@ -189,8 +189,11 @@ command = ["sh", "bin/on-worktree-removed.sh"]
 on = "worktree.created"
 command = ["sh", "bin/on-worktree-created.sh"]
 
-# workspace.focused — update the local focus.state with the focused workspace's
-# sandbox binding so nexus3 clients can discover which sandbox holds operator focus.
+# workspace.focused — supplementary hook: fires only for API-driven focus changes
+# (herdr 0.9.0 vendor gap: client UI focus does not trigger plugin event hooks).
+# focus.state is primarily maintained by the host-side focus watcher goroutine
+# started in herdrPluginLocalAgentStartup; this hook provides a secondary update
+# path for programmatic workspace.focus API calls.
 [[events]]
 on = "workspace.focused"
 command = ["sh", "bin/on-workspace-focused.sh"]
