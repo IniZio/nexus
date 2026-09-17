@@ -72,6 +72,11 @@ type SessionTable struct {
 	byID  map[string]*Session
 	byPID map[int]*Session
 
+	// oneShot holds exit-code channels for short-lived helper children
+	// (blkid, resize2fs, …) started via execCollect; see childexec.go.
+	// Entries are removed on delivery.
+	oneShot map[int]chan int32
+
 	// spawnMu serialises start+add against drainChildren so a fast-exiting
 	// child cannot be reaped (and its exit discarded as an orphan) before add.
 	spawnMu sync.Mutex
@@ -79,8 +84,9 @@ type SessionTable struct {
 
 func newSessionTable() *SessionTable {
 	return &SessionTable{
-		byID:  make(map[string]*Session),
-		byPID: make(map[int]*Session),
+		byID:    make(map[string]*Session),
+		byPID:   make(map[int]*Session),
+		oneShot: make(map[int]chan int32),
 	}
 }
 
@@ -133,12 +139,33 @@ func (t *SessionTable) notifyExit(pid int, code int32) {
 	s, ok := t.byPID[pid]
 	t.mu.RUnlock()
 	if !ok {
-		return // orphan – discard
+		t.mu.Lock()
+		ch, isOneShot := t.oneShot[pid]
+		delete(t.oneShot, pid)
+		t.mu.Unlock()
+		if isOneShot {
+			ch <- code // buffered(1); sent exactly once per registration
+		}
+		return
 	}
 	select {
 	case s.exitCh <- code:
 	default: // already delivered (shouldn't happen with buffer 1)
 	}
+}
+
+// spawnOneShot starts cmd under spawnMu and registers its PID so the reap
+// loop delivers the exit code on exitCh instead of discarding it as an orphan.
+func (t *SessionTable) spawnOneShot(cmd *exec.Cmd, exitCh chan int32) error {
+	t.spawnMu.Lock()
+	defer t.spawnMu.Unlock()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	t.oneShot[cmd.Process.Pid] = exitCh
+	t.mu.Unlock()
+	return nil
 }
 
 // sweepExited evicts completed sessions that have either passed the retention

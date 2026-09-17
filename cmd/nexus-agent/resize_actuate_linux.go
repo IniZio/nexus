@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -36,9 +35,7 @@ var (
 	samplePSICPUPath  = "/proc/pressure/cpu"
 	sampleStatfsFunc  = func(path string, st *unix.Statfs_t) error { return unix.Statfs(path, st) }
 	sampleCPUSysPath  = "/sys/devices/system/cpu"
-	resizeExecFunc    = func(name string, args ...string) ([]byte, error) {
-		return exec.Command(name, args...).CombinedOutput()
-	}
+	resizeExecFunc    = execCollect
 )
 
 // collectSample reads the current guest state and returns a [resize.Sample]

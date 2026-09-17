@@ -137,7 +137,8 @@
         "S10-marketplace-hidden",
         "S11-base-image",
         "S12-blkid-guard",
-        "S13-growdisk-guest-leg"
+        "S13-growdisk-guest-leg",
+        "S14-builder-resize2fs"
       ],
       "acceptance": [
         "herdr worktree-sandbox verb creates a sandbox and exec inside returns exit 0",
@@ -235,6 +236,27 @@
       ],
       "completed_at": "2026-09-17T14:27:52.585Z",
       "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S14-builder-resize2fs",
+      "wave": 3,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Builder image toolchain: inject e2fsprogs-extra (resize2fs) in injectE2fsprogs and make the builder image cache key cover the injected toolchain so package-list changes re-bake; fix the PID-1 ECHILD race on blkid/resize2fs exec in the agent",
+      "blocked_by": [
+        "S13-growdisk-guest-leg"
+      ],
+      "acceptance": [
+        "unit test asserts resize2fs is part of the injected package set (fails without e2fsprogs-extra)",
+        "builder image filename/fingerprint changes when the toolchain list changes (test)",
+        "agent child exec no longer loses exit status to the reaper (test or cited existing mechanism)",
+        "make test for builderimage + cmd/nexus-agent exit 0",
+        "make build/vet exit 0",
+        "nexus + static nexus-agent reinstalled, daemon restarted",
+        "stale builder image removed or invalidated"
+      ],
+      "completed_at": "2026-09-17T14:46:30.038Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     }
   ],
   "write_token": "95fee6420d96bce6",
@@ -242,6 +264,6 @@
   "base_commit": "1cab7cc7343ee57ebed49854fe44626310b98463",
   "motive": "rename-nexus3-to-nexus",
   "gate": {
-    "seal": "b21ec37442e9506fe53f76a0abd9a7561f28c7c49b45652ad9fe9fb7dab38380"
+    "seal": "0f7059afc3265bc31735484e11949ff6e4257e21a9195ad977f961c7168bb2f0"
   }
 }

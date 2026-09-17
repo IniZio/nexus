@@ -242,8 +242,9 @@ sha256sum /proc/1/exe          # agent process
 sha256sum ~/.local/bin/nexus-agent   # compare against host
 ```
 
-The builder image filename embeds the first 16 hex of the agent binary's
-sha256 (`nexus-builder-...-agent<hash16>.ext4`).
+The builder image filename embeds a fingerprint of the injected Alpine
+toolchain package set and the first 16 hex of the agent binary's sha256
+(`nexus-builder-...-tc<hash8>-agent<hash16>.ext4`); changing either re-bakes.
 
 ### Static binary trap (builder VM kernel panic)
 

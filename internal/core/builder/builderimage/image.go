@@ -7,12 +7,13 @@
 //
 // # Cache layout
 //
-//	<dataDir>/images/nexus-builder-<digest>-agent<agenthash>.ext4
+//	<dataDir>/images/nexus-builder-<digest>-tc<toolchainhash>-agent<agenthash>.ext4
 //
-// The digest is the OCI manifest digest of the pulled image; agenthash is
-// the first 16 hex characters of SHA-256(agentBytes). Both are required
-// so that a changed or grown nexus-agent binary forces a rebuild instead
-// of reusing a stale image sized for a smaller agent.
+// The digest is the OCI manifest digest of the pulled image; toolchainhash is
+// toolchainFingerprint over the injected Alpine package set; agenthash is
+// the first 16 hex characters of SHA-256(agentBytes). All three are required
+// so that a changed toolchain or a changed/grown nexus-agent binary forces a
+// rebuild instead of reusing a stale image.
 package builderimage
 
 import (
@@ -94,7 +95,10 @@ var pullRemoteImage = func(ctx context.Context, ociRef string) (v1.Image, error)
 func builderImageCachePath(imagesDir, digestSafe string, agentBytes []byte) string {
 	agentSum := sha256.Sum256(agentBytes)
 	agentTag := fmt.Sprintf("%x", agentSum[:8]) // 16 hex chars — sufficient for version skew
-	return filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s-agent%s.ext4", digestSafe, agentTag))
+	// The toolchain tag sits BEFORE -agent so image.parseBuilderTemplateName
+	// (which anchors on the trailing -agent<16hex>) keeps parsing these names.
+	tcTag := toolchainFingerprint(e2fsprogsPackages)
+	return filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s-tc%s-agent%s.ext4", digestSafe, tcTag, agentTag))
 }
 
 // EnsureBuilderImage returns the host path to a bootable raw ext4 image built

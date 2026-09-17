@@ -37,6 +37,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
@@ -156,26 +157,41 @@ func addToolchainLayers(ctx context.Context, stagingDir string) error {
 	return nil
 }
 
+// e2fsprogsPackages is the ordered Alpine package set injected by
+// injectE2fsprogs. Libraries precede the binaries that need them. Any change
+// here changes toolchainFingerprint and therefore the cached image filename.
+var e2fsprogsPackages = []string{
+	"e2fsprogs-libs-1.47.1-r1.apk",
+	"libcom_err-1.47.1-r1.apk",
+	"libeconf-0.6.3-r0.apk", // libblkid.so.1 → libeconf.so.0
+	"libblkid-2.40.4-r1.apk",
+	"libuuid-2.40.4-r1.apk",
+	"e2fsprogs-1.47.1-r1.apk",
+	"e2fsprogs-extra-1.47.1-r1.apk", // resize2fs; NEEDED libs are all above
+}
+
+// toolchainFingerprint returns 8 hex chars of SHA-256 over pkgs, folded into
+// the builder image cache filename so a toolchain change re-bakes the image.
+func toolchainFingerprint(pkgs []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(pkgs, "\n")))
+	return fmt.Sprintf("%x", sum[:4])
+}
+
 // injectE2fsprogs downloads mke2fs and its Alpine shared library dependencies
 // into stagingDir. This allows the builder VM to create the artifact ext4
 // from the built rootfs without requiring e2fsprogs in the base image.
 //
 // Packages (Alpine v3.21 main/x86_64):
-//   - e2fsprogs       — mke2fs and related binaries
+//   - e2fsprogs       — mke2fs, e2fsck and mkfs.* (sbin/)
+//   - e2fsprogs-extra — resize2fs, tune2fs, debugfs (usr/sbin/); the guest
+//     agent's disk.grow handler execs resize2fs
 //   - e2fsprogs-libs  — libext2fs.so.2, libe2p.so.2, libss.so.2
 //   - libcom_err      — libcom_err.so.2
 //   - libblkid        — libblkid.so.1
 //   - libuuid         — libuuid.so.1
 func injectE2fsprogs(ctx context.Context, stagingDir string) error {
 	const alpineBase = "https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64"
-	pkgs := []string{
-		"e2fsprogs-libs-1.47.1-r1.apk",
-		"libcom_err-1.47.1-r1.apk",
-		"libeconf-0.6.3-r0.apk", // libblkid.so.1 → libeconf.so.0
-		"libblkid-2.40.4-r1.apk",
-		"libuuid-2.40.4-r1.apk",
-		"e2fsprogs-1.47.1-r1.apk", // last: binary depends on libs above
-	}
+	pkgs := e2fsprogsPackages
 	slog.Info("builderimage: injecting e2fsprogs into builder rootfs", "packages", len(pkgs))
 	for _, pkg := range pkgs {
 		slog.Info("builderimage: downloading Alpine package", "pkg", pkg)

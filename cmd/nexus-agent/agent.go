@@ -52,7 +52,7 @@ func New(ctrlLis, dataLis net.Listener) *Agent {
 // occurs. It returns nil on clean shutdown.
 func (a *Agent) Run(ctx context.Context) error {
 	if a.isPid1 {
-		go a.reapLoop(ctx)
+		a.startReaper(ctx)
 	}
 
 	gs := grpc.NewServer()
@@ -126,6 +126,11 @@ func (a *Agent) drainChildren() {
 // burst (buffer overflowed while the goroutine was preempted) is cleaned up
 // within 30 seconds. The tick is cheap: Wait4(WNOHANG) returns immediately
 // when no zombies are present.
+func (a *Agent) startReaper(ctx context.Context) {
+	oneShotReaper.Store(a.sessions)
+	go a.reapLoop(ctx)
+}
+
 func (a *Agent) reapLoop(ctx context.Context) {
 	// Buffer of 1 is sufficient: drainChildren reaps all zombies on any wakeup,
 	// so we only need to queue one pending notification at a time.
