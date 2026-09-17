@@ -145,20 +145,21 @@ func addToolchainLayers(ctx context.Context, stagingDir string) error {
 		}
 	}
 
-	// ── 3. Inject mke2fs for in-guest artifact ext4 creation ─────────────────
-	// RunBuilderRole (inside the builder VM) uses mke2fs to write the solved
-	// container rootfs to /dev/vdc as a raw ext4 image. The moby/buildkit
-	// Alpine base may have a busybox stub at /sbin/mke2fs that does not support
-	// the -d flag; always inject the real e2fsprogs binary and its libraries.
-	if err := injectE2fsprogs(ctx, stagingDir); err != nil {
-		return fmt.Errorf("toolchain: inject e2fsprogs: %w", err)
+	// ── 3. Inject toolchain packages for in-guest operations ─────────────────
+	// RunBuilderRole uses mke2fs (e2fsprogs) to write the solved container
+	// rootfs to /dev/vdc as a raw ext4 image. The Alpine base may have a
+	// busybox stub at /sbin/mke2fs that does not support the -d flag.
+	// nexus-agent also sets up zram swap via zramctl (util-linux-misc); the
+	// moby/buildkit Alpine base ships no zramctl at all.
+	if err := injectToolchain(ctx, stagingDir); err != nil {
+		return fmt.Errorf("toolchain: inject toolchain packages: %w", err)
 	}
 
 	return nil
 }
 
-// e2fsprogsPackages: libraries precede the binaries that need them; any change re-keys the image cache filename.
-var e2fsprogsPackages = []string{
+// toolchainPackages: libraries precede the binaries that need them; any change re-keys the image cache filename.
+var toolchainPackages = []string{
 	"e2fsprogs-libs-1.47.1-r1.apk",
 	"libcom_err-1.47.1-r1.apk",
 	"libeconf-0.6.3-r0.apk", // libblkid.so.1 → libeconf.so.0
@@ -166,6 +167,8 @@ var e2fsprogsPackages = []string{
 	"libuuid-2.40.4-r1.apk",
 	"e2fsprogs-1.47.1-r1.apk",
 	"e2fsprogs-extra-1.47.1-r1.apk", // resize2fs
+	"libsmartcols-2.40.4-r1.apk",    // libsmartcols.so.1 (needed by zramctl)
+	"util-linux-misc-2.40.4-r1.apk", // zramctl at sbin/zramctl; ELF needs only libsmartcols+musl
 }
 
 func toolchainFingerprint(pkgs []string) string {
@@ -173,29 +176,18 @@ func toolchainFingerprint(pkgs []string) string {
 	return fmt.Sprintf("%x", sum[:4])
 }
 
-// injectE2fsprogs downloads mke2fs and its Alpine shared library dependencies
-// into stagingDir. This allows the builder VM to create the artifact ext4
-// from the built rootfs without requiring e2fsprogs in the base image.
-//
-// Packages (Alpine v3.21 main/x86_64):
-//   - e2fsprogs       — mke2fs, e2fsck and mkfs.* (sbin/)
-//   - e2fsprogs-extra — resize2fs, tune2fs, debugfs (usr/sbin/); the guest
-//     agent's disk.grow handler execs resize2fs
-//   - e2fsprogs-libs  — libext2fs.so.2, libe2p.so.2, libss.so.2
-//   - libcom_err      — libcom_err.so.2
-//   - libblkid        — libblkid.so.1
-//   - libuuid         — libuuid.so.1
-func injectE2fsprogs(ctx context.Context, stagingDir string) error {
+// injectToolchain downloads toolchainPackages (e2fsprogs + util-linux-misc and
+// their Alpine shared library dependencies) into stagingDir.
+func injectToolchain(ctx context.Context, stagingDir string) error {
 	const alpineBase = "https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64"
-	pkgs := e2fsprogsPackages
-	slog.Info("builderimage: injecting e2fsprogs into builder rootfs", "packages", len(pkgs))
-	for _, pkg := range pkgs {
+	slog.Info("builderimage: injecting toolchain packages into builder rootfs", "packages", len(toolchainPackages))
+	for _, pkg := range toolchainPackages {
 		slog.Info("builderimage: downloading Alpine package", "pkg", pkg)
 		if err := extractAlpinePkg(ctx, alpineBase+"/"+pkg, stagingDir); err != nil {
 			return fmt.Errorf("%s: %w", pkg, err)
 		}
 	}
-	slog.Info("builderimage: e2fsprogs injection complete")
+	slog.Info("builderimage: toolchain injection complete")
 	return nil
 }
 

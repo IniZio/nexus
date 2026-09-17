@@ -96,7 +96,7 @@ func builderImageCachePath(imagesDir, digestSafe string, agentBytes []byte) stri
 	agentSum := sha256.Sum256(agentBytes)
 	agentTag := fmt.Sprintf("%x", agentSum[:8]) // 16 hex chars — sufficient for version skew
 	// -tc sits BEFORE -agent: image.parseBuilderTemplateName anchors on the trailing -agent<16hex>.
-	tcTag := toolchainFingerprint(e2fsprogsPackages)
+	tcTag := toolchainFingerprint(toolchainPackages)
 	return filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s-tc%s-agent%s.ext4", digestSafe, tcTag, agentTag))
 }
 
