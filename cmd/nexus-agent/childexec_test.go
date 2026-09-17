@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -82,14 +83,22 @@ func TestExecCollectCmd_WithEnvAndDir(t *testing.T) {
 		oneShotReaper.Store(nil)
 	})
 
-	cmd := exec.Command("/bin/sh", "-c", "echo $MY_VAR")
+	dir := t.TempDir()
+	cmd := exec.Command("/bin/sh", "-c", "echo $MY_VAR; pwd")
 	cmd.Env = []string{"MY_VAR=hello"}
+	cmd.Dir = dir
 	out, err := execCollectCmd(cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := strings.TrimSpace(string(out)); got != "hello" {
-		t.Fatalf("output = %q, want %q", got, "hello")
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if lines[0] != "hello" {
+		t.Fatalf("env output = %q, want %q", lines[0], "hello")
+	}
+	wantDir, _ := filepath.EvalSymlinks(dir)
+	gotDir, _ := filepath.EvalSymlinks(lines[len(lines)-1])
+	if gotDir != wantDir {
+		t.Fatalf("cwd = %q, want %q", gotDir, wantDir)
 	}
 }
 
