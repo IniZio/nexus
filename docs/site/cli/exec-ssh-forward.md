@@ -98,7 +98,7 @@ nexus3 polls `/proc/net/tcp` inside the sandbox on a short interval. When a new 
 
 Port state is persisted under `~/.config/herdr/portfwd/` on the herdr host and appears in the workspace overlay. When the guest listener closes, the forward is cancelled and the port disappears from the overlay within the reconcile interval.
 
-**Remote-client focus scoping:** on a laptop running `nexus3-client`, forwards are scoped to the sandbox bound to the currently focused herdr workspace. Unfocusing a workspace removes its forwards from `127.0.0.1` within one reconcile tick (≤ 5 s); focusing it again restores them. Forwards of unfocused sandboxes are never applied. Host-side listeners are unaffected by focus — the scoping is client-side only.
+**Remote-client focus scoping:** on a laptop running `nexus3-client`, forwards are scoped to the sandbox bound to the currently focused herdr workspace. Unfocusing a workspace removes its forwards from `127.0.0.1` within one reconcile tick (≤ 5 s); focusing it again restores them. When no workspace is focused, or the focused workspace has no bound sandbox, no forwards are active. Forwards of unfocused sandboxes are never applied. Host-side listeners are unaffected by focus — the scoping is client-side only.
 
 herdr 0.9.0 maintains one session-wide focus shared across all connected clients; the daemon reads focus from the host session's `focus.state` file. Focus-scoped forwarding is accurate only when `nexus3-client` is the **sole interactive client** on the session. When both a host TUI and a remote client are attached, the host session's last workspace-focus event is the one the daemon reads.
 

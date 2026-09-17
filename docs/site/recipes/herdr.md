@@ -334,10 +334,10 @@ state does not settle, `nexus3 reap` will show whether anything leaked.
 
 **Ports are not forwarded even though sandboxes are running.**
 The client daemon forwards ports for the sandbox bound to the currently focused
-herdr workspace on the *host* session. If no workspace is focused, no forwards
-are active. If the focused workspace has no nexus3 binding, the daemon falls
-back to mirroring all live forwards and logs one Info line:
-`portfwd focus: focused workspace has no nexus3 binding; mirroring all forwards`.
+herdr workspace on the *host* session. When no workspace is focused, or the
+focused workspace has no bound sandbox, no forwards are active — the daemon logs
+`portfwd focus: focused workspace has no sandbox; forwarding nothing` and cancels
+any previously applied forwards within one reconcile tick.
 Look for that line in `~/.local/state/nexus3/portfwd-client/agent.log`.
 Switch focus to the workspace that owns the sandbox, or run `nexus3 herdr list`
 on the host to confirm a binding exists.

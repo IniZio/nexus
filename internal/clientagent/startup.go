@@ -87,23 +87,9 @@ func RunStartup(ctx context.Context) error {
 var RemoteStateReader = ReadRemoteCombinedState
 var ForwarderRunner portfwd.Runner = portfwd.OSRunner
 
-var fallbackWarned  sync.Map
 var prevFocusSandbox sync.Map
 
-func warnFallbackOnce(target, kind, msg string, args ...any) {
-	if _, loaded := fallbackWarned.LoadOrStore(target+"\x00"+kind, struct{}{}); !loaded {
-		slog.Warn(msg, args...)
-	}
-}
-
-func clearFallback(target, kind string) {
-	fallbackWarned.Delete(target + "\x00" + kind)
-}
-
-func filterToFocused(forwards []RemoteForwardEntry, sandboxID string, fallback bool) []RemoteForwardEntry {
-	if fallback {
-		return forwards
-	}
+func filterToFocused(forwards []RemoteForwardEntry, sandboxID string) []RemoteForwardEntry {
 	if sandboxID == "" {
 		return nil
 	}
@@ -116,11 +102,14 @@ func filterToFocused(forwards []RemoteForwardEntry, sandboxID string, fallback b
 	return out
 }
 
-func focusFromCombined(combined *RemoteCombinedState, _ string) (string, bool) {
+// focusFromCombined returns the focused sandbox ID, or "" when focus.state is
+// absent or its sandbox_id is empty. An empty return means the desired forward
+// set is empty — nothing is forwarded.
+func focusFromCombined(combined *RemoteCombinedState) string {
 	if combined.FocusMissing || combined.FocusState.SandboxID == "" {
-		return "", true
+		return ""
 	}
-	return combined.FocusState.SandboxID, false
+	return combined.FocusState.SandboxID
 }
 
 func Tick(ctx context.Context, stateDir string, managers map[string]*portfwd.Manager) error {
@@ -150,17 +139,22 @@ func Tick(ctx context.Context, stateDir string, managers map[string]*portfwd.Man
 			slog.Warn("local-agent-startup: read-remote-state", "target", m.SSHTarget, "err", err)
 			continue
 		}
-		sandboxID, fallback := focusFromCombined(combined, m.SSHTarget)
-		if !fallback && sandboxID != "" {
+		sandboxID := focusFromCombined(combined)
+		if sandboxID != "" {
 			prev, _ := prevFocusSandbox.Load(m.SSHTarget)
 			if prevID, _ := prev.(string); prevID != sandboxID {
 				slog.Info("portfwd focus: focused sandbox changed", "target", m.SSHTarget, "sandbox_id", sandboxID)
 				prevFocusSandbox.Store(m.SSHTarget, sandboxID)
 			}
 		} else {
-			prevFocusSandbox.Delete(m.SSHTarget)
+			prev, loaded := prevFocusSandbox.Load(m.SSHTarget)
+			prevID, _ := prev.(string)
+			if !loaded || prevID != "" {
+				slog.Info("portfwd focus: focused workspace has no sandbox; forwarding nothing", "target", m.SSHTarget)
+				prevFocusSandbox.Store(m.SSHTarget, "")
+			}
 		}
-		focused := filterToFocused(combined.ForwardsState.Forwards, sandboxID, fallback)
+		focused := filterToFocused(combined.ForwardsState.Forwards, sandboxID)
 		var desired []portfwd.Listener
 		for _, fwd := range focused {
 			if fwd.Status == "live" || fwd.Status == "pending" {

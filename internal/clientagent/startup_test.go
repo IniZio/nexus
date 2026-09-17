@@ -61,44 +61,17 @@ func TestFilterToFocused(t *testing.T) {
 		{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
 	}
 
-	got := filterToFocused(rows, "sandbox-A", false)
+	got := filterToFocused(rows, "sandbox-A")
 	if len(got) != 1 || got[0].Port != 3000 {
 		t.Errorf("focused on A: got %v", got)
 	}
 
-	got = filterToFocused(rows, "", false)
+	got = filterToFocused(rows, "")
 	if len(got) != 0 {
 		t.Errorf("no focused workspace: want nil/empty, got %v", got)
 	}
-
-	got = filterToFocused(rows, "", true)
-	if len(got) != 2 {
-		t.Errorf("fallback: want all 2 rows, got %v", got)
-	}
-
-	got = filterToFocused(rows, "sandbox-A", true)
-	if len(got) != 2 {
-		t.Errorf("fallback overrides handle: want all 2 rows, got %v", got)
-	}
 }
 
-func TestWarnFallbackOnce_FiresOnce(t *testing.T) {
-	target, kind := t.Name(), "workspace"
-	fallbackWarned.Delete(target + "\x00" + kind)
-
-	for i := 0; i < 3; i++ {
-		warnFallbackOnce(target, kind, "test warn", "i", i)
-	}
-
-	if _, ok := fallbackWarned.Load(target + "\x00" + kind); !ok {
-		t.Error("fallbackWarned key should be set after first warn")
-	}
-
-	clearFallback(target, kind)
-	if _, ok := fallbackWarned.Load(target + "\x00" + kind); ok {
-		t.Error("fallbackWarned key should be cleared after clearFallback")
-	}
-}
 
 func makeFakeRun(applied, cancelled *[]uint16) portfwd.Runner {
 	return func(_ context.Context, argv []string) (string, string, int, error) {
@@ -187,7 +160,9 @@ func TestTick_FocusScoping(t *testing.T) {
 	}
 }
 
-func TestTick_FocusFallback_UsesAllRows(t *testing.T) {
+// F12-AC1: tick 1 focus sb-A applies A rows; tick 2 sandbox_id="" cancels A rows
+// and applies nothing; tick 3 focus.state absent likewise.
+func TestTick_UnboundFocusForwardsNothing(t *testing.T) {
 	ctx := context.Background()
 	stateDir := t.TempDir()
 
@@ -198,15 +173,22 @@ func TestTick_FocusFallback_UsesAllRows(t *testing.T) {
 	}
 	t.Cleanup(func() { ExecCommandContext = origExec })
 
+	tick := 0
+	fwds := RemoteForwardsState{Forwards: []RemoteForwardEntry{
+		{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
+		{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
+	}}
 	origReader := RemoteStateReader
 	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
-		return &RemoteCombinedState{
-			ForwardsState: RemoteForwardsState{Forwards: []RemoteForwardEntry{
-				{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
-				{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
-			}},
-			FocusMissing: true,
-		}, nil
+		tick++
+		switch tick {
+		case 1:
+			return &RemoteCombinedState{ForwardsState: fwds, FocusState: portfwd.FocusState{SandboxID: "sandbox-A"}}, nil
+		case 2:
+			return &RemoteCombinedState{ForwardsState: fwds, FocusState: portfwd.FocusState{SandboxID: ""}}, nil
+		default:
+			return &RemoteCombinedState{ForwardsState: fwds, FocusMissing: true}, nil
+		}
 	}
 	t.Cleanup(func() { RemoteStateReader = origReader })
 
@@ -216,11 +198,37 @@ func TestTick_FocusFallback_UsesAllRows(t *testing.T) {
 	t.Cleanup(func() { ForwarderRunner = origRunner })
 
 	managers := make(map[string]*portfwd.Manager)
+
 	if err := Tick(ctx, stateDir, managers); err != nil {
-		t.Fatalf("tick: %v", err)
+		t.Fatalf("tick 1: %v", err)
 	}
-	if len(applied) != 2 {
-		t.Errorf("fallback: want both rows applied, got %v", applied)
+	if len(applied) != 1 || applied[0] != 3000 {
+		t.Errorf("tick 1: want [3000] applied, got %v", applied)
+	}
+	if len(cancelled) != 0 {
+		t.Errorf("tick 1: want no cancels, got %v", cancelled)
+	}
+
+	applied, cancelled = nil, nil
+	if err := Tick(ctx, stateDir, managers); err != nil {
+		t.Fatalf("tick 2: %v", err)
+	}
+	if len(cancelled) != 1 || cancelled[0] != 3000 {
+		t.Errorf("tick 2: want [3000] cancelled, got %v", cancelled)
+	}
+	if len(applied) != 0 {
+		t.Errorf("tick 2: want nothing applied, got %v", applied)
+	}
+
+	applied, cancelled = nil, nil
+	if err := Tick(ctx, stateDir, managers); err != nil {
+		t.Fatalf("tick 3: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("tick 3: want nothing applied, got %v", applied)
+	}
+	if len(cancelled) != 0 {
+		t.Errorf("tick 3: want no cancels, got %v", cancelled)
 	}
 }
 
@@ -248,7 +256,7 @@ func TestReadRemoteCombinedState_OneArgvNamesBothFiles(t *testing.T) {
 	}
 }
 
-// F2-AC3: missing focus.state and sandbox_id=="" each fall back to all rows.
+// D-16: absent focus.state and sandbox_id=="" both forward nothing.
 func TestFocusFromCombined_FallbackCases(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -265,9 +273,9 @@ func TestFocusFromCombined_FallbackCases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sandboxID, fallback := focusFromCombined(&tc.combined, "target")
-			if sandboxID != "" || !fallback {
-				t.Errorf("%s: got (%q, %v), want (\"\", true)", tc.name, sandboxID, fallback)
+			sandboxID := focusFromCombined(&tc.combined)
+			if sandboxID != "" {
+				t.Errorf("%s: got %q, want \"\" (forward nothing)", tc.name, sandboxID)
 			}
 		})
 	}
@@ -316,12 +324,12 @@ func TestParseRemoteCombinedState_FocusFilters(t *testing.T) {
 		t.Errorf("FocusState.SandboxID: got %q, want sb1", combined.FocusState.SandboxID)
 	}
 
-	sandboxID, fallback := focusFromCombined(combined, "target")
-	if fallback || sandboxID != "sb1" {
-		t.Errorf("focusFromCombined: got (%q, %v), want (sb1, false)", sandboxID, fallback)
+	sandboxID := focusFromCombined(combined)
+	if sandboxID != "sb1" {
+		t.Errorf("focusFromCombined: got %q, want sb1", sandboxID)
 	}
 
-	filtered := filterToFocused(combined.ForwardsState.Forwards, sandboxID, fallback)
+	filtered := filterToFocused(combined.ForwardsState.Forwards, sandboxID)
 	if len(filtered) != 1 || filtered[0].Port != 3000 {
 		t.Errorf("filter to sb1: got %v, want [{3000 sb1 live}]", filtered)
 	}
