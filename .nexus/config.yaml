@@ -1,7 +1,7 @@
 version: 1
 
 sandbox:
-  # nexus3's own worktree sandboxes need nested KVM so inner nexus3 VMs can
+  # nexus's own worktree sandboxes need nested KVM so inner nexus VMs can
   # boot for hot-swap and self-hosting work (D-N3N-02).
   #
   # Read from the checkout's own .nexus/config.yaml (D-12); it takes effect on

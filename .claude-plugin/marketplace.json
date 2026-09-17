@@ -1,14 +1,14 @@
 {
-  "name": "nexus3",
-  "description": "Claude Code plugin for nexus3 microVM sandboxes",
+  "name": "nexus",
+  "description": "Claude Code plugin for nexus microVM sandboxes",
   "owner": {
     "name": "IniZio"
   },
   "plugins": [
     {
-      "name": "nexus3",
+      "name": "nexus",
       "source": "./plugins/claude",
-      "description": "nexus3 microVM sandbox — skill namespace and MCP server for Claude Code",
+      "description": "nexus microVM sandbox — skill namespace and MCP server for Claude Code",
       "version": "0.1.0",
       "author": {
         "name": "IniZio"
@@ -17,7 +17,7 @@
       "keywords": [
         "microvm",
         "sandbox",
-        "nexus3"
+        "nexus"
       ]
     }
   ]

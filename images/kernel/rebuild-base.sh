@@ -51,6 +51,7 @@ BUILD_TAG="${BUILD_DATE}-${GIT_SHA}"
 echo "nexus-agent: building (CGO_ENABLED=0 GOOS=linux GOARCH=amd64) build=${BUILD_TAG}"
 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+  -trimpath \
   -ldflags "-X main.agentBuildTag=${BUILD_TAG}" \
   -o images/kernel/nexus-agent \
   ./cmd/nexus-agent

@@ -1,5 +1,5 @@
 # Keep the build context small for the multi-stage Docker build.
-# The build context is the nexus3 repo root.
+# The build context is the nexus repo root.
 
 # Heavy generated artefacts
 .git/
@@ -9,16 +9,16 @@
 .claude/
 
 # Pre-compiled host binaries at repo root (not part of the Go source)
-nexus3
-nexus3-agent
+nexus
+nexus-agent
 buildorca
 cli.test
 
 # Example scratch dirs (allow virtiofsd — only host-staged binary needed)
-examples/nexus3-in-docker/stage/
-!examples/nexus3-in-docker/stage/virtiofsd
-examples/nexus3-in-docker/ws/
-examples/nexus3-in-docker/boottest/
+examples/nexus-in-docker/stage/
+!examples/nexus-in-docker/stage/virtiofsd
+examples/nexus-in-docker/ws/
+examples/nexus-in-docker/boottest/
 
 # Go test / build cache
 /bin/

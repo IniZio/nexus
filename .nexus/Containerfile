@@ -1,8 +1,8 @@
-# nexus3 guest image — inner nexus3 VM substrate
+# nexus guest image — inner nexus VM substrate
 #
-# This Containerfile produces the root filesystem for the nexus3 guest VM.
-# buildkit.go appends a final COPY layer for the nexus3-agent binary
-# (boot contract: init=/sbin/nexus3-agent) — do NOT add it here.
+# This Containerfile produces the root filesystem for the nexus guest VM.
+# buildkit.go appends a final COPY layer for the nexus-agent binary
+# (boot contract: init=/sbin/nexus-agent) — do NOT add it here.
 #
 # COPY of local assets (e.g. vmlinux.bin, kernel modules) is deferred to T3.
 # All dependencies are obtained via package installs or in-build downloads.
@@ -10,7 +10,7 @@
 FROM ubuntu:24.04
 
 LABEL maintainer="Nexus Team"
-LABEL description="nexus3 guest image with inner-VM substrate (cloud-hypervisor, passt, virtiofsd, Go)"
+LABEL description="nexus guest image with inner-VM substrate (cloud-hypervisor, passt, virtiofsd, Go)"
 
 # ── Base packages ─────────────────────────────────────────────────────────────
 # curl + ca-certificates: in-build downloads (cloud-hypervisor, Go toolchain)
@@ -49,7 +49,7 @@ RUN curl -fsSL \
     && cloud-hypervisor --version
 
 # ── Go toolchain ──────────────────────────────────────────────────────────────
-# Needed to build nexus3 (and its dependencies) inside the guest.
+# Needed to build nexus (and its dependencies) inside the guest.
 # Pin to a specific release so image builds are reproducible.
 ARG GO_VERSION=1.23.4
 ARG GO_ARCH=amd64

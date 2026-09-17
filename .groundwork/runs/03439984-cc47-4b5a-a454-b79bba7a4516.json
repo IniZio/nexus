@@ -108,7 +108,7 @@
     {
       "id": "S7-host-cutover",
       "wave": 2,
-      "status": "pending",
+      "status": "complete",
       "kind": "impl",
       "desc": "Operator host cutover: stop live sandboxes via herdr verbs, stop nexus3 local-agent-startup daemon, delete ~/.local/state/nexus3 ~/.config/nexus3 ~/.cache/nexus3 ~/.local/share/nexus3 /var/lib/nexus3 /run/nexus3, back up ~/.local/bin/nexus -> nexus.old-product, build+install nexus / nexus-agent (static, make install-agent) / nexus-guest-shell, swap claude plugin nexus3@nexus3 -> nexus@nexus and herdr plugin, restart daemon",
       "blocked_by": [
@@ -122,7 +122,9 @@
         "~/.local/bin/nexus-agent is static (file reports statically linked)",
         "claude plugin list shows nexus@nexus and not nexus3@nexus3",
         "herdr plugin list shows nexus"
-      ]
+      ],
+      "completed_at": "2026-09-17T13:52:30.134Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     },
     {
       "id": "S8-live-proof",
@@ -131,7 +133,9 @@
       "kind": "impl",
       "desc": "Live proof through herdr: create a worktree sandbox with the renamed plugin verb, exec inside, confirm guest agent is nexus-agent and host state lives under ~/.local/state/nexus, tear down",
       "blocked_by": [
-        "S7-host-cutover"
+        "S7-host-cutover",
+        "S10-marketplace-hidden",
+        "S11-base-image"
       ],
       "acceptance": [
         "herdr worktree-sandbox verb creates a sandbox and exec inside returns exit 0",
@@ -156,6 +160,40 @@
       ],
       "completed_at": "2026-09-17T12:16:26.926Z",
       "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S10-marketplace-hidden",
+      "wave": 2,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Rename leftovers in hidden dirs: .claude-plugin/marketplace.json (name nexus, plugins[0].name nexus) and any other tracked hidden-path file still saying nexus3; then claude plugin marketplace remove nexus3 && make install-plugin",
+      "blocked_by": [
+        "S7-host-cutover"
+      ],
+      "acceptance": [
+        "rg -i --hidden nexus3 over tracked files (git ls-files) returns 0 lines excluding .groundwork CHANGELOG.md plugins/claude/evals",
+        "claude plugin list shows nexus@nexus",
+        "claude plugin marketplace list has no nexus3 entry"
+      ],
+      "completed_at": "2026-09-17T13:57:46.730Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S11-base-image",
+      "wave": 2,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Make a base image available under the new name for the renamed host: rebuild via the documented path (images/AGENT-REBUILD.md, cmd/rebuild-agent-base, images/kernel/rebuild-base.sh) with the renamed nexus-agent baked in; make nexus resolve it (local override or ghcr.io/inizio/nexus-base) so nexus doctor base_image passes",
+      "blocked_by": [
+        "S7-host-cutover"
+      ],
+      "acceptance": [
+        "nexus doctor reports base_image OK",
+        "the image contains /sbin/nexus-agent (not nexus3-agent)",
+        "how the ref is resolved is documented in the report"
+      ],
+      "completed_at": "2026-09-17T13:58:31.153Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     }
   ],
   "write_token": "95fee6420d96bce6",
@@ -163,6 +201,6 @@
   "base_commit": "1cab7cc7343ee57ebed49854fe44626310b98463",
   "motive": "rename-nexus3-to-nexus",
   "gate": {
-    "seal": "ab114e662278a4f3e9300c072fe7df0f03ba340ecae738659bb31a097068d3bb"
+    "seal": "3e089b08426ac41c283e68397ac8603254551cf5b37b6ae432846052b9f7b17a"
   }
 }
