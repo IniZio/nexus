@@ -108,6 +108,51 @@ func TestReferencedDigests_PinnedBaseKept(t *testing.T) {
 	}
 }
 
+// TestReferencedDigests_HerdrDefaultBaseRepoKept: every tag of the herdr
+// default base repo is kept with no sandboxes; a same-prefix other repo is not.
+func TestReferencedDigests_HerdrDefaultBaseRepoKept(t *testing.T) {
+	ctx := context.Background()
+	c := newCache(t)
+	latest := putImageRef(t, c, []byte("nexus-base-latest"), domain.KindBase, service.HerdrDefaultBaseRepo+":latest")
+	versioned := putImageRef(t, c, []byte("nexus-base-v1"), domain.KindBase, service.HerdrDefaultBaseRepo+":v0.16.2")
+	lookalike := putImageRef(t, c, []byte("nexus-base-dev"), domain.KindBase, service.HerdrDefaultBaseRepo+"-dev:latest")
+
+	ref, err := service.ReferencedDigestsPinned(ctx, c, &fakeSandboxImageLister{}, service.DefaultPinnedBaseRefs)
+	if err != nil {
+		t.Fatalf("ReferencedDigestsPinned: %v", err)
+	}
+	for _, d := range []domain.Digest{latest, versioned} {
+		if !containsDigest(ref, d) {
+			t.Errorf("herdr default base %s not in referenced set %v", d, ref)
+		}
+	}
+	if containsDigest(ref, lookalike) {
+		t.Errorf("lookalike repo %s should NOT be in referenced set %v", lookalike, ref)
+	}
+}
+
+// TestAutoPruneAfterBuild_HerdrDefaultBaseSurvives: an unrelated --file build
+// with no sandboxes must not evict the herdr default base image.
+func TestAutoPruneAfterBuild_HerdrDefaultBaseSurvives(t *testing.T) {
+	ctx := context.Background()
+	c := newCache(t)
+	base := putImageRef(t, c, []byte("nexus-base-latest"), domain.KindBase, service.HerdrDefaultBaseRepo+":latest")
+	built := putImage(t, c, []byte("fresh-builder"), domain.KindBuilder)
+
+	n, err := service.AutoPruneAfterBuild(ctx, c, &fakeSandboxImageLister{}, 0, built)
+	if err != nil {
+		t.Fatalf("AutoPruneAfterBuild: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("pruned %d entries, want 0", n)
+	}
+	for _, d := range []domain.Digest{base, built} {
+		if _, err := c.Get(ctx, d); err != nil {
+			t.Errorf("%s was pruned: %v", d, err)
+		}
+	}
+}
+
 // TestReferencedDigests_SandboxReferencedBaseKept: a KindBase image with a
 // non-pinned ref is kept when a sandbox record references it.
 func TestReferencedDigests_SandboxReferencedBaseKept(t *testing.T) {

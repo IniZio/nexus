@@ -645,7 +645,7 @@ func herdrRepoFlags(scanner *bufio.Scanner) ([]string, error) {
 	return []string{"--repo", repo, "--secret", "GH_TOKEN@github.com,api.github.com,uploads.github.com"}, nil
 }
 
-const herdrDefaultImageRepo = "ghcr.io/inizio/nexus-base"
+const herdrDefaultImageRepo = service.HerdrDefaultBaseRepo
 
 var herdrDefaultImageTag = "latest"
 

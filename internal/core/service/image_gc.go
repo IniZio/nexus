@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"syscall"
 
 	"github.com/IniZio/nexus/internal/core/diskfloor"
@@ -50,6 +51,20 @@ func SetFreeSpaceFuncForTest(fn func(string) (uint64, error)) func() {
 // the `image build --base` default.
 var DefaultPinnedBaseRefs = []string{"nexus-agent-base", "debian:bookworm-slim"}
 
+// HerdrDefaultBaseRepo is the herdr plugin's default boot image; its tag is
+// release-stamped in internal/cli, so GC pins every tag of the repository.
+const HerdrDefaultBaseRepo = "ghcr.io/inizio/nexus-base"
+
+var DefaultPinnedBaseRepos = []string{HerdrDefaultBaseRepo}
+
+func refInRepo(ref, repo string) bool {
+	if ref == repo {
+		return true
+	}
+	rest := strings.TrimPrefix(ref, repo)
+	return rest != ref && (strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "@"))
+}
+
 // ReferencedDigests returns the set of image digests that must be preserved
 // during GC. The returned set includes:
 //   - Every image referenced by an existing sandbox record (Envelope.ImageDigest).
@@ -94,6 +109,13 @@ func ReferencedDigestsPinned(ctx context.Context, c *image.Cache, store SandboxI
 		}
 		if _, ok := pinned[img.Ref]; ok {
 			ref[img.Digest] = struct{}{}
+			continue
+		}
+		for _, repo := range DefaultPinnedBaseRepos {
+			if refInRepo(img.Ref, repo) {
+				ref[img.Digest] = struct{}{}
+				break
+			}
 		}
 	}
 
