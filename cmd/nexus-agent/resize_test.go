@@ -307,6 +307,66 @@ func TestHandleDiskGrow_RefusesNonExt4(t *testing.T) {
 	}
 }
 
+// TestParseBlkidType: util-linux prints the bare value for `-o value -s TYPE`;
+// busybox blkid (Alpine builder VM) ignores those flags and prints the
+// `DEV: KEY="v" ...` line, which the old exact compare refused (ENOSPC bug).
+func TestParseBlkidType(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		want string
+	}{
+		{"util-linux bare value", "ext4\n", "ext4"},
+		{"busybox key=value line", "/dev/vdd: UUID=\"9a1b2c3d-0000-4000-8000-000000000000\" TYPE=\"ext4\"\n", "ext4"},
+		{"busybox non-ext4", "/dev/vdd: TYPE=\"xfs\"\n", "xfs"},
+		{"empty output", "", ""},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseBlkidType(tc.out); got != tc.want {
+				t.Errorf("parseBlkidType(%q) = %q, want %q", tc.out, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleDiskGrow_BusyboxBlkidAcceptsExt4(t *testing.T) {
+	setResizeExec(t, func(name string, _ ...string) ([]byte, error) {
+		if name == "blkid" {
+			return []byte("/dev/vdd: UUID=\"9a1b2c3d-0000-4000-8000-000000000000\" TYPE=\"ext4\"\n"), nil
+		}
+		return []byte("The filesystem on /dev/vdd is now 6748997 (4k) blocks long.\n"), nil
+	})
+	resp := handleDiskGrow(resize.GrowRequest{DiskIndex: 2, TargetBytes: 27643891712})
+	if resp.Error != "" {
+		t.Fatalf("busybox blkid output rejected: %s", resp.Error)
+	}
+	if want := int64(6748997 * 4096); resp.ResultBytes != want {
+		t.Errorf("ResultBytes = %d, want %d", resp.ResultBytes, want)
+	}
+}
+
+func TestHandleDiskGrow_BusyboxBlkidRefusesNonExt4(t *testing.T) {
+	var resizeCalled bool
+	setResizeExec(t, func(name string, _ ...string) ([]byte, error) {
+		if name == "blkid" {
+			return []byte("/dev/vdd: TYPE=\"xfs\"\n"), nil
+		}
+		resizeCalled = true
+		return nil, nil
+	})
+	resp := handleDiskGrow(resize.GrowRequest{DiskIndex: 2, TargetBytes: 10 << 30})
+	if resp.Error == "" {
+		t.Fatal("expected refusal for busybox xfs, got none")
+	}
+	if !strings.Contains(resp.Error, `"xfs"`) {
+		t.Errorf("error %q should name the detected type xfs", resp.Error)
+	}
+	if resizeCalled {
+		t.Error("resize2fs must not run when fs type is not ext4")
+	}
+}
+
 func TestHandleDiskGrow_IndexToDevice(t *testing.T) {
 	// DiskIndex 0 → /dev/vdb, 1 → /dev/vdc, 2 → /dev/vdd.
 	for _, tc := range []struct {

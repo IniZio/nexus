@@ -135,7 +135,8 @@
       "blocked_by": [
         "S7-host-cutover",
         "S10-marketplace-hidden",
-        "S11-base-image"
+        "S11-base-image",
+        "S12-blkid-guard"
       ],
       "acceptance": [
         "herdr worktree-sandbox verb creates a sandbox and exec inside returns exit 0",
@@ -194,6 +195,25 @@
       ],
       "completed_at": "2026-09-17T13:58:31.153Z",
       "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S12-blkid-guard",
+      "wave": 3,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "Fix handleDiskGrow fs-type guard in cmd/nexus-agent/resize_actuate_linux.go: parse blkid output robustly (util-linux 'ext4' and busybox '/dev/vdd: TYPE=\"ext4\"'), unit test both shapes, rebuild static agent + tracked images/kernel/nexus-agent",
+      "blocked_by": [
+        "S11-base-image"
+      ],
+      "acceptance": [
+        "unit test covers util-linux and busybox blkid output shapes and fails on the old comparison",
+        "make test GOTEST_PKGS=./cmd/nexus-agent/... exit 0",
+        "make build and make vet exit 0",
+        "~/.local/bin/nexus-agent rebuilt static via make install-agent",
+        "make check-agent-fresh (or equivalent) passes"
+      ],
+      "completed_at": "2026-09-17T14:11:39.601Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     }
   ],
   "write_token": "95fee6420d96bce6",
@@ -201,6 +221,6 @@
   "base_commit": "1cab7cc7343ee57ebed49854fe44626310b98463",
   "motive": "rename-nexus3-to-nexus",
   "gate": {
-    "seal": "3e089b08426ac41c283e68397ac8603254551cf5b37b6ae432846052b9f7b17a"
+    "seal": "eeba6610b77a68b2af946f67fe84f59752be5813d7f43847349898ef455a0eb5"
   }
 }

@@ -331,7 +331,7 @@ func handleDiskGrow(req resize.GrowRequest) resize.GrowResponse {
 			Error: fmt.Sprintf("blkid %s: %v: %s", device, err, strings.TrimSpace(string(out))),
 		}
 	}
-	fstype := strings.TrimSpace(string(out))
+	fstype := parseBlkidType(string(out))
 	if fstype != "ext4" {
 		return resize.GrowResponse{
 			Error: fmt.Sprintf(
@@ -350,6 +350,22 @@ func handleDiskGrow(req resize.GrowRequest) resize.GrowResponse {
 	}
 	resultBytes := parseResize2fsBytes(string(out), req.TargetBytes)
 	return resize.GrowResponse{ResultBytes: resultBytes}
+}
+
+// parseBlkidType extracts the filesystem type from `blkid -o value -s TYPE`
+// output. util-linux blkid honours those flags and prints the bare value;
+// busybox blkid (Alpine builder VM) ignores them and prints the full
+// `DEV: KEY="v" KEY="v"` line. Returns "" when no type is present.
+func parseBlkidType(output string) string {
+	s := strings.TrimSpace(output)
+	if i := strings.Index(s, `TYPE="`); i >= 0 {
+		rest := s[i+len(`TYPE="`):]
+		if j := strings.IndexByte(rest, '"'); j >= 0 {
+			return rest[:j]
+		}
+		return ""
+	}
+	return s
 }
 
 // parseResize2fsBytes extracts the new filesystem size in bytes from resize2fs
