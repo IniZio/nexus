@@ -12,25 +12,9 @@ import (
 	"github.com/IniZio/nexus3/internal/core/domain"
 )
 
-// Pane-first provisioning. Building a worktree sandbox pulls an image, writes an
-// ext4 disk, and boots a VM — minutes on a cold cache — and until this change
-// none of that had a surface. The action ran the build inline in its own
-// process, so the operator's new worktree workspace showed a host-path shell and
-// nothing else, and a failure went to `herdr plugin log list` and nowhere an
-// operator looks.
-//
-// The fix has two halves and both are load-bearing:
-//
-//	ORDERING     — the pane opens FIRST and the build runs inside it.
-//	PERSISTENCE  — the pane stays open on a non-zero exit, so the error is still
-//	               on screen when someone comes to read it.
-//
-// These tests run the REAL plugin scripts against a stub shim, the same
-// mechanism herdr_scripts_test.go uses. They cannot boot a VM; what they pin is
-// the wiring, which is where both halves of the defect actually lived.
+// Pane-first provisioning: ORDERING (pane opens first, build inside) +
+// PERSISTENCE (pane holds on failure). Tests wire the script stubs.
 
-// worktreePaneEnv copies the plugin scripts next to stub binaries that record
-// their argv.
 type worktreePaneEnv struct {
 	binDir   string
 	shimLog  string
@@ -62,7 +46,6 @@ func newWorktreePaneEnv(t *testing.T, shimExit int) *worktreePaneEnv {
 		herdrBin: filepath.Join(root, "herdr"),
 	}
 
-	// The shim sits one level above bin/, exactly as in the real plugin.
 	shim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + e.shimLog + "\nexit " +
 		itoa(shimExit) + "\n"
 	if err := os.WriteFile(filepath.Join(root, "nexus3-shim.sh"), []byte(shim), 0o755); err != nil {
@@ -77,9 +60,6 @@ func newWorktreePaneEnv(t *testing.T, shimExit int) *worktreePaneEnv {
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
-// runScript executes one of the copied scripts with the given args and env,
-// feeding it an immediate EOF on stdin so a `read -r _` hold returns instead of
-// blocking the test forever. Returns combined output and exit code.
 func (e *worktreePaneEnv) runScript(t *testing.T, name string, args []string, env []string) (string, int) {
 	t.Helper()
 	cmd := exec.Command("sh", append([]string{filepath.Join(e.binDir, name)}, args...)...)
@@ -121,11 +101,7 @@ func (e *worktreePaneEnv) herdrArgv(t *testing.T) string {
 	return string(b)
 }
 
-// TestOpenPaneScript_WorktreeSandboxOpensPaneFirst is the ORDERING half.
-//
-// The action must open the worktree-sandbox pane and must NOT run the build
-// itself. If it calls the nexus3 shim directly, the build is happening in a
-// process with no surface — which is the defect.
+// ORDERING half: pane opens, build inside, shim NOT called.
 func TestOpenPaneScript_WorktreeSandboxOpensPaneFirst(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
 	_, code := e.runScript(t, "open-pane.sh", []string{"worktree-sandbox"},
@@ -151,10 +127,7 @@ func TestOpenPaneScript_WorktreeSandboxOpensPaneFirst(t *testing.T) {
 	}
 }
 
-// TestPaneScript_WorktreeSandboxRoutesToNexus3Verb is the routing invariant that
-// moved out of TestHerdrManifestDispatch when the direct call left open-pane.sh.
-// The pane is now where `nexus3 herdr worktree-sandbox` is actually invoked, and
-// if it stops being invoked there the whole flow silently does nothing.
+// Routing: pane invokes `nexus3 herdr worktree-sandbox` verb.
 func TestPaneScript_WorktreeSandboxRoutesToNexus3Verb(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
 	_, code := e.runScript(t, "pane.sh", []string{"worktree-sandbox"},
@@ -172,10 +145,7 @@ func TestPaneScript_WorktreeSandboxRoutesToNexus3Verb(t *testing.T) {
 	}
 }
 
-// TestPaneScript_WorktreeSandboxAutoFlag pins that the worktree.created event
-// path keeps its --auto predicate. Losing it would make the hook bind a sandbox
-// for EVERY new worktree workspace, in every repo, rather than only where a
-// sibling workspace is already nexus3-bound.
+// --auto predicate: worktree.created event must keep it.
 func TestPaneScript_WorktreeSandboxAutoFlag(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
 	_, _ = e.runScript(t, "pane.sh", []string{"worktree-sandbox"},
@@ -186,15 +156,7 @@ func TestPaneScript_WorktreeSandboxAutoFlag(t *testing.T) {
 	}
 }
 
-// TestPaneScript_WorktreeSandboxHoldsPaneOpenOnFailure is the PERSISTENCE half.
-//
-// The stub shim exits 1. The pane must block on Enter before closing, so the
-// error is still on screen. The test supplies an immediate EOF, so a script that
-// holds correctly returns promptly here while still holding for a real operator
-// whose stdin is a live terminal.
-//
-// The discriminator is the prompt itself: no prompt means no hold means the pane
-// closed on the error and took it with it.
+// PERSISTENCE half: pane holds on failure via "Press Enter to close" prompt.
 func TestPaneScript_WorktreeSandboxHoldsPaneOpenOnFailure(t *testing.T) {
 	e := newWorktreePaneEnv(t, 1)
 	out, code := e.runScript(t, "pane.sh", []string{"worktree-sandbox"},
@@ -212,10 +174,7 @@ func TestPaneScript_WorktreeSandboxHoldsPaneOpenOnFailure(t *testing.T) {
 	}
 }
 
-// TestPaneScript_WorktreeSandboxSucceedsWithoutHolding is the mirror: a
-// successful build must NOT leave a pane demanding Enter. Without this, "always
-// hold" passes the persistence test above while making every successful
-// provisioning leave a dead pane behind.
+// Success: pane closes without holding (no dead pane).
 func TestPaneScript_WorktreeSandboxSucceedsWithoutHolding(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
 	out, code := e.runScript(t, "pane.sh", []string{"worktree-sandbox"},
@@ -229,10 +188,7 @@ func TestPaneScript_WorktreeSandboxSucceedsWithoutHolding(t *testing.T) {
 	}
 }
 
-// TestPaneScript_WorktreeSandboxRefusesWithoutWorkspaceID is the fail-closed
-// rail for this script. An absent HERDR_WORKSPACE_ID is not a reason to guess or
-// to silently do nothing: `nexus3 herdr worktree-sandbox ""` would bind the
-// wrong thing or fail obscurely.
+// Fail-closed: refuse without HERDR_WORKSPACE_ID.
 func TestPaneScript_WorktreeSandboxRefusesWithoutWorkspaceID(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
 	out, code := e.runScript(t, "pane.sh", []string{"worktree-sandbox"},
@@ -248,9 +204,6 @@ func TestPaneScript_WorktreeSandboxRefusesWithoutWorkspaceID(t *testing.T) {
 	}
 }
 
-// TestOnWorktreeCreated_OpensProvisioningPane covers the event path, which is
-// the one the defect was actually reported on: herdr fires worktree.created and
-// the hook used to build a VM for minutes with no surface at all.
 func TestOnWorktreeCreated_OpensProvisioningPane(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
 	_, code := e.runScript(t, "on-worktree-created.sh", nil,
@@ -274,17 +227,9 @@ func TestOnWorktreeCreated_OpensProvisioningPane(t *testing.T) {
 	}
 }
 
-// TestOnWorktreeCreated_FallsBackWhenPaneCannotOpen pins the deliberate
-// fail-OPEN here, which is the one place in this slice that is not a refusal
-// and is worth naming as such.
-//
-// A pane is a SIGNAL. If herdr cannot give us one, the right answer is still to
-// provision the worktree — the operator loses visibility, not their sandbox.
-// This is the opposite call from the submission-confirmation guard, where the
-// missing input IS the thing being checked and refusing is the only safe answer.
+// Fail-OPEN: missing pane → fallback to inline (operator loses visibility, not sandbox).
 func TestOnWorktreeCreated_FallsBackWhenPaneCannotOpen(t *testing.T) {
 	e := newWorktreePaneEnv(t, 0)
-	// Make `herdr plugin pane open` fail.
 	failing := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + e.herdrLog + "\nexit 1\n"
 	if err := os.WriteFile(e.herdrBin, []byte(failing), 0o755); err != nil {
 		t.Fatal(err)
@@ -306,22 +251,7 @@ func TestOnWorktreeCreated_FallsBackWhenPaneCannotOpen(t *testing.T) {
 	}
 }
 
-// TestHerdrWorktreeSandbox_paneFailureSurfacesInAutoMode closes the gap that
-// buried the reported failure.
-//
-// Step 9 used to return nil under failSafe (auto/conditional mode) when the
-// guest pane could not be opened. The reasoning was that the sandbox and binding
-// are committed and recoverable — which is TRUE, and beside the point. The
-// consequence was a live VM, no pane, and the only record of it a line in
-// `herdr plugin log list`:
-//
-//	exit 1  workspace_not_found
-//	worktree-sandbox: open guest pane: space-create: open shell pane: exit status 1
-//
-// Now that provisioning runs inside a pane that holds itself open on a non-zero
-// exit, returning the error is what puts that message in front of the operator.
-// auto mode is the mode the worktree.created hook uses, so it is exactly the
-// mode that must not swallow it.
+// Auto-mode pane failure surfaces (was buried in herdr plugin log list).
 func TestHerdrWorktreeSandbox_paneFailureSurfacesInAutoMode(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
@@ -338,9 +268,6 @@ func TestHerdrWorktreeSandbox_paneFailureSurfacesInAutoMode(t *testing.T) {
 			swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 			t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
-			// Fail ONLY `plugin pane open`. Everything else succeeds, so the
-			// sandbox and the binding are genuinely committed and the pane is
-			// the only thing that went wrong — the exact reported shape.
 			old := herdrExecCommandContext
 			herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 				if len(args) >= 3 && args[0] == "plugin" && args[1] == "pane" && args[2] == "open" {
@@ -350,9 +277,7 @@ func TestHerdrWorktreeSandbox_paneFailureSurfacesInAutoMode(t *testing.T) {
 			}
 			t.Cleanup(func() { herdrExecCommandContext = old })
 
-			// auto mode's repo predicate needs a sibling binding whose RepoRoot
-			// matches this worktree's repo, or it short-circuits at step 5 and
-			// never reaches step 9 — which would make this test vacuous.
+			// Needs sibling binding for auto mode, else short-circuits (vacuous).
 			if tc.auto {
 				seedBindingWithRepoRoot(t, root, "w-src", "repo/sibling", "/repo")
 			}
