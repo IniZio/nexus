@@ -43,7 +43,10 @@ func TestDiskIndexMapping(t *testing.T) {
 	}
 }
 
-func TestGrowDisk_shrinkRejected(t *testing.T) {
+// TestGrowDisk_targetBelowFileNeverShrinksHost verifies that a target at or below
+// the host backing-file size never truncates the file downward and never calls
+// vm.resize-disk; the guest leg still runs so resize2fs reconciles the fs.
+func TestGrowDisk_targetBelowFileNeverShrinksHost(t *testing.T) {
 	dir := t.TempDir()
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
@@ -55,23 +58,104 @@ func TestGrowDisk_shrinkRejected(t *testing.T) {
 	}
 	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
 
+	var mu sync.Mutex
+	chCalls := 0
 	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		chCalls++
+		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
 	r := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	r.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		hostConn, guestConn := net.Pipe()
+		go func() {
+			defer guestConn.Close()
+			if _, err := resize.DecodeGrowRequest(guestConn); err != nil {
+				return
+			}
+			_ = resize.EncodeGrowResponse(guestConn, resize.GrowResponse{ResultBytes: origSize})
+		}()
+		return hostConn, nil
+	}
 
-	if err := r.GrowDisk(context.Background(), 0, origSize-1); err == nil {
-		t.Error("GrowDisk shrink target returned nil; want error")
+	if err := r.GrowDisk(context.Background(), 0, origSize-1); err != nil {
+		t.Errorf("GrowDisk below-file-size target returned error: %v; want nil (guest reconcile)", err)
 	}
 
 	if err := r.GrowDisk(context.Background(), 0, origSize); err != nil {
-		t.Errorf("GrowDisk equal-size returned error: %v; want nil (no-op)", err)
+		t.Errorf("GrowDisk equal-size returned error: %v; want nil (guest reconcile)", err)
 	}
 
 	fi, _ := os.Stat(diskPath)
 	if fi.Size() != origSize {
-		t.Errorf("backing file size = %d, want %d (unchanged after no-op/shrink reject)", fi.Size(), origSize)
+		t.Errorf("backing file size = %d, want %d (host file must never shrink)", fi.Size(), origSize)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if chCalls != 0 {
+		t.Errorf("vm.resize-disk called %d times for target <= file size; want 0", chCalls)
+	}
+}
+
+// TestGrowDisk_equalSizeSendsGuestLeg is the S13 regression: when the host
+// backing file already equals targetBytes (an earlier poll truncated it and
+// the guest leg then failed), GrowDisk must still send disk.grow so the guest
+// runs resize2fs and the filesystem catches up with the device. Before the
+// fix GrowDisk returned nil early and the governor logged govern.disk.grew
+// although the guest was never asked; the fs stayed at its old size forever.
+func TestGrowDisk_equalSizeSendsGuestLeg(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const fileSize = 10 * 1024 * 1024
+	diskPath := filepath.Join(dir, "extra0.raw")
+	if err := createSizedFile(diskPath, fileSize); err != nil {
+		t.Fatalf("create backing file: %v", err)
+	}
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
+
+	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	guestReqs := make(chan resize.GrowRequest, 1)
+	r := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	r.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		hostConn, guestConn := net.Pipe()
+		go func() {
+			defer guestConn.Close()
+			req, err := resize.DecodeGrowRequest(guestConn)
+			if err != nil {
+				return
+			}
+			guestReqs <- req
+			_ = resize.EncodeGrowResponse(guestConn, resize.GrowResponse{ResultBytes: fileSize})
+		}()
+		return hostConn, nil
+	}
+
+	if err := r.GrowDisk(context.Background(), 0, fileSize); err != nil {
+		t.Fatalf("GrowDisk equal-size: %v", err)
+	}
+
+	select {
+	case req := <-guestReqs:
+		if req.DiskIndex != 0 {
+			t.Errorf("GrowRequest.DiskIndex = %d, want 0", req.DiskIndex)
+		}
+		if req.TargetBytes != fileSize {
+			t.Errorf("GrowRequest.TargetBytes = %d, want %d (device size)", req.TargetBytes, fileSize)
+		}
+	default:
+		t.Fatalf("GrowDisk(target == file size %d) returned nil without sending disk.grow to the guest; fs never reconciled", fileSize)
+	}
+
+	fi, _ := os.Stat(diskPath)
+	if fi.Size() != fileSize {
+		t.Errorf("backing file size = %d, want %d (unchanged)", fi.Size(), fileSize)
 	}
 }
 
@@ -664,14 +748,16 @@ func TestGrowDisk_guestUnreachable(t *testing.T) {
 	}
 
 	fi, _ := os.Stat(diskPath)
-	if fi.Size() != targetSize {
-		t.Errorf("backing file size = %d, want %d (host commit must not be rolled back on guest dial error)", fi.Size(), targetSize)
+	if fi.Size() != origSize {
+		t.Errorf("backing file size = %d, want %d (host truncate must be rolled back on guest dial error)", fi.Size(), origSize)
 	}
 }
 
 // TestGrowDisk_guestResizeFails verifies that GrowResponse.Error causes GrowDisk to
-// return non-nil so the governor's growErrLogged latch fires and lastGrow is not advanced.
-// Without the fix GrowDisk returned nil despite the error, causing backing-file/filesystem divergence.
+// return non-nil so the governor's growErrLogged latch fires and lastGrow is not advanced,
+// AND that the host truncate is rolled back so file size == fs size holds (S13: an
+// un-rolled-back truncate left the file at target, and every later poll hit the
+// equal-size path without ever growing the fs).
 func TestGrowDisk_guestResizeFails(t *testing.T) {
 	dir := t.TempDir()
 	d := newTestDriver(t, dir)
@@ -710,8 +796,8 @@ func TestGrowDisk_guestResizeFails(t *testing.T) {
 	}
 
 	fi, _ := os.Stat(diskPath)
-	if fi.Size() != targetSize {
-		t.Errorf("backing file size = %d, want %d (host commit must not be rolled back on guest resize error)", fi.Size(), targetSize)
+	if fi.Size() != origSize {
+		t.Errorf("backing file size = %d after guest resize error, want %d (host truncate must be rolled back so file size == fs size)", fi.Size(), origSize)
 	}
 }
 

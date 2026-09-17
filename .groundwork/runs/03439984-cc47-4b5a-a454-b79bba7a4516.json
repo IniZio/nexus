@@ -136,7 +136,8 @@
         "S7-host-cutover",
         "S10-marketplace-hidden",
         "S11-base-image",
-        "S12-blkid-guard"
+        "S12-blkid-guard",
+        "S13-growdisk-guest-leg"
       ],
       "acceptance": [
         "herdr worktree-sandbox verb creates a sandbox and exec inside returns exit 0",
@@ -214,6 +215,26 @@
       ],
       "completed_at": "2026-09-17T14:11:39.601Z",
       "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
+    },
+    {
+      "id": "S13-growdisk-guest-leg",
+      "wave": 3,
+      "status": "complete",
+      "kind": "impl",
+      "desc": "GrowDisk: when host backing file is already at target size still run the guest disk.grow leg (idempotent resize2fs) instead of returning nil, and roll back the host truncate when the guest leg fails; unit tests for both; verify stale caches/buildkit*.ext4 self-heal or recreate them",
+      "blocked_by": [
+        "S12-blkid-guard"
+      ],
+      "acceptance": [
+        "unit test: equal-size path sends guest disk.grow (fails on old early return)",
+        "unit test: guest-leg failure restores host file size",
+        "make test for the driver package exit 0",
+        "make build/vet exit 0",
+        "nexus binary reinstalled",
+        "dumpe2fs on caches/buildkit*.ext4 shows fs size == file size or the stale caches were removed"
+      ],
+      "completed_at": "2026-09-17T14:27:52.585Z",
+      "session_id": "03439984-cc47-4b5a-a454-b79bba7a4516"
     }
   ],
   "write_token": "95fee6420d96bce6",
@@ -221,6 +242,6 @@
   "base_commit": "1cab7cc7343ee57ebed49854fe44626310b98463",
   "motive": "rename-nexus3-to-nexus",
   "gate": {
-    "seal": "eeba6610b77a68b2af946f67fe84f59752be5813d7f43847349898ef455a0eb5"
+    "seal": "b21ec37442e9506fe53f76a0abd9a7561f28c7c49b45652ad9fe9fb7dab38380"
   }
 }

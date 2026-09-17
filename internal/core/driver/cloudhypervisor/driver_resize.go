@@ -119,8 +119,11 @@ func (r *SandboxResizer) CurrentVCPUs() int32 {
 
 // GrowDisk expands the host backing file for ExtraDisks[diskIndex] to targetBytes,
 // notifies CH via vm.resize-disk, then instructs the guest to run resize2fs over vsock.
-// Safety: grow-only, running-required, sparse-aware pool check, atomic rollback on CH failure.
-// The guest leg (dial + resize2fs) returns an error so the governor does not advance lastGrow.
+// Safety: grow-only, running-required, sparse-aware pool check, atomic rollback on CH
+// failure AND on guest-leg failure, so "backing file size == guest fs size" always holds.
+// When the backing file is already >= targetBytes the host leg is skipped but the guest
+// leg still runs: resize2fs is idempotent and reconciles an fs that a previous poll left
+// behind. A guest-leg error is returned so the governor does not advance lastGrow.
 func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetBytes int64) error {
 	if diskIndex < 0 {
 		return fmt.Errorf("cloudhypervisor: GrowDisk %s: diskIndex %d must be >= 0", r.id, diskIndex)
@@ -152,28 +155,38 @@ func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetByte
 		return fmt.Errorf("cloudhypervisor: GrowDisk %s: stat %s: %w", r.id, diskPath, err)
 	}
 	currentSize := fi.Size()
-	if targetBytes <= currentSize {
-		if targetBytes == currentSize {
-			return nil
+	hostGrown := targetBytes > currentSize
+	if !hostGrown {
+		targetBytes = currentSize
+	}
+
+	if hostGrown {
+		if err := checkFreeSpace(diskPath, targetBytes); err != nil {
+			return fmt.Errorf("cloudhypervisor: GrowDisk %s: %w", r.id, err)
 		}
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: cannot shrink disk (current %d B, target %d B)",
-			r.id, currentSize, targetBytes)
-	}
-	if err := checkFreeSpace(diskPath, targetBytes); err != nil {
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: %w", r.id, err)
+
+		if err := os.Truncate(diskPath, targetBytes); err != nil {
+			return fmt.Errorf("cloudhypervisor: GrowDisk %s: expand backing file: %w", r.id, err)
+		}
+
+		c := newClient(r.d.socketPath(r.id))
+		if err := c.VMResizeDisk(ctx, chDiskID, uint64(targetBytes)); err != nil {
+			if rollbackErr := os.Truncate(diskPath, currentSize); rollbackErr != nil {
+				return fmt.Errorf("cloudhypervisor: GrowDisk %s: vm.resize-disk failed (%w); rollback truncate also failed (%v) — disk state is UNKNOWN",
+					r.id, err, rollbackErr)
+			}
+			return fmt.Errorf("cloudhypervisor: GrowDisk %s: vm.resize-disk: %w", r.id, err)
+		}
 	}
 
-	if err := os.Truncate(diskPath, targetBytes); err != nil {
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: expand backing file: %w", r.id, err)
-	}
-
-	c := newClient(r.d.socketPath(r.id))
-	if err := c.VMResizeDisk(ctx, chDiskID, uint64(targetBytes)); err != nil {
+	rollbackHost := func(cause error) error {
+		if !hostGrown {
+			return cause
+		}
 		if rollbackErr := os.Truncate(diskPath, currentSize); rollbackErr != nil {
-			return fmt.Errorf("cloudhypervisor: GrowDisk %s: vm.resize-disk failed (%w); rollback truncate also failed (%v) — disk state is UNKNOWN",
-				r.id, err, rollbackErr)
+			return fmt.Errorf("%w; rollback truncate also failed (%v) — disk state is UNKNOWN", cause, rollbackErr)
 		}
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: vm.resize-disk: %w", r.id, err)
+		return cause
 	}
 
 	if conn, dialErr := r.dialGuest(ctx, r.id, resize.TelemetryVsockPort); dialErr != nil {
@@ -183,7 +196,7 @@ func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetByte
 			"targetBytes", targetBytes,
 			"err", dialErr,
 		)
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: disk %d: guest unreachable: %w", r.id, diskIndex, dialErr)
+		return rollbackHost(fmt.Errorf("cloudhypervisor: GrowDisk %s: disk %d: guest unreachable: %w", r.id, diskIndex, dialErr))
 	} else if growErr := r.sendGrowToGuest(conn, diskIndex, targetBytes); growErr != nil {
 		slog.Warn("cloudhypervisor.disk.grow_guest_failed",
 			"sandbox", r.id,
@@ -191,7 +204,7 @@ func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetByte
 			"targetBytes", targetBytes,
 			"err", growErr,
 		)
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: disk %d: guest resize failed: %w", r.id, diskIndex, growErr)
+		return rollbackHost(fmt.Errorf("cloudhypervisor: GrowDisk %s: disk %d: guest resize failed: %w", r.id, diskIndex, growErr))
 	}
 
 	if fn, ok := r.postGrowHooks[diskIndex]; ok {
