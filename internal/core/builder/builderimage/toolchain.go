@@ -165,6 +165,7 @@ var toolchainPackages = []string{
 	"libeconf-0.6.3-r0.apk", // libblkid.so.1 → libeconf.so.0
 	"libblkid-2.40.4-r1.apk",
 	"libuuid-2.40.4-r1.apk",
+	"libmount-2.40.4-r1.apk",
 	"e2fsprogs-1.47.1-r1.apk",
 	"e2fsprogs-extra-1.47.1-r1.apk", // resize2fs
 	"libsmartcols-2.40.4-r1.apk",    // libsmartcols.so.1 (needed by zramctl)
@@ -238,6 +239,7 @@ func extractAlpinePkg(ctx context.Context, url, dstDir string) error {
 			if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 				return fmt.Errorf("mkdir parent %s: %w", hdr.Name, err)
 			}
+			_ = os.Remove(dstPath)
 			f, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
 			if err != nil {
 				return fmt.Errorf("create %s: %w", hdr.Name, err)
