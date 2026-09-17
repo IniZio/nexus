@@ -233,6 +233,28 @@ func TestListBuilderTemplatesMissingRoot(t *testing.T) {
 	}
 }
 
+func TestListBuilderTemplatesParsesToolchainTaggedName(t *testing.T) {
+	c, root := newRootedCache(t)
+	const digest = "sha256-0011223344556677889900aabbccddeeff00112233445566778899aabbccddeeff"
+	want := "nexus-builder-" + digest + "-tc1a2b3c4d-agent" + currentTag + ".ext4"
+	writeTemplate(t, root, want, true)
+	writeTemplate(t, root, "nexus-builder-"+digest+"-agent"+currentTag+"-tc1a2b3c4d.ext4", true)
+
+	got, err := c.ListBuilderTemplates(context.Background())
+	if err != nil {
+		t.Fatalf("ListBuilderTemplates: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("listed %d templates, want 1 (only the -tc<8hex>-agent<16hex> shape): %+v", len(got), got)
+	}
+	if filepath.Base(got[0].Path) != want {
+		t.Fatalf("listed %q, want %q", filepath.Base(got[0].Path), want)
+	}
+	if got[0].AgentTag != currentTag {
+		t.Fatalf("AgentTag = %q, want %q", got[0].AgentTag, currentTag)
+	}
+}
+
 func TestPruneCandidates(t *testing.T) {
 	c := newCache(t)
 	ctx := context.Background()

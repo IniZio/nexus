@@ -349,20 +349,24 @@ func handleDiskGrow(req resize.GrowRequest) resize.GrowResponse {
 	return resize.GrowResponse{ResultBytes: resultBytes}
 }
 
-// parseBlkidType extracts the filesystem type from `blkid -o value -s TYPE`
-// output. util-linux blkid honours those flags and prints the bare value;
-// busybox blkid (Alpine builder VM) ignores them and prints the full
-// `DEV: KEY="v" KEY="v"` line. Returns "" when no type is present.
+// parseBlkidType handles both util-linux blkid (bare value for `-o value -s TYPE`)
+// and busybox blkid (ignores the flags, prints `DEV: KEY="v" ...`); PTTYPE/SEC_TYPE must not match.
 func parseBlkidType(output string) string {
 	s := strings.TrimSpace(output)
-	if i := strings.Index(s, `TYPE="`); i >= 0 {
-		rest := s[i+len(`TYPE="`):]
-		if j := strings.IndexByte(rest, '"'); j >= 0 {
-			return rest[:j]
+	if !strings.Contains(s, `="`) {
+		return s
+	}
+	for _, f := range strings.Fields(s) {
+		v, ok := strings.CutPrefix(f, `TYPE="`)
+		if !ok {
+			continue
+		}
+		if j := strings.IndexByte(v, '"'); j >= 0 {
+			return v[:j]
 		}
 		return ""
 	}
-	return s
+	return ""
 }
 
 // parseResize2fsBytes extracts the new filesystem size in bytes from resize2fs

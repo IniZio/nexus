@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -734,30 +735,49 @@ func TestGrowDisk_guestUnreachable(t *testing.T) {
 	}
 	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
 
+	var chCalls atomic.Int32
 	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chCalls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
+	var dials atomic.Int32
 	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
 	resizer.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		dials.Add(1)
 		return nil, fmt.Errorf("vsock: guest unreachable (injected)")
 	}
 
 	if err := resizer.GrowDisk(context.Background(), 0, targetSize); err == nil {
 		t.Error("GrowDisk returned nil when guest unreachable; want error so governor does not advance lastGrow")
 	}
-
 	fi, _ := os.Stat(diskPath)
-	if fi.Size() != origSize {
-		t.Errorf("backing file size = %d, want %d (host truncate must be rolled back on guest dial error)", fi.Size(), origSize)
+	if fi.Size() != targetSize {
+		t.Errorf("backing file size = %d, want %d (host leg stays at target; CH capacity already advanced)", fi.Size(), targetSize)
+	}
+	if got := chCalls.Load(); got != 1 {
+		t.Fatalf("CH resize-disk calls after first GrowDisk = %d, want 1", got)
+	}
+
+	if err := resizer.GrowDisk(context.Background(), 0, targetSize); err == nil {
+		t.Error("retry GrowDisk returned nil while guest still unreachable")
+	}
+	if got := dials.Load(); got != 2 {
+		t.Errorf("guest dials after retry = %d, want 2 (retry must re-send the guest leg)", got)
+	}
+	if got := chCalls.Load(); got != 1 {
+		t.Errorf("CH resize-disk calls after retry = %d, want 1 (retry must skip the host leg)", got)
+	}
+	fi, _ = os.Stat(diskPath)
+	if fi.Size() != targetSize {
+		t.Errorf("backing file size after retry = %d, want %d", fi.Size(), targetSize)
 	}
 }
 
 // TestGrowDisk_guestResizeFails verifies that GrowResponse.Error causes GrowDisk to
-// return non-nil so the governor's growErrLogged latch fires and lastGrow is not advanced,
-// AND that the host truncate is rolled back so file size == fs size holds (S13: an
-// un-rolled-back truncate left the file at target, and every later poll hit the
-// equal-size path without ever growing the fs).
+// return non-nil so the governor does not advance lastGrow, that the host leg is NOT
+// rolled back (CH capacity has already advanced), and that a retry with the same
+// target re-sends the guest leg without touching the host file or CH.
 func TestGrowDisk_guestResizeFails(t *testing.T) {
 	dir := t.TempDir()
 	d := newTestDriver(t, dir)
@@ -771,10 +791,13 @@ func TestGrowDisk_guestResizeFails(t *testing.T) {
 	}
 	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
 
+	var chCalls atomic.Int32
 	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chCalls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
+	var guestReqs atomic.Int32
 	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
 	resizer.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
 		hostConn, guestConn := net.Pipe()
@@ -783,6 +806,7 @@ func TestGrowDisk_guestResizeFails(t *testing.T) {
 			if _, err := resize.DecodeGrowRequest(guestConn); err != nil {
 				return
 			}
+			guestReqs.Add(1)
 			_ = resize.EncodeGrowResponse(guestConn, resize.GrowResponse{
 				Error: "resize2fs: No such file or directory",
 			})
@@ -790,14 +814,29 @@ func TestGrowDisk_guestResizeFails(t *testing.T) {
 		return hostConn, nil
 	}
 
-	err := resizer.GrowDisk(context.Background(), 0, targetSize)
-	if err == nil {
+	if err := resizer.GrowDisk(context.Background(), 0, targetSize); err == nil {
 		t.Error("GrowDisk returned nil when guest resize failed; want non-nil error (backing file diverges from guest filesystem)")
 	}
-
 	fi, _ := os.Stat(diskPath)
-	if fi.Size() != origSize {
-		t.Errorf("backing file size = %d after guest resize error, want %d (host truncate must be rolled back so file size == fs size)", fi.Size(), origSize)
+	if fi.Size() != targetSize {
+		t.Errorf("backing file size = %d after guest resize error, want %d (host leg stays at target)", fi.Size(), targetSize)
+	}
+	if got := chCalls.Load(); got != 1 {
+		t.Fatalf("CH resize-disk calls after first GrowDisk = %d, want 1", got)
+	}
+
+	if err := resizer.GrowDisk(context.Background(), 0, targetSize); err == nil {
+		t.Error("retry GrowDisk returned nil while guest resize still fails")
+	}
+	if got := guestReqs.Load(); got != 2 {
+		t.Errorf("guest GrowRequests after retry = %d, want 2 (retry must re-send the guest leg)", got)
+	}
+	if got := chCalls.Load(); got != 1 {
+		t.Errorf("CH resize-disk calls after retry = %d, want 1 (retry must skip the host leg)", got)
+	}
+	fi, _ = os.Stat(diskPath)
+	if fi.Size() != targetSize {
+		t.Errorf("backing file size after retry = %d, want %d", fi.Size(), targetSize)
 	}
 }
 

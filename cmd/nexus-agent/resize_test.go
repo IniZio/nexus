@@ -319,6 +319,9 @@ func TestParseBlkidType(t *testing.T) {
 		{"util-linux bare value", "ext4\n", "ext4"},
 		{"busybox key=value line", "/dev/vdd: UUID=\"9a1b2c3d-0000-4000-8000-000000000000\" TYPE=\"ext4\"\n", "ext4"},
 		{"busybox non-ext4", "/dev/vdd: TYPE=\"xfs\"\n", "xfs"},
+		{"PTTYPE before TYPE", "/dev/vdd: PTTYPE=\"dos\" TYPE=\"ext4\"\n", "ext4"},
+		{"SEC_TYPE before TYPE", "/dev/vdd: SEC_TYPE=\"ext2\" TYPE=\"ext4\"\n", "ext4"},
+		{"PTTYPE only", "/dev/vdd: PTTYPE=\"dos\"\n", ""},
 		{"empty output", "", ""},
 	} {
 		tc := tc

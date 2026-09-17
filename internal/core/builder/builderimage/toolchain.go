@@ -157,9 +157,7 @@ func addToolchainLayers(ctx context.Context, stagingDir string) error {
 	return nil
 }
 
-// e2fsprogsPackages is the ordered Alpine package set injected by
-// injectE2fsprogs. Libraries precede the binaries that need them. Any change
-// here changes toolchainFingerprint and therefore the cached image filename.
+// e2fsprogsPackages: libraries precede the binaries that need them; any change re-keys the image cache filename.
 var e2fsprogsPackages = []string{
 	"e2fsprogs-libs-1.47.1-r1.apk",
 	"libcom_err-1.47.1-r1.apk",
@@ -167,11 +165,9 @@ var e2fsprogsPackages = []string{
 	"libblkid-2.40.4-r1.apk",
 	"libuuid-2.40.4-r1.apk",
 	"e2fsprogs-1.47.1-r1.apk",
-	"e2fsprogs-extra-1.47.1-r1.apk", // resize2fs; NEEDED libs are all above
+	"e2fsprogs-extra-1.47.1-r1.apk", // resize2fs
 }
 
-// toolchainFingerprint returns 8 hex chars of SHA-256 over pkgs, folded into
-// the builder image cache filename so a toolchain change re-bakes the image.
 func toolchainFingerprint(pkgs []string) string {
 	sum := sha256.Sum256([]byte(strings.Join(pkgs, "\n")))
 	return fmt.Sprintf("%x", sum[:4])

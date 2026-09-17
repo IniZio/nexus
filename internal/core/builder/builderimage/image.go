@@ -95,8 +95,7 @@ var pullRemoteImage = func(ctx context.Context, ociRef string) (v1.Image, error)
 func builderImageCachePath(imagesDir, digestSafe string, agentBytes []byte) string {
 	agentSum := sha256.Sum256(agentBytes)
 	agentTag := fmt.Sprintf("%x", agentSum[:8]) // 16 hex chars — sufficient for version skew
-	// The toolchain tag sits BEFORE -agent so image.parseBuilderTemplateName
-	// (which anchors on the trailing -agent<16hex>) keeps parsing these names.
+	// -tc sits BEFORE -agent: image.parseBuilderTemplateName anchors on the trailing -agent<16hex>.
 	tcTag := toolchainFingerprint(e2fsprogsPackages)
 	return filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s-tc%s-agent%s.ext4", digestSafe, tcTag, agentTag))
 }

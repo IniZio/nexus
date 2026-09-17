@@ -38,6 +38,7 @@ func (t *SessionTable) runCollect(cmd *exec.Cmd) ([]byte, error) {
 	out, readErr := io.ReadAll(pr)
 	pr.Close()
 	code := <-exitCh
+	_ = cmd.Process.Release()
 	if readErr != nil {
 		return out, readErr
 	}
