@@ -376,6 +376,24 @@ func supervisorSendReportMetadata(ctx context.Context, socketPath, workspaceID s
 	return err
 }
 
+// herdrSocketPath resolves the herdr Unix socket path for the given session.
+// Resolution order:
+//  1. HERDR_SOCKET_PATH environment variable — used verbatim.
+//  2. Non-empty session → <home>/.config/herdr/sessions/<session>/herdr.sock
+//  3. Default → <home>/.config/herdr/herdr.sock
+//
+// Duplicated from internal/cli/cmd_herdr_metadata.go:herdrSocketPath to avoid
+// an import cycle (internal/supervisor must not import internal/cli).
+func herdrSocketPath(home, session string) string {
+	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" {
+		return p
+	}
+	if session != "" {
+		return filepath.Join(home, ".config", "herdr", "sessions", session, "herdr.sock")
+	}
+	return filepath.Join(home, ".config", "herdr", "herdr.sock")
+}
+
 func makePortForwardReporter(sandboxRef string) func(context.Context, []uint16) {
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
@@ -406,7 +424,8 @@ func makePortForwardReporter(sandboxRef string) func(context.Context, []uint16) 
 			return
 		}
 		home, _ := os.UserHomeDir()
-		socketPath := filepath.Join(home, ".config", "herdr", "herdr.sock")
+		session := os.Getenv("HERDR_SESSION")
+		socketPath := herdrSocketPath(home, session)
 		if _, err := os.Stat(socketPath); err != nil {
 			return
 		}

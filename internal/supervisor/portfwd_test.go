@@ -432,6 +432,60 @@ func TestReporter_CalledOnlyWhenPortSetChanges(t *testing.T) {
 	}
 }
 
+func TestMakePortForwardReporter_DialsSessionSocket(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("HERDR_SESSION", "agents")
+	t.Setenv("HERDR_SOCKET_PATH", "")
+
+	stateBase := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateBase)
+
+	storeRoot := filepath.Join(stateBase, "nexus3")
+	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bindJSON := `[{"sandbox_handle":"test/sb","herdr_workspace_id":"wXYZ"}]`
+	if err := os.WriteFile(filepath.Join(storeRoot, "herdr-space-bindings.json"), []byte(bindJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sockDir := filepath.Join(tmpHome, ".config", "herdr", "sessions", "agents")
+	if err := os.MkdirAll(sockDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sockPath := filepath.Join(sockDir, "herdr.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen on expected socket: %v", err)
+	}
+	defer ln.Close()
+
+	connCh := make(chan struct{}, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+		connCh <- struct{}{}
+	}()
+
+	reporter := makePortForwardReporter("test/sb")
+	if reporter == nil {
+		t.Fatal("makePortForwardReporter returned nil")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	reporter(ctx, []uint16{8080})
+
+	select {
+	case <-connCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("reporter did not dial %s — socket path resolution incorrect (hardcoded default?)", sockPath)
+	}
+}
+
 func TestWriteState_DedupesTCPAndTCP6Rows(t *testing.T) {
 	port := freeForwardablePort(t)
 	portHex := fmt.Sprintf("%04X", port)
