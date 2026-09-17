@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,7 +20,7 @@ const darwinPsFixture = `  PID                  STARTED COMMAND
   203 Wed Sep 16 11:02:00 2026 /usr/local/bin/nexus3-client herdr local-agent-startup`
 
 func TestParseHerdrProcsLinux(t *testing.T) {
-	procs, err := ParseHerdrProcs(linuxPsFixture, "linux")
+	procs, err := ParseHerdrProcs(linuxPsFixture, "linux", nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -53,7 +55,7 @@ func TestParseHerdrProcsLinux(t *testing.T) {
 }
 
 func TestParseHerdrProcsDarwin(t *testing.T) {
-	procs, err := ParseHerdrProcs(darwinPsFixture, "darwin")
+	procs, err := ParseHerdrProcs(darwinPsFixture, "darwin", nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -75,7 +77,7 @@ func TestParseHerdrProcsDarwin(t *testing.T) {
 }
 
 func TestParseHerdrProcsStartTime(t *testing.T) {
-	procs, err := ParseHerdrProcs(linuxPsFixture, "linux")
+	procs, err := ParseHerdrProcs(linuxPsFixture, "linux", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestParseHerdrProcsStartTime(t *testing.T) {
 }
 
 func TestParseHerdrProcsNonHerdrExcluded(t *testing.T) {
-	procs, err := ParseHerdrProcs(linuxPsFixture, "linux")
+	procs, err := ParseHerdrProcs(linuxPsFixture, "linux", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,5 +96,112 @@ func TestParseHerdrProcsNonHerdrExcluded(t *testing.T) {
 		if p.PID == 105 {
 			t.Errorf("non-herdr process PID 105 should be excluded")
 		}
+	}
+}
+
+const threeServerPs = `  PID                  STARTED COMMAND
+  556120 Tue Sep 16 10:00:00 2026 /usr/bin/herdr server
+  1895133 Tue Sep 16 10:01:00 2026 /usr/bin/herdr server
+  1518875 Tue Sep 16 10:02:00 2026 /usr/bin/herdr server`
+
+func TestParseHerdrProcs_ServerSessionFromSocket(t *testing.T) {
+	socksByPID := map[int][]string{
+		556120:  {"/home/user/.config/herdr/sessions/msbprobe/herdr.sock"},
+		1895133: {"/home/user/.config/herdr/herdr.sock"},
+		1518875: {"/home/user/.config/herdr/sessions/agents/herdr.sock"},
+	}
+	finder := func(pid int) []string { return socksByPID[pid] }
+	procs, err := ParseHerdrProcs(threeServerPs, "linux", finder)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(procs) != 3 {
+		t.Fatalf("want 3 procs, got %d", len(procs))
+	}
+	want := map[int]string{556120: "msbprobe", 1895133: "", 1518875: "agents"}
+	for _, p := range procs {
+		if got, ok := want[p.PID]; !ok || p.Session != got {
+			t.Errorf("pid %d: session got %q, want %q", p.PID, p.Session, got)
+		}
+	}
+}
+
+func TestParseHerdrProcs_ThreeDistinctSocketServersOK(t *testing.T) {
+	socksByPID := map[int][]string{
+		556120:  {"/home/user/.config/herdr/sessions/msbprobe/herdr.sock"},
+		1895133: {"/home/user/.config/herdr/herdr.sock"},
+		1518875: {"/home/user/.config/herdr/sessions/agents/herdr.sock"},
+	}
+	finder := func(pid int) []string { return socksByPID[pid] }
+	procs, err := ParseHerdrProcs(threeServerPs, "linux", finder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lister := func(_ context.Context) ([]HerdrProc, error) { return procs, nil }
+	cr := checkHerdrProcesses(context.Background(), lister)
+	if !cr.OK {
+		t.Errorf("three distinct socket sessions must be OK; detail=%s rem=%s", cr.Detail, cr.Remediation)
+	}
+}
+
+const dupServerPs = `  PID                  STARTED COMMAND
+  100 Tue Sep 16 10:00:00 2026 /usr/bin/herdr server
+  200 Tue Sep 16 10:01:00 2026 /usr/bin/herdr server`
+
+func TestParseHerdrProcs_DuplicateServerSameSocket(t *testing.T) {
+	socksByPID := map[int][]string{
+		100: {"/home/user/.config/herdr/herdr.sock"},
+		200: {"/home/user/.config/herdr/herdr.sock"},
+	}
+	finder := func(pid int) []string { return socksByPID[pid] }
+	procs, err := ParseHerdrProcs(dupServerPs, "linux", finder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lister := func(_ context.Context) ([]HerdrProc, error) { return procs, nil }
+	cr := checkHerdrProcesses(context.Background(), lister)
+	if cr.OK {
+		t.Error("two servers sharing the same socket session must WARN")
+	}
+	if !strings.Contains(cr.Remediation, "100") {
+		t.Errorf("stale pid 100 must appear in remediation; got: %s", cr.Remediation)
+	}
+	if strings.Contains(cr.Remediation, "200") {
+		t.Errorf("live pid 200 must not appear in remediation; got: %s", cr.Remediation)
+	}
+}
+
+func TestParseSSXlpForPID(t *testing.T) {
+	ssOut := "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n" +
+		"u_str LISTEN 0 128 /home/user/.config/herdr/sessions/msbprobe/herdr.sock 556120 * 0 users:((\"herdr\",pid=556120,fd=4))\n" +
+		"u_str LISTEN 0 128 /home/user/.config/herdr/herdr.sock 1895133 * 0 users:((\"herdr\",pid=1895133,fd=3))\n"
+
+	paths := parseSSXlpForPID(ssOut, 556120)
+	if len(paths) != 1 || paths[0] != "/home/user/.config/herdr/sessions/msbprobe/herdr.sock" {
+		t.Fatalf("pid 556120: want msbprobe path, got %v", paths)
+	}
+	paths2 := parseSSXlpForPID(ssOut, 1895133)
+	if len(paths2) != 1 || paths2[0] != "/home/user/.config/herdr/herdr.sock" {
+		t.Fatalf("pid 1895133: want default path, got %v", paths2)
+	}
+}
+
+func TestParseLsofFnForSockets(t *testing.T) {
+	lsofOut := "p1895133\nn/home/user/.config/herdr/herdr.sock\n"
+	paths := parseLsofFnForSockets(lsofOut)
+	if len(paths) != 1 || paths[0] != "/home/user/.config/herdr/herdr.sock" {
+		t.Fatalf("want default socket path, got %v", paths)
+	}
+}
+
+func TestParseLsofFnForSockets_Darwin(t *testing.T) {
+	lsofOut := "p556120\nn/home/user/.config/herdr/sessions/msbprobe/herdr.sock\n"
+	paths := parseLsofFnForSockets(lsofOut)
+	if len(paths) != 1 || paths[0] != "/home/user/.config/herdr/sessions/msbprobe/herdr.sock" {
+		t.Fatalf("want msbprobe path, got %v", paths)
+	}
+	s, ok := sessionFromSocketPaths(paths)
+	if !ok || s != "msbprobe" {
+		t.Fatalf("want session msbprobe, got %q %v", s, ok)
 	}
 }

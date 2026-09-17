@@ -193,6 +193,48 @@ func TestMasterForwardsMacOS(t *testing.T) {
 	}
 }
 
+func TestReconcileCancelFailureRetainsAppliedEntry(t *testing.T) {
+	mgr, _ := makeMgr([]runResp{
+		{code: 0},
+		{code: 0},
+		{code: 1, stderr: "cancel: no such forward"},
+	})
+	ref := SandboxRef{ID: "abc", Status: SandboxStatusRunning}
+	if err := mgr.Reconcile(context.Background(), []Listener{{Port: 3000, Sandbox: ref}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Reconcile(context.Background(), nil); err != nil {
+		t.Fatalf("cancel failure must not propagate as error: %v", err)
+	}
+	entries := mgr.Applied()
+	if len(entries) != 1 || entries[0].Port != 3000 {
+		t.Fatalf("cancel failure must retain Applied entry; got %v", entries)
+	}
+}
+
+func TestReconcileCancelFailureWarnOnce(t *testing.T) {
+	mgr, _ := makeMgr([]runResp{
+		{code: 0},
+		{code: 0},
+		{code: 1, stderr: "fail"},
+		{code: 1, stderr: "fail"},
+	})
+	ref := SandboxRef{ID: "abc", Status: SandboxStatusRunning}
+	if err := mgr.Reconcile(context.Background(), []Listener{{Port: 3000, Sandbox: ref}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Reconcile(context.Background(), nil); err != nil {
+		t.Fatalf("first cancel failure: %v", err)
+	}
+	if err := mgr.Reconcile(context.Background(), nil); err != nil {
+		t.Fatalf("second cancel failure: %v", err)
+	}
+	entries := mgr.Applied()
+	if len(entries) != 1 {
+		t.Fatalf("entry must be retained after repeated cancel failure; got %v", entries)
+	}
+}
+
 func TestMasterForwardsNoMaster(t *testing.T) {
 	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, Run: seqRun(nil, []runResp{{code: 255}})}
 	ports, err := f.MasterForwards(context.Background())

@@ -123,13 +123,22 @@ func (f *Forwarder) Apply(ctx context.Context, port uint16) error {
 
 func (f *Forwarder) Cancel(ctx context.Context, port uint16) error {
 	spec := fmt.Sprintf("%d:127.0.0.1:%d", port, port)
-	_, _, _, err := f.Run(ctx, []string{
+	_, stderr, code, err := f.Run(ctx, []string{
 		"ssh", "-O", "cancel",
 		"-L", spec,
 		"-o", "ControlPath=" + f.ControlPath,
 		f.SSHHost,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		if s := strings.TrimSpace(stderr); s != "" {
+			return fmt.Errorf("ssh -O cancel: exit %d: %s", code, s)
+		}
+		return fmt.Errorf("ssh -O cancel: exit %d", code)
+	}
+	return nil
 }
 
 // Presence is the three-way answer to "is local :port bound?". A port bound

@@ -22,17 +22,19 @@ type persistedApplied struct {
 }
 
 type Manager struct {
-	fw          *Forwarder
-	applied     map[fwdKey]struct{}
-	persistPath string
+	fw               *Forwarder
+	applied          map[fwdKey]struct{}
+	persistPath      string
+	cancelWarnedPort map[uint16]struct{}
 }
 
 // NewManager loads a persisted applied-set from <controlpath>.applied.json so
 // a restarted client can cancel orphaned forwards from the previous process.
 func NewManager(fw *Forwarder) *Manager {
 	m := &Manager{
-		fw:      fw,
-		applied: make(map[fwdKey]struct{}),
+		fw:               fw,
+		applied:          make(map[fwdKey]struct{}),
+		cancelWarnedPort: make(map[uint16]struct{}),
 	}
 	if fw.ControlPath != "" {
 		m.persistPath = fw.ControlPath + ".applied.json"
@@ -128,7 +130,11 @@ func (m *Manager) Reconcile(ctx context.Context, desired []Listener) error {
 	for key := range m.applied {
 		if _, ok := desiredSet[key]; !ok {
 			if err := m.fw.Cancel(ctx, key.port); err != nil {
-				return err
+				if _, warned := m.cancelWarnedPort[key.port]; !warned {
+					slog.Warn("portfwd: cancel forward failed, entry retained", "port", key.port, "err", err)
+					m.cancelWarnedPort[key.port] = struct{}{}
+				}
+				continue
 			}
 			delete(m.applied, key)
 		}

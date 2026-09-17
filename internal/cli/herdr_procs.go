@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +28,8 @@ type HerdrProc struct {
 	Session string
 	Argv    string
 }
+
+type SocketFinder func(pid int) []string
 
 var lstartFormats = []string{
 	"Mon Jan _2 15:04:05 2006",
@@ -50,6 +54,79 @@ func extractSession(argv string) string {
 		}
 	}
 	return ""
+}
+
+func sessionFromSocketPath(path string) (string, bool) {
+	const marker = "/sessions/"
+	if i := strings.Index(path, marker); i >= 0 {
+		after := path[i+len(marker):]
+		if j := strings.IndexByte(after, '/'); j > 0 {
+			return after[:j], true
+		}
+		return "", false
+	}
+	if strings.HasSuffix(path, "/herdr.sock") {
+		return "", true
+	}
+	return "", false
+}
+
+func sessionFromSocketPaths(paths []string) (string, bool) {
+	for _, p := range paths {
+		if s, ok := sessionFromSocketPath(p); ok {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// parseSSXlpForPID returns socket paths for pid from `ss -xlp` output (field[4] on matching lines).
+func parseSSXlpForPID(ssOut string, pid int) []string {
+	needle := fmt.Sprintf("pid=%d,", pid)
+	var paths []string
+	for _, line := range strings.Split(ssOut, "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 5 {
+			paths = append(paths, fields[4])
+		}
+	}
+	return paths
+}
+
+func parseLsofFnForSockets(lsofOut string) []string {
+	var paths []string
+	for _, line := range strings.Split(lsofOut, "\n") {
+		if strings.HasPrefix(line, "n") {
+			paths = append(paths, line[1:])
+		}
+	}
+	return paths
+}
+
+// OSSocketFinder returns a SocketFinder backed by the OS.
+// Linux: ss -xlp once (lazily memoised). Darwin: lsof -U -a -p <pid> -Fn per pid.
+func OSSocketFinder(ctx context.Context, goos string) SocketFinder {
+	if goos == "darwin" {
+		return func(pid int) []string {
+			out, err := exec.CommandContext(ctx, "lsof", "-U", "-a", "-p", strconv.Itoa(pid), "-Fn").Output()
+			if err != nil {
+				return nil
+			}
+			return parseLsofFnForSockets(string(out))
+		}
+	}
+	var once sync.Once
+	var ssOut string
+	return func(pid int) []string {
+		once.Do(func() {
+			out, _ := exec.CommandContext(ctx, "ss", "-xlp").Output()
+			ssOut = string(out)
+		})
+		return parseSSXlpForPID(ssOut, pid)
+	}
 }
 
 func classifyProc(argv string) (HerdrProcKind, bool) {
@@ -85,9 +162,10 @@ func classifyProc(argv string) (HerdrProcKind, bool) {
 	return HerdrOther, true
 }
 
-// ParseHerdrProcs parses `ps -axo pid,lstart,args` output on linux or darwin.
-// goos is "linux" or "darwin" (reserved for future format divergence).
-func ParseHerdrProcs(psOutput string, _ string) ([]HerdrProc, error) {
+// ParseHerdrProcs parses `ps -axo pid,lstart,args` output.
+// findSockets, when non-nil, derives Session for HerdrServer processes from
+// their owned UNIX socket path; falls back to argv --session then "unknown-<pid>".
+func ParseHerdrProcs(psOutput string, goos string, findSockets SocketFinder) ([]HerdrProc, error) {
 	lines := strings.Split(psOutput, "\n")
 	var procs []HerdrProc
 	for _, line := range lines {
@@ -113,11 +191,20 @@ func ParseHerdrProcs(psOutput string, _ string) ([]HerdrProc, error) {
 		if err != nil {
 			return nil, err
 		}
+		session := extractSession(argv)
+		if kind == HerdrServer && findSockets != nil {
+			paths := findSockets(pid)
+			if s, ok := sessionFromSocketPaths(paths); ok {
+				session = s
+			} else if session == "" {
+				session = fmt.Sprintf("unknown-%d", pid)
+			}
+		}
 		procs = append(procs, HerdrProc{
 			PID:     pid,
 			Start:   t,
 			Kind:    kind,
-			Session: extractSession(argv),
+			Session: session,
 			Argv:    argv,
 		})
 	}
@@ -130,5 +217,6 @@ func ListHerdrProcesses(ctx context.Context) ([]HerdrProc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("herdr procs ps: %w", err)
 	}
-	return ParseHerdrProcs(string(out), "")
+	goos := runtime.GOOS
+	return ParseHerdrProcs(string(out), goos, OSSocketFinder(ctx, goos))
 }

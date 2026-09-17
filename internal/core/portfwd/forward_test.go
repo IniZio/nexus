@@ -373,6 +373,26 @@ func TestMasterArgv_CanonicalForm(t *testing.T) {
 	}
 }
 
+func TestCancelNonZeroExitReturnsError(t *testing.T) {
+	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, Run: seqRun(nil, []runResp{
+		{code: 1, stderr: "cancel: no such forward"},
+	})}
+	err := f.Cancel(context.Background(), 3000)
+	if err == nil {
+		t.Fatal("Cancel with non-zero exit must return error")
+	}
+	if !strings.Contains(err.Error(), "cancel: no such forward") {
+		t.Fatalf("error must include stderr; got: %v", err)
+	}
+}
+
+func TestCancelZeroExitNoError(t *testing.T) {
+	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, Run: seqRun(nil, []runResp{{code: 0}})}
+	if err := f.Cancel(context.Background(), 3000); err != nil {
+		t.Fatalf("Cancel with exit 0 must not error: %v", err)
+	}
+}
+
 func TestForwarderEnsureMasterUsesCanonicalArgv(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "test.ctl")
