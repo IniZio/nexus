@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
@@ -108,5 +109,46 @@ func TestBalloonNormSource_Clamp(t *testing.T) {
 	s, _ := norm.Poll(context.Background())
 	if s.MemTotalBytes != 0 {
 		t.Errorf("underflow not clamped to 0: %d", s.MemTotalBytes)
+	}
+}
+
+type blockingStreamSource struct {
+	fakePollSource
+	sampleCh chan resize.Sample
+	errCh    chan error
+}
+
+func (f *blockingStreamSource) Stream(_ context.Context) (<-chan resize.Sample, <-chan error, error) {
+	return f.sampleCh, f.errCh, nil
+}
+
+func TestBalloonNormSource_Stream_CancelUnblocksForwarder(t *testing.T) {
+	sampleCh := make(chan resize.Sample, 1)
+	sampleCh <- resize.Sample{MemTotalBytes: 8192 * 1024 * 1024}
+	innerErrCh := make(chan error)
+
+	inner := &blockingStreamSource{sampleCh: sampleCh, errCh: innerErrCh}
+	norm := newBalloonNormSource(inner, newTestBalloonResizer(8192, 2048, 6144))
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	normCh, _, err := norm.Stream(ctx)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-normCh:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("forwarder goroutine did not exit within 2s after ctx cancel")
+		}
 	}
 }

@@ -45,12 +45,45 @@ func (b *balloonNormSource) Stream(ctx context.Context) (<-chan resize.Sample, <
 		return nil, nil, err
 	}
 	normCh := make(chan resize.Sample)
+	outErrCh := make(chan error, 1)
 	go func() {
 		defer close(normCh)
-		for s := range sampleCh {
-			b.norm(&s)
-			normCh <- s
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case s, ok := <-sampleCh:
+				if !ok {
+					return
+				}
+				b.norm(&s)
+				select {
+				case normCh <- s:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 	}()
-	return normCh, errCh, nil
+	go func() {
+		defer close(outErrCh)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case e, ok := <-errCh:
+				if !ok {
+					return
+				}
+				if e != nil {
+					select {
+					case outErrCh <- e:
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+	return normCh, outErrCh, nil
 }

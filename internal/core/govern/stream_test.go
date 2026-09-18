@@ -62,16 +62,18 @@ type fakeStreamTelemetry struct {
 	mu     sync.Mutex
 	opens  int
 	openFn func(n int) (<-chan resize.Sample, <-chan error, error)
+	ctxs   []context.Context
 }
 
 func (f *fakeStreamTelemetry) Poll(_ context.Context) (resize.Sample, error) {
 	return f.pollSample, f.pollErr
 }
 
-func (f *fakeStreamTelemetry) Stream(_ context.Context) (<-chan resize.Sample, <-chan error, error) {
+func (f *fakeStreamTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-chan error, error) {
 	f.mu.Lock()
 	f.opens++
 	n := f.opens
+	f.ctxs = append(f.ctxs, ctx)
 	f.mu.Unlock()
 	return f.openFn(n)
 }
@@ -80,6 +82,15 @@ func (f *fakeStreamTelemetry) Opens() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.opens
+}
+
+func (f *fakeStreamTelemetry) StreamCtx(n int) context.Context {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n >= 1 && n <= len(f.ctxs) {
+		return f.ctxs[n-1]
+	}
+	return nil
 }
 
 type notifyResizer struct {
@@ -222,6 +233,16 @@ func TestStreamWatchdogFiresAndReconnects(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("stream did not reconnect after watchdog fired; opens=%d", stream.Opens())
 	}
+
+	firstCtx := stream.StreamCtx(1)
+	if firstCtx == nil {
+		t.Fatal("no context captured for first stream open")
+	}
+	select {
+	case <-firstCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("first stream ctx was not cancelled after watchdog reconnect")
+	}
 }
 
 func TestStreamErrorReconnectsAfterBackoff(t *testing.T) {
@@ -270,6 +291,56 @@ func TestStreamErrorReconnectsAfterBackoff(t *testing.T) {
 	}
 	if stream.Opens() < 2 {
 		t.Errorf("expected ≥2 Stream() opens; got %d", stream.Opens())
+	}
+}
+
+func TestPollFallbackPollsImmediately(t *testing.T) {
+	t.Parallel()
+	const boot = 2 * gib
+	resizer := newNotifyResizer(boot)
+	clk := newSafeFakeClock()
+
+	streamDead := make(chan struct{})
+	stream := &fakeStreamTelemetry{
+		openFn: func(n int) (<-chan resize.Sample, <-chan error, error) {
+			sampleCh := make(chan resize.Sample)
+			errCh := make(chan error, 1)
+			if n == 1 {
+				close(sampleCh)
+				select {
+				case streamDead <- struct{}{}:
+				default:
+				}
+			}
+			return sampleCh, errCh, nil
+		},
+	}
+	ps := growSample(uint64(boot))
+	ps.Timestamp = clk.Now()
+	stream.pollSample = ps
+
+	g := New(Config{
+		Resizer:   resizer,
+		Telemetry: stream,
+		Headroom:  &fakeHeadroom{ok: true},
+		Bounds:    resize.Bounds{MemMinBytes: boot, MemMaxBytes: boot * 4},
+		Clock:     clk,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.Run(ctx)
+
+	select {
+	case <-streamDead:
+	case <-time.After(time.Second):
+		t.Fatal("first stream did not close")
+	}
+
+	select {
+	case <-resizer.signal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pollFallback did not poll immediately after stream dead; no resize without clock advance")
 	}
 }
 

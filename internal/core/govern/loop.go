@@ -2,9 +2,11 @@ package govern
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -101,7 +103,8 @@ const (
 // Boot delay removed: first evaluation fires on the first validated sample.
 // When telemetry implements TelemetryStream the push path is used; a watchdog
 // reconnects after streamWatchdog silence; ErrStreamUnsupported falls back
-// permanently to Poll; governor polls during every reconnect backoff.
+// permanently to Poll; pollFallback polls once immediately then at the adaptive
+// interval during each reconnect backoff.
 func (g *Governor) Run(ctx context.Context) {
 	if g.bounds.MemMinBytes == 0 || g.bounds.MemMaxBytes == 0 ||
 		g.bounds.MemMinBytes >= g.bounds.MemMaxBytes {
@@ -125,8 +128,10 @@ func (g *Governor) runStream(ctx context.Context, streamer resize.TelemetryStrea
 		if ctx.Err() != nil {
 			return
 		}
-		sampleCh, errCh, err := streamer.Stream(ctx)
+		streamCtx, streamCancel := context.WithCancel(ctx)
+		sampleCh, errCh, err := streamer.Stream(streamCtx)
 		if err != nil {
+			streamCancel()
 			if resize.IsStreamUnsupported(err) {
 				slog.Info("govern.stream.unsupported", "reason", "old guest agent; falling back to poll permanently")
 				g.runPoll(ctx)
@@ -138,7 +143,9 @@ func (g *Governor) runStream(ctx context.Context, streamer resize.TelemetryStrea
 			continue
 		}
 		backoff = streamBackoffMin
-		if dead := g.driveStream(ctx, sampleCh, errCh); dead && ctx.Err() == nil {
+		dead := g.driveStream(ctx, sampleCh, errCh)
+		streamCancel()
+		if dead && ctx.Err() == nil {
 			g.pollFallback(ctx, backoff)
 			backoff = min(backoff*2, streamBackoffMax)
 		}
@@ -170,6 +177,10 @@ func (g *Governor) driveStream(ctx context.Context, sampleCh <-chan resize.Sampl
 }
 
 func (g *Governor) pollFallback(ctx context.Context, dur time.Duration) {
+	g.pollOnce(ctx)
+	if ctx.Err() != nil {
+		return
+	}
 	timeout := g.clock.After(dur)
 	for {
 		interval := memoryEvalInterval
@@ -295,17 +306,13 @@ func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-ch
 	if err != nil {
 		return nil, nil, fmt.Errorf("govern: vsock dial port %d for stream: %w", resize.TelemetryVsockPort, err)
 	}
-	if err := resize.EncodeStreamRequest(conn); err != nil {
-		conn.Close()
-		return nil, nil, fmt.Errorf("govern: send stream request: %w", err)
-	}
-
-	// Apply a poll-timeout deadline for first-frame detection. A legacy guest
-	// that does not understand "sample.stream" may close immediately (io.EOF)
-	// or hang; either is treated as ErrStreamUnsupported so Run falls back to Poll.
 	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		conn.Close()
 		return nil, nil, fmt.Errorf("govern: stream setup deadline: %w", err)
+	}
+	if err := resize.EncodeStreamRequest(conn); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("govern: send stream request: %w", err)
 	}
 
 	dec := resize.NewStreamDecoder(conn)
@@ -329,16 +336,12 @@ func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-ch
 
 	if first.err != nil {
 		conn.Close()
-		// io.EOF means the peer closed the connection without sending any frame —
-		// equivalent to "unknown kind": the guest does not support streaming.
-		// Deadline expiry also surfaces as a timeout error; treat both as unsupported.
-		if first.err == io.EOF || resize.IsStreamUnsupported(first.err) {
+		if isStreamUnsupportedErr(first.err) {
 			return nil, nil, fmt.Errorf("govern: stream setup: %w", resize.ErrStreamUnsupported)
 		}
 		return nil, nil, fmt.Errorf("govern: stream first frame: %w", first.err)
 	}
 
-	// First frame received — clear the deadline so the live stream is not time-limited.
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		conn.Close()
 		return nil, nil, fmt.Errorf("govern: clear stream deadline: %w", err)
@@ -349,13 +352,17 @@ func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-ch
 	sampleCh <- first.s
 
 	go func() {
-		defer conn.Close()
+		<-ctx.Done()
+		conn.Close()
+	}()
+
+	go func() {
 		defer close(sampleCh)
 		defer close(errCh)
 		for {
 			s, err := dec.Next()
 			if err != nil {
-				if err != io.EOF {
+				if err != io.EOF && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, net.ErrClosed) {
 					select {
 					case errCh <- err:
 					default:
@@ -372,4 +379,12 @@ func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-ch
 	}()
 
 	return sampleCh, errCh, nil
+}
+
+func isStreamUnsupportedErr(err error) bool {
+	if err == io.EOF || errors.Is(err, io.ErrClosedPipe) || resize.IsStreamUnsupported(err) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }

@@ -285,7 +285,7 @@ func (r *BalloonMemoryResizer) CurrentMemoryBytes() int64 {
 	return int64(r.totalMiB-r.balloon.Load()) * 1024 * 1024
 }
 
-func (r *BalloonMemoryResizer) BalloonBytes() int64 { //nolint:unused
+func (r *BalloonMemoryResizer) BalloonBytes() int64 {
 	return int64(r.balloon.Load()) * 1024 * 1024
 }
 
