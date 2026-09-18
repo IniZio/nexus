@@ -7,7 +7,7 @@ PATCH="$SCRIPT_DIR/fakeowner.patch"
 TAG=v1.13.3
 TAG_SHA=13ee2e13024eaf40cdedb4bcb0a49d5695ade0b8
 REPO_URL=https://gitlab.com/virtio-fs/virtiofsd.git
-PATCH_SHA256=bb0291722a64ff04e6a593a5a45915528f3b2b007c0c5b5044977270f44c02c1
+PATCH_SHA256=603600cf03134eb6cfab6a7f8b63b5d302dccc4a3584f313c131778815543c0f
 CARGO=${CARGO:-${HOME}/.cargo/bin/cargo}
 INSTALL_PATH=${HOME}/.local/bin/virtiofsd
 

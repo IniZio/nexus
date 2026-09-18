@@ -7,7 +7,7 @@
 - store the caller uid/gid from `CREATE`/`mkdir`/`mknod`/`symlink` in a per-inode map
 - report each file's owner as the uid/gid that created it (falling back to `0:0`)
 - widen modes to `a+rwX`: plain files `|= 0o666`; directories `|= 0o777`; exec bits preserved
-- pass `chmod` through to the host as the daemon uid (`chown` is no-oped); `access()` always returns success
+- pass `chmod` through to the host with mode narrowing: exec bits applied exactly as requested; rw bits only retained where the host already had them (rw can be removed but never added); setuid/setgid/sticky masked off; `chown` is no-oped; `access()` always returns success
 - squash all guest uids/gids to the daemon's host uid/gid for real host ops
 
 The nexus virtiofs driver (`ch_virtiofs.go`) auto-detects `--fake-owner` via
@@ -27,22 +27,20 @@ because the reported uid matches the caller.
 
 ## Write matrix (integration test results)
 
-Guest kernel 7.0.0-30-generic, virtiofsd v1.13.3+fakeowner-v2 (creator-uid map),
-nexus workspace with `--mount /tmp/fo5:/mnt/u`, uid-1000 via `setpriv --reuid=1000`.
+Guest kernel 7.0.0-30-generic, virtiofsd v1.13.3+fakeowner-v3 (chmod narrowing),
+nexus workspace with `--mount /tmp/fo7:/mnt/u`, host files pre-created as 644.
 
-| Operation | uid 0 | uid 1000 | uid 65534 |
+| Operation | host before | host after | rc |
 |---|---|---|---|
-| echo > (create) | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
-| echo >> (append) | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
-| mkdir | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
-| cp -p (preserve mode+owner) | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
-| chmod +x (guest-created) | ✓ rc=0; host mode follows | ✓ rc=0; host mode follows | ✓ rc=0; host mode follows |
-| chmod 600 (guest-created) | ✓ rc=0; guest reads 666 (widened); host 600 | ✓ rc=0 | ✓ rc=0 |
-| chmod +x (pre-existing host file, not daemon-owned) | ✓ root rc=0 | EPERM rc=1 (honest; guest sees 0:0, caller is 1000) | — |
-| chown uid:gid | ✓ rc=0 (no-op on host) | ✓ rc=0 (no-op on host) | ✓ rc=0 (no-op on host) |
-| rm then recreate → new owner | — | 65534 after uid-65534 recreate ✓ | — |
-| git status (clean repo) | clean ✓ | clean ✓ | — |
-| host ls -ln (daemon uid) | 1003:1003 ✓ | 1003:1003 ✓ | 1003:1003 ✓ |
+| `chmod +x h.sh` (pre-existing 644) | 644 | **755** | 0 |
+| `chmod 777 h644` (pre-existing 644) | 644 | **755** | 0 |
+| `chmod 600 h644` (pre-existing 644) | 644 | **600** | 0 |
+| `chmod 644 h644` (cur host=600) | 600 | **600** | 0 |
+| `chmod +x` (guest-created) | daemon-644 | **755** | 0 |
+| `chmod 600` (guest-created) | daemon-644 | **600** | 0 |
+| `chown uid:gid` | any | unchanged | 0 |
+
+`chmod 777` on a 644 file → host 755: exec bits are added (guest legitimately requested them), but group/other W bits are not added because the host file lacked them. `chmod 644` after `chmod 600` → host stays 600: narrowing is one-way within a session; once rw bits are removed from the host they cannot be re-added from the guest.
 
 Guest `ls -ln` shows the creating uid. Host `ls -ln` shows the daemon uid (1003:1003).
 Pre-existing files appear as `0:0` with `a+rwX`. After `rm f` + recreate as uid 65534,
