@@ -994,7 +994,7 @@ func TestAutoResize_Cmdline(t *testing.T) {
 func TestBuilderVM_AutoResizeFullyWired(t *testing.T) {
 	// Reproduce the builder-VM config assembly without booting a real VM.
 	// These are the same inputs the production path uses.
-	bootMemMiB := uint32(builder.DefaultBuilderMemMiB) // 8192
+	bootMemMiB := uint32(builder.DefaultBuilderMemMiB) // 2048
 	bootVCPUs := uint32(builder.DefaultBuilderVCPUs)   // 2
 
 	// Build the base config (same call as the production path).
@@ -1002,7 +1002,11 @@ func TestBuilderVM_AutoResizeFullyWired(t *testing.T) {
 
 	// Resolve auto-resize via vmcfg (same as the production path).
 	// REVERT THIS and the test FAILS — proving the builder path is fully wired.
-	builderAR := vmcfg.Resolve(vmcfg.Config{BootMemMiB: bootMemMiB, BootVCPUs: bootVCPUs})
+	builderAR := vmcfg.Resolve(vmcfg.Config{
+		BootMemMiB: bootMemMiB,
+		BootVCPUs:  bootVCPUs,
+		MemMaxMiB:  builder.MemMaxMiB(builder.BuilderVMSpec{}),
+	})
 
 	// Wire the three fields (mirrors the production path).
 	cfg.MemoryMaxMiB = builderAR.MemoryMaxMiB
@@ -1032,11 +1036,11 @@ func TestBuilderVM_AutoResizeFullyWired(t *testing.T) {
 		t.Errorf("builder VM Cmdline PID-1 section missing %q: %q", wantCeiling, cfg.Cmdline)
 	}
 
-	// Spot-check the default ceilings are sane: 4× boot with documented floors.
-	// 8192 MiB boot → expect 32768 MiB ceiling (4×8192, floor 4096).
-	const wantMemMaxMiB = uint32(4 * builder.DefaultBuilderMemMiB)
+	// Spot-check the default ceiling: 2048 MiB boot → explicit 8192 MiB
+	// ceiling from builder.MemMaxMiB (not vmcfg's 4× rule).
+	const wantMemMaxMiB = builder.DefaultBuilderMemMaxMiB
 	if cfg.MemoryMaxMiB != wantMemMaxMiB {
-		t.Errorf("builder VM MemoryMaxMiB: got %d, want %d (4×DefaultBuilderMemMiB)", cfg.MemoryMaxMiB, wantMemMaxMiB)
+		t.Errorf("builder VM MemoryMaxMiB: got %d, want %d (DefaultBuilderMemMaxMiB)", cfg.MemoryMaxMiB, wantMemMaxMiB)
 	}
 	// 2 vCPU boot → expect 8 vCPU ceiling (4×2, floor 4).
 	const wantVCPUMax = uint32(4 * builder.DefaultBuilderVCPUs)

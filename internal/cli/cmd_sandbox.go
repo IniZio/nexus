@@ -280,7 +280,7 @@ type sandboxCreateFlags struct {
 	memoryMaxMiB     uint32   // --memory-max <MiB>: RAM ceiling for hotplug region
 	vcpusMax         uint32   // --vcpus-max <n>:    vCPU ceiling for hotplug
 	diskMaxGiB       uint32   // --disk-max <GiB>:   disk grow ceiling
-	builderMemoryMiB uint32   // --builder-memory <MiB>: builder VM RAM (0 = use default 8192 MiB; min 1024 when set)
+	builderMemoryMiB uint32   // --builder-memory <MiB>: builder VM RAM (0 = use default 2048 MiB; min 1024 when set)
 	secrets          []string // --secret ENV@host[,host…] (repeatable)
 	egressClosed     bool     // --egress closed: disable open egress (D-PD-33)
 	egressExplicit   bool
@@ -1150,6 +1150,13 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				}
 			}
 
+			// Admit before any side effects: EnsureBuilderImage, the worktree copy
+			// and SelectCacheDisks (which fences the cache disk dirty) all come after.
+			builderBootMemMiB := uint32(builder.MemMiB(builder.BuilderVMSpec{MemoryMiB: uint16(f.builderMemoryMiB)}))
+			if err := builder.AdmitBuilderBoot(builderBootMemMiB, builder.ProcfsMeminfo); err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
+			}
+
 			builderRootfsTemplate, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: builder image: %w", err))
@@ -1193,11 +1200,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				TargetArch:       buildTargetArch,
 			}
 
-			builderBootMemMiB := uint32(builder.MemMiB(spec))
 			builderBootVCPUs := uint32(builder.VCPUs(spec))
 			builderAR := vmcfg.Resolve(vmcfg.Config{
 				BootMemMiB: builderBootMemMiB,
 				BootVCPUs:  builderBootVCPUs,
+				MemMaxMiB:  builder.MemMaxMiB(spec),
 			})
 
 			builderSocketDir, err := orcaSocketDir()

@@ -246,6 +246,9 @@ func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
 	if _, err := exec.LookPath("debugfs"); err != nil {
 		t.Skip("debugfs not available (install e2fsprogs)")
 	}
+	if _, err := exec.LookPath("e2fsck"); err != nil {
+		t.Skip("e2fsck not available (install e2fsprogs)")
+	}
 
 	ctx := context.Background()
 	writeMarker := func(t *testing.T, imgPath string) {
@@ -267,7 +270,7 @@ func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
 		return strings.Contains(string(out), "pre-crash cache payload")
 	}
 
-	t.Run("dirty lease is wiped on next reuse", func(t *testing.T) {
+	t.Run("dirty lease is recovered by e2fsck on next reuse", func(t *testing.T) {
 		dataDir := t.TempDir()
 
 		specs, release, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
@@ -312,16 +315,18 @@ func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
 			t.Fatalf("stat after reuse: %v", err)
 		}
 		ino2 := fi2.Sys().(*syscall.Stat_t).Ino
-		if ino2 == ino1 {
-			t.Error("image inode unchanged: dirty lease was NOT wiped on next reuse")
+		// A journaled ext4 left behind by an unclean death is recoverable:
+		// e2fsck must repair and hand back the SAME image with its layers.
+		if ino2 != ino1 {
+			t.Error("disk was recreated (inode changed): e2fsck should have recovered the valid ext4")
 		}
-		if markerPresent(t, spec2.ImagePath) {
-			t.Error("pre-crash payload survived reuse: dirty lease was not wiped — poisoned cache would be served as a hit")
+		if !markerPresent(t, spec2.ImagePath) {
+			t.Error("pre-crash payload lost: e2fsck recovery must preserve disk contents")
 		}
-		// The fresh lease handed out by the wipe path must itself be fenced
-		// dirty again, not silently treated as already clean.
+		// The recovered lease must itself be fenced dirty again, not silently
+		// treated as already clean.
 		if !cacheDiskIsDirty(spec2.ImagePath) {
-			t.Error("re-created disk after wipe must be fenced dirty until its own clean sync is confirmed")
+			t.Error("dirty marker must remain set after e2fsck recovery")
 		}
 	})
 

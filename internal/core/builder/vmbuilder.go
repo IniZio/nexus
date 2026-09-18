@@ -67,19 +67,21 @@ type BuilderStore interface {
 // BuildkitClient; builder cannot therefore import agent directly).
 type GuestExecFn func(ctx context.Context, argv []string, stderr io.Writer) (int32, error)
 
-// DefaultBuilderVCPUs and DefaultBuilderMemMiB are the production defaults for
-// the ephemeral builder VM. These values are large enough for a real
-// multi-stage buildkitd build (pulling base images, compiling, etc.) without
-// OOM-killing the guest. The E2E proof (TestBuilderVME2E) exercises these
-// exact values.
+// DefaultBuilderVCPUs, DefaultBuilderMemMiB and DefaultBuilderMemMaxMiB are
+// the production sizing for the ephemeral builder VM. The E2E proof
+// (TestBuilderVME2E) exercises these exact values.
 //
-// DefaultBuilderMemMiB is 8 GiB: apt-heavy multi-stage builds (e.g. debian +
-// compiler toolchains) fill the buildkitd overlay cache and blew through 2 GiB
-// in live testing, OOM-killing the guest mid-build. 8 GiB matches the ceiling
-// proven in old-nexus production runs.
+// The builder used to boot at a fixed 8 GiB because apt-heavy multi-stage
+// builds (debian + compiler toolchains) blew through 2 GiB before virtio-mem
+// governing existed. Guest RAM is memfd-backed and unswappable, so a fixed
+// 8 GiB boot commits 8 GiB of host RAM up front; on a loaded host that got the
+// VMM OOM-killed (motive builder-oom-crashloop, 2026-09-18). It now boots at
+// 2 GiB and the governor grows it toward the 8 GiB ceiling, each grow
+// host-headroom guarded.
 const (
-	DefaultBuilderVCPUs  uint8  = 2
-	DefaultBuilderMemMiB uint16 = 8192
+	DefaultBuilderVCPUs     uint8  = 2
+	DefaultBuilderMemMiB    uint16 = 2048
+	DefaultBuilderMemMaxMiB uint32 = 8192
 )
 
 // BuildInVM boots an ephemeral builder VM described by spec, executes an
@@ -533,11 +535,24 @@ func VCPUs(spec BuilderVMSpec) uint8 {
 	return spec.VCPUs
 }
 
-// MemMiB returns the effective guest memory for a BuilderVMSpec, substituting
+// MemMiB returns the effective boot memory for a BuilderVMSpec, substituting
 // DefaultBuilderMemMiB when the spec field is zero.
 func MemMiB(spec BuilderVMSpec) uint16 {
 	if spec.MemoryMiB == 0 {
 		return DefaultBuilderMemMiB
 	}
 	return spec.MemoryMiB
+}
+
+// MemMaxMiB returns the governor ceiling: DefaultBuilderMemMaxMiB, or 4× an
+// explicit --builder-memory boot size when that is larger.
+func MemMaxMiB(spec BuilderVMSpec) uint32 {
+	if spec.MemoryMiB == 0 {
+		return DefaultBuilderMemMaxMiB
+	}
+	boot := uint32(spec.MemoryMiB)
+	if boot*4 > DefaultBuilderMemMaxMiB {
+		return boot * 4
+	}
+	return DefaultBuilderMemMaxMiB
 }
