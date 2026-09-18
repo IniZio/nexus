@@ -55,7 +55,7 @@ The server exposes 13 tools: nine covering sandbox lifecycle and execution, and 
 | `delegate_worktree_create` | Create a worktree-bound sandbox for a host repo path; `allowed_branches` is rejected if set — branch policy is derived from the worktree's current branch |
 | `delegate_agent_dispatch` | Submit a brief to the in-guest agent; blocks until the brief is delivered, not until the work is done |
 | `delegate_agent_poll` | Read the guest worktree's `git log`, `git status`, and branch name to detect progress |
-| `delegate_teardown` | Remove the sandbox and its herdr space; the host git worktree is not removed |
+| `delegate_teardown` | Remove the sandbox and its herdr space; pass `force:true` to discard uncommitted changes, otherwise a dirty worktree returns a structured error listing the changed files |
 
 ### MCP gaps <Badge type="danger" text="not built" />
 

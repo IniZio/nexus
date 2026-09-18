@@ -54,6 +54,10 @@ var runHerdrCLI = func(ctx context.Context, herdrBin string, argv ...string) (st
 	return runBinary(ctx, herdrBin, argv...)
 }
 
+var runGitCLI = func(ctx context.Context, argv ...string) (string, error) {
+	return runBinary(ctx, "git", argv...)
+}
+
 func runBinary(ctx context.Context, bin string, argv ...string) (string, error) {
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, bin, argv...)
@@ -89,7 +93,8 @@ type delegateAgentPollResult struct {
 }
 
 type delegateTeardownArgs struct {
-	Ref string `json:"ref" jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	Ref   string `json:"ref"             jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	Force bool   `json:"force,omitempty" jsonschema:"Remove the worktree even if it has uncommitted or untracked changes; those changes are discarded"`
 }
 
 func validateDelegateWorktreeCreate(args delegateWorktreeCreateArgs) error {
@@ -387,6 +392,8 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Description: "Reverse delegate_worktree_create: resolve the herdr workspace bound to the sandbox (`nexus herdr list`), " +
 			"run `herdr worktree remove --workspace <ws>` (closes the workspace, removes the git worktree, and reaps the sandbox via the worktree.removed hook), " +
 			"then verify the sandbox is gone. Falls back to `nexus sandbox rm <ref>` only when no workspace is bound or the sandbox is still listed afterwards. " +
+			"When the worktree has uncommitted or untracked changes the remove fails with a structured error listing them; " +
+			"pass force:true to discard those changes and remove anyway. " +
 			"Returns {removed, workspace_id, handle, sandbox_id, output}.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateTeardownArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
@@ -408,8 +415,56 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if err != nil {
 			return errorResult(fmt.Errorf("delegate_teardown: %w; workspace %s is bound to %s and must be removed through herdr", err, ws, args.Ref)), nil, nil
 		}
-		rmOut, err := runHerdrCLI(ctx, herdrBin, "worktree", "remove", "--workspace", ws)
+		rmArgv := []string{"worktree", "remove", "--workspace", ws}
+		if args.Force {
+			rmArgv = append(rmArgv, "--force")
+		}
+		rmOut, err := runHerdrCLI(ctx, herdrBin, rmArgv...)
 		if err != nil {
+			if !args.Force {
+				errCode, errMsg, parsed := herdrout.ParseHerdrErrorCode(rmOut)
+				if parsed && errCode == "dirty_worktree_requires_force" {
+					wtPath := ""
+					if wtOut, wtErr := runHerdrCLI(ctx, herdrBin, "worktree", "list", "--json"); wtErr == nil {
+						wtPath = herdrout.WorktreePathByWorkspaceID(wtOut, ws)
+					}
+					if wtPath == "" {
+						if i := strings.Index(errMsg, "'"); i >= 0 {
+							if j := strings.Index(errMsg[i+1:], "'"); j >= 0 {
+								wtPath = errMsg[i+1 : i+1+j]
+							}
+						}
+					}
+					if wtPath != "" {
+						statusOut, _ := runGitCLI(ctx, "-C", wtPath, "status", "--porcelain", "--untracked-files=all")
+						var lines []string
+						for _, l := range strings.Split(strings.TrimRight(statusOut, "\n"), "\n") {
+							if l != "" {
+								lines = append(lines, l)
+							}
+						}
+						n := len(lines)
+						const porcelainCap = 50
+						suffix := ""
+						if n > porcelainCap {
+							suffix = fmt.Sprintf("\n... and %d more", n-porcelainCap)
+							lines = lines[:porcelainCap]
+						}
+						return errorResult(fmt.Errorf(
+							"delegate_teardown: worktree %s has uncommitted changes (%d files):\n%s%s\nHarvest or commit them first, or call delegate_teardown again with force:true to discard them.",
+							wtPath, n, strings.Join(lines, "\n"), suffix,
+						)), nil, nil
+					}
+					return errorResult(fmt.Errorf(
+						"delegate_teardown: herdr worktree remove --workspace %s: dirty worktree (code=%s: %s); "+
+							"harvest or commit changes first, or call delegate_teardown again with force:true to discard them.",
+						ws, errCode, errMsg,
+					)), nil, nil
+				}
+				if parsed {
+					return errorResult(fmt.Errorf("delegate_teardown: herdr worktree remove --workspace %s: code=%s: %s\n%s", ws, errCode, errMsg, rmOut)), nil, nil
+				}
+			}
 			return errorResult(fmt.Errorf("delegate_teardown: herdr worktree remove --workspace %s: %w\n%s", ws, err, rmOut)), nil, nil
 		}
 

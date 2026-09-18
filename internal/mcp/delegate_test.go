@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -588,5 +589,90 @@ func TestDelegateTeardown_HerdrRemoveFails_NoSandboxRm(t *testing.T) {
 	}
 	if _, found := rec.find("sandbox rm"); found {
 		t.Errorf("sandbox rm ran after herdr remove failed: %+v", rec.calls)
+	}
+}
+
+func TestDelegateTeardown_DirtyWorktree_ReturnsActionableError(t *testing.T) {
+	repoDir := t.TempDir()
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", repoDir, "init"},
+		{"git", "-C", repoDir, "config", "user.email", "t@t.com"},
+		{"git", "-C", repoDir, "config", "user.name", "T"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	untrackedFile := filepath.Join(repoDir, "untracked.txt")
+	if err := os.WriteFile(untrackedFile, []byte("pending work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirtyJSON := fmt.Sprintf(
+		`{"error":{"code":"dirty_worktree_requires_force","message":"fatal: '%s' contains modified or untracked files, use --force to delete it"},"id":"cli:worktree:remove"}`,
+		repoDir,
+	)
+	listJSON := fmt.Sprintf(
+		`{"result":{"worktrees":[{"branch":"feat/x","path":%q,"open_workspace_id":"wNEW"}]}}`,
+		repoDir,
+	)
+
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	rec := installHostCLIRecorder(t, map[string]string{"herdr list": teardownBindingLines})
+	origHerdr := runHerdrCLI
+	runHerdrCLI = func(_ context.Context, bin string, argv ...string) (string, error) {
+		rec.calls = append(rec.calls, hostCall{bin: bin, args: argv})
+		if len(argv) >= 2 && argv[0] == "worktree" && argv[1] == "remove" {
+			return dirtyJSON + "\n", fmt.Errorf("exit status 1")
+		}
+		if len(argv) >= 2 && argv[0] == "worktree" && argv[1] == "list" {
+			return listJSON, nil
+		}
+		return "", fmt.Errorf("unexpected herdr call: %q", argv)
+	}
+	t.Cleanup(func() { runHerdrCLI = origHerdr })
+
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_teardown", map[string]any{"ref": "repo/branch"})
+	if !res.IsError {
+		t.Fatalf("expected error, got success: %s", resultText(t, res))
+	}
+	text := resultText(t, res)
+	if !strings.Contains(text, "force:true") {
+		t.Errorf("error text missing 'force:true': %s", text)
+	}
+	if !strings.Contains(text, "untracked.txt") {
+		t.Errorf("error text missing porcelain line with 'untracked.txt': %s", text)
+	}
+	if _, found := rec.find("sandbox rm"); found {
+		t.Errorf("sandbox rm ran on dirty error: %+v", rec.calls)
+	}
+}
+
+func TestDelegateTeardown_Force_PassesForceFlag(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	rec := installHostCLIRecorder(t, map[string]string{
+		"herdr list":      teardownBindingLines,
+		"worktree remove": "removed\n",
+		"sandbox list":    "HANDLE  STATE  ID\n",
+	})
+
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_teardown", map[string]any{"ref": "repo/branch", "force": true})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+	rm, ok := rec.find("worktree remove")
+	if !ok {
+		t.Fatalf("herdr worktree remove never ran: %+v", rec.calls)
+	}
+	if !containsToken(rm.args, "--force") {
+		t.Errorf("worktree remove argv missing --force: %q", rm.args)
 	}
 }

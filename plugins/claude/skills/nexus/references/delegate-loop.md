@@ -139,9 +139,18 @@ workspace, removes the git worktree, and reaps the sandbox and its disks
 through the `worktree.removed` hook — then verifies the sandbox is gone from
 `nexus ps`. It falls back to `nexus rm <ref>` only when no workspace is
 bound to the ref, or when the sandbox is still listed after the herdr remove.
+If the worktree has uncommitted or untracked changes, the tool returns a
+structured error listing the changed files rather than silently discarding
+them; pass `force:true` to override and discard those changes.
 
 ```json
 { "ref": "project/name" }
+```
+
+To discard uncommitted changes and remove anyway:
+
+```json
+{ "ref": "project/name", "force": true }
 ```
 
 Returns `{removed, workspace_id, handle, sandbox_id, output}`. No CLI step is
