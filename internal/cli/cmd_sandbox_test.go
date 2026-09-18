@@ -1414,6 +1414,56 @@ func TestAgentCfg_Rm_NoVolumeNoPanic(t *testing.T) {
 	}
 }
 
+func TestHerdrVolumes_Rm_DeletesAllAutoProvisionedVolumes(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := t.TempDir()
+
+	st, err := store.NewFileStore(storeRoot)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+	svc := service.New(st, fake.New(), lifecycle.New())
+	svc.WithVolumes(vs)
+
+	sb, err := svc.Create(ctx, "nexus", "feat-my-work", service.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create sandbox: %v", err)
+	}
+
+	handle := sb.Handle()
+	type volSpec struct {
+		name string
+		size int64
+	}
+	specs := []volSpec{
+		{herdrDockerDiskVolumeName(handle), 20 * 1024 * 1024 * 1024},
+		{herdrGoCacheDiskVolumeName(handle), 10 * 1024 * 1024 * 1024},
+		{herdrGoPathDiskVolumeName(handle), 10 * 1024 * 1024 * 1024},
+		{herdrAgentCfgDiskVolumeName(handle), 2 * 1024 * 1024 * 1024},
+	}
+	for _, sp := range specs {
+		if _, cErr := vs.Create(ctx, sp.name, volumestore.KindDisk, sp.size, ""); cErr != nil {
+			t.Fatalf("pre-create volume %s: %v", sp.name, cErr)
+		}
+		if aErr := vs.Attach(ctx, sp.name, sb.ID.String()); aErr != nil {
+			t.Fatalf("attach volume %s: %v", sp.name, aErr)
+		}
+	}
+
+	out, _, _ := capture(true)
+	if rmErr := runSandboxRmFull(ctx, []string{sb.ID.String()}, out, svc, storeRoot,
+		func(_ context.Context, _ string) error { return nil }); rmErr != nil {
+		t.Fatalf("runSandboxRmFull: %v", rmErr)
+	}
+
+	for _, sp := range specs {
+		if _, gErr := vs.Get(sp.name); gErr == nil {
+			t.Errorf("volume %s still exists after sandbox rm; expected deletion", sp.name)
+		}
+	}
+}
+
 // ── sandbox.agents (plural) user-config tests (D-TP-09/TBD-5) ───────────────
 
 // TestApplyUserGlobalConfig_AgentsList_SetsPrimaryAndExtras verifies that

@@ -19,7 +19,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // ── Test harness ──────────────────────────────────────────────────────────────
@@ -399,5 +402,77 @@ func TestHerdrSpaceTeardown_SandboxIDMismatch_FailOpen_ReturnsNil(t *testing.T) 
 	})
 	if err != nil {
 		t.Errorf("failOpen teardown with SandboxID mismatch must return nil; got %v", err)
+	}
+}
+
+func TestHerdrSpaceTeardown_BoundSandbox_RemovesAllAutoVolumes(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+
+	handle := "nexus/my-branch"
+	b := HerdrSpaceBinding{
+		SpaceLabel:       "nexus:nexus/my-branch",
+		HerdrWorkspaceID: "wABC",
+		SandboxHandle:    handle,
+		SandboxID:        "sb-abc",
+	}
+	if err := HerdrSpacePut(ctx, root, b); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	vs := volumestore.New(filepath.Join(root, "volumes"))
+	volNames := []string{
+		herdrDockerDiskVolumeName(handle),
+		herdrGoCacheDiskVolumeName(handle),
+		herdrGoPathDiskVolumeName(handle),
+		herdrAgentCfgDiskVolumeName(handle),
+	}
+	for _, name := range volNames {
+		if _, err := vs.Create(ctx, name, volumestore.KindDisk, 1<<30, ""); err != nil {
+			t.Fatalf("pre-create volume %s: %v", name, err)
+		}
+	}
+
+	h := &txnHarness{}
+	deps := h.deps(root)
+	if err := herdrSpaceTeardown(ctx, root, handle, deps, teardownOpts{sandboxAlreadyRemoved: true}); err != nil {
+		t.Fatalf("herdrSpaceTeardown: %v", err)
+	}
+
+	for _, name := range volNames {
+		if _, err := vs.Get(name); err == nil {
+			t.Errorf("volume %s still exists after teardown; expected deletion", name)
+		}
+	}
+}
+
+func TestHerdrSpaceTeardown_NoBinding_RemovesAutoVolumes(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+
+	handle := "nexus/already-torn"
+	vs := volumestore.New(filepath.Join(root, "volumes"))
+	volNames := []string{
+		herdrDockerDiskVolumeName(handle),
+		herdrGoCacheDiskVolumeName(handle),
+		herdrGoPathDiskVolumeName(handle),
+		herdrAgentCfgDiskVolumeName(handle),
+	}
+	for _, name := range volNames {
+		if _, err := vs.Create(ctx, name, volumestore.KindDisk, 1<<30, ""); err != nil {
+			t.Fatalf("pre-create volume %s: %v", name, err)
+		}
+	}
+
+	h := &txnHarness{}
+	deps := h.deps(root)
+	if err := herdrSpaceTeardown(ctx, root, handle, deps, teardownOpts{sandboxAlreadyRemoved: true}); err != nil {
+		t.Fatalf("herdrSpaceTeardown (no binding): %v", err)
+	}
+
+	for _, name := range volNames {
+		if _, err := vs.Get(name); err == nil {
+			t.Errorf("volume %s still exists after no-binding teardown; expected deletion", name)
+		}
 	}
 }

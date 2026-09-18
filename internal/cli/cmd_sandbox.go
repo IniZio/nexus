@@ -2150,19 +2150,6 @@ func runSandboxRmFull(ctx context.Context, args []string, out *Output, svc *serv
 		})
 	}
 
-	if target != nil && storeRoot != "" {
-		proj, name, pErr := domain.ParseHandle(target.Handle())
-		if pErr == nil {
-			autoVolName := sandboxAgentCfgVolumeName(proj, name)
-			vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
-			if rmErr := vs.Rm(ctx, autoVolName); rmErr != nil && !strings.HasSuffix(rmErr.Error(), ": not found") {
-				slog.Warn("sandbox.rm.agentcfg_volume_leak",
-					"sandbox", target.ID.String(), "volume", autoVolName, "err", rmErr,
-					"action", "auto-provisioned agentcfg volume not deleted; run: nexus volume rm "+autoVolName)
-			}
-		}
-	}
-
 	id := ref
 	handle := ref
 	if target != nil {

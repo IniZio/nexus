@@ -18,7 +18,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
+
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -204,7 +207,8 @@ func herdrSpaceEnsureWorkspaceTxn(ctx context.Context, b HerdrSpaceBinding, host
 func herdrSpaceTeardown(ctx context.Context, storeRoot, handle string, deps txnDeps, opts teardownOpts) error {
 	b, err := HerdrSpaceGetByHandle(ctx, storeRoot, handle)
 	if errors.Is(err, ErrHerdrSpaceNotFound) {
-		return nil // no binding — already torn down or never created
+		removeHerdrAutoVolumes(ctx, storeRoot, handle)
+		return nil
 	}
 	if err != nil {
 		return herdrTxnMaybeErr(opts.failOpen, err, "herdr-txn teardown: get binding by handle", "handle", handle)
@@ -219,12 +223,12 @@ func herdrSpaceTeardown(ctx context.Context, storeRoot, handle string, deps txnD
 		return herdrTxnMaybeErr(opts.failOpen, refErr, "herdr-txn teardown: SandboxID guard")
 	}
 
-	// Remove sandbox VM (unless already gone).
 	if !opts.sandboxAlreadyRemoved {
 		if err := deps.svcRemove(ctx, handle); err != nil && !herdrTxnIsNotFound(err) {
 			return herdrTxnMaybeErr(opts.failOpen, err, "herdr-txn teardown: svcRemove", "handle", handle)
 		}
 	}
+	removeHerdrAutoVolumes(ctx, storeRoot, handle)
 
 	// Close herdr workspace. On failure: retain binding, return nil (always).
 	if err := deps.workspaceClose(ctx, b.HerdrWorkspaceID); err != nil {
@@ -259,4 +263,23 @@ func herdrTxnMaybeErr(failOpen bool, err error, msg string, fields ...any) error
 // Uses string matching so callers do not need to import the store package.
 func herdrTxnIsNotFound(err error) bool {
 	return strings.Contains(err.Error(), "not found")
+}
+
+func removeHerdrAutoVolumes(ctx context.Context, storeRoot, handle string) {
+	if storeRoot == "" {
+		return
+	}
+	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+	for _, name := range []string{
+		herdrDockerDiskVolumeName(handle),
+		herdrGoCacheDiskVolumeName(handle),
+		herdrGoPathDiskVolumeName(handle),
+		herdrAgentCfgDiskVolumeName(handle),
+	} {
+		if err := vs.Rm(ctx, name); err != nil && !strings.HasSuffix(err.Error(), ": not found") {
+			slog.Warn("sandbox.rm.auto_volume_leak",
+				"volume", name, "err", err,
+				"action", "auto-provisioned volume not deleted; run: nexus volume rm "+name)
+		}
+	}
 }
