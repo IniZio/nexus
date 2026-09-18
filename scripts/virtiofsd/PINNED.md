@@ -6,8 +6,8 @@
 | Tag object SHA | 13ee2e13024eaf40cdedb4bcb0a49d5695ade0b8 |
 | Commit SHA | bbf82173682a3e48083771a0a23331e5c23b4924 |
 | Patch file | fakeowner.patch |
-| Patch SHA-256 | e52708cdd99d2157133a1fbfde2cd3c50d1a5fec382bc18bde91a3133f3eeadf |
-| Patch lines | 376 |
+| Patch SHA-256 | f2c7a7f8b2e75fa1850447f14b87bfc66ad0494bcc748e802b6298681ee8ecbf |
+| Patch lines | 383 |
 
 ## Rationale
 

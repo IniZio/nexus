@@ -241,7 +241,7 @@ index 38f49db..7676901 100644
      }
  
      fn setattr(
-@@ -1909,12 +1989,38 @@
+@@ -1909,12 +1989,45 @@
          };
 
          if valid.contains(SetattrValid::MODE) {
@@ -249,7 +249,14 @@ index 38f49db..7676901 100644
 +            let mode_to_apply = if self.cfg.fake_owner {
 +                let req = attr.mode & 0o777;
 +                if self.get_creator_uid(inode).is_some() {
-+                    req
++                    // Mask off g/o+w (0o022): the guest always sees all files as a+rwX
++                    // regardless of host mode, so passing g/o+w to the host has no
++                    // guest-visible effect but creates world-writable files on the host
++                    // (source of truth). With this mask no host file ever gains
++                    // group/other write from the guest, whether via chmod, cp -a/cp -p,
++                    // rsync -a, tar -xp, or shutil.copystat.
++                    // Invariant: host_mode & 0o022 == 0 unless the host set it.
++                    req & 0o755
 +                } else {
 +                    let cur_mode = unsafe {
 +                        let mut st = std::mem::zeroed::<libc::stat>();
@@ -283,7 +290,7 @@ index 38f49db..7676901 100644
                      }
                  }
              };
-@@ -1923,7 +2025,7 @@
+@@ -1923,7 +2032,7 @@
              }
          }
  
@@ -292,7 +299,7 @@ index 38f49db..7676901 100644
              let uid = if valid.contains(SetattrValid::UID) {
                  self.map_guest_uid(attr.uid)?.into_inner()
              } else {
-@@ -2021,7 +2123,14 @@
+@@ -2021,7 +2130,14 @@
              }
          }
  
@@ -308,7 +315,7 @@ index 38f49db..7676901 100644
      }
  
      fn rename(
-@@ -2118,7 +2227,18 @@
+@@ -2118,7 +2234,18 @@
                  return Err(e);
              }
          }
@@ -328,7 +335,7 @@ index 38f49db..7676901 100644
      }
  
      fn link(
-@@ -2152,7 +2272,14 @@
+@@ -2152,7 +2279,14 @@
              self.after_invalidating_path(invalidated_inode, "Overwrote (via link)");
          }
          if res == 0 {
@@ -344,7 +351,7 @@ index 38f49db..7676901 100644
          } else {
              Err(io::Error::last_os_error())
          }
-@@ -2194,7 +2321,18 @@
+@@ -2194,7 +2328,18 @@
              }
          }
  
@@ -364,7 +371,7 @@ index 38f49db..7676901 100644
      }
  
      fn readlink(&self, _ctx: Context, inode: Inode) -> io::Result<Vec<u8>> {
-@@ -2281,6 +2419,9 @@
+@@ -2281,6 +2426,9 @@
      }
  
      fn access(&self, ctx: Context, inode: Inode, mask: u32) -> io::Result<()> {
