@@ -7,7 +7,7 @@
 - store the caller uid/gid from `CREATE`/`mkdir`/`mknod`/`symlink` in a per-inode map
 - report each file's owner as the uid/gid that created it (falling back to `0:0`)
 - widen modes to `a+rwX`: plain files `|= 0o666`; directories `|= 0o777`; exec bits preserved
-- no-op `chmod` and `chown` on the host; `access()` always returns success
+- pass `chmod` through to the host as the daemon uid (`chown` is no-oped); `access()` always returns success
 - squash all guest uids/gids to the daemon's host uid/gid for real host ops
 
 The nexus virtiofs driver (`ch_virtiofs.go`) auto-detects `--fake-owner` via
@@ -36,8 +36,10 @@ nexus workspace with `--mount /tmp/fo5:/mnt/u`, uid-1000 via `setpriv --reuid=10
 | echo >> (append) | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
 | mkdir | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
 | cp -p (preserve mode+owner) | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
-| chmod +x | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
-| chown uid:gid | ✓ rc=0 | ✓ rc=0 | ✓ rc=0 |
+| chmod +x (guest-created) | ✓ rc=0; host mode follows | ✓ rc=0; host mode follows | ✓ rc=0; host mode follows |
+| chmod 600 (guest-created) | ✓ rc=0; guest reads 666 (widened); host 600 | ✓ rc=0 | ✓ rc=0 |
+| chmod +x (pre-existing host file, not daemon-owned) | ✓ root rc=0 | EPERM rc=1 (honest; guest sees 0:0, caller is 1000) | — |
+| chown uid:gid | ✓ rc=0 (no-op on host) | ✓ rc=0 (no-op on host) | ✓ rc=0 (no-op on host) |
 | rm then recreate → new owner | — | 65534 after uid-65534 recreate ✓ | — |
 | git status (clean repo) | clean ✓ | clean ✓ | — |
 | host ls -ln (daemon uid) | 1003:1003 ✓ | 1003:1003 ✓ | 1003:1003 ✓ |
@@ -45,6 +47,8 @@ nexus workspace with `--mount /tmp/fo5:/mnt/u`, uid-1000 via `setpriv --reuid=10
 Guest `ls -ln` shows the creating uid. Host `ls -ln` shows the daemon uid (1003:1003).
 Pre-existing files appear as `0:0` with `a+rwX`. After `rm f` + recreate as uid 65534,
 `ls -ln` shows 65534:65534 (proves forget clears the map entry, no stale ownership).
+
+Creator ownership is in-memory only: after dentry-cache eviction (`echo 3 > /proc/sys/vm/drop_caches`) or sandbox stop/start, guest-created files report `0:0` (still rw for everyone via widened modes; non-root `chmod`/`chown` on those inodes then returns EPERM).
 
 ## Performance
 

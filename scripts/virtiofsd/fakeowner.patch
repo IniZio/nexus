@@ -247,7 +247,7 @@ index 38f49db..7676901 100644
  
 -        if valid.contains(SetattrValid::MODE) {
 -            // Safe because this doesn't modify any memory and we check the return value.
-+        if valid.contains(SetattrValid::MODE) && !self.cfg.fake_owner {
++        if valid.contains(SetattrValid::MODE) {
              let res = unsafe {
                  match data {
                      Data::Handle(_, fd) => libc::fchmod(fd, attr.mode),

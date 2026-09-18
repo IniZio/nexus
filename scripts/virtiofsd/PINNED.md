@@ -6,7 +6,7 @@
 | Tag object SHA | 13ee2e13024eaf40cdedb4bcb0a49d5695ade0b8 |
 | Commit SHA | bbf82173682a3e48083771a0a23331e5c23b4924 |
 | Patch file | fakeowner.patch |
-| Patch SHA-256 | fad57c756f38b8274aa1f91f3a346f9806171c9f89170ab7dfddae703afe30c3 |
+| Patch SHA-256 | bb0291722a64ff04e6a593a5a45915528f3b2b007c0c5b5044977270f44c02c1 |
 | Patch lines | 344 |
 
 ## Rationale
@@ -27,8 +27,8 @@ empirically via raw-header probe on kernel 7.0.0-30-generic, vhost-user,
 The patch stores the caller uid from `CREATE`/`mkdir`/`mknod`/`symlink` in a
 per-inode `HashMap<u64,(u32,u32)>` on `PassthroughFs`. Every attr-returning
 path (`lookup`, `getattr`, `setattr`, `link`) reads from that map (falling back
-to `0:0` for inodes not in the map). `chmod`/`chown` are no-oped on the host;
-the guest VFS allows them because `inode_owner_or_capable` sees the reported uid
+to `0:0` for inodes not in the map). `chown` is no-oped on the host; `chmod` passes through (daemon uid owns guest-created files, so fchmod succeeds; pre-existing host files not owned by the daemon get honest EPERM from non-root guest callers).
+the guest VFS allows owner-matching ops because `inode_owner_or_capable` sees the reported uid
 matching the caller. Result: `echo x > f && chmod +x f && chown 1000:1000 f &&
 cp -p f g` as guest uid 1000 returns `rc=0` and `ls -ln` shows `1000:1000`.
 

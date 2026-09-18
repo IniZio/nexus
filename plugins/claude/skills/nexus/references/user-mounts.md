@@ -63,8 +63,7 @@ Interpret the output:
 
 ## Security boundary
 
-Never add credential directories to `sandbox.mounts`. All virtiofs mounts are
-host-read-only inside the guest, but read-only is not the same as invisible —
+Never add credential directories to `sandbox.mounts`. `--mount host:guest` mounts are read-write inside the guest unless `:ro` is appended — read-only is not the same as invisible —
 an in-guest agent can read anything mounted. The following must **never** appear
 in user config:
 
@@ -88,9 +87,10 @@ enables `--fake-owner` automatically (override with `NEXUS_VIRTIOFS_FAKE_OWNER=0
 What fake-owner guarantees:
 
 - Files created inside the guest (`create`/`mkdir`/`mknod`/`symlink`) report the creating uid/gid as owner — `chmod +x`, `chown`, and `cp -p` all return rc=0 from any guest uid.
-- Pre-existing host files appear as `0:0` with `a+rwX` modes (read/write for all uids; `chmod` on pre-existing files needs root).
+- Pre-existing host files appear as `0:0` with `a+rwX` modes (read/write for all uids; root can `chmod`; non-root `chmod` on these files returns EPERM because the guest sees 0:0 as owner).
 - Host ownership never changes — all guest writes land as the daemon uid.
-- `chown` and `chmod` are silently no-oped on the host; `access()` always succeeds.
+- `chmod` passes through to the host as the daemon uid (daemon owns guest-created files, so fchmod succeeds); `chown` is no-oped; `access()` always succeeds.
+- Creator ownership is in-memory: after dentry-cache eviction or sandbox stop/start, guest-created files report `0:0` (still rw for all via widened modes; non-root `chmod`/`chown` then returns EPERM).
 
 ### Without fake-owner / per-uid matching
 
