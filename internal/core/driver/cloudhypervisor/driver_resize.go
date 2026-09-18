@@ -260,6 +260,54 @@ func checkFreeSpace(diskPath string, targetBytes int64) error {
 	return nil
 }
 
+// BalloonMemoryResizer implements resize.MemoryResizer via virtio-balloon.
+// Drift: vm.info does not expose live balloon size after guest OOM deflation; the tracked balloon
+// goes stale-high, so normalised MemTotal is too low and the avail/total ratio is inflated —
+// the governor biases toward shrink (re-inflate), bounded by the PSI-trigger grow that follows OOM.
+type BalloonMemoryResizer struct {
+	d        *CHDriver
+	id       domain.SandboxID
+	totalMiB uint32
+	minMiB   uint32
+	balloon  atomic.Uint32
+}
+
+// NewBalloonMemoryResizer returns a resizer for a balloon-mode VM.
+// totalMiB is the ceiling (MemoryMiB the VM booted with); minMiB is the
+// minimum reachable RAM (original boot size = totalMiB − initialBalloonMiB).
+func NewBalloonMemoryResizer(d *CHDriver, id domain.SandboxID, totalMiB, minMiB, initialBalloonMiB uint32) *BalloonMemoryResizer {
+	r := &BalloonMemoryResizer{d: d, id: id, totalMiB: totalMiB, minMiB: minMiB}
+	r.balloon.Store(initialBalloonMiB)
+	return r
+}
+
+func (r *BalloonMemoryResizer) CurrentMemoryBytes() int64 {
+	return int64(r.totalMiB-r.balloon.Load()) * 1024 * 1024
+}
+
+func (r *BalloonMemoryResizer) BalloonBytes() int64 { //nolint:unused
+	return int64(r.balloon.Load()) * 1024 * 1024
+}
+
+func (r *BalloonMemoryResizer) ResizeMemory(ctx context.Context, targetBytes int64) (int64, error) {
+	targetMiB := uint32(targetBytes / (1024 * 1024)) //nolint:gosec
+	if targetMiB < r.minMiB {
+		targetMiB = r.minMiB
+	}
+	if targetMiB > r.totalMiB {
+		targetMiB = r.totalMiB
+	}
+	newBalloonMiB := r.totalMiB - targetMiB
+	if max := r.totalMiB - r.minMiB; newBalloonMiB > max {
+		newBalloonMiB = max
+	}
+	if err := r.d.ResizeBalloon(ctx, r.id, newBalloonMiB); err != nil {
+		return r.CurrentMemoryBytes(), fmt.Errorf("cloudhypervisor: BalloonMemoryResizer %s: %w", r.id, err)
+	}
+	r.balloon.Store(newBalloonMiB)
+	return int64(r.totalMiB-newBalloonMiB) * 1024 * 1024, nil
+}
+
 func diskIndexToCHID(diskIndex int) string {
 	return fmt.Sprintf("_disk%d", diskIndex+1)
 }

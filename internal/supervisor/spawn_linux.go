@@ -109,6 +109,9 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	if cfg.BootVCPUs != 0 {
 		args = append(args, "--boot-vcpus", strconv.Itoa(int(cfg.BootVCPUs)))
 	}
+	if cfg.BalloonMiB != 0 {
+		args = append(args, "--balloon-mib", strconv.FormatUint(uint64(cfg.BalloonMiB), 10))
+	}
 	// NestedVirt: forward when true; omit otherwise so the flag default (false)
 	// preserves nested-OFF without flag-presence checks (D-N3N-02).
 	if cfg.NestedVirt {

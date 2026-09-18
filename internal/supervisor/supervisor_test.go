@@ -811,6 +811,98 @@ func TestBuildSupervisorArgv_NestedVirtForwarded(t *testing.T) {
 //
 // MUTATION PROOF: hardcode cfg.NestedVirt = true in BuildSupervisorArgv and this
 // test fails (--nested appears when it must not).
+func TestBuildSupervisorDriverConfig_BalloonMode(t *testing.T) {
+	cfg := Config{
+		CHBin:      "/usr/bin/cloud-hypervisor",
+		SocketDir:  "/run/user/1000/n3",
+		KernelPath: "/k",
+		DiskPath:   "/d",
+		MemoryMiB:  2048,
+		BalloonMiB: 6144,
+		BootVCPUs:  2,
+	}
+	got := buildSupervisorDriverConfig(cfg, 8192, 8, nil)
+
+	if got.MemoryMiB != 8192 {
+		t.Errorf("MemoryMiB = %d, want 8192 (balloon-mode: VM must boot at ceiling)", got.MemoryMiB)
+	}
+	if got.BalloonMiB != 6144 {
+		t.Errorf("BalloonMiB = %d, want 6144", got.BalloonMiB)
+	}
+	if !got.FreePageReporting {
+		t.Error("FreePageReporting = false, want true")
+	}
+}
+
+func TestBuildSupervisorDriverConfig_NoBalloon_MemoryUnchanged(t *testing.T) {
+	cfg := Config{
+		CHBin:      "/usr/bin/cloud-hypervisor",
+		SocketDir:  "/run/user/1000/n3",
+		KernelPath: "/k",
+		DiskPath:   "/d",
+		MemoryMiB:  2048,
+		BalloonMiB: 0,
+		BootVCPUs:  2,
+	}
+	got := buildSupervisorDriverConfig(cfg, 8192, 8, nil)
+
+	if got.MemoryMiB != 2048 {
+		t.Errorf("MemoryMiB = %d, want 2048 (virtio-mem mode: boot at boot size)", got.MemoryMiB)
+	}
+	if got.BalloonMiB != 0 {
+		t.Errorf("BalloonMiB = %d, want 0", got.BalloonMiB)
+	}
+}
+
+func TestBuildSupervisorArgv_BalloonMiBForwarded(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+			BalloonMiB: 6144,
+		},
+	}
+	argv := BuildSupervisorArgv(cfg)
+	findFlag := func(flag string) (string, bool) {
+		for i, a := range argv {
+			if a == flag && i+1 < len(argv) {
+				return argv[i+1], true
+			}
+		}
+		return "", false
+	}
+	v, ok := findFlag("--balloon-mib")
+	if !ok {
+		t.Fatal("argv missing --balloon-mib; BalloonMiB not forwarded to supervisor")
+	}
+	if v != "6144" {
+		t.Errorf("--balloon-mib = %q, want \"6144\"", v)
+	}
+}
+
+func TestBuildSupervisorArgv_ZeroBalloonOmitsFlag(t *testing.T) {
+	cfg := SpawnConfig{
+		Config: Config{
+			SandboxRef: "abc123",
+			StoreRoot:  "/store",
+			StateDir:   "/state",
+			CHBin:      "/usr/bin/cloud-hypervisor",
+			SocketDir:  "/run/nexus",
+			KernelPath: "/boot/vmlinux",
+			DiskPath:   "/data/sb.raw",
+		},
+	}
+	argv := BuildSupervisorArgv(cfg)
+	if slices.Contains(argv, "--balloon-mib") {
+		t.Error("argv contains --balloon-mib for BalloonMiB=0; virtio-mem sandboxes must not emit this flag")
+	}
+}
+
 func TestBuildSupervisorArgv_NotNestedOmitsFlag(t *testing.T) {
 	cfg := SpawnConfig{
 		Config: Config{

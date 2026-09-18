@@ -182,6 +182,7 @@ func (d *supervisorBuilderDriver) buildSpawnConfig(sandboxID domain.SandboxID, s
 			ExtraDisks:           d.extraDisks,
 			GovBounds:            d.ar.Bounds,
 			MemoryMiB:            d.bootMemMiB,
+			BalloonMiB:           d.ar.MemoryMaxMiB - d.bootMemMiB,
 			BootVCPUs:            d.bootVCPUs,
 			ResizableDiskIndices: cacheDiskIndices,
 			// Cmdline: full kernel cmdline. The supervisor's CHDriver inserts
