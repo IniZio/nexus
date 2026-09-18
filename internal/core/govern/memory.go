@@ -7,6 +7,7 @@
 // memory_resize.go (packages/nexus/internal/engine/workspace/memory_resize.go).
 // TestMemoryControlLawConstants is an anti-regression guard: it fails loudly
 // if any constant drifts (e.g. grow threshold back to 0.15, consecutive back to 2).
+// Triggered-sample handling (Sample.Trigger psi_mem/psi_cpu) is NEW — not from OLD.
 package govern
 
 import (
@@ -22,11 +23,6 @@ import (
 // Source column refers to OLD-nexus memory_resize.go line numbers.
 // These are the corrected values per the 2026-08-14 audit (D-DC-23).
 const (
-	// memoryResizeBootDelay is the quiet period after VM start before the
-	// governor begins sampling. Matches OLD memoryResizeBootDelay.
-	// Source: OLD memory_resize.go:43.
-	memoryResizeBootDelay = 10 * time.Second
-
 	// memoryEvalInterval is the nominal poll interval when no pressure is seen.
 	// Source: OLD memory_resize.go:42 memoryResizeEvalInterval = 5s.
 	memoryEvalInterval = 5 * time.Second
@@ -202,6 +198,9 @@ func sampleWantsGrow(s resize.Sample, prevSwapUsed uint64) bool {
 	if s.MemTotalBytes == 0 {
 		return false
 	}
+	if s.Trigger == resize.TriggerPSIMemory {
+		return true
+	}
 	// Signal 1: PSI — leading flow indicator.
 	if s.MemPSISupported && s.MemPSISomeAvg10 >= psiGrowPressure {
 		return true
@@ -211,9 +210,9 @@ func sampleWantsGrow(s resize.Sample, prevSwapUsed uint64) bool {
 	if ratio < defaultGrowThreshold {
 		return true
 	}
-	// Signal 2b: CPU-load pre-warm (F13) — a build saturating its vCPUs is
-	// about to allocate; grow earlier while the guest is loaded.
-	if s.CPUPSISupported && s.CPUPSISomeAvg10 >= cpuGrowPressure && ratio < loadedGrowThreshold {
+	cpuLoaded := (s.CPUPSISupported && s.CPUPSISomeAvg10 >= cpuGrowPressure) ||
+		s.Trigger == resize.TriggerPSICPU
+	if cpuLoaded && ratio < loadedGrowThreshold {
 		return true
 	}
 	// Signal 3: swap-pressure flow gate — zram indicator (D-RAM-07 + D-RAM-10).
@@ -259,6 +258,9 @@ func sampleWantsShrink(s resize.Sample, prevSwapUsed, prevSwapInPages uint64) bo
 	if s.MemTotalBytes == 0 {
 		return false
 	}
+	if s.Trigger == resize.TriggerPSIMemory {
+		return false
+	}
 	// Block shrink when PSI reports active stall.
 	if s.MemPSISupported && s.MemPSISomeAvg10 >= psiGrowPressure {
 		return false
@@ -297,6 +299,9 @@ func sampleIsCritical(s resize.Sample) bool {
 	if s.MemTotalBytes == 0 {
 		return false
 	}
+	if s.Trigger == resize.TriggerPSIMemory {
+		return true
+	}
 	// Bypass 1: PSI "full" — every task stalling.
 	if s.MemPSISupported && s.MemPSIFullAvg10 >= psiCriticalPressure {
 		return true
@@ -327,6 +332,9 @@ func growStep(minBytes, maxBytes, current int64, s resize.Sample) int64 {
 
 	// Per-step ceiling: half the configurable range, but never below the floor.
 	stepCap := delta / 2
+	if s.Trigger == resize.TriggerPSIMemory {
+		stepCap = maxBytes - current
+	}
 	if stepCap < minGrowStepBytes {
 		stepCap = minGrowStepBytes
 	}

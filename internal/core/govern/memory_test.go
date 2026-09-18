@@ -110,6 +110,93 @@ func TestSample_SwapInPagesOmittedDecodesZero(t *testing.T) {
 	}
 }
 
+func TestMemoryTrigger_PSIMemory(t *testing.T) {
+	t.Parallel()
+	totalB := uint64(8 * gib)
+	healthy := resize.Sample{
+		Timestamp:         time.Now(),
+		MemTotalBytes:     totalB,
+		MemAvailableBytes: uint64(float64(totalB) * 0.60),
+		MemPSISupported:   true,
+		Trigger:           resize.TriggerPSIMemory,
+	}
+	if !sampleWantsGrow(healthy, 0) {
+		t.Fatal("psi_mem trigger: sampleWantsGrow=false, want true")
+	}
+	if sampleWantsShrink(healthy, 0, 0) {
+		t.Fatal("psi_mem trigger: sampleWantsShrink=true, want false")
+	}
+	if !sampleIsCritical(healthy) {
+		t.Fatal("psi_mem trigger: sampleIsCritical=false, want true")
+	}
+	minB, maxB, cur := int64(7*gib), int64(8*gib), int64(7*gib)
+	critSample := resize.Sample{
+		Timestamp:         time.Now(),
+		MemTotalBytes:     uint64(cur),
+		MemAvailableBytes: 0,
+		MemPSISupported:   true,
+		Trigger:           resize.TriggerPSIMemory,
+	}
+	step := growStep(minB, maxB, cur, critSample)
+	remaining := maxB - cur
+	if step != remaining {
+		t.Fatalf("psi_mem growStep=%d, want full remaining=%d", step, remaining)
+	}
+	normalSample := critSample
+	normalSample.Trigger = ""
+	normalStep := growStep(minB, maxB, cur, normalSample)
+	if normalStep >= remaining {
+		t.Fatalf("untriggered growStep=%d should be < remaining=%d", normalStep, remaining)
+	}
+}
+
+func TestMemoryTrigger_PSICPUGrowThreshold(t *testing.T) {
+	t.Parallel()
+	totalB := uint64(8 * gib)
+	mkSample := func(ratio float64) resize.Sample {
+		return resize.Sample{
+			Timestamp:         time.Now(),
+			MemTotalBytes:     totalB,
+			MemAvailableBytes: uint64(float64(totalB) * ratio),
+			MemPSISupported:   true,
+			CPUPSISupported:   false,
+			Trigger:           resize.TriggerPSICPU,
+		}
+	}
+	if !sampleWantsGrow(mkSample(0.30), 0) {
+		t.Fatal("psi_cpu + ratio 0.30 < loadedGrowThreshold: want grow")
+	}
+	if sampleWantsGrow(mkSample(0.40), 0) {
+		t.Fatal("psi_cpu + ratio 0.40 >= loadedGrowThreshold: want no grow")
+	}
+}
+
+func TestMemoryTrigger_HeartbeatBehavesLikeNone(t *testing.T) {
+	t.Parallel()
+	totalB := uint64(8 * gib)
+	noTrigger := resize.Sample{
+		Timestamp:         time.Now(),
+		MemTotalBytes:     totalB,
+		MemAvailableBytes: uint64(float64(totalB) * 0.60),
+		MemPSISupported:   true,
+	}
+	heartbeat := noTrigger
+	heartbeat.Trigger = resize.TriggerHeartbeat
+	if sampleWantsGrow(noTrigger, 0) != sampleWantsGrow(heartbeat, 0) {
+		t.Fatal("heartbeat changes sampleWantsGrow result vs no-trigger")
+	}
+	if sampleWantsShrink(noTrigger, 0, 0) != sampleWantsShrink(heartbeat, 0, 0) {
+		t.Fatal("heartbeat changes sampleWantsShrink result vs no-trigger")
+	}
+	if sampleIsCritical(noTrigger) != sampleIsCritical(heartbeat) {
+		t.Fatal("heartbeat changes sampleIsCritical result vs no-trigger")
+	}
+	minB, maxB, cur := int64(512*1024*1024), int64(8*gib), int64(2*gib)
+	if growStep(minB, maxB, cur, noTrigger) != growStep(minB, maxB, cur, heartbeat) {
+		t.Fatal("heartbeat changes growStep result vs no-trigger")
+	}
+}
+
 func TestGovernor_SwapInBlockLogsInfo(t *testing.T) {
 	var buf bytes.Buffer
 	orig := slog.Default()
