@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/IniZio/nexus/internal/herdrout"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -57,6 +58,9 @@ var runHerdrCLI = func(ctx context.Context, herdrBin string, argv ...string) (st
 var runGitCLI = func(ctx context.Context, argv ...string) (string, error) {
 	return runBinary(ctx, "git", argv...)
 }
+
+var teardownPollInterval = 500 * time.Millisecond
+var teardownPollTimeout = 15 * time.Second
 
 func runBinary(ctx context.Context, bin string, argv ...string) (string, error) {
 	var buf bytes.Buffer
@@ -243,6 +247,11 @@ func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID
 		}
 	}
 	return "", "", "", false
+}
+
+func isSandboxNotFound(err error, output string) bool {
+	combined := strings.ToLower(err.Error() + " " + output)
+	return strings.Contains(combined, "not found") || strings.Contains(combined, "no such")
 }
 
 // sandboxListed reports whether `nexus sandbox list` still shows handle or sandboxID.
@@ -468,20 +477,45 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			return errorResult(fmt.Errorf("delegate_teardown: herdr worktree remove --workspace %s: %w\n%s", ws, err, rmOut)), nil, nil
 		}
 
-		psOut, err := runHostCLI(ctx, "sandbox", "list")
-		if err != nil {
-			return errorResult(fmt.Errorf("delegate_teardown: nexus sandbox list: %w\n%s", err, psOut)), nil, nil
-		}
 		out := rmOut
-		if sandboxListed(psOut, handle, sandboxID) {
+		how := "removed-by-hook"
+		deadline := time.Now().Add(teardownPollTimeout)
+		stillListed := false
+		for {
+			psOut, listErr := runHostCLI(ctx, "sandbox", "list")
+			if listErr != nil {
+				return errorResult(fmt.Errorf("delegate_teardown: nexus sandbox list: %w\n%s", listErr, psOut)), nil, nil
+			}
+			if !sandboxListed(psOut, handle, sandboxID) {
+				break
+			}
+			if time.Now().After(deadline) {
+				stillListed = true
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return errorResult(fmt.Errorf("delegate_teardown: context cancelled waiting for sandbox %s to disappear", handle)), nil, nil
+			case <-time.After(teardownPollInterval):
+			}
+		}
+		if stillListed {
 			fallbackOut, runErr := runHostCLI(ctx, "sandbox", "rm", args.Ref)
 			if runErr != nil {
-				return errorResult(fmt.Errorf("delegate_teardown: sandbox %s still listed after herdr worktree remove; sandbox rm: %w\n%s", handle, runErr, fallbackOut)), nil, nil
+				if isSandboxNotFound(runErr, fallbackOut) {
+					how = "already-gone"
+					out += fallbackOut
+				} else {
+					return errorResult(fmt.Errorf("delegate_teardown: sandbox %s still listed after herdr worktree remove; sandbox rm: %w\n%s", handle, runErr, fallbackOut)), nil, nil
+				}
+			} else {
+				how = "removed-by-fallback"
+				out += fallbackOut
 			}
-			out += fallbackOut
 		}
 		return successResult(map[string]interface{}{
 			"removed":      true,
+			"how":          how,
 			"workspace_id": ws,
 			"handle":       handle,
 			"sandbox_id":   sandboxID,

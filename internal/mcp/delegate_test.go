@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── exec seam fake ────────────────────────────────────────────────────────────
@@ -543,7 +544,15 @@ func TestDelegateTeardown_Unbound_FallsBackToSandboxRm(t *testing.T) {
 
 // Hook did not reap: the sandbox is still listed after the herdr remove, so
 // teardown falls back to `nexus sandbox rm` and still reports success.
+func setTeardownPollTiming(t *testing.T, interval, timeout time.Duration) {
+	t.Helper()
+	origI, origT := teardownPollInterval, teardownPollTimeout
+	teardownPollInterval, teardownPollTimeout = interval, timeout
+	t.Cleanup(func() { teardownPollInterval, teardownPollTimeout = origI, origT })
+}
+
 func TestDelegateTeardown_StillListed_FallsBackToSandboxRm(t *testing.T) {
+	setTeardownPollTiming(t, 0, 0)
 	rec, data, text, isErr := runDelegateTeardown(t, map[string]string{
 		"herdr list":      teardownBindingLines,
 		"worktree remove": "removed\n",
@@ -674,5 +683,110 @@ func TestDelegateTeardown_Force_PassesForceFlag(t *testing.T) {
 	}
 	if !containsToken(rm.args, "--force") {
 		t.Errorf("worktree remove argv missing --force: %q", rm.args)
+	}
+}
+
+func TestDelegateTeardown_PollClearsBeforeTimeout_SuccessWithoutFallback(t *testing.T) {
+	setTeardownPollTiming(t, 0, 5*time.Second)
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+
+	callCount := 0
+	rec := installHostCLIRecorder(t, map[string]string{
+		"herdr list":      teardownBindingLines,
+		"worktree remove": "removed\n",
+	})
+	origHost := runHostCLI
+	runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "sandbox" && argv[1] == "list" {
+			callCount++
+			if callCount >= 2 {
+				return "HANDLE  STATE  ID\nrepo/other  running  sb-9\n", nil
+			}
+			return "HANDLE  STATE  ID\nrepo/branch  running  sb-1\n", nil
+		}
+		return origHost(ctx, argv...)
+	}
+	t.Cleanup(func() { runHostCLI = origHost })
+
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_teardown", map[string]any{"ref": "repo/branch"})
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("data unmarshal: %v", err)
+	}
+	if data["how"] != "removed-by-hook" {
+		t.Errorf("how = %v, want removed-by-hook", data["how"])
+	}
+	if _, found := rec.find("sandbox rm"); found {
+		t.Errorf("sandbox rm ran after polling cleared: %+v", rec.calls)
+	}
+}
+
+func TestDelegateTeardown_FallbackRmNotFound_ReportsSuccess(t *testing.T) {
+	setTeardownPollTiming(t, 0, 0)
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	rec := installHostCLIRecorder(t, map[string]string{
+		"herdr list":      teardownBindingLines,
+		"worktree remove": "removed\n",
+		"sandbox list":    "HANDLE  STATE  ID\nrepo/branch  running  sb-1\n",
+	})
+	origHost := runHostCLI
+	runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "sandbox" && argv[1] == "rm" {
+			rec.calls = append(rec.calls, hostCall{bin: "<nexus>", args: append([]string(nil), argv...)})
+			return "sandbox not found\n", fmt.Errorf("exit status 1: sandbox not found")
+		}
+		return origHost(ctx, argv...)
+	}
+	t.Cleanup(func() { runHostCLI = origHost })
+
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_teardown", map[string]any{"ref": "repo/branch"})
+	if res.IsError {
+		t.Fatalf("expected success (not-found = already gone), got error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("data unmarshal: %v", err)
+	}
+	if data["how"] != "already-gone" {
+		t.Errorf("how = %v, want already-gone", data["how"])
+	}
+	if data["removed"] != true {
+		t.Errorf("removed = %v, want true", data["removed"])
+	}
+}
+
+func TestDelegateTeardown_FallbackRmRealError_ReturnsError(t *testing.T) {
+	setTeardownPollTiming(t, 0, 0)
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	rec := installHostCLIRecorder(t, map[string]string{
+		"herdr list":      teardownBindingLines,
+		"worktree remove": "removed\n",
+		"sandbox list":    "HANDLE  STATE  ID\nrepo/branch  running  sb-1\n",
+	})
+	origHost := runHostCLI
+	runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "sandbox" && argv[1] == "rm" {
+			rec.calls = append(rec.calls, hostCall{bin: "<nexus>", args: append([]string(nil), argv...)})
+			return "internal error: vm stuck\n", fmt.Errorf("exit status 2: vm stuck")
+		}
+		return origHost(ctx, argv...)
+	}
+	t.Cleanup(func() { runHostCLI = origHost })
+
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_teardown", map[string]any{"ref": "repo/branch"})
+	if !res.IsError {
+		t.Fatalf("expected error for real rm failure, got success: %s", resultText(t, res))
+	}
+	if text := resultText(t, res); !strings.Contains(text, "vm stuck") {
+		t.Errorf("error text does not surface rm output: %s", text)
 	}
 }
