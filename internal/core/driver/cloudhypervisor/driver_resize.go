@@ -338,18 +338,18 @@ func (r *BalloonMemoryResizer) ResizeMemory(ctx context.Context, targetBytes int
 	if err := r.d.ResizeBalloon(ctx, r.id, newBalloonMiB); err != nil {
 		return r.CurrentMemoryBytes(), fmt.Errorf("cloudhypervisor: BalloonMemoryResizer %s: %w", r.id, err)
 	}
-	r.balloon.Store(newBalloonMiB)
 	r.mu.Lock()
+	r.balloon.Store(newBalloonMiB)
 	r.driftFirstSeen = time.Time{}
 	r.driftCount = 0
 	r.mu.Unlock()
 	return int64(r.totalMiB-newBalloonMiB) * 1024 * 1024, nil
 }
 
-// ObserveSample clamps the tracked balloon to ≤ (memTotal−memAvail)/MiB.
-// A stale-high value (after guest OOM deflation) corrects to too-low, which
-// biases the governor toward grow — the safe direction. ResizeMemory re-asserts.
-// Correction requires ≥3 consecutive violation samples spanning ≥15 s.
+// ObserveSample clamps the tracked balloon to ≤ guest used MiB.
+// The corrected value equals guest used, which is an upper bound on the true
+// balloon, so effective memory ≤ truth — shrink-biased, less so than stale.
+// ResizeMemory re-asserts. Correction requires ≥3 samples spanning ≥15 s.
 func (r *BalloonMemoryResizer) ObserveSample(memTotal, memAvail uint64) (DriftStatus, uint32) {
 	const mib = 1024 * 1024
 	if memTotal < mib {

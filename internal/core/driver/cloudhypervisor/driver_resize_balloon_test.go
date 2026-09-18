@@ -26,22 +26,22 @@ func TestBalloonMemoryResizer_ObserveSample(t *testing.T) {
 		wantBalloon uint32
 	}{
 		{
-			name: "no violation when used >= balloon",
+			name:        "no violation when used >= balloon",
 			initBalloon: 6144, memTotal: 8192 * mib, memAvail: 512 * mib,
 			wantStatus: DriftOK, wantBalloon: 6144,
 		},
 		{
-			name: "suspect on first violation sample",
+			name:        "suspect on first violation sample",
 			initBalloon: 6144, memTotal: 8192 * mib, memAvail: 7000 * mib,
 			wantStatus: DriftSuspect, wantBalloon: 6144,
 		},
 		{
-			name: "never raises balloon",
+			name:        "never raises balloon",
 			initBalloon: 100, memTotal: 8192 * mib, memAvail: 512 * mib,
 			wantStatus: DriftOK, wantBalloon: 100,
 		},
 		{
-			name: "sub-MiB total skips correction",
+			name:        "sub-MiB total skips correction",
 			initBalloon: 6144, memTotal: 100, memAvail: 0,
 			wantStatus: DriftOK, wantBalloon: 6144,
 		},
@@ -110,13 +110,78 @@ func TestBalloonMemoryResizer_ObserveSample_Window(t *testing.T) {
 		fakeNow = base.Add(8 * time.Second)
 		r.ObserveSample(total, avail)
 		fakeNow = base.Add(9 * time.Second)
-		r.ObserveSample(8192*mib, 512*mib) // used=7680 MiB > balloon=6144 → resets
+		r.ObserveSample(8192*mib, 512*mib)
 		fakeNow = base.Add(25 * time.Second)
 		st, _ := r.ObserveSample(total, avail)
 		if st == DriftCorrected {
 			t.Errorf("corrected after reset, want no correction yet (count reset to 1)")
 		}
 	})
+
+	t.Run("3 samples span<15s no correction", func(t *testing.T) {
+		var fakeNow time.Time = base
+		r := NewBalloonMemoryResizer(nil, domain.NewSandboxID(), 8192, 2048, 6144)
+		r.SetClock(func() time.Time { return fakeNow })
+		total, avail := uint64(8192*mib), uint64(7000*mib)
+		st, bal := r.ObserveSample(total, avail)
+		if st != DriftSuspect {
+			t.Errorf("first sample: status = %v, want DriftSuspect", st)
+		}
+		fakeNow = base.Add(4 * time.Second)
+		r.ObserveSample(total, avail)
+		fakeNow = base.Add(8 * time.Second)
+		st, bal = r.ObserveSample(total, avail)
+		if st == DriftCorrected {
+			t.Errorf("corrected with span 8s < 15s, want no correction")
+		}
+		if bal != 6144 {
+			t.Errorf("balloon = %d, want 6144", bal)
+		}
+	})
+}
+
+func TestBalloonMemoryResizer_ResizeResetsDrift(t *testing.T) {
+	const mib = 1024 * 1024
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	var fakeNow time.Time = base
+	dir := testSocketDir(t)
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ln, err := net.Listen("unix", d.socketPath(id))
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	r := NewBalloonMemoryResizer(d, id, 8192, 2048, 6144)
+	r.SetClock(func() time.Time { return fakeNow })
+
+	total, avail := uint64(8192*mib), uint64(7000*mib)
+	r.ObserveSample(total, avail)
+	fakeNow = base.Add(10 * time.Second)
+	r.ObserveSample(total, avail)
+
+	if _, err := r.ResizeMemory(context.Background(), int64(4096*mib)); err != nil {
+		t.Fatalf("ResizeMemory: %v", err)
+	}
+
+	fakeNow = base.Add(20 * time.Second)
+	st, _ := r.ObserveSample(total, avail)
+	if st == DriftCorrected {
+		t.Errorf("DriftCorrected after resize reset, want DriftSuspect")
+	}
+	if st != DriftSuspect {
+		t.Errorf("status = %v after resize reset, want DriftSuspect", st)
+	}
 }
 
 func TestBalloonMemoryResizer_CurrentMemoryBytes(t *testing.T) {

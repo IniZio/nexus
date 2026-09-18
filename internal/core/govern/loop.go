@@ -346,7 +346,7 @@ func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-ch
 		if resize.IsStreamUnsupported(first.err) {
 			return nil, nil, fmt.Errorf("govern: stream setup: %w", resize.ErrStreamUnsupported)
 		}
-		return nil, nil, fmt.Errorf("govern: stream first frame: %w", errStreamSetupTransient)
+		return nil, nil, fmt.Errorf("govern: stream setup transient: %w: %v", errStreamSetupTransient, first.err)
 	}
 
 	if err := conn.SetDeadline(time.Time{}); err != nil {
