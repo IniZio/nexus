@@ -61,12 +61,14 @@ func TestGrowDisk_targetBelowFileNeverShrinksHost(t *testing.T) {
 
 	var mu sync.Mutex
 	chCalls := 0
-	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	muxNC := http.NewServeMux()
+	muxNC.HandleFunc("/api/v1/vm.resize-disk", func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
 		chCalls++
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
-	}))
+	})
+	fakeSockListenerMux(t, d.socketPath(id), muxNC)
 
 	r := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
 	r.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
@@ -359,6 +361,11 @@ func TestResizeMemory(t *testing.T) {
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("/api/v1/vm.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"state":"Running","config":{"memory":{"size":536870912,"hotplug_size":536870912}}}`))
+	})
 	fakeSockListenerMux(t, d.socketPath(id), mux)
 
 	bounds := resize.Bounds{MemMinBytes: bootMem, MemMaxBytes: 1024 * 1024 * 1024}
@@ -418,6 +425,11 @@ func TestResizeMemory_clamp(t *testing.T) {
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("/api/v1/vm.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"state":"Running","config":{"memory":{"size":536870912,"hotplug_size":536870912}}}`))
+	})
 	fakeSockListenerMux(t, d.socketPath(id), mux)
 
 	bounds := resize.Bounds{MemMinBytes: bootMem, MemMaxBytes: maxMem}
@@ -465,6 +477,11 @@ func TestResizeMemory_alignsUnaligned(t *testing.T) {
 		}
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/vm.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"state":"Running","config":{"memory":{"size":536870912,"hotplug_size":3758096384}}}`))
 	})
 	fakeSockListenerMux(t, d.socketPath(id), mux)
 
@@ -736,10 +753,12 @@ func TestGrowDisk_guestUnreachable(t *testing.T) {
 	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
 
 	var chCalls atomic.Int32
-	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	muxUR := http.NewServeMux()
+	muxUR.HandleFunc("/api/v1/vm.resize-disk", func(w http.ResponseWriter, _ *http.Request) {
 		chCalls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
-	}))
+	})
+	fakeSockListenerMux(t, d.socketPath(id), muxUR)
 
 	var dials atomic.Int32
 	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
@@ -792,10 +811,12 @@ func TestGrowDisk_guestResizeFails(t *testing.T) {
 	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
 
 	var chCalls atomic.Int32
-	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	muxGF := http.NewServeMux()
+	muxGF.HandleFunc("/api/v1/vm.resize-disk", func(w http.ResponseWriter, _ *http.Request) {
 		chCalls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
-	}))
+	})
+	fakeSockListenerMux(t, d.socketPath(id), muxGF)
 
 	var guestReqs atomic.Int32
 	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)

@@ -188,6 +188,11 @@ func startFakeCHServer(t *testing.T, path string) *atomic.Int64 {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("/api/v1/vm.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"state":"Running","config":{"memory":{"size":536870912,"hotplug_size":3758096384}}}`))
+	})
 
 	srv := httptest.NewUnstartedServer(mux)
 	srv.Listener = ln

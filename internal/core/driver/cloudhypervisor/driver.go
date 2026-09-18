@@ -90,7 +90,7 @@ func buildMemoryConfig(cfg Config, memMiB uint64) *vmMemoryConfig {
 	if len(cfg.LiveMounts) > 0 {
 		mc.Shared = true
 	}
-	if cfg.MemoryMaxMiB > cfg.MemoryMiB {
+	if cfg.MemoryMaxMiB > uint32(memMiB) {
 		mc.SizeBytes = uint64(cfg.MemoryMaxMiB) * 1024 * 1024
 	}
 	return mc

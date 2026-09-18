@@ -37,20 +37,15 @@ func NewSandboxResizer(d *CHDriver, id domain.SandboxID, bounds resize.Bounds, b
 	r.memBytes.Store(bootMemBytes)
 	r.vcpus.Store(bootVCPUs)
 	r.postGrowHooks = buildVolumePostGrowHooks(d.cfg.ExtraDisks)
-	d.memMu.Lock()
-	if d.memState[id] == nil {
-		bootMiB := uint32(bootMemBytes / (1024 * 1024))        //nolint:gosec
-		totalMiB := uint32(bounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec
-		if totalMiB == 0 {
-			totalMiB = bootMiB
-		}
-		mode := driver.MemoryModeVirtioMem
-		if totalMiB <= bootMiB {
-			mode = driver.MemoryModeFlat
-		}
-		d.memState[id] = &vmMemState{mode: mode, bootMiB: bootMiB, totalMiB: totalMiB}
+	// Eagerly load mem state from the live VM so the correct mode (balloon vs
+	// virtio-mem) is known before the first normaliser call. Best-effort: a
+	// Debug log on failure leaves state nil so getOrLoadMemState retries later.
+	loadCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := d.getOrLoadMemState(loadCtx, id); err != nil {
+		slog.Debug("cloudhypervisor: NewSandboxResizer: pre-load mem state (will retry)",
+			"sandbox", id, "err", err)
 	}
-	d.memMu.Unlock()
 	return r
 }
 
@@ -319,6 +314,17 @@ func (d *CHDriver) clearMemState(id domain.SandboxID) {
 	d.memMu.Unlock()
 }
 
+func (d *CHDriver) loadMemStateBestEffort(id domain.SandboxID) *vmMemState {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	st, err := d.getOrLoadMemState(ctx, id)
+	if err != nil {
+		slog.Debug("cloudhypervisor: lazy load mem state", "sandbox", id, "err", err)
+		return nil
+	}
+	return st
+}
+
 func (d *CHDriver) getOrLoadMemState(ctx context.Context, id domain.SandboxID) (*vmMemState, error) {
 	d.memMu.Lock()
 	st := d.memState[id]
@@ -352,21 +358,25 @@ func adoptMemState(info *vmInfoResponse) *vmMemState {
 		return st
 	}
 	mem := info.Config.Memory
-	totalMiB := uint32(mem.SizeBytes / (1024 * 1024)) //nolint:gosec
-	st.totalMiB = totalMiB
+	sizeMiB := uint32(mem.SizeBytes / (1024 * 1024)) //nolint:gosec
 
 	if info.Config.Balloon != nil && info.Config.Balloon.SizeBytes > 0 {
+		// Balloon: memory.size is the ceiling; balloon inflates within it.
 		balloonMiB := uint32(info.Config.Balloon.SizeBytes / (1024 * 1024)) //nolint:gosec
 		st.mode = driver.MemoryModeBalloon
-		st.bootMiB = totalMiB - balloonMiB
+		st.totalMiB = sizeMiB
+		st.bootMiB = sizeMiB - balloonMiB
 		st.balloon.Store(balloonMiB)
 	} else if mem.HotplugSize > 0 {
+		// VirtioMem: memory.size = boot RAM; hotplug_size = extra capacity.
 		hotplugMiB := uint32(mem.HotplugSize / (1024 * 1024)) //nolint:gosec
 		st.mode = driver.MemoryModeVirtioMem
-		st.bootMiB = totalMiB - hotplugMiB
+		st.bootMiB = sizeMiB
+		st.totalMiB = sizeMiB + hotplugMiB
 	} else {
 		st.mode = driver.MemoryModeFlat
-		st.bootMiB = totalMiB
+		st.bootMiB = sizeMiB
+		st.totalMiB = sizeMiB
 	}
 	return st
 }
@@ -375,6 +385,9 @@ func (d *CHDriver) MemoryMode(id domain.SandboxID) driver.MemoryMode {
 	d.memMu.Lock()
 	st := d.memState[id]
 	d.memMu.Unlock()
+	if st == nil {
+		st = d.loadMemStateBestEffort(id)
+	}
 	if st == nil {
 		return driver.MemoryModeFlat
 	}
@@ -385,6 +398,9 @@ func (d *CHDriver) BalloonBytes(id domain.SandboxID) int64 {
 	d.memMu.Lock()
 	st := d.memState[id]
 	d.memMu.Unlock()
+	if st == nil {
+		st = d.loadMemStateBestEffort(id)
+	}
 	if st == nil || st.mode != driver.MemoryModeBalloon {
 		return 0
 	}
@@ -395,6 +411,9 @@ func (d *CHDriver) ObserveSample(id domain.SandboxID, memTotal, memAvail uint64)
 	d.memMu.Lock()
 	st := d.memState[id]
 	d.memMu.Unlock()
+	if st == nil {
+		st = d.loadMemStateBestEffort(id)
+	}
 	if st == nil || st.mode != driver.MemoryModeBalloon {
 		return driver.DriftOK, 0
 	}
@@ -494,6 +513,9 @@ func (d *CHDriver) CurrentMemoryBytes(id domain.SandboxID) int64 {
 	d.memMu.Lock()
 	st := d.memState[id]
 	d.memMu.Unlock()
+	if st == nil {
+		st = d.loadMemStateBestEffort(id)
+	}
 	if st == nil {
 		return 0
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 func setTestMemState(d *CHDriver, id domain.SandboxID, st *vmMemState) {
@@ -355,7 +356,7 @@ func TestAdoptMemState_Detection(t *testing.T) {
 		},
 		{
 			name:         "virtiomem legacy",
-			infoJSON:     `{"state":"Running","config":{"memory":{"size":` + itoa(8192*1024*1024) + `,"hotplug_size":` + itoa(6144*1024*1024) + `}}}`,
+			infoJSON:     `{"state":"Running","config":{"memory":{"size":` + itoa(2048*1024*1024) + `,"hotplug_size":` + itoa(6144*1024*1024) + `}}}`,
 			wantMode:     driver.MemoryModeVirtioMem,
 			wantBalloon:  0,
 			wantBootMiB:  2048,
@@ -409,6 +410,134 @@ func TestAdoptMemState_Detection(t *testing.T) {
 				t.Errorf("totalMiB = %d, want %d", st.totalMiB, tc.wantTotalMiB)
 			}
 		})
+	}
+}
+
+func TestNewSandboxResizer_AdoptPath(t *testing.T) {
+	const mib = 1024 * 1024
+	tests := []struct {
+		name         string
+		vmInfoJSON   string
+		bootMemBytes int64
+		wantMode     driver.MemoryMode
+		wantBalloonB int64
+		resizeTarget int64
+		wantReqField string
+		wantResizeB  int64
+	}{
+		{
+			name:         "balloon",
+			vmInfoJSON:   `{"state":"Running","config":{"memory":{"size":` + itoa(8192*mib) + `},"balloon":{"size":` + itoa(6144*mib) + `}}}`,
+			bootMemBytes: 2048 * mib,
+			wantMode:     driver.MemoryModeBalloon,
+			wantBalloonB: 6144 * mib,
+			resizeTarget: 4096 * mib,
+			wantReqField: "desired_balloon",
+			wantResizeB:  4096 * mib,
+		},
+		{
+			name:         "virtiomem",
+			vmInfoJSON:   `{"state":"Running","config":{"memory":{"size":` + itoa(2048*mib) + `,"hotplug_size":` + itoa(6144*mib) + `}}}`,
+			bootMemBytes: 2048 * mib,
+			wantMode:     driver.MemoryModeVirtioMem,
+			wantBalloonB: 0,
+			resizeTarget: 4096 * mib,
+			wantReqField: "desired_ram",
+			wantResizeB:  4096 * mib,
+		},
+		{
+			name:         "flat",
+			vmInfoJSON:   `{"state":"Running","config":{"memory":{"size":` + itoa(512*mib) + `}}}`,
+			bootMemBytes: 512 * mib,
+			wantMode:     driver.MemoryModeFlat,
+			wantBalloonB: 0,
+			resizeTarget: 1024 * mib,
+			wantReqField: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := testSocketDir(t)
+			d := newTestDriver(t, dir)
+			id := domain.NewSandboxID()
+
+			var gotResizeBody map[string]any
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/vm.info", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.vmInfoJSON))
+			})
+			mux.HandleFunc("/api/v1/vm.resize", func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &gotResizeBody)
+				w.WriteHeader(http.StatusNoContent)
+			})
+			ln, err := net.Listen("unix", d.socketPath(id))
+			if err != nil {
+				t.Fatalf("listen unix: %v", err)
+			}
+			srv := httptest.NewUnstartedServer(mux)
+			srv.Listener = ln
+			srv.Start()
+			t.Cleanup(srv.Close)
+
+			bounds := resize.Bounds{MemMinBytes: 0, MemMaxBytes: int64(8192) * mib}
+			resizer := NewSandboxResizer(d, id, bounds, tc.bootMemBytes, 1)
+
+			if got := d.MemoryMode(id); got != tc.wantMode {
+				t.Errorf("MemoryMode = %v, want %v", got, tc.wantMode)
+			}
+			if got := d.BalloonBytes(id); got != tc.wantBalloonB {
+				t.Errorf("BalloonBytes = %d, want %d", got, tc.wantBalloonB)
+			}
+
+			got, err := resizer.ResizeMemory(context.Background(), tc.resizeTarget)
+			if tc.wantReqField == "" {
+				if err == nil {
+					t.Error("expected error for flat mode resize, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResizeMemory: %v", err)
+			}
+			if got != tc.wantResizeB {
+				t.Errorf("ResizeMemory returned %d, want %d", got, tc.wantResizeB)
+			}
+			if cur := resizer.CurrentMemoryBytes(); cur != tc.wantResizeB {
+				t.Errorf("resizer.CurrentMemoryBytes() = %d, want %d", cur, tc.wantResizeB)
+			}
+			if _, ok := gotResizeBody[tc.wantReqField]; !ok {
+				t.Errorf("vm.resize body missing %q; got %v", tc.wantReqField, gotResizeBody)
+			}
+		})
+	}
+}
+
+func TestMemoryMode_LazyLoad(t *testing.T) {
+	const mib = 1024 * 1024
+	dir := testSocketDir(t)
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"state":"Running","config":{"memory":{"size":` + itoa(8192*mib) + `},"balloon":{"size":` + itoa(6144*mib) + `}}}`))
+	})
+	ln, err := net.Listen("unix", d.socketPath(id))
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	if got := d.MemoryMode(id); got != driver.MemoryModeBalloon {
+		t.Errorf("MemoryMode (lazy) = %v, want MemoryModeBalloon", got)
 	}
 }
 
