@@ -185,8 +185,10 @@ func findHerdrWorkspaceID(workspaceListOut, repoPath string) (string, error) {
 	return "", fmt.Errorf("repo %s is not open as a herdr workspace; open it in herdr first", repoPath)
 }
 
-// parseHerdrWorktreeCreateWS scans `herdr worktree create` output for the
-// JSON line {"ws":"<id>","linked":true} and returns the workspace ID.
+// parseHerdrWorktreeCreateWS scans `herdr worktree create` output and returns
+// the workspace ID. Accepts legacy {"ws":"<id>"} lines (herdr <0.9.0) and the
+// herdr 0.9.0+ result envelope (result.workspace.workspace_id,
+// result.worktree.open_workspace_id, result.workspace_id).
 func parseHerdrWorktreeCreateWS(out string) string {
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -194,10 +196,31 @@ func parseHerdrWorktreeCreateWS(out string) string {
 			continue
 		}
 		var v struct {
-			WS string `json:"ws"`
+			WS     string `json:"ws"`
+			Result struct {
+				WorkspaceID string `json:"workspace_id"`
+				Workspace   struct {
+					WorkspaceID string `json:"workspace_id"`
+				} `json:"workspace"`
+				Worktree struct {
+					OpenWorkspaceID string `json:"open_workspace_id"`
+				} `json:"worktree"`
+			} `json:"result"`
 		}
-		if json.Unmarshal([]byte(line), &v) == nil && v.WS != "" {
+		if json.Unmarshal([]byte(line), &v) != nil {
+			continue
+		}
+		if v.WS != "" {
 			return v.WS
+		}
+		if v.Result.Workspace.WorkspaceID != "" {
+			return v.Result.Workspace.WorkspaceID
+		}
+		if v.Result.Worktree.OpenWorkspaceID != "" {
+			return v.Result.Worktree.OpenWorkspaceID
+		}
+		if v.Result.WorkspaceID != "" {
+			return v.Result.WorkspaceID
 		}
 	}
 	return ""
@@ -335,7 +358,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		ws := parseHerdrWorktreeCreateWS(createOut)
 		if ws == "" {
-			return errorResult(fmt.Errorf("delegate_worktree_create: herdr worktree create: no {\"ws\":...} line in output\n%s", createOut)), nil, nil
+			return errorResult(fmt.Errorf("delegate_worktree_create: herdr worktree create: no workspace_id ({\"ws\":...} or result.workspace.workspace_id) in output\n%s", createOut)), nil, nil
 		}
 
 		bindOut, err := runHostCLI(ctx, "herdr", "worktree-sandbox", ws)

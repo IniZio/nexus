@@ -1049,3 +1049,58 @@ func TestPreflightCaptureSize_InfoError_ENOENT_NotFailClosed(t *testing.T) {
 		t.Fatalf("ENOENT in d.Info() must NOT trip the fail-closed guard (vanished entry, no undercount); got: %v", err)
 	}
 }
+
+func TestForceIncludeContainerfile_DockerignoreExcludesNexus(t *testing.T) {
+	src := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(src, ".nexus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".nexus", "Containerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".nexus", "config.yaml"), []byte("key: value\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".dockerignore"), []byte(".nexus\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pm, err := loadDockerIgnore(src)
+	if err != nil {
+		t.Fatalf("loadDockerIgnore: %v", err)
+	}
+	allPatterns := append([]string(nil), nexusAlwaysExclude...)
+	if pm != nil {
+		for _, p := range pm.Patterns() {
+			allPatterns = append(allPatterns, p.String())
+		}
+	}
+	combinedPM, err := patternmatcher.New(allPatterns)
+	if err != nil {
+		t.Fatalf("patternmatcher.New: %v", err)
+	}
+
+	staging, cleanup, err := filteredWorktreeDir(src, combinedPM, "")
+	if err != nil {
+		t.Fatalf("filteredWorktreeDir: %v", err)
+	}
+	defer cleanup()
+
+	if err := forceIncludeContainerfile(src, staging); err != nil {
+		t.Fatalf("forceIncludeContainerfile: %v", err)
+	}
+
+	cfPath := filepath.Join(staging, ".nexus", "Containerfile")
+	data, err := os.ReadFile(cfPath)
+	if err != nil {
+		t.Fatalf(".nexus/Containerfile absent from staging: %v", err)
+	}
+	if string(data) != "FROM scratch\n" {
+		t.Errorf("Containerfile content = %q, want %q", string(data), "FROM scratch\n")
+	}
+
+	if _, err := os.Stat(filepath.Join(staging, ".nexus", "config.yaml")); err == nil {
+		t.Error(".nexus/config.yaml should be excluded by .dockerignore but was found in staging")
+	}
+}

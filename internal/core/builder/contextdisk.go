@@ -81,6 +81,11 @@ func ContextToDisk(ctx context.Context, contextDir string, outExt4 string) error
 		return fmt.Errorf("contextdisk: filter context: %w", err)
 	}
 	defer cleanup()
+
+	if err := forceIncludeContainerfile(contextDir, filtered); err != nil {
+		return fmt.Errorf("contextdisk: force-include Containerfile: %w", err)
+	}
+
 	packDir := filtered
 
 	dataBytes, err := dirSizeBytes(packDir)

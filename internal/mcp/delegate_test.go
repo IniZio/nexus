@@ -369,6 +369,73 @@ func TestDelegateWorktreeCreate_HerdrMissing(t *testing.T) {
 	}
 }
 
+func TestParseHerdrWorktreeCreateWS(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "legacy ws line",
+			in:   `{"ws":"wNEW","linked":true}` + "\n",
+			want: "wNEW",
+		},
+		{
+			name: "herdr 0.9.0 result envelope",
+			in: `{"id":"cli:worktree:create","result":{"root_pane":{},"tab":{},"type":"worktree_created",` +
+				`"workspace":{"active_tab_id":"wA2:t1","label":"nexus-probe-tmp","workspace_id":"wA2","worktree":{}}` +
+				`,"worktree":{"branch":"nexus-probe-tmp","is_linked_worktree":true,"open_workspace_id":"wA2","path":"/home/newman/.herdr/worktrees/groundwork/nexus-probe-tmp"}}}` + "\n",
+			want: "wA2",
+		},
+		{
+			name: "no id line",
+			in:   "not json\nstill not json\n",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseHerdrWorktreeCreateWS(tc.in)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDelegateWorktreeCreate_Herdr090Format(t *testing.T) {
+	repo := t.TempDir()
+	newFormat := `{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"wA2","label":"nexus-probe-tmp"},"worktree":{"branch":"feat/x","is_linked_worktree":true,"open_workspace_id":"wA2","path":"/wt/path"}}}` + "\n"
+	canned := happyCanned(repo, "feat/x")
+	canned["worktree create"] = newFormat
+	canned["herdr list"] = "label=x\tworkspace_id=wA2\thandle=repo/branch\tsandbox_id=sb-1\tpane_id=\n"
+	canned["worktree list"] = `{"result":{"worktrees":[{"branch":"feat/x","path":"/wt/path","is_linked_worktree":true}]}}`
+
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	rec := installHostCLIRecorder(t, canned)
+
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_worktree_create", map[string]any{
+		"repo_path": repo,
+		"branch":    "feat/x",
+	})
+	text := resultText(t, res)
+	if res.IsError {
+		t.Fatalf("tool returned error: %s", text)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("data unmarshal: %v", err)
+	}
+	if got, _ := data["workspace_id"].(string); got != "wA2" {
+		t.Errorf("workspace_id = %q, want %q (data=%v)", got, "wA2", data)
+	}
+	if _, found := rec.find("herdr worktree-sandbox"); !found {
+		t.Errorf("herdr worktree-sandbox not called; calls=%+v", rec.calls)
+	}
+}
+
 // TestDelegateAgentDispatch_PrependsStandingOrders drives delegate_agent_dispatch
 // through the MCP server with a fake host executor and asserts the brief the
 // guest receives starts with the standing orders and ends with the caller's text.

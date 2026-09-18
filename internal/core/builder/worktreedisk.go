@@ -156,6 +156,10 @@ func WorktreeToDiskWithExtra(ctx context.Context, srcDir, outExt4 string, maxByt
 	}
 	defer cleanup()
 
+	if err := forceIncludeContainerfile(srcDir, filtered); err != nil {
+		return fmt.Errorf("worktreedisk: force-include Containerfile: %w", err)
+	}
+
 	dataBytes, err := dirSizeBytes(filtered)
 	if err != nil {
 		return fmt.Errorf("worktreedisk: measure filtered dir: %w", err)
