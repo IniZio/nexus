@@ -1,0 +1,235 @@
+diff --git c/Cargo.toml w/Cargo.toml
+index 2f03eb8..404f49b 100644
+--- c/Cargo.toml
++++ w/Cargo.toml
+@@ -31,7 +31,7 @@ futures = { version = "0.3", features = ["thread-pool"] }
+ libc = "0.2.177"
+ log = "0.4"
+ libseccomp-sys = { version = "0.2", optional = true }
+-clap = { version = "4", features = ["derive"] }
++clap = { version = "4", features = ["derive", "env"] }
+ postcard = { version = "1.0", features = ["use-std"] }
+ serde = { version = "1.0", features = ["derive"] }
+ vhost-user-backend = "0.17.0"
+diff --git c/src/main.rs w/src/main.rs
+index d4c72e7..69ccaa9 100644
+--- c/src/main.rs
++++ w/src/main.rs
+@@ -412,6 +412,10 @@ struct Opt {
+     /// This parameter is ignored on the destination side.
+     #[arg(long = "migration-confirm-paths")]
+     migration_confirm_paths: bool,
++
++    /// Allow any guest uid/gid to read and write all files (opt-in; also enabled by VIRTIOFSD_FAKE_OWNER=1).
++    #[arg(long = "fake-owner", env = "VIRTIOFSD_FAKE_OWNER")]
++    fake_owner: bool,
+ }
+ 
+ fn parse_compat(opt: Opt) -> Opt {
+@@ -843,9 +847,26 @@ fn main() {
+         migration_verify_handles: opt.migration_verify_handles,
+         migration_confirm_paths: opt.migration_confirm_paths,
+         migration_mode: opt.migration_mode,
+-        uid_map: Some(opt.translate_uid),
+-        gid_map: Some(opt.translate_gid),
++        uid_map: Some(if opt.fake_owner && opt.translate_uid.is_empty() {
++            vec![soft_idmap::cmdline::IdMap::SquashGuest {
++                from_guest: 0,
++                to_host: unsafe { libc::getuid() },
++                count: u32::MAX,
++            }]
++        } else {
++            opt.translate_uid
++        }),
++        gid_map: Some(if opt.fake_owner && opt.translate_gid.is_empty() {
++            vec![soft_idmap::cmdline::IdMap::SquashGuest {
++                from_guest: 0,
++                to_host: unsafe { libc::getgid() },
++                count: u32::MAX,
++            }]
++        } else {
++            opt.translate_gid
++        }),
+         guest_fd_limit,
++        fake_owner: opt.fake_owner,
+         ..Default::default()
+     };
+ 
+diff --git c/src/passthrough/mod.rs w/src/passthrough/mod.rs
+index 38f49db..759af1a 100644
+--- c/src/passthrough/mod.rs
++++ w/src/passthrough/mod.rs
+@@ -390,6 +390,8 @@ pub struct Config {
+     ///
+     /// The default is `u64::MAX`.
+     pub guest_fd_limit: u64,
++
++    pub fake_owner: bool,
+ }
+ 
+ impl Default for Config {
+@@ -422,6 +424,7 @@ impl Default for Config {
+             uid_map: None,
+             gid_map: None,
+             guest_fd_limit: u64::MAX,
++            fake_owner: false,
+         }
+     }
+ }
+@@ -1465,6 +1468,9 @@ impl PassthroughFs {
+         ctx: &Context,
+         extensions: &Extensions,
+     ) -> io::Result<Option<UnixCredentialsGuard>> {
++        if self.cfg.fake_owner {
++            return Ok(None);
++        }
+         let host_uid = self.map_guest_uid(ctx.uid)?;
+         let host_gid = self.map_guest_gid(ctx.gid)?;
+         let supp_gid = extensions
+@@ -1498,6 +1504,14 @@ impl PassthroughFs {
+     }
+ }
+ 
++fn fake_mode(mode: u32) -> u32 {
++    if mode & 0o170000 == 0o040000 {
++        mode | 0o777
++    } else {
++        mode | 0o666 | if mode & 0o111 != 0 { 0o111 } else { 0 }
++    }
++}
++
+ impl FileSystem for PassthroughFs {
+     type Inode = Inode;
+     type Handle = Handle;
+@@ -1596,7 +1610,13 @@ impl FileSystem for PassthroughFs {
+     }
+ 
+     fn lookup(&self, _ctx: Context, parent: Inode, name: &CStr) -> io::Result<Entry> {
+-        self.do_lookup(parent, name)
++        let mut entry = self.do_lookup(parent, name)?;
++        if self.cfg.fake_owner {
++            entry.attr.uid = GuestUid::from(0u32);
++            entry.attr.gid = GuestGid::from(0u32);
++            entry.attr.mode = fake_mode(entry.attr.mode);
++        }
++        Ok(entry)
+     }
+ 
+     fn forget(&self, _ctx: Context, inode: Inode, count: u64) {
+@@ -1666,7 +1686,13 @@ impl FileSystem for PassthroughFs {
+             }
+         }
+ 
+-        self.do_lookup(parent, name)
++        let mut entry = self.do_lookup(parent, name)?;
++        if self.cfg.fake_owner {
++            entry.attr.uid = GuestUid::from(0u32);
++            entry.attr.gid = GuestGid::from(0u32);
++            entry.attr.mode = fake_mode(entry.attr.mode);
++        }
++        Ok(entry)
+     }
+ 
+     fn rmdir(&self, _ctx: Context, parent: Inode, name: &CStr) -> io::Result<()> {
+@@ -1793,6 +1819,12 @@ impl FileSystem for PassthroughFs {
+             _ => {}
+         };
+ 
++        let mut entry = entry;
++        if self.cfg.fake_owner {
++            entry.attr.uid = GuestUid::from(0u32);
++            entry.attr.gid = GuestGid::from(0u32);
++            entry.attr.mode = fake_mode(entry.attr.mode);
++        }
+         Ok((entry, Some(handle), opts))
+     }
+ 
+@@ -1868,7 +1900,13 @@ impl FileSystem for PassthroughFs {
+         inode: Inode,
+         _handle: Option<Handle>,
+     ) -> io::Result<(fuse::Attr, Duration)> {
+-        self.do_getattr(inode)
++        let (mut attr, dur) = self.do_getattr(inode)?;
++        if self.cfg.fake_owner {
++            attr.uid = GuestUid::from(0u32);
++            attr.gid = GuestGid::from(0u32);
++            attr.mode = fake_mode(attr.mode);
++        }
++        Ok((attr, dur))
+     }
+ 
+     fn setattr(
+@@ -1908,8 +1946,7 @@ impl FileSystem for PassthroughFs {
+             Data::ProcPath(pathname)
+         };
+ 
+-        if valid.contains(SetattrValid::MODE) {
+-            // Safe because this doesn't modify any memory and we check the return value.
++        if valid.contains(SetattrValid::MODE) && !self.cfg.fake_owner {
+             let res = unsafe {
+                 match data {
+                     Data::Handle(_, fd) => libc::fchmod(fd, attr.mode),
+@@ -1923,7 +1960,7 @@ impl FileSystem for PassthroughFs {
+             }
+         }
+ 
+-        if valid.intersects(SetattrValid::UID | SetattrValid::GID) {
++        if !self.cfg.fake_owner && valid.intersects(SetattrValid::UID | SetattrValid::GID) {
+             let uid = if valid.contains(SetattrValid::UID) {
+                 self.map_guest_uid(attr.uid)?.into_inner()
+             } else {
+@@ -2118,7 +2155,13 @@ impl FileSystem for PassthroughFs {
+                 return Err(e);
+             }
+         }
+-        self.do_lookup(parent, name)
++        let mut entry = self.do_lookup(parent, name)?;
++        if self.cfg.fake_owner {
++            entry.attr.uid = GuestUid::from(0u32);
++            entry.attr.gid = GuestGid::from(0u32);
++            entry.attr.mode = fake_mode(entry.attr.mode);
++        }
++        Ok(entry)
+     }
+ 
+     fn link(
+@@ -2152,7 +2195,13 @@ impl FileSystem for PassthroughFs {
+             self.after_invalidating_path(invalidated_inode, "Overwrote (via link)");
+         }
+         if res == 0 {
+-            self.do_lookup(newparent, newname)
++            let mut entry = self.do_lookup(newparent, newname)?;
++            if self.cfg.fake_owner {
++                entry.attr.uid = GuestUid::from(0u32);
++                entry.attr.gid = GuestGid::from(0u32);
++                entry.attr.mode = fake_mode(entry.attr.mode);
++            }
++            Ok(entry)
+         } else {
+             Err(io::Error::last_os_error())
+         }
+@@ -2194,7 +2243,13 @@ impl FileSystem for PassthroughFs {
+             }
+         }
+ 
+-        self.do_lookup(parent, name)
++        let mut entry = self.do_lookup(parent, name)?;
++        if self.cfg.fake_owner {
++            entry.attr.uid = GuestUid::from(0u32);
++            entry.attr.gid = GuestGid::from(0u32);
++            entry.attr.mode = fake_mode(entry.attr.mode);
++        }
++        Ok(entry)
+     }
+ 
+     fn readlink(&self, _ctx: Context, inode: Inode) -> io::Result<Vec<u8>> {
+@@ -2281,6 +2336,9 @@ impl FileSystem for PassthroughFs {
+     }
+ 
+     fn access(&self, ctx: Context, inode: Inode, mask: u32) -> io::Result<()> {
++        if self.cfg.fake_owner {
++            return Ok(());
++        }
+         let data = self.inodes.get(inode).ok_or_else(ebadf)?;
+         let inode_file = data.get_file()?;
+         let st = statx(&inode_file, None)?.st;
