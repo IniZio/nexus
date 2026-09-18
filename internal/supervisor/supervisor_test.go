@@ -826,6 +826,9 @@ func TestBuildSupervisorDriverConfig_BalloonMode(t *testing.T) {
 	if got.MemoryMiB != 8192 {
 		t.Errorf("MemoryMiB = %d, want 8192 (balloon-mode: VM must boot at ceiling)", got.MemoryMiB)
 	}
+	if got.MemoryMaxMiB != 0 {
+		t.Errorf("MemoryMaxMiB = %d, want 0 (balloon-mode: no virtio-mem hotplug region; CH driver rejects MemoryMaxMiB==MemoryMiB)", got.MemoryMaxMiB)
+	}
 	if got.BalloonMiB != 6144 {
 		t.Errorf("BalloonMiB = %d, want 6144", got.BalloonMiB)
 	}

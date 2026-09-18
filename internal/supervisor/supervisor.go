@@ -937,6 +937,9 @@ func RunDetached(cfg Config) error {
 			AgentCfgLowerGuestPath: agentCfgLowerGuestPath,
 			MCPServers:             mcpServersForSeed,
 			UserMounts:             userMountsForSeed,
+			HostUID:                os.Getuid(),
+			HostGID:                os.Getgid(),
+			HostUIDSeeder:          service.NewGuestFileSeeder(agentClient, service.GuestHostUIDEnvPath),
 			// IsHumanGitVM: true for human git-VM sandboxes (no agent). Enables
 			// the SSH→HTTPS remote rewrite in probeAndSeedGuest so "git push"
 			// routes through the MITM proxy on this boot and every restart.
@@ -1308,6 +1311,8 @@ func ProbeGuestAgent(ctx context.Context, prober GuestProber, retryDelay time.Du
 // tests replace it with a spy to verify the call without a live VM (D-M4).
 var seedShellProfileFn = service.SeedGuestShellProfile
 
+var seedHostUIDFn = service.SeedGuestHostUID
+
 // seedAgentOnboardingFn is the function called by probeAndSeedGuest to write
 // the claude CLI onboarding state. Default is service.SeedGuestAgentOnboarding;
 // tests replace it with a spy to verify the call without a live VM (D-J10).
@@ -1512,6 +1517,9 @@ type guestSeedInputs struct {
 	// is skipped — the live mount is the direct source, no overlay needed.
 	HasClaudeRWMount bool
 	ClaudeHostHome   string // host home dir when HasClaudeRWMount; "" or "/root" skips companion symlink
+	HostUID          int
+	HostGID          int
+	HostUIDSeeder    service.GuestSeeder
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -1571,13 +1579,18 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 	// proxy/seeding split so whether a shell picks up a credential does not depend
 	// on which seeding branch this sandbox takes. The drop-in carries no credential
 	// itself; it is harmless when cred.env never arrives (no MITM proxy).
-	if profErr := seedShellProfileFn(ctx, id, in.ProfileSeeder); profErr != nil {
+	if profErr := seedShellProfileFn(ctx, id, in.HostUID, in.HostGID, in.ProfileSeeder); profErr != nil {
 		slog.Warn("supervisor.shell_profile_seed_failed",
 			"sandbox", id, "path", service.GuestShellProfilePath, "err", profErr,
 			"action", "interactively started agents in this guest will lack credentials")
 	} else {
 		slog.Info("supervisor.shell_profile_seeded",
 			"sandbox", id, "path", service.GuestShellProfilePath)
+	}
+
+	if uidErr := seedHostUIDFn(ctx, id, in.HostUID, in.HostGID, in.HostUIDSeeder); uidErr != nil {
+		slog.Warn("supervisor.host_uid_seed_failed",
+			"sandbox", id, "path", service.GuestHostUIDEnvPath, "err", uidErr)
 	}
 
 	// Claude CLI onboarding seed (D-J10). Writes ~/.claude.json so an
@@ -2004,8 +2017,10 @@ func buildSupervisorDriverConfig(
 	extraDisks []cloudhypervisor.ExtraDisk,
 ) cloudhypervisor.Config {
 	memMiB := cfg.MemoryMiB
+	effectiveMemMaxMiB := memMaxMiB
 	if cfg.BalloonMiB > 0 {
 		memMiB = memMaxMiB
+		effectiveMemMaxMiB = 0
 	}
 	return cloudhypervisor.Config{
 		BinaryPath:        cfg.CHBin,
@@ -2014,7 +2029,7 @@ func buildSupervisorDriverConfig(
 		DiskImagePath:     cfg.DiskPath,
 		StartTimeout:      30 * time.Second,
 		MemoryMiB:         memMiB,
-		MemoryMaxMiB:      memMaxMiB,
+		MemoryMaxMiB:      effectiveMemMaxMiB,
 		BalloonMiB:        cfg.BalloonMiB,
 		VCPUs:             cfg.BootVCPUs, // boot_vcpus — see doc comment above
 		VCPUMax:           vcpuMax,
