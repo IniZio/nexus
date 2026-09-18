@@ -3,6 +3,7 @@ package govern
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -11,50 +12,24 @@ import (
 	"github.com/IniZio/nexus/internal/core/resize"
 )
 
-// Clock abstracts wall time for testability. All time-dependent code in the
-// governor uses clock.Now() and clock.After() so tests can inject a controlled
-// timeline without sleeping or spinning on real timers.
 type Clock interface {
 	Now() time.Time
 	After(d time.Duration) <-chan time.Time
 }
 
-// realClock is the production Clock backed by the real wall clock.
 type realClock struct{}
 
 func (realClock) Now() time.Time                         { return time.Now() }
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-// AxisEvaluator is the hook the poll loop calls after each valid telemetry
-// sample. Each resize axis (memory, disk, CPU) implements one and registers
-// it via Governor.RegisterAxis before Run.
-//
-// disk.go and cpu.go add axes without editing memory.go or loop.go — that
-// is the seam that prevents parallel-slice collision on safety-critical code.
 type AxisEvaluator interface {
 	Evaluate(ctx context.Context)
 }
 
-// axisEvalFunc adapts a func(context.Context) to AxisEvaluator so the memory
-// axis can be registered as a plain method value.
 type axisEvalFunc func(ctx context.Context)
 
 func (f axisEvalFunc) Evaluate(ctx context.Context) { f(ctx) }
 
-// Governor is the single-tenant auto-resize control loop for one sandbox.
-//
-// It polls the guest for telemetry over vsock (D-DC-10, D-DC-11) and calls
-// each registered AxisEvaluator. The memory axis (memory.go) applies its
-// control law and guards grows against host RAM exhaustion via HasHeadroom
-// (hostheadroom.go); the disk and vCPU axes apply their own control laws
-// without a RAM headroom check.
-//
-// Single-tenant design: OLD-nexus maintains a workspaceID-keyed map of states
-// for N workspaces. nexus drops the map entirely — one Governor per supervisor
-// process, one sandbox per supervisor, no workspaceID parameters anywhere
-// (D-DC-12).
-//
-// Construct with New and run with Run.
 type Governor struct {
 	resizer   resize.MemoryResizer
 	telemetry resize.TelemetrySource
@@ -62,56 +37,28 @@ type Governor struct {
 	bounds    resize.Bounds
 	clock     Clock
 
-	// transient control-law state — all fields accessed only from the Run
-	// goroutine; no locking required.
 	growCount           int
 	shrinkCount         int
 	lastResizeTime      time.Time
 	lastResizeWasShrink bool
-	// grewOnce is set on the first memory grow attempt; until then the memory
-	// axis skips the post-resize cooldown for a grow (F13, see evaluate).
-	grewOnce       bool
-	latest         resize.Sample
-	lastSampleTime time.Time
-	// prevSwapUsed is the SwapUsed (bytes) from the sample before g.latest.
-	// Used by sampleWantsGrow as the reference point for the flow gate
-	// (D-RAM-10): grow fires only when SwapUsed has increased since the
-	// previous sample. Updated immediately before g.latest is overwritten each
-	// poll cycle so evaluate() always sees the prior sample's value.
-	prevSwapUsed uint64
-	// prevSwapInPages is the cumulative pswpin from the sample before g.latest;
-	// sampleWantsShrink refuses while g.latest.SwapInPages exceeds it.
-	prevSwapInPages uint64
-	agentOutdated   bool
-	pollErrLogged   bool
-	axes            []AxisEvaluator
+	grewOnce            bool
+	latest              resize.Sample
+	lastSampleTime      time.Time
+	prevSwapUsed        uint64
+	prevSwapInPages     uint64
+	agentOutdated       bool
+	pollErrLogged       bool
+	axes                []AxisEvaluator
 }
 
-// Config is the Governor's construction parameters.
 type Config struct {
-	// Resizer is the MemoryResizer to call for grow and shrink operations.
-	// Must not be nil.
-	Resizer resize.MemoryResizer
-
-	// Telemetry is the source of guest telemetry samples. Must not be nil.
-	// In production: NewVsockTelemetry(drv, id). In tests: a fake.
+	Resizer   resize.MemoryResizer
 	Telemetry resize.TelemetrySource
-
-	// Headroom checks host memory availability before each memory-axis grow.
-	// When nil, NewProcfsHeadroom() is used (reads /proc/meminfo on the host).
-	// The disk and vCPU axes do not call this reader.
-	Headroom HostHeadroomReader
-
-	// Bounds carries the per-sandbox resource ceilings. When MemMinBytes or
-	// MemMaxBytes is zero (or min >= max), the governor runs in passive mode
-	// (it polls but never resizes).
-	Bounds resize.Bounds
-
-	// Clock controls time for testability. When nil, realClock is used.
-	Clock Clock
+	Headroom  HostHeadroomReader
+	Bounds    resize.Bounds
+	Clock     Clock
 }
 
-// New constructs a Governor from cfg.
 func New(cfg Config) *Governor {
 	if cfg.Resizer == nil {
 		panic("govern.New: Resizer must not be nil")
@@ -134,105 +81,125 @@ func New(cfg Config) *Governor {
 		bounds:    cfg.Bounds,
 		clock:     clk,
 	}
-	// Wire the memory axis. disk.go and cpu.go call RegisterAxis to add theirs
-	// without editing memory.go or loop.go.
 	g.axes = []AxisEvaluator{axisEvalFunc(g.evaluate)}
 	return g
 }
 
-// RegisterAxis appends a to the governor's per-sample evaluation chain.
-// Must be called before Run. disk.go and cpu.go use this to attach their
-// axes without editing memory.go or loop.go.
 func (g *Governor) RegisterAxis(a AxisEvaluator) {
 	g.axes = append(g.axes, a)
 }
 
-// Run starts the adaptive polling loop. It blocks until ctx is cancelled.
-// Intended to run as a goroutine inside the detached supervisor process.
-//
-// Boot delay (memoryResizeBootDelay = 10 s) gives the guest time to settle
-// before the first sample; this mirrors OLD memoryResizeBootDelay.
-//
-// Adaptive interval: 5 s nominal, 2 s once a sample shows pressure.
+// streamWatchdog: silence budget before declaring the push stream dead and reconnecting (3× nominal eval interval).
+const streamWatchdog = 3 * memoryEvalInterval
+
+const (
+	streamBackoffMin = 1 * time.Second
+	streamBackoffMax = 30 * time.Second
+)
+
+// Run starts the adaptive sampling loop; blocks until ctx cancelled.
+// Boot delay removed: first evaluation fires on the first validated sample.
+// When telemetry implements TelemetryStream the push path is used; a watchdog
+// reconnects after streamWatchdog silence; ErrStreamUnsupported falls back
+// permanently to Poll; governor polls during every reconnect backoff.
 func (g *Governor) Run(ctx context.Context) {
-	// Guard: skip the poll loop when bounds are unconfigured. Without this gate
-	// every sandbox that does not opt into auto-resize dials vsock:3002 on every
-	// poll cycle and fills the log with govern.poll_error (~17k/day per sandbox).
-	// Passive-mode logic inside evaluate() is not sufficient: it only suppresses
-	// resizes, not polls. One Info line is all that is needed.
 	if g.bounds.MemMinBytes == 0 || g.bounds.MemMaxBytes == 0 ||
 		g.bounds.MemMinBytes >= g.bounds.MemMaxBytes {
 		slog.Info("govern.loop.skipped", "reason", "bounds_not_configured")
 		return
 	}
-
-	// Boot delay.
-	select {
-	case <-ctx.Done():
-		return
-	case <-g.clock.After(memoryResizeBootDelay):
-	}
-
 	slog.Info("govern.loop.started",
 		"min_bytes", g.bounds.MemMinBytes,
 		"max_bytes", g.bounds.MemMaxBytes,
 	)
+	if streamer, ok := g.telemetry.(resize.TelemetryStream); ok {
+		g.runStream(ctx, streamer)
+	} else {
+		g.runPoll(ctx)
+	}
+}
 
-	interval := memoryEvalInterval
+func (g *Governor) runStream(ctx context.Context, streamer resize.TelemetryStream) {
+	backoff := streamBackoffMin
 	for {
-		// Poll with a timeout smaller than the eval interval.
-		pollCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		sample, pollErr := g.telemetry.Poll(pollCtx)
-		cancel()
-
 		if ctx.Err() != nil {
 			return
 		}
-
-		if pollErr != nil {
-			// Dedup poll_error: log only on first occurrence, clear on success.
-			// Follows the same agentOutdated pattern used for govern.sample_stale
-			// nine lines below — consistent treatment for the two transient fault
-			// modes in this loop.
-			if !g.pollErrLogged {
-				g.pollErrLogged = true
-				slog.Warn("govern.poll_error", "err", pollErr)
+		sampleCh, errCh, err := streamer.Stream(ctx)
+		if err != nil {
+			if resize.IsStreamUnsupported(err) {
+				slog.Info("govern.stream.unsupported", "reason", "old guest agent; falling back to poll permanently")
+				g.runPoll(ctx)
+				return
 			}
-		} else {
-			g.pollErrLogged = false
-			// Validate sample age. Reject stale samples to prevent a
-			// stale-sample resize cascade after VM suspend/resume.
-			age := g.clock.Now().Sub(sample.Timestamp)
-			if age < 0 {
-				age = -age // tolerate small clock skew
-			}
-			if age > resize.SampleMaxAge {
-				if !g.agentOutdated {
-					g.agentOutdated = true
-					slog.Warn("govern.sample_stale",
-						"age", age,
-						"max_age", resize.SampleMaxAge,
-					)
-				}
-			} else {
-				g.agentOutdated = false
-				g.acceptSample(ctx, sample)
-			}
+			slog.Warn("govern.stream.open_error", "err", err, "reconnect_in", backoff)
+			g.pollFallback(ctx, backoff)
+			backoff = min(backoff*2, streamBackoffMax)
+			continue
 		}
+		backoff = streamBackoffMin
+		if dead := g.driveStream(ctx, sampleCh, errCh); dead && ctx.Err() == nil {
+			g.pollFallback(ctx, backoff)
+			backoff = min(backoff*2, streamBackoffMax)
+		}
+	}
+}
 
-		// Adaptive interval: fast-poll while the guest shows grow pressure.
-		// The interval is read from g.latest AFTER evaluate returns, so the first
-		// shrink sample following a grow sample is evaluated at the 2s cadence
-		// (not 5s). Because the memory axis uses count-based shrink tracking, a
-		// 5-sample shrink run that immediately follows a grow sample spans
-		// 2+5+5+5+5=22s rather than the nominal 4×5=20s: a ~10% deviation, once
-		// per grow→shrink transition. CPU is unaffected (time-based window).
+func (g *Governor) driveStream(ctx context.Context, sampleCh <-chan resize.Sample, errCh <-chan error) (dead bool) {
+	watchdog := g.clock.After(streamWatchdog)
+	for {
+		select {
+		case s, ok := <-sampleCh:
+			if !ok {
+				return true
+			}
+			g.ingestSample(ctx, s)
+			watchdog = g.clock.After(streamWatchdog)
+		case err, ok := <-errCh:
+			if ok && err != nil {
+				slog.Warn("govern.stream.error", "err", err)
+			}
+			return true
+		case <-watchdog:
+			slog.Warn("govern.stream.watchdog_fired", "silence", streamWatchdog, "action", "reconnecting")
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+func (g *Governor) pollFallback(ctx context.Context, dur time.Duration) {
+	timeout := g.clock.After(dur)
+	for {
+		interval := memoryEvalInterval
 		if sampleWantsGrow(g.latest, g.prevSwapUsed) {
 			interval = memoryPressurePollInterval
-		} else {
-			interval = memoryEvalInterval
 		}
+		select {
+		case <-timeout:
+			return
+		case <-ctx.Done():
+			return
+		case <-g.clock.After(interval):
+			g.pollOnce(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+		}
+	}
+}
 
+func (g *Governor) runPoll(ctx context.Context) {
+	for {
+		g.pollOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		interval := memoryEvalInterval
+		if sampleWantsGrow(g.latest, g.prevSwapUsed) {
+			interval = memoryPressurePollInterval
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -241,10 +208,41 @@ func (g *Governor) Run(ctx context.Context) {
 	}
 }
 
-// acceptSample installs a fresh, non-stale sample as g.latest and runs every
-// axis over it. The previous g.latest's SwapUsed and SwapInPages are captured
-// first so the flow gates (D-RAM-10 grow, D-RAM-13 + HAN-941 shrink) compare
-// against the prior sample.
+func (g *Governor) pollOnce(ctx context.Context) {
+	pollCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	sample, pollErr := g.telemetry.Poll(pollCtx)
+	cancel()
+	if ctx.Err() != nil {
+		return
+	}
+	if pollErr != nil {
+		if !g.pollErrLogged {
+			g.pollErrLogged = true
+			slog.Warn("govern.poll_error", "err", pollErr)
+		}
+		return
+	}
+	g.pollErrLogged = false
+	g.ingestSample(ctx, sample)
+}
+
+// ingestSample validates age and, if fresh, stores the sample and runs all axes (shared by stream and poll paths).
+func (g *Governor) ingestSample(ctx context.Context, sample resize.Sample) {
+	age := g.clock.Now().Sub(sample.Timestamp)
+	if age < 0 {
+		age = -age
+	}
+	if age > resize.SampleMaxAge {
+		if !g.agentOutdated {
+			g.agentOutdated = true
+			slog.Warn("govern.sample_stale", "age", age, "max_age", resize.SampleMaxAge)
+		}
+		return
+	}
+	g.agentOutdated = false
+	g.acceptSample(ctx, sample)
+}
+
 func (g *Governor) acceptSample(ctx context.Context, sample resize.Sample) {
 	if g.latest.SwapTotalBytes > 0 && g.latest.SwapFreeBytes <= g.latest.SwapTotalBytes {
 		g.prevSwapUsed = g.latest.SwapTotalBytes - g.latest.SwapFreeBytes
@@ -259,49 +257,119 @@ func (g *Governor) acceptSample(ctx context.Context, sample resize.Sample) {
 	}
 }
 
-// vsockTelemetry implements resize.TelemetrySource via the proven DialGuest
-// path (HB-P7, D-DC-10). It dials vsock port resize.TelemetryVsockPort (3002)
-// on every Poll call, sends a SampleRequest, and decodes the SampleResponse.
-//
-// There is no OLD-nexus equivalent: OLD used event-driven guest→host push;
-// nexus uses host→guest polling so no host-side hybrid-vsock listener is
-// needed.
 type vsockTelemetry struct {
 	dialer driver.GuestDialer
 	id     domain.SandboxID
 }
 
-// NewVsockTelemetry returns a resize.TelemetrySource that polls the guest via
-// vsock using the DialGuest path (D-DC-10, proven in production by the
-// port-forward mux and sshd bridge).
 func NewVsockTelemetry(dialer driver.GuestDialer, id domain.SandboxID) resize.TelemetrySource {
 	return &vsockTelemetry{dialer: dialer, id: id}
 }
 
-// Poll implements resize.TelemetrySource.
 func (v *vsockTelemetry) Poll(ctx context.Context) (resize.Sample, error) {
 	conn, err := v.dialer.DialGuest(ctx, v.id, resize.TelemetryVsockPort)
 	if err != nil {
-		return resize.Sample{}, fmt.Errorf("govern: vsock dial port %d: %w",
-			resize.TelemetryVsockPort, err)
+		return resize.Sample{}, fmt.Errorf("govern: vsock dial port %d: %w", resize.TelemetryVsockPort, err)
 	}
 	defer conn.Close()
-
-	// Apply context deadline to the connection so we don't block indefinitely.
 	if dl, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(dl); err != nil {
 			return resize.Sample{}, fmt.Errorf("govern: set vsock deadline: %w", err)
 		}
 	}
-
 	if err := resize.EncodeSampleRequest(conn); err != nil {
 		return resize.Sample{}, fmt.Errorf("govern: send sample request: %w", err)
 	}
-
 	resp, err := resize.DecodeSampleResponse(conn)
 	if err != nil {
 		return resize.Sample{}, fmt.Errorf("govern: decode sample response: %w", err)
 	}
-
 	return resp.Sample, nil
+}
+
+// Stream implements TelemetryStream. Decodes the first frame synchronously; returns ErrStreamUnsupported when
+// the guest closes without a frame (io.EOF) or sends "unknown kind", so Run falls back to Poll permanently.
+// First-frame detection is bounded by a 10 s deadline so a hanging connection does not block the governor.
+func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-chan error, error) {
+	conn, err := v.dialer.DialGuest(ctx, v.id, resize.TelemetryVsockPort)
+	if err != nil {
+		return nil, nil, fmt.Errorf("govern: vsock dial port %d for stream: %w", resize.TelemetryVsockPort, err)
+	}
+	if err := resize.EncodeStreamRequest(conn); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("govern: send stream request: %w", err)
+	}
+
+	// Apply a poll-timeout deadline for first-frame detection. A legacy guest
+	// that does not understand "sample.stream" may close immediately (io.EOF)
+	// or hang; either is treated as ErrStreamUnsupported so Run falls back to Poll.
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("govern: stream setup deadline: %w", err)
+	}
+
+	dec := resize.NewStreamDecoder(conn)
+	type firstResult struct {
+		s   resize.Sample
+		err error
+	}
+	firstCh := make(chan firstResult, 1)
+	go func() {
+		s, err := dec.Next()
+		firstCh <- firstResult{s, err}
+	}()
+
+	var first firstResult
+	select {
+	case first = <-firstCh:
+	case <-ctx.Done():
+		conn.Close()
+		return nil, nil, ctx.Err()
+	}
+
+	if first.err != nil {
+		conn.Close()
+		// io.EOF means the peer closed the connection without sending any frame —
+		// equivalent to "unknown kind": the guest does not support streaming.
+		// Deadline expiry also surfaces as a timeout error; treat both as unsupported.
+		if first.err == io.EOF || resize.IsStreamUnsupported(first.err) {
+			return nil, nil, fmt.Errorf("govern: stream setup: %w", resize.ErrStreamUnsupported)
+		}
+		return nil, nil, fmt.Errorf("govern: stream first frame: %w", first.err)
+	}
+
+	// First frame received — clear the deadline so the live stream is not time-limited.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("govern: clear stream deadline: %w", err)
+	}
+
+	sampleCh := make(chan resize.Sample, 16)
+	errCh := make(chan error, 1)
+	sampleCh <- first.s
+
+	go func() {
+		defer conn.Close()
+		defer close(sampleCh)
+		defer close(errCh)
+		for {
+			s, err := dec.Next()
+			if err != nil {
+				if err != io.EOF {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+				return
+			}
+			select {
+			case sampleCh <- s:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return sampleCh, errCh, nil
 }
