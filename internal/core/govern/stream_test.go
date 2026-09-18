@@ -353,12 +353,7 @@ func (f *fakeDialer) DialGuest(ctx context.Context, _ domain.SandboxID, _ uint32
 	return f.dialFn(ctx)
 }
 
-// TestVsockStreamFirstFrameEOFIsUnsupported reproduces the regression where a legacy
-// guest (or the integration test's fake vsock server) closes the connection after
-// receiving a "sample.stream" request without sending any frame. Before the fix,
-// vsockTelemetry.Stream() returned closed channels (not ErrStreamUnsupported), so
-// runStream looped forever without falling back to Poll and the governor never fired.
-func TestVsockStreamFirstFrameEOFIsUnsupported(t *testing.T) {
+func TestVsockStreamFirstFrameEOFIsTransient(t *testing.T) {
 	t.Parallel()
 
 	client, server := net.Pipe()
@@ -373,9 +368,72 @@ func TestVsockStreamFirstFrameEOFIsUnsupported(t *testing.T) {
 
 	_, _, err := v.Stream(context.Background())
 	if err == nil {
-		t.Fatal("Stream() returned nil error; want ErrStreamUnsupported")
+		t.Fatal("Stream() returned nil error; want transient error")
 	}
-	if !resize.IsStreamUnsupported(err) {
-		t.Errorf("Stream() error = %v; want IsStreamUnsupported", err)
+	if resize.IsStreamUnsupported(err) {
+		t.Errorf("Stream() returned ErrStreamUnsupported; want transient (not permanent downgrade)")
+	}
+	if !errors.Is(err, errStreamSetupTransient) {
+		t.Errorf("Stream() error = %v; want errStreamSetupTransient", err)
+	}
+}
+
+func TestStreamTransientRetriesAndSucceeds(t *testing.T) {
+	t.Parallel()
+	const boot = 2 * gib
+	resizer := newNotifyResizer(boot)
+	clk := newSafeFakeClock()
+
+	successCh := make(chan resize.Sample)
+	successErrCh := make(chan error, 1)
+	thirdCallSeen := make(chan struct{}, 1)
+
+	stream := &fakeStreamTelemetry{
+		openFn: func(n int) (<-chan resize.Sample, <-chan error, error) {
+			if n <= 2 {
+				return nil, nil, errStreamSetupTransient
+			}
+			select {
+			case thirdCallSeen <- struct{}{}:
+			default:
+			}
+			return successCh, successErrCh, nil
+		},
+	}
+	ps := growSample(uint64(boot))
+	ps.Timestamp = clk.Now()
+	stream.pollSample = ps
+
+	g := New(Config{
+		Resizer:   resizer,
+		Telemetry: stream,
+		Headroom:  &fakeHeadroom{ok: true},
+		Bounds:    resize.Bounds{MemMinBytes: boot, MemMaxBytes: boot * 4},
+		Clock:     clk,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.Run(ctx)
+
+	select {
+	case <-resizer.signal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("poll did not fire resize during backoff after first transient error")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	clk.Advance(streamBackoffMin + time.Second)
+
+	time.Sleep(20 * time.Millisecond)
+	clk.Advance(2*streamBackoffMin + time.Second)
+
+	select {
+	case <-thirdCallSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("governor did not reach third Stream() call; opens=%d", stream.Opens())
+	}
+	if stream.Opens() < 3 {
+		t.Errorf("expected ≥3 Stream() opens; got %d", stream.Opens())
 	}
 }

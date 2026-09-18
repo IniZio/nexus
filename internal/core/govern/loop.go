@@ -32,6 +32,8 @@ type axisEvalFunc func(ctx context.Context)
 
 func (f axisEvalFunc) Evaluate(ctx context.Context) { f(ctx) }
 
+var errStreamSetupTransient = errors.New("govern: stream setup transient")
+
 type Governor struct {
 	resizer   resize.MemoryResizer
 	telemetry resize.TelemetrySource
@@ -50,6 +52,7 @@ type Governor struct {
 	prevSwapInPages     uint64
 	agentOutdated       bool
 	pollErrLogged       bool
+	streamErrLogged     bool
 	axes                []AxisEvaluator
 }
 
@@ -137,10 +140,17 @@ func (g *Governor) runStream(ctx context.Context, streamer resize.TelemetryStrea
 				g.runPoll(ctx)
 				return
 			}
-			slog.Warn("govern.stream.open_error", "err", err, "reconnect_in", backoff)
+			if !g.streamErrLogged {
+				g.streamErrLogged = true
+				slog.Warn("govern.stream.open_error", "err", err, "reconnect_in", backoff)
+			}
 			g.pollFallback(ctx, backoff)
 			backoff = min(backoff*2, streamBackoffMax)
 			continue
+		}
+		if g.streamErrLogged {
+			g.streamErrLogged = false
+			slog.Info("govern.stream.connected")
 		}
 		backoff = streamBackoffMin
 		dead := g.driveStream(ctx, sampleCh, errCh)
@@ -298,9 +308,6 @@ func (v *vsockTelemetry) Poll(ctx context.Context) (resize.Sample, error) {
 	return resp.Sample, nil
 }
 
-// Stream implements TelemetryStream. Decodes the first frame synchronously; returns ErrStreamUnsupported when
-// the guest closes without a frame (io.EOF) or sends "unknown kind", so Run falls back to Poll permanently.
-// First-frame detection is bounded by a 10 s deadline so a hanging connection does not block the governor.
 func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-chan error, error) {
 	conn, err := v.dialer.DialGuest(ctx, v.id, resize.TelemetryVsockPort)
 	if err != nil {
@@ -336,10 +343,10 @@ func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-ch
 
 	if first.err != nil {
 		conn.Close()
-		if isStreamUnsupportedErr(first.err) {
+		if resize.IsStreamUnsupported(first.err) {
 			return nil, nil, fmt.Errorf("govern: stream setup: %w", resize.ErrStreamUnsupported)
 		}
-		return nil, nil, fmt.Errorf("govern: stream first frame: %w", first.err)
+		return nil, nil, fmt.Errorf("govern: stream first frame: %w", errStreamSetupTransient)
 	}
 
 	if err := conn.SetDeadline(time.Time{}); err != nil {
@@ -379,12 +386,4 @@ func (v *vsockTelemetry) Stream(ctx context.Context) (<-chan resize.Sample, <-ch
 	}()
 
 	return sampleCh, errCh, nil
-}
-
-func isStreamUnsupportedErr(err error) bool {
-	if err == io.EOF || errors.Is(err, io.ErrClosedPipe) || resize.IsStreamUnsupported(err) {
-		return true
-	}
-	var ne net.Error
-	return errors.As(err, &ne) && ne.Timeout()
 }
