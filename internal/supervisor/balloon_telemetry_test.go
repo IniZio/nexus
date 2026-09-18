@@ -3,6 +3,8 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +12,42 @@ import (
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/core/resize"
 )
+
+type testLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *testLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *testLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	h.records = append(h.records, r.Clone())
+	h.mu.Unlock()
+	return nil
+}
+func (h *testLogHandler) WithAttrs(_ []slog.Attr) slog.Handler  { return h }
+func (h *testLogHandler) WithGroup(_ string) slog.Handler       { return h }
+
+func (h *testLogHandler) count(msg string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.records {
+		if r.Message == msg {
+			n++
+		}
+	}
+	return n
+}
+
+func captureLog(t *testing.T) *testLogHandler {
+	t.Helper()
+	h := &testLogHandler{}
+	old := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(old) })
+	slog.SetDefault(slog.New(h))
+	return h
+}
 
 type fakePollSource struct{ sample resize.Sample }
 
@@ -120,6 +158,123 @@ type blockingStreamSource struct {
 
 func (f *blockingStreamSource) Stream(_ context.Context) (<-chan resize.Sample, <-chan error, error) {
 	return f.sampleCh, f.errCh, nil
+}
+
+func TestBalloonNormSource_DriftSuspect_Poll(t *testing.T) {
+	h := captureLog(t)
+	const mib = 1024 * 1024
+	inner := &fakePollSource{sample: resize.Sample{
+		MemTotalBytes:     8192 * mib,
+		MemAvailableBytes: 7000 * mib,
+	}}
+	resizer := newTestBalloonResizer(8192, 2048, 6144)
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	resizer.SetClock(func() time.Time { return base })
+	norm := newBalloonNormSource(inner, resizer)
+
+	s, err := norm.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	wantTotal := uint64(8192-6144) * mib
+	if s.MemTotalBytes != wantTotal {
+		t.Errorf("MemTotalBytes = %d, want %d (balloon not yet corrected)", s.MemTotalBytes, wantTotal)
+	}
+	if h.count("govern.balloon.drift_suspect") != 1 {
+		t.Errorf("drift_suspect log count = %d, want 1", h.count("govern.balloon.drift_suspect"))
+	}
+	if h.count("govern.balloon.drift_corrected") != 0 {
+		t.Errorf("drift_corrected should not fire on first sample")
+	}
+}
+
+func TestBalloonNormSource_DriftCorrected_Poll(t *testing.T) {
+	h := captureLog(t)
+	const mib = 1024 * 1024
+	inner := &fakePollSource{sample: resize.Sample{
+		MemTotalBytes:     8192 * mib,
+		MemAvailableBytes: 7000 * mib,
+	}}
+	resizer := newTestBalloonResizer(8192, 2048, 6144)
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	var fakeNow time.Time = base
+	resizer.SetClock(func() time.Time { return fakeNow })
+	norm := newBalloonNormSource(inner, resizer)
+
+	norm.Poll(context.Background()) //nolint:errcheck
+	fakeNow = base.Add(8 * time.Second)
+	norm.Poll(context.Background()) //nolint:errcheck
+	fakeNow = base.Add(16 * time.Second)
+	s, err := norm.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	wantTotal := uint64(8192-1192) * mib
+	if s.MemTotalBytes != wantTotal {
+		t.Errorf("MemTotalBytes = %d, want %d", s.MemTotalBytes, wantTotal)
+	}
+	if h.count("govern.balloon.drift_corrected") != 1 {
+		t.Errorf("drift_corrected log count = %d, want 1", h.count("govern.balloon.drift_corrected"))
+	}
+}
+
+func TestBalloonNormSource_DriftCorrected_Stream(t *testing.T) {
+	h := captureLog(t)
+	const mib = 1024 * 1024
+	resizer := newTestBalloonResizer(8192, 2048, 6144)
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	var callCount int
+	resizer.SetClock(func() time.Time {
+		t := base.Add(time.Duration(callCount) * 8 * time.Second)
+		callCount++
+		return t
+	})
+	inner := &fakeStreamSource{
+		samples: []resize.Sample{
+			{MemTotalBytes: 8192 * mib, MemAvailableBytes: 7000 * mib},
+			{MemTotalBytes: 8192 * mib, MemAvailableBytes: 7000 * mib},
+			{MemTotalBytes: 8192 * mib, MemAvailableBytes: 7000 * mib},
+		},
+	}
+	norm := newBalloonNormSource(inner, resizer)
+	sampleCh, errCh, err := norm.Stream(context.Background())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var got []resize.Sample
+	for s := range sampleCh {
+		got = append(got, s)
+	}
+	if e := <-errCh; e != nil && !errors.Is(e, context.Canceled) {
+		t.Fatalf("stream error: %v", e)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d samples, want 3", len(got))
+	}
+	wantCorrected := uint64(8192-1192) * mib
+	if got[2].MemTotalBytes != wantCorrected {
+		t.Errorf("sample[2] MemTotalBytes = %d, want %d", got[2].MemTotalBytes, wantCorrected)
+	}
+	if h.count("govern.balloon.drift_corrected") != 1 {
+		t.Errorf("drift_corrected log count = %d, want 1", h.count("govern.balloon.drift_corrected"))
+	}
+}
+
+func TestBalloonNormSource_FirstSampleLog_Once(t *testing.T) {
+	h := captureLog(t)
+	inner := &fakePollSource{sample: resize.Sample{
+		MemTotalBytes:     8192 * 1024 * 1024,
+		MemAvailableBytes: 512 * 1024 * 1024,
+	}}
+	norm := newBalloonNormSource(inner, newTestBalloonResizer(8192, 2048, 6144))
+	for range 3 {
+		if _, err := norm.Poll(context.Background()); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+	}
+	if n := h.count("govern.balloon.first_sample"); n != 1 {
+		t.Errorf("first_sample log count = %d, want 1", n)
+	}
 }
 
 func TestBalloonNormSource_Stream_CancelUnblocksForwarder(t *testing.T) {

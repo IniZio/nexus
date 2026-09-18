@@ -7,8 +7,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/resize"
@@ -260,6 +262,20 @@ func checkFreeSpace(diskPath string, targetBytes int64) error {
 	return nil
 }
 
+// DriftStatus is returned by ObserveSample.
+type DriftStatus int
+
+const (
+	DriftOK        DriftStatus = iota // no violation or window not yet met
+	DriftSuspect                      // first sample in a new violation run
+	DriftCorrected                    // window satisfied; balloon clamped
+)
+
+const (
+	driftMinSamples = 3
+	driftMinWindow  = 15 * time.Second
+)
+
 // BalloonMemoryResizer implements resize.MemoryResizer via virtio-balloon.
 // Drift: vm.info does not expose live balloon size after guest OOM deflation; the tracked balloon
 // goes stale-high, so normalised MemTotal is too low and the avail/total ratio is inflated —
@@ -270,6 +286,11 @@ type BalloonMemoryResizer struct {
 	totalMiB uint32
 	minMiB   uint32
 	balloon  atomic.Uint32
+
+	mu             sync.Mutex
+	clockFn        func() time.Time
+	driftFirstSeen time.Time
+	driftCount     int
 }
 
 // NewBalloonMemoryResizer returns a resizer for a balloon-mode VM.
@@ -279,6 +300,19 @@ func NewBalloonMemoryResizer(d *CHDriver, id domain.SandboxID, totalMiB, minMiB,
 	r := &BalloonMemoryResizer{d: d, id: id, totalMiB: totalMiB, minMiB: minMiB}
 	r.balloon.Store(initialBalloonMiB)
 	return r
+}
+
+func (r *BalloonMemoryResizer) SetClock(fn func() time.Time) {
+	r.mu.Lock()
+	r.clockFn = fn
+	r.mu.Unlock()
+}
+
+func (r *BalloonMemoryResizer) now() time.Time {
+	if r.clockFn != nil {
+		return r.clockFn()
+	}
+	return time.Now()
 }
 
 func (r *BalloonMemoryResizer) CurrentMemoryBytes() int64 {
@@ -305,7 +339,49 @@ func (r *BalloonMemoryResizer) ResizeMemory(ctx context.Context, targetBytes int
 		return r.CurrentMemoryBytes(), fmt.Errorf("cloudhypervisor: BalloonMemoryResizer %s: %w", r.id, err)
 	}
 	r.balloon.Store(newBalloonMiB)
+	r.mu.Lock()
+	r.driftFirstSeen = time.Time{}
+	r.driftCount = 0
+	r.mu.Unlock()
 	return int64(r.totalMiB-newBalloonMiB) * 1024 * 1024, nil
+}
+
+// ObserveSample clamps the tracked balloon to ≤ (memTotal−memAvail)/MiB.
+// A stale-high value (after guest OOM deflation) corrects to too-low, which
+// biases the governor toward grow — the safe direction. ResizeMemory re-asserts.
+// Correction requires ≥3 consecutive violation samples spanning ≥15 s.
+func (r *BalloonMemoryResizer) ObserveSample(memTotal, memAvail uint64) (DriftStatus, uint32) {
+	const mib = 1024 * 1024
+	if memTotal < mib {
+		return DriftOK, r.balloon.Load()
+	}
+	var usedMiB uint32
+	if memTotal > memAvail {
+		usedMiB = uint32((memTotal - memAvail) / mib) //nolint:gosec
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur := r.balloon.Load()
+	if cur <= usedMiB {
+		r.driftFirstSeen = time.Time{}
+		r.driftCount = 0
+		return DriftOK, cur
+	}
+	now := r.now()
+	if r.driftCount == 0 {
+		r.driftFirstSeen = now
+	}
+	r.driftCount++
+	if r.driftCount >= driftMinSamples && now.Sub(r.driftFirstSeen) >= driftMinWindow {
+		r.balloon.Store(usedMiB)
+		r.driftFirstSeen = time.Time{}
+		r.driftCount = 0
+		return DriftCorrected, usedMiB
+	}
+	if r.driftCount == 1 {
+		return DriftSuspect, cur
+	}
+	return DriftOK, cur
 }
 
 func diskIndexToCHID(diskIndex int) string {
