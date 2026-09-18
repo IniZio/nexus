@@ -90,10 +90,8 @@ func buildMemoryConfig(cfg Config, memMiB uint64) *vmMemoryConfig {
 	if len(cfg.LiveMounts) > 0 {
 		mc.Shared = true
 	}
-	if cfg.MemoryMaxMiB > 0 {
-		hotplugMiB := uint64(cfg.MemoryMaxMiB) - memMiB
-		mc.HotplugSize = hotplugMiB * 1024 * 1024
-		mc.HotplugMethod = "VirtioMem"
+	if cfg.MemoryMaxMiB > cfg.MemoryMiB {
+		mc.SizeBytes = uint64(cfg.MemoryMaxMiB) * 1024 * 1024
 	}
 	return mc
 }
@@ -237,20 +235,16 @@ type Config struct {
 	// Must be > MemoryMiB when set; New returns an error otherwise.
 	MemoryMaxMiB uint32
 
-	// BalloonMiB is the initial virtio-balloon device size in mebibytes.
-	// When non-zero, a balloon device is attached at boot with this size.
-	// When zero and FreePageReporting is true, a zero-size balloon device is
-	// still attached (size=0, deflate_on_oom=true, free_page_reporting=true).
-	// When both BalloonMiB and FreePageReporting are zero/false, no balloon
-	// device is configured and ResizeBalloon will return an error from CH.
+	// BalloonMiB is accepted for backward compat; the driver infers balloon
+	// mode from MemoryMiB/MemoryMaxMiB and ignores this field directly.
 	BalloonMiB uint32
 
 	// FreePageReporting enables passive free-page reporting on the
 	// virtio-balloon device. When true the guest balloon driver advertises
 	// pages it has freed back to the host, allowing the host to reclaim memory
 	// that the guest no longer uses without any active balloon inflation step.
-	// If BalloonMiB is 0 and this is true, a zero-size balloon device with
-	// free_page_reporting=true and deflate_on_oom=true is created automatically.
+	// In balloon mode (MemoryMaxMiB > MemoryMiB), free_page_reporting is always
+	// enabled on the balloon that is created to enforce the boot constraint.
 	FreePageReporting bool
 
 	// StartTimeout is how long to wait for the VMM API socket to become
@@ -338,6 +332,9 @@ type CHDriver struct {
 	// spawnVirtiofsdFn is the per-mount spawn call used by spawnVirtiofsdForMounts.
 	// Defaults to the real spawnVirtiofsd; overridable in tests for deterministic failure injection.
 	spawnVirtiofsdFn func(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool) (*managedProcess, error)
+
+	memMu    sync.Mutex
+	memState map[domain.SandboxID]*vmMemState
 }
 
 // New validates cfg, creates the socket directory if necessary, and returns a
@@ -421,6 +418,7 @@ func New(cfg Config) (*CHDriver, error) {
 		virtiofsdStageDirs: make(map[domain.SandboxID][]string),
 		snapshotStore:      snapshotStore,
 		spawnVirtiofsdFn:   spawnVirtiofsd,
+		memState:           make(map[domain.SandboxID]*vmMemState),
 	}, nil
 }
 
@@ -593,6 +591,10 @@ func (d *CHDriver) clearState(id domain.SandboxID) {
 	d.mu.Lock()
 	delete(d.procs, id)
 	d.mu.Unlock()
+
+	d.memMu.Lock()
+	delete(d.memState, id)
+	d.memMu.Unlock()
 }
 
 // Name returns the human-readable substrate name.
@@ -795,7 +797,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 			cmdline = defaultCmdline
 		}
 	}
-	cmdline = buildCmdline(cmdline, d.cfg.MemoryMaxMiB)
+	cmdline = buildCmdline(cmdline, 0)
 
 	// Nested-virt preflight: check host support and /dev/kvm access before
 	// constructing vmcfg. We fail loudly here so the error is attributed to
@@ -838,16 +840,19 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		Memory: memCfg,
 	}
 
-	// Attach a virtio-balloon device when requested. free_page_reporting
-	// requires a balloon device to exist, so if only FreePageReporting is set
-	// we still create a zero-size balloon (size=0 keeps it fully deflated at
-	// boot while reporting remains active). deflate_on_oom is always true to
-	// prevent the balloon from starving the guest under memory pressure.
-	if d.cfg.BalloonMiB > 0 || d.cfg.FreePageReporting {
+	var initBalloonMiB uint32
+	if d.cfg.MemoryMaxMiB > memMiB {
+		initBalloonMiB = d.cfg.MemoryMaxMiB - memMiB
 		vmcfg.Balloon = &balloonConfig{
-			SizeBytes:         uint64(d.cfg.BalloonMiB) * 1024 * 1024,
+			SizeBytes:         uint64(initBalloonMiB) * 1024 * 1024,
 			DeflateOnOOM:      true,
-			FreePageReporting: d.cfg.FreePageReporting,
+			FreePageReporting: true,
+		}
+	} else if d.cfg.FreePageReporting {
+		vmcfg.Balloon = &balloonConfig{
+			SizeBytes:         0,
+			DeflateOnOOM:      true,
+			FreePageReporting: true,
 		}
 	}
 
@@ -936,6 +941,8 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		cleanup()
 		return "", fmt.Errorf("cloudhypervisor: start %s: write instance ID: %w", id, err)
 	}
+
+	d.storeMemState(id, memMiB, d.cfg.MemoryMaxMiB, initBalloonMiB)
 
 	// Note: d.procs[id] is NOT set on the netns path. Kill ownership is via
 	// d.nets[id].rt → rt.Stop(), reached through clearState → teardownSandboxNet.
@@ -1057,11 +1064,12 @@ func (d *CHDriver) ResizeBalloon(ctx context.Context, id domain.SandboxID, ballo
 
 // Compile-time interface assertions.
 var (
-	_ driver.Driver       = (*CHDriver)(nil)
-	_ driver.PauseResumer = (*CHDriver)(nil)
-	_ driver.Snapshotter  = (*CHDriver)(nil)
-	_ driver.Forker       = (*CHDriver)(nil)
-	_ driver.NetworkHook  = (*CHDriver)(nil)
+	_ driver.Driver             = (*CHDriver)(nil)
+	_ driver.PauseResumer       = (*CHDriver)(nil)
+	_ driver.Snapshotter        = (*CHDriver)(nil)
+	_ driver.Forker             = (*CHDriver)(nil)
+	_ driver.NetworkHook        = (*CHDriver)(nil)
+	_ driver.MemoryModeReporter = (*CHDriver)(nil)
 	// GuestDialer assertion is in ch_vsock.go.
 	// NetworkHook assertion is also in ch_net.go.
 )

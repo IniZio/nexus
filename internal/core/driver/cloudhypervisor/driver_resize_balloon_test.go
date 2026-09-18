@@ -5,6 +5,7 @@ package cloudhypervisor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,9 +14,26 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
-func TestBalloonMemoryResizer_ObserveSample(t *testing.T) {
+func setTestMemState(d *CHDriver, id domain.SandboxID, st *vmMemState) {
+	d.memMu.Lock()
+	d.memState[id] = st
+	d.memMu.Unlock()
+}
+
+func newBalloonTestState(totalMiB, bootMiB, initBalloonMiB uint32) *vmMemState {
+	st := &vmMemState{
+		mode:     driver.MemoryModeBalloon,
+		bootMiB:  bootMiB,
+		totalMiB: totalMiB,
+	}
+	st.balloon.Store(initBalloonMiB)
+	return st
+}
+
+func TestObserveSample_Basic(t *testing.T) {
 	const mib = 1024 * 1024
 	tests := []struct {
 		name        string
@@ -48,8 +66,12 @@ func TestBalloonMemoryResizer_ObserveSample(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewBalloonMemoryResizer(nil, domain.NewSandboxID(), 8192, 2048, tc.initBalloon)
-			status, newBalloon := r.ObserveSample(tc.memTotal, tc.memAvail)
+			dir := testSocketDir(t)
+			d := newTestDriver(t, dir)
+			id := domain.NewSandboxID()
+			setTestMemState(d, id, newBalloonTestState(8192, 2048, tc.initBalloon))
+
+			status, newBalloon := d.ObserveSample(id, tc.memTotal, tc.memAvail)
 			if status != tc.wantStatus {
 				t.Errorf("status = %v, want %v", status, tc.wantStatus)
 			}
@@ -60,19 +82,24 @@ func TestBalloonMemoryResizer_ObserveSample(t *testing.T) {
 	}
 }
 
-func TestBalloonMemoryResizer_ObserveSample_Window(t *testing.T) {
+func TestObserveSample_Window(t *testing.T) {
 	const mib = 1024 * 1024
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	t.Run("2 samples at 5s no correction", func(t *testing.T) {
-		var fakeNow time.Time = base
-		r := NewBalloonMemoryResizer(nil, domain.NewSandboxID(), 8192, 2048, 6144)
-		r.SetClock(func() time.Time { return fakeNow })
+		fakeNow := base
+		dir := testSocketDir(t)
+		d := newTestDriver(t, dir)
+		id := domain.NewSandboxID()
+		st := newBalloonTestState(8192, 2048, 6144)
+		st.clockFn = func() time.Time { return fakeNow }
+		setTestMemState(d, id, st)
+
 		total, avail := uint64(8192*mib), uint64(7000*mib)
-		r.ObserveSample(total, avail)
+		d.ObserveSample(id, total, avail)
 		fakeNow = base.Add(5 * time.Second)
-		st, bal := r.ObserveSample(total, avail)
-		if st == DriftCorrected {
+		status, bal := d.ObserveSample(id, total, avail)
+		if status == DriftCorrected {
 			t.Errorf("corrected after only 2 samples / 5s, want no correction")
 		}
 		if bal != 6144 {
@@ -81,57 +108,72 @@ func TestBalloonMemoryResizer_ObserveSample_Window(t *testing.T) {
 	})
 
 	t.Run("3 samples spanning 15s corrects", func(t *testing.T) {
-		var fakeNow time.Time = base
-		r := NewBalloonMemoryResizer(nil, domain.NewSandboxID(), 8192, 2048, 6144)
-		r.SetClock(func() time.Time { return fakeNow })
+		fakeNow := base
+		dir := testSocketDir(t)
+		d := newTestDriver(t, dir)
+		id := domain.NewSandboxID()
+		st := newBalloonTestState(8192, 2048, 6144)
+		st.clockFn = func() time.Time { return fakeNow }
+		setTestMemState(d, id, st)
+
 		total, avail := uint64(8192*mib), uint64(7000*mib)
-		r.ObserveSample(total, avail)
+		d.ObserveSample(id, total, avail)
 		fakeNow = base.Add(8 * time.Second)
-		r.ObserveSample(total, avail)
+		d.ObserveSample(id, total, avail)
 		fakeNow = base.Add(16 * time.Second)
-		st, bal := r.ObserveSample(total, avail)
-		if st != DriftCorrected {
-			t.Errorf("status = %v, want DriftCorrected", st)
+		status, bal := d.ObserveSample(id, total, avail)
+		if status != DriftCorrected {
+			t.Errorf("status = %v, want DriftCorrected", status)
 		}
 		if bal != 1192 {
 			t.Errorf("balloon = %d, want 1192", bal)
 		}
-		if r.BalloonBytes() != int64(1192)*mib {
-			t.Errorf("BalloonBytes not updated: %d", r.BalloonBytes())
+		if d.BalloonBytes(id) != int64(1192)*mib {
+			t.Errorf("BalloonBytes not updated: %d", d.BalloonBytes(id))
 		}
 	})
 
 	t.Run("reset when used >= tracked in between", func(t *testing.T) {
-		var fakeNow time.Time = base
-		r := NewBalloonMemoryResizer(nil, domain.NewSandboxID(), 8192, 2048, 6144)
-		r.SetClock(func() time.Time { return fakeNow })
+		fakeNow := base
+		dir := testSocketDir(t)
+		d := newTestDriver(t, dir)
+		id := domain.NewSandboxID()
+		st := newBalloonTestState(8192, 2048, 6144)
+		st.clockFn = func() time.Time { return fakeNow }
+		setTestMemState(d, id, st)
+
 		total, avail := uint64(8192*mib), uint64(7000*mib)
-		r.ObserveSample(total, avail)
+		d.ObserveSample(id, total, avail)
 		fakeNow = base.Add(8 * time.Second)
-		r.ObserveSample(total, avail)
+		d.ObserveSample(id, total, avail)
 		fakeNow = base.Add(9 * time.Second)
-		r.ObserveSample(8192*mib, 512*mib)
+		d.ObserveSample(id, 8192*mib, 512*mib)
 		fakeNow = base.Add(25 * time.Second)
-		st, _ := r.ObserveSample(total, avail)
-		if st == DriftCorrected {
+		status, _ := d.ObserveSample(id, total, avail)
+		if status == DriftCorrected {
 			t.Errorf("corrected after reset, want no correction yet (count reset to 1)")
 		}
 	})
 
 	t.Run("3 samples span<15s no correction", func(t *testing.T) {
-		var fakeNow time.Time = base
-		r := NewBalloonMemoryResizer(nil, domain.NewSandboxID(), 8192, 2048, 6144)
-		r.SetClock(func() time.Time { return fakeNow })
+		fakeNow := base
+		dir := testSocketDir(t)
+		d := newTestDriver(t, dir)
+		id := domain.NewSandboxID()
+		st := newBalloonTestState(8192, 2048, 6144)
+		st.clockFn = func() time.Time { return fakeNow }
+		setTestMemState(d, id, st)
+
 		total, avail := uint64(8192*mib), uint64(7000*mib)
-		st, bal := r.ObserveSample(total, avail)
-		if st != DriftSuspect {
-			t.Errorf("first sample: status = %v, want DriftSuspect", st)
+		status, bal := d.ObserveSample(id, total, avail)
+		if status != DriftSuspect {
+			t.Errorf("first sample: status = %v, want DriftSuspect", status)
 		}
 		fakeNow = base.Add(4 * time.Second)
-		r.ObserveSample(total, avail)
+		d.ObserveSample(id, total, avail)
 		fakeNow = base.Add(8 * time.Second)
-		st, bal = r.ObserveSample(total, avail)
-		if st == DriftCorrected {
+		status, bal = d.ObserveSample(id, total, avail)
+		if status == DriftCorrected {
 			t.Errorf("corrected with span 8s < 15s, want no correction")
 		}
 		if bal != 6144 {
@@ -140,11 +182,11 @@ func TestBalloonMemoryResizer_ObserveSample_Window(t *testing.T) {
 	})
 }
 
-func TestBalloonMemoryResizer_ResizeResetsDrift(t *testing.T) {
+func TestResizeMemory_ResetsDrift(t *testing.T) {
 	const mib = 1024 * 1024
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	fakeNow := base
 
-	var fakeNow time.Time = base
 	dir := testSocketDir(t)
 	d := newTestDriver(t, dir)
 	id := domain.NewSandboxID()
@@ -162,41 +204,46 @@ func TestBalloonMemoryResizer_ResizeResetsDrift(t *testing.T) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	r := NewBalloonMemoryResizer(d, id, 8192, 2048, 6144)
-	r.SetClock(func() time.Time { return fakeNow })
+	st := newBalloonTestState(8192, 2048, 6144)
+	st.clockFn = func() time.Time { return fakeNow }
+	setTestMemState(d, id, st)
 
 	total, avail := uint64(8192*mib), uint64(7000*mib)
-	r.ObserveSample(total, avail)
+	d.ObserveSample(id, total, avail)
 	fakeNow = base.Add(10 * time.Second)
-	r.ObserveSample(total, avail)
+	d.ObserveSample(id, total, avail)
 
-	if _, err := r.ResizeMemory(context.Background(), int64(4096*mib)); err != nil {
+	if _, err := d.ResizeMemory(context.Background(), id, int64(4096*mib)); err != nil {
 		t.Fatalf("ResizeMemory: %v", err)
 	}
 
 	fakeNow = base.Add(20 * time.Second)
-	st, _ := r.ObserveSample(total, avail)
-	if st == DriftCorrected {
+	status, _ := d.ObserveSample(id, total, avail)
+	if status == DriftCorrected {
 		t.Errorf("DriftCorrected after resize reset, want DriftSuspect")
 	}
-	if st != DriftSuspect {
-		t.Errorf("status = %v after resize reset, want DriftSuspect", st)
+	if status != DriftSuspect {
+		t.Errorf("status = %v after resize reset, want DriftSuspect", status)
 	}
 }
 
-func TestBalloonMemoryResizer_CurrentMemoryBytes(t *testing.T) {
-	r := NewBalloonMemoryResizer(nil, domain.NewSandboxID(), 8192, 2048, 6144)
+func TestCurrentMemoryBytes_BalloonMode(t *testing.T) {
+	dir := testSocketDir(t)
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+	setTestMemState(d, id, newBalloonTestState(8192, 2048, 6144))
+
 	want := int64(2048) * 1024 * 1024
-	if got := r.CurrentMemoryBytes(); got != want {
+	if got := d.CurrentMemoryBytes(id); got != want {
 		t.Errorf("CurrentMemoryBytes = %d, want %d", got, want)
 	}
 }
 
-func TestBalloonMemoryResizer_ResizeMemory(t *testing.T) {
+func TestResizeMemory_BalloonDispatch(t *testing.T) {
 	tests := []struct {
 		name           string
 		totalMiB       uint32
-		minMiB         uint32
+		bootMiB        uint32
 		initBalloon    uint32
 		targetBytes    int64
 		wantEffMiB     uint32
@@ -204,28 +251,28 @@ func TestBalloonMemoryResizer_ResizeMemory(t *testing.T) {
 	}{
 		{
 			name:     "grow to 4 GiB",
-			totalMiB: 8192, minMiB: 2048, initBalloon: 6144,
+			totalMiB: 8192, bootMiB: 2048, initBalloon: 6144,
 			targetBytes:    int64(4096) * 1024 * 1024,
 			wantEffMiB:     4096,
 			wantBalloonMiB: 4096,
 		},
 		{
 			name:     "grow to ceiling",
-			totalMiB: 8192, minMiB: 2048, initBalloon: 6144,
+			totalMiB: 8192, bootMiB: 2048, initBalloon: 6144,
 			targetBytes:    int64(8192) * 1024 * 1024,
 			wantEffMiB:     8192,
 			wantBalloonMiB: 0,
 		},
 		{
-			name:     "clamp below minimum",
-			totalMiB: 8192, minMiB: 2048, initBalloon: 0,
+			name:     "clamp below minimum (boot)",
+			totalMiB: 8192, bootMiB: 2048, initBalloon: 0,
 			targetBytes:    int64(512) * 1024 * 1024,
 			wantEffMiB:     2048,
 			wantBalloonMiB: 6144,
 		},
 		{
 			name:     "clamp above ceiling",
-			totalMiB: 8192, minMiB: 2048, initBalloon: 0,
+			totalMiB: 8192, bootMiB: 2048, initBalloon: 0,
 			targetBytes:    int64(16384) * 1024 * 1024,
 			wantEffMiB:     8192,
 			wantBalloonMiB: 0,
@@ -256,8 +303,8 @@ func TestBalloonMemoryResizer_ResizeMemory(t *testing.T) {
 			srv.Start()
 			t.Cleanup(srv.Close)
 
-			r := NewBalloonMemoryResizer(d, id, tc.totalMiB, tc.minMiB, tc.initBalloon)
-			got, err := r.ResizeMemory(context.Background(), tc.targetBytes)
+			setTestMemState(d, id, newBalloonTestState(tc.totalMiB, tc.bootMiB, tc.initBalloon))
+			got, err := d.ResizeMemory(context.Background(), id, tc.targetBytes)
 			if err != nil {
 				t.Fatalf("ResizeMemory: %v", err)
 			}
@@ -265,7 +312,7 @@ func TestBalloonMemoryResizer_ResizeMemory(t *testing.T) {
 			if got != wantEff {
 				t.Errorf("returned %d, want %d", got, wantEff)
 			}
-			if cur := r.CurrentMemoryBytes(); cur != wantEff {
+			if cur := d.CurrentMemoryBytes(id); cur != wantEff {
 				t.Errorf("CurrentMemoryBytes = %d, want %d", cur, wantEff)
 			}
 			wantBalloon := float64(tc.wantBalloonMiB) * 1024 * 1024
@@ -274,4 +321,97 @@ func TestBalloonMemoryResizer_ResizeMemory(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResizeMemory_FlatModeErrors(t *testing.T) {
+	dir := testSocketDir(t)
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+	st := &vmMemState{mode: driver.MemoryModeFlat, bootMiB: 512, totalMiB: 512}
+	setTestMemState(d, id, st)
+
+	_, err := d.ResizeMemory(context.Background(), id, int64(1024)*1024*1024)
+	if err == nil {
+		t.Error("expected error for flat mode resize, got nil")
+	}
+}
+
+func TestAdoptMemState_Detection(t *testing.T) {
+	tests := []struct {
+		name         string
+		infoJSON     string
+		wantMode     driver.MemoryMode
+		wantBalloon  uint32
+		wantBootMiB  uint32
+		wantTotalMiB uint32
+	}{
+		{
+			name:         "balloon mode",
+			infoJSON:     `{"state":"Running","config":{"memory":{"size":` + itoa(8192*1024*1024) + `},"balloon":{"size":` + itoa(6144*1024*1024) + `}}}`,
+			wantMode:     driver.MemoryModeBalloon,
+			wantBalloon:  6144,
+			wantBootMiB:  2048,
+			wantTotalMiB: 8192,
+		},
+		{
+			name:         "virtiomem legacy",
+			infoJSON:     `{"state":"Running","config":{"memory":{"size":` + itoa(8192*1024*1024) + `,"hotplug_size":` + itoa(6144*1024*1024) + `}}}`,
+			wantMode:     driver.MemoryModeVirtioMem,
+			wantBalloon:  0,
+			wantBootMiB:  2048,
+			wantTotalMiB: 8192,
+		},
+		{
+			name:         "flat",
+			infoJSON:     `{"state":"Running","config":{"memory":{"size":` + itoa(512*1024*1024) + `}}}`,
+			wantMode:     driver.MemoryModeFlat,
+			wantBalloon:  0,
+			wantBootMiB:  512,
+			wantTotalMiB: 512,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := testSocketDir(t)
+			d := newTestDriver(t, dir)
+			id := domain.NewSandboxID()
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/vm.info", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.infoJSON))
+			})
+			ln, err := net.Listen("unix", d.socketPath(id))
+			if err != nil {
+				t.Fatalf("listen unix: %v", err)
+			}
+			srv := httptest.NewUnstartedServer(mux)
+			srv.Listener = ln
+			srv.Start()
+			t.Cleanup(srv.Close)
+
+			st, err := d.getOrLoadMemState(context.Background(), id)
+			if err != nil {
+				t.Fatalf("getOrLoadMemState: %v", err)
+			}
+			if st.mode != tc.wantMode {
+				t.Errorf("mode = %v, want %v", st.mode, tc.wantMode)
+			}
+			if got := st.balloon.Load(); got != tc.wantBalloon {
+				t.Errorf("balloon = %d, want %d", got, tc.wantBalloon)
+			}
+			if st.bootMiB != tc.wantBootMiB {
+				t.Errorf("bootMiB = %d, want %d", st.bootMiB, tc.wantBootMiB)
+			}
+			if st.totalMiB != tc.wantTotalMiB {
+				t.Errorf("totalMiB = %d, want %d", st.totalMiB, tc.wantTotalMiB)
+			}
+		})
+	}
+}
+
+func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
 }

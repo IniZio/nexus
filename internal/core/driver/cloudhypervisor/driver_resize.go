@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/resize"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 )
@@ -36,6 +37,20 @@ func NewSandboxResizer(d *CHDriver, id domain.SandboxID, bounds resize.Bounds, b
 	r.memBytes.Store(bootMemBytes)
 	r.vcpus.Store(bootVCPUs)
 	r.postGrowHooks = buildVolumePostGrowHooks(d.cfg.ExtraDisks)
+	d.memMu.Lock()
+	if d.memState[id] == nil {
+		bootMiB := uint32(bootMemBytes / (1024 * 1024))        //nolint:gosec
+		totalMiB := uint32(bounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec
+		if totalMiB == 0 {
+			totalMiB = bootMiB
+		}
+		mode := driver.MemoryModeVirtioMem
+		if totalMiB <= bootMiB {
+			mode = driver.MemoryModeFlat
+		}
+		d.memState[id] = &vmMemState{mode: mode, bootMiB: bootMiB, totalMiB: totalMiB}
+	}
+	d.memMu.Unlock()
 	return r
 }
 
@@ -76,26 +91,80 @@ func (r *SandboxResizer) ResizeMemory(ctx context.Context, targetBytes int64) (i
 		targetBytes = r.bounds.MemMaxBytes
 	}
 
-	if rem := targetBytes % memHotplugAlignBytes; rem != 0 {
-		targetBytes += memHotplugAlignBytes - rem
-		if targetBytes > r.bounds.MemMaxBytes {
-			targetBytes -= memHotplugAlignBytes
-		}
+	got, err := r.d.ResizeMemory(ctx, r.id, targetBytes)
+	if err != nil {
+		return r.memBytes.Load(), err
 	}
-
-	desiredRAM := uint64(targetBytes)
-	c := newClient(r.d.socketPath(r.id))
-	if err := c.VMResize(ctx, &desiredRAM, nil, nil); err != nil {
-		return r.memBytes.Load(), fmt.Errorf("cloudhypervisor: ResizeMemory %s: %w", r.id, err)
-	}
-
-	r.memBytes.Store(targetBytes)
-	return targetBytes, nil
+	r.memBytes.Store(got)
+	return got, nil
 }
 
 func (r *SandboxResizer) CurrentMemoryBytes() int64 {
 	return r.memBytes.Load()
 }
+
+// BalloonMemoryResizer holds per-sandbox balloon tracking state and satisfies
+// both resize.MemoryResizer and the balloon normalisation source interface
+// used by the supervisor. It can operate standalone (d == nil) for tests.
+type BalloonMemoryResizer struct {
+	d  *CHDriver
+	id domain.SandboxID
+	st *vmMemState
+}
+
+// NewBalloonMemoryResizer initialises a BalloonMemoryResizer for the given
+// sandbox. totalMiB is the hardware ceiling; memMiB is the boot allocation;
+// balloonMiB is the initial balloon size (totalMiB-memMiB when 0).
+func NewBalloonMemoryResizer(d *CHDriver, id domain.SandboxID, totalMiB, memMiB, balloonMiB uint32) *BalloonMemoryResizer {
+	if balloonMiB == 0 && totalMiB > memMiB {
+		balloonMiB = totalMiB - memMiB
+	}
+	st := &vmMemState{
+		bootMiB:  memMiB,
+		totalMiB: totalMiB,
+		mode:     driver.MemoryModeBalloon,
+	}
+	st.balloon.Store(balloonMiB)
+	return &BalloonMemoryResizer{d: d, id: id, st: st}
+}
+
+// SetClock injects a fake clock into the drift-detection state, for testing.
+func (r *BalloonMemoryResizer) SetClock(fn func() time.Time) {
+	r.st.mu.Lock()
+	r.st.clockFn = fn
+	r.st.mu.Unlock()
+}
+
+func (r *BalloonMemoryResizer) BalloonBytes() int64 {
+	return int64(r.st.balloon.Load()) * 1024 * 1024
+}
+
+func (r *BalloonMemoryResizer) ObserveSample(memTotal, memAvail uint64) (driver.DriftStatus, uint32) {
+	return r.st.observeSample(memTotal, memAvail)
+}
+
+func (r *BalloonMemoryResizer) ResizeMemory(ctx context.Context, targetBytes int64) (int64, error) {
+	const mib = 1024 * 1024
+	totalBytes := int64(r.st.totalMiB) * mib
+	if targetBytes > totalBytes {
+		targetBytes = totalBytes
+	}
+	newBalloonMiB := uint32((totalBytes - targetBytes) / mib) //nolint:gosec
+	if r.d != nil {
+		if err := r.d.ResizeBalloon(ctx, r.id, newBalloonMiB); err != nil {
+			return r.CurrentMemoryBytes(), err
+		}
+	}
+	r.st.balloon.Store(newBalloonMiB)
+	return int64(r.st.totalMiB-newBalloonMiB) * mib, nil
+}
+
+func (r *BalloonMemoryResizer) CurrentMemoryBytes() int64 {
+	const mib = int64(1024 * 1024)
+	return (int64(r.st.totalMiB) - int64(r.st.balloon.Load())) * mib //nolint:gosec
+}
+
+var _ resize.MemoryResizer = (*BalloonMemoryResizer)(nil)
 
 func (r *SandboxResizer) ResizeCPU(ctx context.Context, targetVCPUs int32) (int32, error) {
 	if targetVCPUs < r.bounds.VCPUMin {
@@ -262,13 +331,12 @@ func checkFreeSpace(diskPath string, targetBytes int64) error {
 	return nil
 }
 
-// DriftStatus is returned by ObserveSample.
-type DriftStatus int
+type DriftStatus = driver.DriftStatus
 
 const (
-	DriftOK        DriftStatus = iota // no violation or window not yet met
-	DriftSuspect                      // first sample in a new violation run
-	DriftCorrected                    // window satisfied; balloon clamped
+	DriftOK        = driver.DriftOK
+	DriftSuspect   = driver.DriftSuspect
+	DriftCorrected = driver.DriftCorrected
 )
 
 const (
@@ -276,15 +344,10 @@ const (
 	driftMinWindow  = 15 * time.Second
 )
 
-// BalloonMemoryResizer implements resize.MemoryResizer via virtio-balloon.
-// Drift: vm.info does not expose live balloon size after guest OOM deflation; the tracked balloon
-// goes stale-high, so normalised MemTotal is too low and the avail/total ratio is inflated —
-// the governor biases toward shrink (re-inflate), bounded by the PSI-trigger grow that follows OOM.
-type BalloonMemoryResizer struct {
-	d        *CHDriver
-	id       domain.SandboxID
+type vmMemState struct {
+	mode     driver.MemoryMode
+	bootMiB  uint32
 	totalMiB uint32
-	minMiB   uint32
 	balloon  atomic.Uint32
 
 	mu             sync.Mutex
@@ -293,95 +356,218 @@ type BalloonMemoryResizer struct {
 	driftCount     int
 }
 
-// NewBalloonMemoryResizer returns a resizer for a balloon-mode VM.
-// totalMiB is the ceiling (MemoryMiB the VM booted with); minMiB is the
-// minimum reachable RAM (original boot size = totalMiB − initialBalloonMiB).
-func NewBalloonMemoryResizer(d *CHDriver, id domain.SandboxID, totalMiB, minMiB, initialBalloonMiB uint32) *BalloonMemoryResizer {
-	r := &BalloonMemoryResizer{d: d, id: id, totalMiB: totalMiB, minMiB: minMiB}
-	r.balloon.Store(initialBalloonMiB)
-	return r
-}
-
-func (r *BalloonMemoryResizer) SetClock(fn func() time.Time) {
-	r.mu.Lock()
-	r.clockFn = fn
-	r.mu.Unlock()
-}
-
-func (r *BalloonMemoryResizer) now() time.Time {
-	if r.clockFn != nil {
-		return r.clockFn()
+func (s *vmMemState) now() time.Time {
+	if s.clockFn != nil {
+		return s.clockFn()
 	}
 	return time.Now()
 }
 
-func (r *BalloonMemoryResizer) CurrentMemoryBytes() int64 {
-	return int64(r.totalMiB-r.balloon.Load()) * 1024 * 1024
+func (d *CHDriver) storeMemState(id domain.SandboxID, bootMiB, totalMiB, initBalloonMiB uint32) {
+	st := &vmMemState{bootMiB: bootMiB, totalMiB: totalMiB}
+	if totalMiB > bootMiB {
+		st.mode = driver.MemoryModeBalloon
+	} else {
+		st.mode = driver.MemoryModeFlat
+	}
+	st.balloon.Store(initBalloonMiB)
+	d.memMu.Lock()
+	d.memState[id] = st
+	d.memMu.Unlock()
 }
 
-func (r *BalloonMemoryResizer) BalloonBytes() int64 {
-	return int64(r.balloon.Load()) * 1024 * 1024
+func (d *CHDriver) clearMemState(id domain.SandboxID) {
+	d.memMu.Lock()
+	delete(d.memState, id)
+	d.memMu.Unlock()
 }
 
-func (r *BalloonMemoryResizer) ResizeMemory(ctx context.Context, targetBytes int64) (int64, error) {
-	targetMiB := uint32(targetBytes / (1024 * 1024)) //nolint:gosec
-	if targetMiB < r.minMiB {
-		targetMiB = r.minMiB
+func (d *CHDriver) getOrLoadMemState(ctx context.Context, id domain.SandboxID) (*vmMemState, error) {
+	d.memMu.Lock()
+	st := d.memState[id]
+	d.memMu.Unlock()
+	if st != nil {
+		return st, nil
 	}
-	if targetMiB > r.totalMiB {
-		targetMiB = r.totalMiB
+	c := newClient(d.socketPath(id))
+	info, _, err := c.VMInfoFull(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("cloudhypervisor: load mem state for %s: %w", id, err)
 	}
-	newBalloonMiB := r.totalMiB - targetMiB
-	if max := r.totalMiB - r.minMiB; newBalloonMiB > max {
-		newBalloonMiB = max
+	if info == nil {
+		return nil, fmt.Errorf("cloudhypervisor: load mem state for %s: VM absent", id)
 	}
-	if err := r.d.ResizeBalloon(ctx, r.id, newBalloonMiB); err != nil {
-		return r.CurrentMemoryBytes(), fmt.Errorf("cloudhypervisor: BalloonMemoryResizer %s: %w", r.id, err)
+	st = adoptMemState(info)
+	d.memMu.Lock()
+	if existing := d.memState[id]; existing != nil {
+		d.memMu.Unlock()
+		return existing, nil
 	}
-	r.mu.Lock()
-	r.balloon.Store(newBalloonMiB)
-	r.driftFirstSeen = time.Time{}
-	r.driftCount = 0
-	r.mu.Unlock()
-	return int64(r.totalMiB-newBalloonMiB) * 1024 * 1024, nil
+	d.memState[id] = st
+	d.memMu.Unlock()
+	return st, nil
 }
 
-// ObserveSample clamps the tracked balloon to ≤ guest used MiB.
-// The corrected value equals guest used, which is an upper bound on the true
-// balloon, so effective memory ≤ truth — shrink-biased, less so than stale.
-// ResizeMemory re-asserts. Correction requires ≥3 samples spanning ≥15 s.
-func (r *BalloonMemoryResizer) ObserveSample(memTotal, memAvail uint64) (DriftStatus, uint32) {
+func adoptMemState(info *vmInfoResponse) *vmMemState {
+	st := &vmMemState{}
+	if info.Config == nil || info.Config.Memory == nil {
+		st.mode = driver.MemoryModeFlat
+		return st
+	}
+	mem := info.Config.Memory
+	totalMiB := uint32(mem.SizeBytes / (1024 * 1024)) //nolint:gosec
+	st.totalMiB = totalMiB
+
+	if info.Config.Balloon != nil && info.Config.Balloon.SizeBytes > 0 {
+		balloonMiB := uint32(info.Config.Balloon.SizeBytes / (1024 * 1024)) //nolint:gosec
+		st.mode = driver.MemoryModeBalloon
+		st.bootMiB = totalMiB - balloonMiB
+		st.balloon.Store(balloonMiB)
+	} else if mem.HotplugSize > 0 {
+		hotplugMiB := uint32(mem.HotplugSize / (1024 * 1024)) //nolint:gosec
+		st.mode = driver.MemoryModeVirtioMem
+		st.bootMiB = totalMiB - hotplugMiB
+	} else {
+		st.mode = driver.MemoryModeFlat
+		st.bootMiB = totalMiB
+	}
+	return st
+}
+
+func (d *CHDriver) MemoryMode(id domain.SandboxID) driver.MemoryMode {
+	d.memMu.Lock()
+	st := d.memState[id]
+	d.memMu.Unlock()
+	if st == nil {
+		return driver.MemoryModeFlat
+	}
+	return st.mode
+}
+
+func (d *CHDriver) BalloonBytes(id domain.SandboxID) int64 {
+	d.memMu.Lock()
+	st := d.memState[id]
+	d.memMu.Unlock()
+	if st == nil || st.mode != driver.MemoryModeBalloon {
+		return 0
+	}
+	return int64(st.balloon.Load()) * 1024 * 1024
+}
+
+func (d *CHDriver) ObserveSample(id domain.SandboxID, memTotal, memAvail uint64) (driver.DriftStatus, uint32) {
+	d.memMu.Lock()
+	st := d.memState[id]
+	d.memMu.Unlock()
+	if st == nil || st.mode != driver.MemoryModeBalloon {
+		return driver.DriftOK, 0
+	}
+	return st.observeSample(memTotal, memAvail)
+}
+
+func (s *vmMemState) observeSample(memTotal, memAvail uint64) (driver.DriftStatus, uint32) {
 	const mib = 1024 * 1024
 	if memTotal < mib {
-		return DriftOK, r.balloon.Load()
+		return driver.DriftOK, s.balloon.Load()
 	}
 	var usedMiB uint32
 	if memTotal > memAvail {
 		usedMiB = uint32((memTotal - memAvail) / mib) //nolint:gosec
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	cur := r.balloon.Load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.balloon.Load()
 	if cur <= usedMiB {
-		r.driftFirstSeen = time.Time{}
-		r.driftCount = 0
-		return DriftOK, cur
+		s.driftFirstSeen = time.Time{}
+		s.driftCount = 0
+		return driver.DriftOK, cur
 	}
-	now := r.now()
-	if r.driftCount == 0 {
-		r.driftFirstSeen = now
+	now := s.now()
+	if s.driftCount == 0 {
+		s.driftFirstSeen = now
 	}
-	r.driftCount++
-	if r.driftCount >= driftMinSamples && now.Sub(r.driftFirstSeen) >= driftMinWindow {
-		r.balloon.Store(usedMiB)
-		r.driftFirstSeen = time.Time{}
-		r.driftCount = 0
-		return DriftCorrected, usedMiB
+	s.driftCount++
+	if s.driftCount >= driftMinSamples && now.Sub(s.driftFirstSeen) >= driftMinWindow {
+		s.balloon.Store(usedMiB)
+		s.driftFirstSeen = time.Time{}
+		s.driftCount = 0
+		return driver.DriftCorrected, usedMiB
 	}
-	if r.driftCount == 1 {
-		return DriftSuspect, cur
+	if s.driftCount == 1 {
+		return driver.DriftSuspect, cur
 	}
-	return DriftOK, cur
+	return driver.DriftOK, cur
+}
+
+func (d *CHDriver) ResizeMemory(ctx context.Context, id domain.SandboxID, targetBytes int64) (int64, error) {
+	st, err := d.getOrLoadMemState(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	switch st.mode {
+	case driver.MemoryModeBalloon:
+		return d.resizeMemoryBalloon(ctx, id, st, targetBytes)
+	case driver.MemoryModeVirtioMem:
+		return d.resizeMemoryVirtioMem(ctx, id, st, targetBytes)
+	default:
+		return 0, fmt.Errorf("cloudhypervisor: ResizeMemory %s: mode flat does not support resize", id)
+	}
+}
+
+func (d *CHDriver) resizeMemoryBalloon(ctx context.Context, id domain.SandboxID, st *vmMemState, targetBytes int64) (int64, error) {
+	targetMiB := uint32(targetBytes / (1024 * 1024)) //nolint:gosec
+	if targetMiB < st.bootMiB {
+		targetMiB = st.bootMiB
+	}
+	if targetMiB > st.totalMiB {
+		targetMiB = st.totalMiB
+	}
+	newBalloonMiB := st.totalMiB - targetMiB
+	if max := st.totalMiB - st.bootMiB; newBalloonMiB > max {
+		newBalloonMiB = max
+	}
+	if err := d.ResizeBalloon(ctx, id, newBalloonMiB); err != nil {
+		return int64(st.totalMiB-st.balloon.Load()) * 1024 * 1024,
+			fmt.Errorf("cloudhypervisor: ResizeMemory %s: %w", id, err)
+	}
+	st.mu.Lock()
+	st.balloon.Store(newBalloonMiB)
+	st.driftFirstSeen = time.Time{}
+	st.driftCount = 0
+	st.mu.Unlock()
+	return int64(st.totalMiB-newBalloonMiB) * 1024 * 1024, nil
+}
+
+func (d *CHDriver) resizeMemoryVirtioMem(ctx context.Context, id domain.SandboxID, st *vmMemState, targetBytes int64) (int64, error) {
+	const align = int64(memHotplugAlignBytes)
+	if rem := targetBytes % align; rem != 0 {
+		targetBytes += align - rem
+		if targetBytes > int64(st.totalMiB)*1024*1024 {
+			targetBytes -= align
+		}
+	}
+	desiredRAM := uint64(targetBytes) //nolint:gosec
+	c := newClient(d.socketPath(id))
+	if err := c.VMResize(ctx, &desiredRAM, nil, nil); err != nil {
+		return 0, fmt.Errorf("cloudhypervisor: ResizeMemory %s: %w", id, err)
+	}
+	return targetBytes, nil
+}
+
+func (d *CHDriver) CurrentMemoryBytes(id domain.SandboxID) int64 {
+	d.memMu.Lock()
+	st := d.memState[id]
+	d.memMu.Unlock()
+	if st == nil {
+		return 0
+	}
+	switch st.mode {
+	case driver.MemoryModeBalloon:
+		return int64(st.totalMiB-st.balloon.Load()) * 1024 * 1024
+	case driver.MemoryModeFlat:
+		return int64(st.bootMiB) * 1024 * 1024
+	default:
+		return 0
+	}
 }
 
 func diskIndexToCHID(diskIndex int) string {

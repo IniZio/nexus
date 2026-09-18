@@ -79,8 +79,24 @@ func isAbsent(err error) bool {
 }
 
 // vmInfoResponse is the subset of Cloud Hypervisor's VmInfo we parse.
+// The config field is populated only by VMInfoFull; VMInfo only uses State.
 type vmInfoResponse struct {
-	State string `json:"state"`
+	State  string        `json:"state"`
+	Config *vmInfoConfig `json:"config,omitempty"`
+}
+
+type vmInfoConfig struct {
+	Memory  *vmInfoMemoryConfig  `json:"memory,omitempty"`
+	Balloon *vmInfoBalloonConfig `json:"balloon,omitempty"`
+}
+
+type vmInfoMemoryConfig struct {
+	SizeBytes   uint64 `json:"size"`
+	HotplugSize uint64 `json:"hotplug_size,omitempty"`
+}
+
+type vmInfoBalloonConfig struct {
+	SizeBytes uint64 `json:"size"`
 }
 
 // chErrorResponse is CH's error body format: a JSON array where index 0 is
@@ -349,10 +365,10 @@ func (c *client) Ping(ctx context.Context) error {
 // makes Absent unambiguous — "no VM exists here" — whether the socket is
 // unreachable (dead VMM) or reachable but empty (crashed between spawnVMM and
 // vm.create).
-func (c *client) VMInfo(ctx context.Context) (driver.RunState, error) {
+func (c *client) VMInfoFull(ctx context.Context) (*vmInfoResponse, driver.RunState, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/vm.info", nil)
 	if err != nil {
-		return driver.Unknown, err
+		return nil, driver.Unknown, err
 	}
 	defer drainClose(resp)
 
@@ -361,23 +377,27 @@ func (c *client) VMInfo(ctx context.Context) (driver.RunState, error) {
 		if resp.StatusCode == http.StatusInternalServerError {
 			var chErr chErrorResponse
 			if json.Unmarshal(body, &chErr) == nil && chErr.isNoVM() {
-				// CH confirmed: no VM has been created in this VMM. This is a
-				// determined observation — return Absent with nil error.
-				return driver.Absent, nil
+				return nil, driver.Absent, nil
 			}
 		}
-		return driver.Unknown,
+		return nil, driver.Unknown,
 			fmt.Errorf("cloudhypervisor: vm.info: unexpected status %d: %s",
 				resp.StatusCode, body)
 	}
 
 	var info vmInfoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return driver.Unknown,
+		return nil, driver.Unknown,
 			fmt.Errorf("cloudhypervisor: vm.info: decode response: %w", err)
 	}
 
-	return mapCHState(info.State)
+	state, err := mapCHState(info.State)
+	return &info, state, err
+}
+
+func (c *client) VMInfo(ctx context.Context) (driver.RunState, error) {
+	_, state, err := c.VMInfoFull(ctx)
+	return state, err
 }
 
 // VMCreate sends PUT /api/v1/vm.create with cfg. Returns nil on 204.
