@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,18 +187,82 @@ func TestStreamUnknownKind(t *testing.T) {
 }
 
 func TestPSITriggerSpecs(t *testing.T) {
-	wantLines := map[string]bool{
-		"some 100000 500000":  true,
-		"full 50000 500000":   true,
-		"some 150000 1000000": true,
+	want := map[string][2]string{
+		"some 100000 500000":  {"memory", "some 200000 2000000"},
+		"full 50000 500000":   {"memory", "full 100000 2000000"},
+		"some 150000 1000000": {"cpu", "some 300000 2000000"},
 	}
 	for _, s := range psiTriggerSpecs {
-		if !wantLines[s.line] {
-			t.Errorf("unexpected trigger line %q for resource %q", s.line, s.resource)
+		w, ok := want[s.fast]
+		if !ok {
+			t.Errorf("unexpected fast trigger line %q for resource %q", s.fast, s.resource)
+			continue
+		}
+		if s.resource != w[0] || s.slow != w[1] {
+			t.Errorf("spec %q: resource/slow = %q/%q, want %q/%q", s.fast, s.resource, s.slow, w[0], w[1])
 		}
 	}
 	if len(psiTriggerSpecs) != 3 {
 		t.Errorf("want 3 trigger specs, got %d", len(psiTriggerSpecs))
+	}
+}
+
+// The kernel's psi_write copies the payload into a fixed buffer and
+// unconditionally NUL-terminates it at buf[nbytes-1], dropping the last
+// byte written. A line without a trailing newline therefore loses its last
+// window digit ("some 100000 500000" -> "some 100000 50000") and is
+// rejected with EINVAL.
+func TestOpenPSITriggerWritesNewlineTerminatedLine(t *testing.T) {
+	orig := psiTriggerBasePath
+	t.Cleanup(func() { psiTriggerBasePath = orig })
+	psiTriggerBasePath = t.TempDir()
+	path := filepath.Join(psiTriggerBasePath, "memory")
+	writeTestFile(t, path, "")
+
+	const line = "some 100000 500000"
+	fd, err := openPSITrigger("memory", line)
+	if err != nil {
+		t.Fatalf("openPSITrigger: %v", err)
+	}
+	unix.Close(fd)
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != line+"\n" {
+		t.Errorf("bytes written to %s = %q, want %q (newline-terminated)", path, got, line+"\n")
+	}
+}
+
+func TestOpenPSITriggersDegradationLogsErrnoAndAttempt(t *testing.T) {
+	orig := psiTriggerBasePath
+	t.Cleanup(func() { psiTriggerBasePath = orig })
+	psiTriggerBasePath = t.TempDir()
+	if err := os.Mkdir(filepath.Join(psiTriggerBasePath, "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(psiTriggerBasePath, "cpu"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	con, err := os.CreateTemp(t.TempDir(), "console")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer con.Close()
+
+	triggers := openPSITriggers(con)
+	if len(triggers) != 0 {
+		t.Fatalf("expected 0 triggers, got %d", len(triggers))
+	}
+	log, err := os.ReadFile(con.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"EISDIR", "fast", "slow", "some 100000 500000", "some 200000 2000000", "heartbeat-only"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("degradation log missing %q:\n%s", want, log)
+		}
 	}
 }
 

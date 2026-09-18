@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,42 +21,64 @@ type psiTrigger struct {
 	trigger string
 }
 
-var psiTriggerSpecs = []struct {
+// fast needs CAP_SYS_RESOURCE (sub-2s window); slow is the unprivileged-legal
+// form since Linux 6.5 (window a multiple of 2 s).
+type psiTriggerSpec struct {
 	resource string
-	line     string
+	fast     string
+	slow     string
 	trigger  string
-}{
-	{"memory", "some 100000 500000", resize.TriggerPSIMemory},
-	{"memory", "full 50000 500000", resize.TriggerPSIMemory},
-	{"cpu", "some 150000 1000000", resize.TriggerPSICPU},
 }
 
+var psiTriggerSpecs = []psiTriggerSpec{
+	{"memory", "some 100000 500000", "some 200000 2000000", resize.TriggerPSIMemory},
+	{"memory", "full 50000 500000", "full 100000 2000000", resize.TriggerPSIMemory},
+	{"cpu", "some 150000 1000000", "some 300000 2000000", resize.TriggerPSICPU},
+}
+
+func errnoName(err error) string {
+	var errno unix.Errno
+	if errors.As(err, &errno) {
+		return unix.ErrnoName(errno)
+	}
+	return "non-errno"
+}
+
+// openPSITrigger arms one trigger. The line is newline-terminated because
+// psi_write NUL-terminates its copy at buf[nbytes-1], discarding the final
+// byte of whatever was written.
 func openPSITrigger(resource, line string) (int, error) {
 	path := filepath.Join(psiTriggerBasePath, resource)
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return -1, fmt.Errorf("open %s: %w", path, err)
+		return -1, fmt.Errorf("open %s for %q: %w (%s)", path, line, err, errnoName(err))
 	}
-	if _, err := unix.Write(fd, []byte(line)); err != nil {
+	if _, err := unix.Write(fd, []byte(line+"\n")); err != nil {
 		unix.Close(fd)
-		return -1, fmt.Errorf("write trigger to %s: %w", path, err)
+		return -1, fmt.Errorf("write %q to %s: %w (%s)", line, path, err, errnoName(err))
 	}
 	return fd, nil
 }
 
 func openPSITriggers(con *os.File) []psiTrigger {
 	var triggers []psiTrigger
-	var loggedErr bool
 	for _, spec := range psiTriggerSpecs {
-		fd, err := openPSITrigger(spec.resource, spec.line)
-		if err != nil {
-			if !loggedErr {
-				consoleLog(con, "nexus-agent: psi-trigger: %v (CONFIG_PSI off or unprivileged — heartbeat-only streaming)\n", err)
-				loggedErr = true
-			}
+		fd, fastErr := openPSITrigger(spec.resource, spec.fast)
+		if fastErr == nil {
+			consoleLog(con, "nexus-agent: psi-trigger: %s %q armed (fast)\n", spec.resource, spec.fast)
+			triggers = append(triggers, psiTrigger{fd: fd, trigger: spec.trigger})
 			continue
 		}
-		triggers = append(triggers, psiTrigger{fd: fd, trigger: spec.trigger})
+		fd, slowErr := openPSITrigger(spec.resource, spec.slow)
+		if slowErr == nil {
+			consoleLog(con, "nexus-agent: psi-trigger: %s %q armed (slow, unprivileged window); fast attempt failed: %v\n", spec.resource, spec.slow, fastErr)
+			triggers = append(triggers, psiTrigger{fd: fd, trigger: spec.trigger})
+			continue
+		}
+		consoleLog(con, "nexus-agent: psi-trigger: %s not armed; fast attempt: %v; slow attempt: %v\n", spec.resource, fastErr, slowErr)
+	}
+	if len(triggers) == 0 {
+		consoleLog(con, "nexus-agent: psi-trigger: no trigger armed — heartbeat-only streaming\n")
 	}
 	return triggers
 }

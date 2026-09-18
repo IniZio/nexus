@@ -263,6 +263,23 @@ func unquoteEnvValue(v string) string {
 	return v
 }
 
+var nexusHostUIDEnvPath = "/etc/nexus/hostuid.env"
+
+func readNexusHostUIDEnv() map[string]string {
+	data, err := os.ReadFile(nexusHostUIDEnvPath)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]string, 2)
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if ok && k != "" {
+			m[k] = v
+		}
+	}
+	return m
+}
+
 // bootSpecEnv returns the KEY=VALUE entries of the boot manifest at
 // bootspecPath (/etc/nexus/boot.json): the image-wide Spec.Env first, then
 // every task's Env in task order, with exact duplicate pairs dropped. That is
@@ -328,10 +345,11 @@ func guestBaselineEnv(scratchDiskPresent bool) []string {
 		base = append(base, "TMPDIR="+scratchDiskGuestMount)
 	}
 	etcEnv := readEtcEnvironment()
-	if len(etcEnv) == 0 {
-		return base
+	result := mergeEnv(base, envToMap(etcEnv))
+	if hostUID := readNexusHostUIDEnv(); len(hostUID) > 0 {
+		result = mergeEnv(result, hostUID)
 	}
-	return mergeEnv(base, envToMap(etcEnv))
+	return result
 }
 
 // envToMap converts a "KEY=VALUE" slice to a map.

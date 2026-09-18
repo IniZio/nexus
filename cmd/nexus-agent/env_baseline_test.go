@@ -466,3 +466,41 @@ func TestBootSpecEnvAbsentOrUnparseable(t *testing.T) {
 		t.Errorf("unparseable manifest: bootSpecEnv() = %v; want nil", got)
 	}
 }
+
+func TestGuestBaselineHostUID(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "hostuid-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(f, "NEXUS_HOST_UID=2345")
+	fmt.Fprintln(f, "NEXUS_HOST_GID=6789")
+	f.Close()
+
+	orig := nexusHostUIDEnvPath
+	nexusHostUIDEnvPath = f.Name()
+	defer func() { nexusHostUIDEnvPath = orig }()
+
+	env := guestBaselineEnv(false)
+	m := envFirstValues(env)
+
+	for key, want := range map[string]string{
+		"NEXUS_HOST_UID": "2345",
+		"NEXUS_HOST_GID": "6789",
+	} {
+		if got, ok := m[key]; !ok {
+			t.Errorf("%s missing from guestBaselineEnv()", key)
+		} else if got != want {
+			t.Errorf("%s = %q; want %q", key, got, want)
+		}
+	}
+}
+
+func TestReadNexusHostUIDEnvMissing(t *testing.T) {
+	orig := nexusHostUIDEnvPath
+	nexusHostUIDEnvPath = filepath.Join(t.TempDir(), "absent.env")
+	defer func() { nexusHostUIDEnvPath = orig }()
+
+	if got := readNexusHostUIDEnv(); got != nil {
+		t.Errorf("absent file: readNexusHostUIDEnv() = %v; want nil", got)
+	}
+}
