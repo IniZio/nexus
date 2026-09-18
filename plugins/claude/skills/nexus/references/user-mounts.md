@@ -89,7 +89,7 @@ What fake-owner guarantees:
 - Files created inside the guest (`create`/`mkdir`/`mknod`/`symlink`) report the creating uid/gid as owner — `chmod +x`, `chown`, and `cp -p` all return rc=0 from any guest uid.
 - Pre-existing host files appear as `0:0` with `a+rwX` modes (read/write for all uids; root can `chmod`; non-root `chmod` on these files returns EPERM because the guest sees 0:0 as owner).
 - Host ownership never changes — all guest writes land as the daemon uid.
-- `chmod` applies to the host with mode narrowing: exec bits pass through exactly as requested; rw bits can be removed but never added beyond what the host file already had; setuid/setgid/sticky are masked off. `chown` is no-oped; `access()` always succeeds.
+- `chmod` on files the guest created passes through unchanged (mask 0o7000 — guest-created files can be made world-writable; they are daemon-owned on the host); on pre-existing host files it can add/remove exec bits and remove rw bits but never add rw bits. `chown` is no-oped; `access()` always succeeds.
 - Creator ownership is in-memory: after dentry-cache eviction or sandbox stop/start, guest-created files report `0:0` (still rw for all via widened modes; non-root `chmod`/`chown` then returns EPERM).
 
 ### Without fake-owner / per-uid matching

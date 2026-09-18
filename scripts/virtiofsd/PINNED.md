@@ -6,8 +6,8 @@
 | Tag object SHA | 13ee2e13024eaf40cdedb4bcb0a49d5695ade0b8 |
 | Commit SHA | bbf82173682a3e48083771a0a23331e5c23b4924 |
 | Patch file | fakeowner.patch |
-| Patch SHA-256 | 603600cf03134eb6cfab6a7f8b63b5d302dccc4a3584f313c131778815543c0f |
-| Patch lines | 372 |
+| Patch SHA-256 | e52708cdd99d2157133a1fbfde2cd3c50d1a5fec382bc18bde91a3133f3eeadf |
+| Patch lines | 376 |
 
 ## Rationale
 
@@ -27,9 +27,7 @@ empirically via raw-header probe on kernel 7.0.0-30-generic, vhost-user,
 The patch stores the caller uid from `CREATE`/`mkdir`/`mknod`/`symlink` in a
 per-inode `HashMap<u64,(u32,u32)>` on `PassthroughFs`. Every attr-returning
 path (`lookup`, `getattr`, `setattr`, `link`) reads from that map (falling back
-to `0:0` for inodes not in the map). `chown` is no-oped on the host; `chmod` applies with mode narrowing: exec bits pass through as requested, rw bits are only retained where the host already had them (can remove, never add), setuid/setgid/sticky masked off. Pre-existing host files not owned by the daemon return EPERM for non-root `chmod` (guest sees 0:0 owner).
-the guest VFS allows owner-matching ops because `inode_owner_or_capable` sees the reported uid
-matching the caller. Result: `echo x > f && chmod +x f && chown 1000:1000 f &&
+to `0:0` for inodes not in the map). `chown` is no-oped on the host; `chmod` on files the guest created passes the requested mode through unchanged (mask 0o7000); on pre-existing host files it applies narrowing (exec bits pass through, rw bits only retained where the host already had them, setuid/setgid/sticky masked off). The guest VFS allows owner-matching ops because `inode_owner_or_capable` sees the reported uid matching the caller. Result: `echo x > f && chmod +x f && chown 1000:1000 f &&
 cp -p f g` as guest uid 1000 returns `rc=0` and `ls -ln` shows `1000:1000`.
 
 ## Rebuild

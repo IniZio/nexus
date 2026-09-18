@@ -341,7 +341,7 @@ type CreateAndBootOptions struct {
 
 	// GitSeeder is an optional GuestSeeder that delivers the per-sandbox git
 	// identity configuration (user.name, user.email, safe.directory,
-	// init.defaultBranch) to GuestGitconfigPath (/root/.gitconfig) in the
+	// init.defaultBranch) to GuestGitconfigPath (/etc/gitconfig) in the
 	// guest. When non-nil, step 11 of CreateAndBoot calls SeedGitIdentity.
 	// When nil, git identity seeding is skipped (backward compatible).
 	//
@@ -1163,7 +1163,7 @@ func CreateAndBoot(
 	// SeedGitIdentity is a no-op when GitSeeder is nil (existing callers that
 	// omit GitSeeder are unaffected). When set, it resolves the operator's git
 	// identity from the host's global git config (user.name, user.email) and
-	// pushes a gitconfig to GuestGitconfigPath (/root/.gitconfig) configuring
+	// pushes a gitconfig to GuestGitconfigPath (/etc/gitconfig) configuring
 	// that real identity, the workspace safe.directory, and the per-sandbox
 	// branch name (nexus/<motive-slug>/<short-id>).
 	//

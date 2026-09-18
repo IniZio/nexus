@@ -241,31 +241,35 @@ index 38f49db..7676901 100644
      }
  
      fn setattr(
-@@ -1909,12 +1989,34 @@
+@@ -1909,12 +1989,38 @@
          };
- 
+
          if valid.contains(SetattrValid::MODE) {
 -            // Safe because this doesn't modify any memory and we check the return value.
 +            let mode_to_apply = if self.cfg.fake_owner {
-+                let cur_mode = unsafe {
-+                    let mut st = std::mem::zeroed::<libc::stat>();
-+                    let ok = match &data {
-+                        Data::Handle(_, fd) => libc::fstat(*fd, &mut st),
-+                        Data::ProcPath(p) => libc::fstatat(
-+                            self.proc_self_fd.as_raw_fd(),
-+                            p.as_ptr(),
-+                            &mut st,
-+                            0,
-+                        ),
++                let req = attr.mode & 0o777;
++                if self.get_creator_uid(inode).is_some() {
++                    req
++                } else {
++                    let cur_mode = unsafe {
++                        let mut st = std::mem::zeroed::<libc::stat>();
++                        let ok = match &data {
++                            Data::Handle(_, fd) => libc::fstat(*fd, &mut st),
++                            Data::ProcPath(p) => libc::fstatat(
++                                self.proc_self_fd.as_raw_fd(),
++                                p.as_ptr(),
++                                &mut st,
++                                0,
++                            ),
++                        };
++                        if ok < 0 {
++                            return Err(io::Error::last_os_error());
++                        }
++                        st.st_mode
 +                    };
-+                    if ok < 0 {
-+                        return Err(io::Error::last_os_error());
-+                    }
-+                    st.st_mode
-+                };
-+                let req = attr.mode;
-+                let cur = cur_mode & 0o777;
-+                (req & 0o111) | (req & cur & 0o666)
++                    let cur = cur_mode & 0o777;
++                    (req & 0o111) | (req & cur & 0o666)
++                }
 +            } else {
 +                attr.mode
 +            };
