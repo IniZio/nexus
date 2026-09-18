@@ -1,7 +1,8 @@
 // Package resize defines the contract every auto-resize slice consumes:
 // the guest→host telemetry [Sample] type, the three driver capability
 // interfaces ([MemoryResizer], [CPUResizer], [DiskResizer]), a
-// [TelemetrySource] abstraction for the host-side poll path, the
+// [TelemetrySource] abstraction for the host-side poll path, a
+// [TelemetryStream] abstraction for the push path, the
 // [TelemetryVsockPort] constant, and a [Bounds] config type.
 //
 // Dependency rule: this package imports NOTHING from
@@ -10,8 +11,16 @@
 // when the driver, the guest agent, and the supervisor all depend here.
 //
 // Design decisions ported from motive.md §"Design Half B":
-//   - D-DC-10: transport is host→guest polling (not OLD's push) so no
-//     host-side hybrid-vsock listener is required; DialGuest is already proven.
+//   - D-DC-10: two transports share the same vsock port [TelemetryVsockPort]:
+//     (a) host→guest polling: host opens a connection, writes a
+//     [SampleRequest] (kind "sample.request"), and reads one [SampleResponse]
+//     reply — no host-side listener required; DialGuest is already proven.
+//     (b) guest-push streaming: host opens a connection, writes a stream
+//     request (kind "sample.stream"), and the guest streams a sequence of
+//     newline-delimited [SampleResponse] frames until either side closes.
+//     Old guest agents that do not recognise "sample.stream" reply with an
+//     [ErrorResponse] whose message contains "unknown kind"; the host detects
+//     this via [IsStreamUnsupported] and falls back to poll.
 //   - D-DC-11: vsock port 3002, adjacent to the port-forward mux (3001).
 //   - D-DC-12: governor is single-tenant (one sandbox per supervisor process);
 //     OLD's workspaceID parameter is absent from every interface method.
@@ -19,6 +28,11 @@ package resize
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
 	"time"
 )
 
@@ -161,6 +175,25 @@ type Sample struct {
 	// internal resize-call accounting to detect partial CH failures.
 	VCPUCount  int32 `json:"vcpu_count"`
 	VCPUOnline int32 `json:"vcpu_online"`
+
+	// Trigger is set by the guest on push-path samples to identify the PSI
+	// trigger that caused the sample. Empty on polled samples.
+	// Use the TriggerPSI* / TriggerHeartbeat constants and [Sample.IsTriggered].
+	Trigger string `json:"trigger,omitempty"`
+}
+
+// Trigger values for [Sample.Trigger].
+const (
+	TriggerNone      = ""
+	TriggerPSIMemory = "psi_mem"
+	TriggerPSICPU    = "psi_cpu"
+	TriggerHeartbeat = "heartbeat"
+)
+
+// IsTriggered reports whether the sample was caused by a PSI trigger (memory
+// or CPU pressure). Returns false for heartbeat and polled (empty) samples.
+func (s Sample) IsTriggered() bool {
+	return s.Trigger == TriggerPSIMemory || s.Trigger == TriggerPSICPU
 }
 
 // Bounds carries the per-sandbox resource ceilings established at vm.create.
@@ -247,4 +280,84 @@ type TelemetrySource interface {
 	// Poll opens a connection to the guest, sends a [SampleRequest], and
 	// returns the decoded [Sample]. ctx carries the poll deadline.
 	Poll(ctx context.Context) (Sample, error)
+}
+
+// kindStreamRequest is the envelope kind for the push-path stream open.
+const kindStreamRequest msgKind = "sample.stream"
+
+// EncodeStreamRequest writes a stream-open request to w. After this the caller
+// reads a sequence of newline-delimited [SampleResponse] JSON frames via
+// [StreamDecoder.Next] until io.EOF or error.
+func EncodeStreamRequest(w io.Writer) error {
+	return encode(w, kindStreamRequest, SampleRequest{})
+}
+
+// StreamDecoder reads a sequence of [SampleResponse] frames from r.
+// Each frame is a newline-delimited JSON envelope identical to the one-shot
+// poll reply, so a single frame is byte-identical to what [DecodeSampleResponse]
+// would produce.
+type StreamDecoder struct {
+	dec *json.Decoder
+}
+
+// NewStreamDecoder returns a StreamDecoder that reads from r.
+func NewStreamDecoder(r io.Reader) *StreamDecoder {
+	return &StreamDecoder{dec: json.NewDecoder(r)}
+}
+
+// Next decodes the next frame from the stream and returns the contained Sample.
+// Returns io.EOF on clean close. An [ErrorResponse] frame from the guest is
+// returned as an error; if the guest's message contains "unknown kind" the
+// error wraps [ErrStreamUnsupported] so callers can use [IsStreamUnsupported].
+func (d *StreamDecoder) Next() (Sample, error) {
+	var env envelope
+	if err := d.dec.Decode(&env); err != nil {
+		return Sample{}, err
+	}
+	if env.Version != wireVersion {
+		return Sample{}, fmt.Errorf("resize/stream: version mismatch: got %d, want %d", env.Version, wireVersion)
+	}
+	if env.Kind == kindError {
+		var errResp ErrorResponse
+		if err := json.Unmarshal(env.Payload, &errResp); err != nil {
+			return Sample{}, fmt.Errorf("resize/stream: unmarshal error payload: %w", err)
+		}
+		if strings.Contains(errResp.Message, "unknown kind") {
+			return Sample{}, fmt.Errorf("%w: %s", ErrStreamUnsupported, errResp.Message)
+		}
+		return Sample{}, fmt.Errorf("resize/stream: guest error: %s", errResp.Message)
+	}
+	if env.Kind != kindSampleResponse {
+		return Sample{}, fmt.Errorf("resize/stream: unexpected kind %q", env.Kind)
+	}
+	var resp SampleResponse
+	if err := json.Unmarshal(env.Payload, &resp); err != nil {
+		return Sample{}, fmt.Errorf("resize/stream: unmarshal sample: %w", err)
+	}
+	return resp.Sample, nil
+}
+
+// ErrStreamUnsupported is returned (or wrapped) when the guest agent does not
+// support the "sample.stream" kind. Use [IsStreamUnsupported] to test.
+var ErrStreamUnsupported = errors.New("resize: guest does not support sample.stream")
+
+// IsStreamUnsupported reports whether err indicates the guest does not support
+// streaming. It matches both the [ErrStreamUnsupported] sentinel and legacy
+// error text containing "unknown kind" from old guest agents.
+func IsStreamUnsupported(err error) bool {
+	if errors.Is(err, ErrStreamUnsupported) {
+		return true
+	}
+	return err != nil && strings.Contains(err.Error(), "unknown kind")
+}
+
+// TelemetryStream is an optional extension of [TelemetrySource] for guests
+// that support the PSI push path. A [TelemetrySource] implementation MAY also
+// implement TelemetryStream; hosts type-assert and fall back to Poll when the
+// guest replies with an [ErrorResponse] whose message contains "unknown kind".
+type TelemetryStream interface {
+	// Stream returns a channel of Samples until ctx is done or the transport
+	// fails. The error channel receives at most one terminal error; after that
+	// both channels are closed. Callers must drain both channels.
+	Stream(ctx context.Context) (<-chan Sample, <-chan error, error)
 }
