@@ -79,11 +79,36 @@ The security model rests on **"tool payloads, never credential stores."**
 
 ## Container uid contract
 
-Every guest's shared directories are owned by the host user (virtiofsd runs as that
-user; guest root is fine because virtiofsd skips the credential switch for uid 0).
-Docker-compose containers that run as a **fixed non-root uid** (e.g. `USER_ID=1000`)
-need to match the host owner to write those dirs — rootless virtiofsd provides no
-ownership virtualisation.
+### fake-owner mode (default when patched virtiofsd is installed)
+
+`scripts/virtiofsd/build.sh` installs a patched virtiofsd with `--fake-owner`
+support. The nexus virtiofs driver probes `virtiofsd --help` at sandbox start and
+enables `--fake-owner` automatically (override with `NEXUS_VIRTIOFS_FAKE_OWNER=0`).
+
+What fake-owner guarantees:
+
+- Any guest uid can read and write all files in the mount
+- Host file ownership is unchanged — all guest writes land as the daemon uid (host owner)
+- Exec bits are preserved; `a+rwX` is reported so directories are always traversable
+- `chown` requests are silently accepted (no-op) and return success
+
+**Limitation — chmod/chown by non-root guest processes:** files appear owned by
+`0:0` in the guest. The guest kernel's VFS layer (`may_setattr` →
+`inode_owner_or_capable`) blocks `chmod` and `chown` from any process that is
+not uid 0 and lacks `CAP_FOWNER`, before the FUSE request reaches virtiofsd.
+Both return `EPERM`. Because fake-owner widens modes to `a+rwX`, workload
+access is unaffected by what `chmod` would set. Steps that require `chmod` must
+run as guest root, or use the `NEXUS_HOST_UID` recipe below.
+
+Root cause: the guest kernel sends `FUSE_UNKNOWN_UID` (`0xFFFFFFFF`) in all
+FUSE request headers under the nexus vhost-user virtiofs stack; virtiofsd cannot
+recover the caller's uid to report per-caller ownership.
+
+### Without fake-owner / per-uid matching
+
+If fake-owner is disabled (`NEXUS_VIRTIOFS_FAKE_OWNER=0`) or the unpatched
+distro virtiofsd is in use, every guest uid must match the host owner to write
+shared directories.
 
 nexus seeds two variables into every guest at boot:
 
@@ -93,18 +118,18 @@ nexus seeds two variables into every guest at boot:
 | `NEXUS_HOST_GID` | numeric gid of the host user (`os.Getgid()` of the supervisor) |
 
 Both contexts receive them: login shells (via `/etc/profile.d/nexus-cred.sh`) and
-non-login `nexus exec` sessions (via `/etc/nexus/hostuid.env`, merged into every exec's
-baseline environment). `/etc/nexus/startup` boot tasks run before the supervisor seeds the file, so `NEXUS_HOST_UID` is available to exec/login sessions, not to image startup hooks.
+non-login `nexus exec` sessions (via `/etc/nexus/hostuid.env`, merged into every
+exec's baseline environment).
 
 **Compose recipe**
 
 ```yaml
 services:
   app:
-    user: "${NEXUS_HOST_UID}:${NEXUS_HOST_GID}"   # runtime uid — matches host owner
+    user: "${NEXUS_HOST_UID}:${NEXUS_HOST_GID}"
     build:
       args:
-        USER_ID: ${NEXUS_HOST_UID}                 # bake-time, devcontainer style
+        USER_ID: ${NEXUS_HOST_UID}
 ```
 
-Guest root (`user: "0:0"` or omitting `user:`) needs no special handling.
+Guest root (`user: "0:0"` or omitting `user:`) needs no special handling in either mode.

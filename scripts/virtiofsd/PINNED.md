@@ -19,13 +19,13 @@ virtiofsd is vendored as a patched build rather than distro-packaged for two rea
 
 ## Caller-uid finding
 
-When virtiofsd runs without `--sandbox` (nexus default: `--sandbox=none`),
-FUSE `getattr` requests from the guest kernel arrive with `ctx.uid = 4294967295`
-(`u32::MAX`, `FUSE_UNKNOWN_UID`). This is a kernel-internal sentinel: the kernel
-issues getattr on behalf of VFS cache management, not on behalf of a specific
-user process, so no meaningful uid is available. Confirmed by one-shot probe
-written to `/tmp/virtiofsd-uid-probe.txt` during integration testing (removed
-before patch was finalised).
+All FUSE requests (including `lookup`, `create`, and `getattr`) from this guest
+kernel arrive with `ctx.uid = 4294967295` (`u32::MAX`, `FUSE_UNKNOWN_UID`).
+Confirmed empirically: a TRUE-fakeowner build that returns `ctx.uid` when valid
+(falling back to 0 for `FUSE_UNKNOWN_UID`) produced identical results — files
+always show `0:0` — proving the guest kernel sends `FUSE_UNKNOWN_UID` for all
+FUSE operations under the nexus virtiofs stack (vhost-user, `--sandbox=none`,
+kernel 7.0.0-30-generic).
 
 Consequence: the daemon cannot dynamically report each file as owned by its
 caller. All files are reported as `0:0` in fake-owner mode, with widened modes

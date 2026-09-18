@@ -54,6 +54,8 @@ echo "==> built: $OUT"
 
 if [ "$NO_INSTALL" = "0" ]; then
   mkdir -p "$(dirname "$INSTALL_PATH")"
+  BACKUP="${INSTALL_PATH}.bak-$(date +%s)"
+  [ -f "$INSTALL_PATH" ] && cp "$INSTALL_PATH" "$BACKUP" && echo "==> backup: $BACKUP"
   cp "$OUT" "${INSTALL_PATH}.new"
   mv -f "${INSTALL_PATH}.new" "$INSTALL_PATH"
   echo "==> installed: $INSTALL_PATH"

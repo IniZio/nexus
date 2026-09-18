@@ -31,30 +31,31 @@ of caller uid; that path does not go through the VFS ownership check.
 
 ## Caller-uid finding
 
-FUSE `getattr` requests arrive with `ctx.uid = 4294967295` (`FUSE_UNKNOWN_UID`).
-The kernel issues these from VFS cache management paths, not from a user
-process, so the caller uid is unavailable. Files must be reported with a static
-uid; `0:0` is chosen so that root-owned tooling in the guest works without
-adjustment.
+All FUSE requests arrive with `ctx.uid = 4294967295` (`FUSE_UNKNOWN_UID`).
+Confirmed empirically across `lookup`, `create`, and `getattr` on guest kernel
+7.0.0-30-generic with the nexus vhost-user virtiofs stack (`--sandbox=none`).
+A TRUE-fakeowner build (returns `ctx.uid` when valid, falls back to 0) produced
+the same 0:0 output, proving `FUSE_UNKNOWN_UID` is sent for all operations.
+Files are reported with static `0:0` as the owner.
 
 ## Write matrix (integration test results)
 
-Guest kernel 6.12.76, virtiofsd v1.13.3+fakeowner, nexus workspace with
-`--mount /tmp/fo2:/mnt/u`.
+Guest kernel 7.0.0-30-generic, virtiofsd v1.13.3+fakeowner, nexus workspace
+with `--mount /tmp/fo4:/mnt/u`, uid-1000 via `setpriv --reuid=1000`.
 
-| Operation | uid 0 | uid 1000 | uid 65534 |
-|---|---|---|---|
-| touch | ✓ | ✓ | ✓ |
-| echo > (create) | ✓ | ✓ | ✓ |
-| echo >> (append) | ✓ | ✓ | ✓ |
-| chmod 600 | ✓ | EPERM† | EPERM† |
-| chown 1000:1000 | ✓ | EPERM†† | EPERM†† |
-| mkdir | ✓ | ✓ | ✓ |
-| cp (data) | ✓ | ✓ | ✓ |
-| git status | ✓ | — | — |
+| Operation | uid 0 | uid 1000 |
+|---|---|---|
+| echo > (create) | ✓ | ✓ |
+| echo >> (append) | ✓ | ✓ |
+| mkdir | ✓ | ✓ |
+| cp (data) | ✓ | ✓ |
+| cp -p (preserve mode) | ✓ | EPERM† |
+| chmod +x | ✓ | EPERM† |
+| chown uid:gid | ✓ | EPERM† |
 
-† VFS-layer block, not virtiofsd; modes are `a+rwX` regardless.
-†† chown for non-root is a VFS-layer block on the fake-owner ATTR_UID/GID path.
+† VFS-layer block (`inode_owner_or_capable`): file reports owner 0:0, caller has
+no `CAP_FOWNER`. virtiofsd never receives the request. Modes are `a+rwX`
+regardless, so read/write/exec access is unaffected.
 
 ## Performance
 
