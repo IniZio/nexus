@@ -23,7 +23,7 @@ func (p *alwaysOKProber) Ping(_ context.Context) error { return nil }
 func TestProbeAndSeedGuest_DeadProberReturnsError(t *testing.T) {
 	seederCalled := false
 	old := seedShellProfileFn
-	seedShellProfileFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestSeeder) error {
+	seedShellProfileFn = func(_ context.Context, _ domain.SandboxID, _ int, _ int, _ service.GuestSeeder) error {
 		seederCalled = true
 		return nil
 	}
@@ -44,7 +44,7 @@ func TestProbeAndSeedGuest_DeadProberReturnsError(t *testing.T) {
 func TestProbeAndSeedGuest_LiveProberSeedIsInvoked(t *testing.T) {
 	seedCalled := false
 	old := seedShellProfileFn
-	seedShellProfileFn = func(_ context.Context, _ domain.SandboxID, _ service.GuestSeeder) error {
+	seedShellProfileFn = func(_ context.Context, _ domain.SandboxID, _ int, _ int, _ service.GuestSeeder) error {
 		seedCalled = true
 		return nil
 	}

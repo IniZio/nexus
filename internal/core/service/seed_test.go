@@ -99,3 +99,29 @@ func TestResolveAgentCredKindAuthTokenEnv(t *testing.T) {
 		t.Errorf("expected kindAuthToken (%d) with ANTHROPIC_AUTH_TOKEN set, got %d", kindAuthToken, got)
 	}
 }
+
+func TestBuildGuestShellProfileScriptContainsHostUID(t *testing.T) {
+	t.Parallel()
+	script := buildGuestShellProfileScript(1234, 5678)
+	if !strings.Contains(script, "NEXUS_HOST_UID=1234") {
+		t.Errorf("script missing NEXUS_HOST_UID=1234:\n%s", script)
+	}
+	if !strings.Contains(script, "NEXUS_HOST_GID=5678") {
+		t.Errorf("script missing NEXUS_HOST_GID=5678:\n%s", script)
+	}
+}
+
+func TestSeedGuestHostUIDContent(t *testing.T) {
+	t.Parallel()
+	var cap captureSeeder
+	if err := SeedGuestHostUID(context.Background(), seedTestID(1), 1001, 1002, cap.fn()); err != nil {
+		t.Fatalf("SeedGuestHostUID: %v", err)
+	}
+	got := string(cap.payload)
+	if !strings.Contains(got, "NEXUS_HOST_UID=1001") {
+		t.Errorf("payload missing NEXUS_HOST_UID=1001:\n%s", got)
+	}
+	if !strings.Contains(got, "NEXUS_HOST_GID=1002") {
+		t.Errorf("payload missing NEXUS_HOST_GID=1002:\n%s", got)
+	}
+}

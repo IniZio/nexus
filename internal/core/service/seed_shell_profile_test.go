@@ -19,7 +19,7 @@ func TestSeedGuestShellProfile_ScriptActuallySourcesCredEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, credEnv)
+	script := strings.ReplaceAll(buildGuestShellProfileScript(0, 0), GuestCredEnvPath, credEnv)
 	profile := filepath.Join(dir, "nexus-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestSeedGuestShellProfile_ScriptActuallySourcesCredEnv(t *testing.T) {
 func TestSeedGuestShellProfile_NoCredEnvIsHarmless(t *testing.T) {
 	dir := t.TempDir()
 	absent := filepath.Join(dir, "does-not-exist.env")
-	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, absent)
+	script := strings.ReplaceAll(buildGuestShellProfileScript(0, 0), GuestCredEnvPath, absent)
 	profile := filepath.Join(dir, "nexus-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestSeedGuestShellProfile_CarriesNoCredential(t *testing.T) {
 		return nil
 	}
 	var id domain.SandboxID
-	if err := SeedGuestShellProfile(context.Background(), id, seeder); err != nil {
+	if err := SeedGuestShellProfile(context.Background(), id, 0, 0, seeder); err != nil {
 		t.Fatalf("SeedGuestShellProfile: %v", err)
 	}
 	if len(captured) == 0 {
@@ -76,11 +76,12 @@ func TestSeedGuestShellProfile_CarriesNoCredential(t *testing.T) {
 		if strings.HasPrefix(line, "#") || line == "" {
 			continue
 		}
-		// Permitted: shell conditionals, IS_SANDBOX, GIT_SSH_COMMAND (tool path only).
 		if strings.Contains(line, "=") &&
 			!strings.HasPrefix(line, "if ") &&
 			!strings.HasPrefix(line, "export IS_SANDBOX=") &&
-			!strings.HasPrefix(line, "export GIT_SSH_COMMAND=") {
+			!strings.HasPrefix(line, "export GIT_SSH_COMMAND=") &&
+			!strings.HasPrefix(line, "export NEXUS_HOST_UID=") &&
+			!strings.HasPrefix(line, "export NEXUS_HOST_GID=") {
 			t.Errorf("drop-in payload assigns a value inline: %q\n"+
 				"it must only source %s, export IS_SANDBOX, or export GIT_SSH_COMMAND, never carry a credential itself", line, GuestCredEnvPath)
 		}
@@ -93,7 +94,7 @@ func TestSeedGuestShellProfile_CarriesNoCredential(t *testing.T) {
 
 func TestSeedGuestShellProfile_NilSeederIsNoOp(t *testing.T) {
 	var id domain.SandboxID
-	if err := SeedGuestShellProfile(context.Background(), id, nil); err != nil {
+	if err := SeedGuestShellProfile(context.Background(), id, 0, 0, nil); err != nil {
 		t.Errorf("nil seeder must be a no-op, got %v", err)
 	}
 }
@@ -102,7 +103,7 @@ func TestSeedGuestShellProfile_SeederErrorPropagates(t *testing.T) {
 	want := errors.New("guest copy refused")
 	seeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return want }
 	var id domain.SandboxID
-	err := SeedGuestShellProfile(context.Background(), id, seeder)
+	err := SeedGuestShellProfile(context.Background(), id, 0, 0, seeder)
 	if err == nil {
 		t.Fatal("a failed delivery must return an error, not nil")
 	}
@@ -116,7 +117,7 @@ func TestSeedGuestShellProfile_SeederErrorPropagates(t *testing.T) {
 func TestSeedGuestShellProfile_IsSandboxExported(t *testing.T) {
 	dir := t.TempDir()
 	absent := filepath.Join(dir, "does-not-exist.env")
-	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, absent)
+	script := strings.ReplaceAll(buildGuestShellProfileScript(0, 0), GuestCredEnvPath, absent)
 	profile := filepath.Join(dir, "nexus-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
@@ -149,7 +150,7 @@ func stubClaude(t *testing.T, dir string) string {
 func buildProfileForTest(t *testing.T, dir string) string {
 	t.Helper()
 	absent := filepath.Join(dir, "does-not-exist.env")
-	script := strings.ReplaceAll(guestShellProfileScript, GuestCredEnvPath, absent)
+	script := strings.ReplaceAll(buildGuestShellProfileScript(0, 0), GuestCredEnvPath, absent)
 	profile := filepath.Join(dir, "nexus-cred.sh")
 	if err := os.WriteFile(profile, []byte(script), 0o644); err != nil {
 		t.Fatal(err)

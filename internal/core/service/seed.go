@@ -580,11 +580,17 @@ func SeedGuestCredFile(
 
 const GuestShellProfilePath = "/etc/profile.d/nexus-cred.sh"
 
-const guestShellProfileScript = `# nexus: credential and sandbox marker for login shells.
+// GuestHostUIDEnvPath is written by SeedGuestHostUID for non-login exec sessions.
+// The guest agent's guestBaselineEnv reads it so every exec'd process sees
+// NEXUS_HOST_UID and NEXUS_HOST_GID without requiring a login shell.
+const GuestHostUIDEnvPath = "/etc/nexus/hostuid.env"
+
+func buildGuestShellProfileScript(uid, gid int) string {
+	return fmt.Sprintf(`# nexus: credential and sandbox marker for login shells.
 # Written by SeedGuestShellProfile; do not edit.
-if [ -r ` + GuestCredEnvPath + ` ]; then
+if [ -r `+GuestCredEnvPath+` ]; then
     set -a
-    . ` + GuestCredEnvPath + `
+    . `+GuestCredEnvPath+`
     set +a
 fi
 # Mark this as a sandbox environment. Required by claude when running as root.
@@ -594,14 +600,32 @@ export IS_SANDBOX=1
 # /usr/local/bin/nexus-agent exists only in builder images. This env var
 # overrides the core.sshCommand written by git_identity.go, so both must agree.
 export GIT_SSH_COMMAND='/sbin/nexus-agent git-ssh'
-`
+# Host uid/gid owning virtiofs-shared dirs. Non-root container users must match.
+export NEXUS_HOST_UID=%d
+export NEXUS_HOST_GID=%d
+`, uid, gid)
+}
 
-func SeedGuestShellProfile(ctx context.Context, id domain.SandboxID, seeder GuestSeeder) error {
+func SeedGuestShellProfile(ctx context.Context, id domain.SandboxID, uid, gid int, seeder GuestSeeder) error {
 	if seeder == nil {
 		return nil
 	}
-	if err := seeder(ctx, id, []byte(guestShellProfileScript)); err != nil {
+	if err := seeder(ctx, id, []byte(buildGuestShellProfileScript(uid, gid))); err != nil {
 		return fmt.Errorf("seed guest shell profile: deliver to guest: %w", err)
+	}
+	return nil
+}
+
+// SeedGuestHostUID writes NEXUS_HOST_UID and NEXUS_HOST_GID to GuestHostUIDEnvPath
+// (/etc/nexus/hostuid.env) in KEY=VALUE format. The guest agent merges this file
+// into every exec's baseline environment so non-login sessions see the values too.
+func SeedGuestHostUID(ctx context.Context, id domain.SandboxID, uid, gid int, seeder GuestSeeder) error {
+	if seeder == nil {
+		return nil
+	}
+	content := fmt.Sprintf("NEXUS_HOST_UID=%d\nNEXUS_HOST_GID=%d\n", uid, gid)
+	if err := seeder(ctx, id, []byte(content)); err != nil {
+		return fmt.Errorf("seed guest host uid: deliver to guest: %w", err)
 	}
 	return nil
 }

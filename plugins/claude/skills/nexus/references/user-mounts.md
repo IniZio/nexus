@@ -74,3 +74,37 @@ in user config:
 - `~/.aws`, `~/.config/gcloud`, or any provider credential store
 
 The security model rests on **"tool payloads, never credential stores."**
+
+---
+
+## Container uid contract
+
+Every guest's shared directories are owned by the host user (virtiofsd runs as that
+user; guest root is fine because virtiofsd skips the credential switch for uid 0).
+Docker-compose containers that run as a **fixed non-root uid** (e.g. `USER_ID=1000`)
+need to match the host owner to write those dirs — rootless virtiofsd provides no
+ownership virtualisation.
+
+nexus seeds two variables into every guest at boot:
+
+| Variable | Value |
+|---|---|
+| `NEXUS_HOST_UID` | numeric uid of the host user (`os.Getuid()` of the supervisor) |
+| `NEXUS_HOST_GID` | numeric gid of the host user (`os.Getgid()` of the supervisor) |
+
+Both contexts receive them: login shells (via `/etc/profile.d/nexus-hostuid.sh`) and
+non-login `nexus exec` sessions (via `/etc/nexus/hostuid.env`, merged into every exec's
+baseline environment).
+
+**Compose recipe**
+
+```yaml
+services:
+  app:
+    user: "${NEXUS_HOST_UID}:${NEXUS_HOST_GID}"   # runtime uid — matches host owner
+    build:
+      args:
+        USER_ID: ${NEXUS_HOST_UID}                 # bake-time, devcontainer style
+```
+
+Guest root (`user: "0:0"` or omitting `user:`) needs no special handling.
