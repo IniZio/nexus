@@ -2533,7 +2533,17 @@ func TestClassifyBriefSubmission(t *testing.T) {
 			beforeOK:       true,
 			afterOK:        true,
 			afterVisibleOK: false,
-			want:           briefSubmissionSubmitted,
+			want:           briefSubmissionUnknown,
+		},
+		{
+			name:           "stranded pane repaints, visible read fails",
+			before:         chip,
+			after:          chip + "\n⠦ thinking",
+			afterVisible:   "",
+			beforeOK:       true,
+			afterOK:        true,
+			afterVisibleOK: false,
+			want:           briefSubmissionUnknown,
 		},
 		{
 			name:           "unreadable pane returns UNKNOWN",

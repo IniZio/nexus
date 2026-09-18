@@ -242,8 +242,18 @@ func stubPaneRead(t *testing.T, reads []readStep, calls *int) {
 	t.Helper()
 	old := herdrPaneReadFn
 	oldVis := herdrPaneReadVisibleFn
-	herdrPaneReadFn = scriptedPaneReader(reads, calls)
-	herdrPaneReadVisibleFn = func(context.Context, string, string) (string, bool) { return "", false }
+	var lastText string
+	base := scriptedPaneReader(reads, calls)
+	herdrPaneReadFn = func(ctx context.Context, bin, pane string) (string, bool) {
+		text, ok := base(ctx, bin, pane)
+		if ok {
+			lastText = text
+		}
+		return text, ok
+	}
+	herdrPaneReadVisibleFn = func(context.Context, string, string) (string, bool) {
+		return lastText, lastText != ""
+	}
 	oldSettle := briefConfirmSettle
 	briefConfirmSettle = time.Millisecond
 	t.Cleanup(func() {

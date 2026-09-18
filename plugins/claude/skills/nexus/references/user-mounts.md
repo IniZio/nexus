@@ -92,9 +92,9 @@ nexus seeds two variables into every guest at boot:
 | `NEXUS_HOST_UID` | numeric uid of the host user (`os.Getuid()` of the supervisor) |
 | `NEXUS_HOST_GID` | numeric gid of the host user (`os.Getgid()` of the supervisor) |
 
-Both contexts receive them: login shells (via `/etc/profile.d/nexus-hostuid.sh`) and
+Both contexts receive them: login shells (via `/etc/profile.d/nexus-cred.sh`) and
 non-login `nexus exec` sessions (via `/etc/nexus/hostuid.env`, merged into every exec's
-baseline environment).
+baseline environment). `/etc/nexus/startup` boot tasks run before the supervisor seeds the file, so `NEXUS_HOST_UID` is available to exec/login sessions, not to image startup hooks.
 
 **Compose recipe**
 

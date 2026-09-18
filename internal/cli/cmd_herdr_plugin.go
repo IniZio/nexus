@@ -3025,6 +3025,9 @@ func classifyBriefSubmission(before, after, afterVisible string, beforeOK, after
 	if !beforeOK || !afterOK {
 		return briefSubmissionUnknown, "pane read returned no text (both --source recent-unwrapped and --source visible were empty or failed)"
 	}
+	if !afterVisibleOK {
+		return briefSubmissionUnknown, "visible viewport unreadable; cannot rule out stranded input"
+	}
 	if afterVisibleOK {
 		for _, re := range briefStrandedMarkers {
 			if re.MatchString(afterVisible) {
