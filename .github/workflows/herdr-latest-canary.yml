@@ -1,0 +1,59 @@
+# herdr-latest canary — drift detector, NOT a gate.
+# ci.yml pins herdr at a known-good SHA for PR stability. This job runs the
+# same test suite against the latest herdr release to surface format/schema
+# drift before it surprises the pin upgrade. When this job goes red: fix
+# parsers/contract tests first, then bump the pin + SHA in ci.yml.
+# No SHA verification here by design — the tag is unknown ahead of time.
+# This job only runs tests against the downloaded binary; it never publishes.
+name: herdr-latest canary
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  herdr-live-latest:
+    name: herdr-live (latest — drift detector)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Resolve latest herdr tag
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TAG=$(gh release view --repo herdrdev/herdr --json tagName -q .tagName)
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install herdr (latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TAG="${{ steps.latest.outputs.tag }}"
+          mkdir -p "${HOME}/.local/bin"
+          curl --fail --location --silent --show-error \
+            -o "${HOME}/.local/bin/herdr" \
+            "https://github.com/herdrdev/herdr/releases/download/${TAG}/herdr-linux-x86_64"
+          chmod +x "${HOME}/.local/bin/herdr"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Verify herdr version
+        run: herdr --version
+
+      - name: Run herdr-live Tier 1 tests (latest binary)
+        env:
+          TMPDIR: /tmp
+          NEXUS_ALLOW_UNCAPPED: "1"
+          NEXUS_LIVE_REQUIRED: "1"
+        run: make test-herdr-live GOTEST_ARGS='-run TestHerdrPluginManifest|TestHerdrPluginInstall|TestHerdrRefusalGuard|TestHerdrContract_WorkspaceListIsolated|TestHerdrContract_WorktreeCreateIsolated'

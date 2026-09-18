@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/IniZio/nexus/internal/herdrout"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -185,47 +186,6 @@ func findHerdrWorkspaceID(workspaceListOut, repoPath string) (string, error) {
 	return "", fmt.Errorf("repo %s is not open as a herdr workspace; open it in herdr first", repoPath)
 }
 
-// parseHerdrWorktreeCreateWS scans `herdr worktree create` output and returns
-// the workspace ID. Accepts legacy {"ws":"<id>"} lines (herdr <0.9.0) and the
-// herdr 0.9.0+ result envelope (result.workspace.workspace_id,
-// result.worktree.open_workspace_id, result.workspace_id).
-func parseHerdrWorktreeCreateWS(out string) string {
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var v struct {
-			WS     string `json:"ws"`
-			Result struct {
-				WorkspaceID string `json:"workspace_id"`
-				Workspace   struct {
-					WorkspaceID string `json:"workspace_id"`
-				} `json:"workspace"`
-				Worktree struct {
-					OpenWorkspaceID string `json:"open_workspace_id"`
-				} `json:"worktree"`
-			} `json:"result"`
-		}
-		if json.Unmarshal([]byte(line), &v) != nil {
-			continue
-		}
-		if v.WS != "" {
-			return v.WS
-		}
-		if v.Result.Workspace.WorkspaceID != "" {
-			return v.Result.Workspace.WorkspaceID
-		}
-		if v.Result.Worktree.OpenWorkspaceID != "" {
-			return v.Result.Worktree.OpenWorkspaceID
-		}
-		if v.Result.WorkspaceID != "" {
-			return v.Result.WorkspaceID
-		}
-	}
-	return ""
-}
-
 // parseHerdrListBinding finds the `nexus herdr list` line for workspaceID
 // and returns its handle and sandbox_id.
 func parseHerdrListBinding(out, workspaceID string) (handle, sandboxID string, ok bool) {
@@ -292,33 +252,6 @@ func sandboxListed(psOut, handle, sandboxID string) bool {
 	return false
 }
 
-// parseHerdrWorktreePath returns the checkout path of the worktree on branch
-// from `herdr worktree list --json`; empty when not found.
-func parseHerdrWorktreePath(out, branch string) string {
-	var parsed struct {
-		Result struct {
-			Worktrees []struct {
-				Branch string `json:"branch"`
-				Path   string `json:"path"`
-			} `json:"worktrees"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		for _, line := range strings.Split(out, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil {
-				break
-			}
-		}
-	}
-	for _, wt := range parsed.Result.Worktrees {
-		if wt.Branch == branch {
-			return wt.Path
-		}
-	}
-	return ""
-}
-
 func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 	gosdk.AddTool(srv, &gosdk.Tool{
 		Name: "delegate_worktree_create",
@@ -356,7 +289,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if err != nil {
 			return errorResult(fmt.Errorf("delegate_worktree_create: herdr worktree create: %w\n%s", err, createOut)), nil, nil
 		}
-		ws := parseHerdrWorktreeCreateWS(createOut)
+		ws := herdrout.WorktreeCreateWorkspaceID(createOut)
 		if ws == "" {
 			return errorResult(fmt.Errorf("delegate_worktree_create: herdr worktree create: no workspace_id ({\"ws\":...} or result.workspace.workspace_id) in output\n%s", createOut)), nil, nil
 		}
@@ -378,7 +311,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		// Best effort: the worktree path is informational only.
 		worktreePath := ""
 		if wtOut, wtErr := runHerdrCLI(ctx, herdrBin, "worktree", "list", "--json"); wtErr == nil {
-			worktreePath = parseHerdrWorktreePath(wtOut, args.Branch)
+			worktreePath = herdrout.WorktreePath(wtOut, args.Branch)
 		}
 
 		return successResult(map[string]string{

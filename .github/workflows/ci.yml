@@ -137,7 +137,7 @@ jobs:
       - name: Verify herdr version
         run: herdr --version
 
-      # Run only Tier 1 tests (TestHerdrPluginManifest*). Tier 2 tests in this
+      # Run only Tier 1 tests (manifest, install, refusal-guard, contract-worklist, contract-worktree). Tier 2 tests in this
       # tag (herdr_l4_live_test.go, herdr_l4_contract_test.go, etc.) require a
       # running herdr daemon or /dev/kvm and are excluded by the -run filter.
       #
@@ -154,7 +154,7 @@ jobs:
           TMPDIR: /tmp
           NEXUS_ALLOW_UNCAPPED: "1"
           NEXUS_LIVE_REQUIRED: "1"
-        run: make test-herdr-live GOTEST_ARGS='-run TestHerdrPluginManifest|TestHerdrPluginInstall|TestHerdrRefusalGuard|TestHerdrContract_WorkspaceListIsolated'
+        run: make test-herdr-live GOTEST_ARGS='-run TestHerdrPluginManifest|TestHerdrPluginInstall|TestHerdrRefusalGuard|TestHerdrContract_WorkspaceListIsolated|TestHerdrContract_WorktreeCreateIsolated'
 
   # ── Integration tag, Tier 1 ────────────────────────────────────────────────
   # The //go:build integration tag guarded 44 files that had NEVER run: before
