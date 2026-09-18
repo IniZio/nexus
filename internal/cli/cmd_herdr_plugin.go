@@ -2982,6 +2982,44 @@ var briefStrandedMarkers = []*regexp.Regexp{
 }
 
 /**
+ * briefInputBoxRegion returns the input-box region of the visible viewport: the
+ * lines from the top border of the input box to the end of the string.
+ *
+ * Two Claude Code TUI styles are recognised:
+ *
+ *   Old (pre-2.1):  ╭─────╮ / │ > … │ / ╰─────╯ / footer
+ *   New (2.1+):     ─────── / ❯ … / ─────── / footer
+ *
+ * For the old style the search is the last ╭─ line. For the new style the
+ * input box sits between the last two ─-rule lines (lines whose trimmed
+ * content is entirely ─ characters, at least 20 bytes long); the second-to-last
+ * such line is the top border.
+ *
+ * Returns "" when no recognisable input box is found. Callers treat the empty
+ * return as UNKNOWN (fail-closed): the box is off-screen or uses a layout not
+ * yet mapped, and no verdict is safe without locating it.
+ */
+func briefInputBoxRegion(visible string) string {
+	lines := strings.Split(visible, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "╭─") {
+			return strings.Join(lines[i:], "\n")
+		}
+	}
+	var ruleIdxs []int
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if len(t) >= 20 && strings.TrimLeft(t, "─") == "" {
+			ruleIdxs = append(ruleIdxs, i)
+		}
+	}
+	if len(ruleIdxs) >= 2 {
+		return strings.Join(lines[ruleIdxs[len(ruleIdxs)-2]:], "\n")
+	}
+	return ""
+}
+
+/**
  * briefWorkingMarkers are working-agent affordances. FAST PATH ONLY.
  *
  * The same rule the pane watcher lives by applies here: movement decides, and a
@@ -3010,16 +3048,19 @@ var briefWorkingMarkers = []string{
  *
  *  1. Either read unobtainable → UNKNOWN. Refusing here is the whole point: a
  *     pane we cannot read is a pane we cannot vouch for.
- *  2. A stranded marker in the LATER VISIBLE read → STRANDED. Checked against
- *     the viewport only: the [Pasted text #N] chip persists indefinitely in
- *     --source recent-unwrapped scrollback, so matching it there produces a
- *     false positive on every accepted brief. Positive viewport evidence beats
- *     movement (step 3) because a stranded pane still repaints.
- *  3. The pane changed between the two reads → SUBMITTED. Movement is the
- *     decider: a working agent repaints, a pane holding an unsent buffer that
- *     shows no stranded marker at all is not a shape that has been observed.
- *  4. A working affordance in the later read → SUBMITTED (fast path).
- *  5. Otherwise → UNKNOWN. Static, no markers, nothing to go on. NOT a pass.
+ *  2. No input-box border (╭─) in visible viewport → UNKNOWN. Without the
+ *     box we cannot separate transcript from input region.
+ *  3. A stranded marker in the TRANSCRIPT region (lines above the last ╭─
+ *     border) → SUBMITTED. The [Pasted text #N] chip appears there as an
+ *     echoed user turn after the brief is accepted; its presence is positive
+ *     acceptance evidence. This beats the stranded check (step 4) because the
+ *     chip legitimately occupies both regions across the submit boundary.
+ *  4. A stranded marker in the INPUT-BOX region (from the last ╭─ border
+ *     onwards) → STRANDED. Scoped to the box so transcript echoes cannot
+ *     trigger a false STRANDED on an accepted brief.
+ *  5. The pane changed between the two reads → SUBMITTED (movement).
+ *  6. A working affordance in the later read → SUBMITTED (fast path).
+ *  7. Otherwise → UNKNOWN. Static, no markers, nothing to go on. NOT a pass.
  */
 func classifyBriefSubmission(before, after, afterVisible string, beforeOK, afterOK, afterVisibleOK bool) (briefSubmissionVerdict, string) {
 	if !beforeOK || !afterOK {
@@ -3028,11 +3069,19 @@ func classifyBriefSubmission(before, after, afterVisible string, beforeOK, after
 	if !afterVisibleOK {
 		return briefSubmissionUnknown, "visible viewport unreadable; cannot rule out stranded input"
 	}
-	if afterVisibleOK {
-		for _, re := range briefStrandedMarkers {
-			if re.MatchString(afterVisible) {
-				return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
-			}
+	inputBox := briefInputBoxRegion(afterVisible)
+	if inputBox == "" {
+		return briefSubmissionUnknown, "visible viewport contains no input box; cannot determine state"
+	}
+	transcript := afterVisible[:len(afterVisible)-len(inputBox)]
+	for _, re := range briefStrandedMarkers {
+		if re.MatchString(transcript) {
+			return briefSubmissionSubmitted, "brief chip in transcript (brief accepted): matched " + re.String()
+		}
+	}
+	for _, re := range briefStrandedMarkers {
+		if re.MatchString(inputBox) {
+			return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
 		}
 	}
 	if before != after {

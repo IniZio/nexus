@@ -52,6 +52,18 @@ const paneSubmitted = `● I'll start by reading the actual state of things.
 // elapsed timer moved. This is the movement signal the classifier decides on.
 var paneSubmittedTick = strings.Replace(paneSubmitted, "12s", "13s", 1)
 
+const paneSubmittedWithChip = `> [Pasted text #1 +13 lines]
+  paste again to expand
+
+● Create(/workspace/hello.txt)
+  ⎿  Created /workspace/hello.txt
+
+╭──────────────────────────────────────────────────────────────╮
+│ >                                                            │
+╰──────────────────────────────────────────────────────────────╯
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+`
+
 // paneIdleAtPrompt is a submitted-and-finished agent: empty box, no working
 // indicator, no stranded marker, and static across reads. There is genuinely no
 // evidence either way here, so the classifier must say UNKNOWN — not
@@ -168,6 +180,28 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			afterVisibleOK:     true,
 			want:               briefSubmissionSubmitted,
 			wantReasonContains: "repainted",
+		},
+		{
+			name:               "chip in transcript only: brief accepted and agent done",
+			before:             paneSubmittedWithChip,
+			after:              paneSubmittedWithChip,
+			afterVisible:       paneSubmittedWithChip,
+			beforeOK:           true,
+			afterOK:            true,
+			afterVisibleOK:     true,
+			want:               briefSubmissionSubmitted,
+			wantReasonContains: "transcript",
+		},
+		{
+			name:               "no input box in visible: unknown",
+			before:             paneSubmitted,
+			after:              paneSubmitted,
+			afterVisible:       "some output without a box",
+			beforeOK:           true,
+			afterOK:            true,
+			afterVisibleOK:     true,
+			want:               briefSubmissionUnknown,
+			wantReasonContains: "no input box",
 		},
 	}
 
@@ -407,7 +441,71 @@ func TestSpaceAgentDispatch_UsesConfirmedDelivery(t *testing.T) {
 	}
 }
 
-// spaceAgentFuncBody slices out the body of func herdrPluginSpaceAgent.
+func TestBriefInputBoxRegion(t *testing.T) {
+	cases := []struct {
+		name    string
+		visible string
+		want    string
+	}{
+		{
+			name:    "stranded pane: region starts at box top border",
+			visible: paneStranded,
+			want: "╭──────────────────────────────────────────────────────────────╮\n" +
+				"│ > [Pasted text #1 +79 lines]                                 │\n" +
+				"╰──────────────────────────────────────────────────────────────╯\n" +
+				"  ⏵⏵ bypass permissions on (shift+tab to cycle) · paste again to expand\n",
+		},
+		{
+			name:    "submitted pane: region is the empty input box",
+			visible: paneSubmitted,
+			want: "╭──────────────────────────────────────────────────────────────╮\n" +
+				"│ >                                                            │\n" +
+				"╰──────────────────────────────────────────────────────────────╯\n" +
+				"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n",
+		},
+		{
+			name:    "no box border: returns empty string",
+			visible: "some output\nwithout box",
+			want:    "",
+		},
+		{
+			name: "new-style separator: region starts at second-to-last rule line",
+			visible: "transcript line\n" +
+				"──────────────────────────\n" +
+				"❯ \n" +
+				"──────────────────────────\n" +
+				"  ⏵⏵ auto mode on\n",
+			want: "──────────────────────────\n" +
+				"❯ \n" +
+				"──────────────────────────\n" +
+				"  ⏵⏵ auto mode on\n",
+		},
+		{
+			name: "new-style separator with side-panel rules: uses last two rules",
+			visible: "transcript\n" +
+				"──────────────────────────\n" +
+				"file.txt\n" +
+				"──────────────────────────\n" +
+				"──────────────────────────\n" +
+				"❯ [Pasted text #1 +10 lines]\n" +
+				"──────────────────────────\n" +
+				"  ⏵⏵ auto mode · paste again to expand\n",
+			want: "──────────────────────────\n" +
+				"❯ [Pasted text #1 +10 lines]\n" +
+				"──────────────────────────\n" +
+				"  ⏵⏵ auto mode · paste again to expand\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := briefInputBoxRegion(tc.visible)
+			if got != tc.want {
+				t.Errorf("briefInputBoxRegion:\ngot:  %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func spaceAgentFuncBody(t *testing.T, src string) string {
 	t.Helper()
 	const marker = "\nfunc herdrPluginSpaceAgent(ctx context.Context"

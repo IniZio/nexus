@@ -2494,6 +2494,9 @@ func TestHerdrWorktreeSandbox_step9_paneListFailure_usesTab(t *testing.T) {
 func TestClassifyBriefSubmission(t *testing.T) {
 	chip := "[Pasted text #1 +79 lines]\npaste again to expand"
 	const working = "esc to interrupt"
+	const boxLine = "╭──────────────────────────────────────────────────────────────╮"
+	chipVisible := boxLine + "\n│ > [Pasted text #1 +79 lines]                                 │\n╰──────────────────────────────────────────────────────────────╯\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · paste again to expand\n"
+	emptyBox := boxLine + "\n│ >                                                            │\n╰──────────────────────────────────────────────────────────────╯\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
 
 	tests := []struct {
 		name           string
@@ -2509,17 +2512,17 @@ func TestClassifyBriefSubmission(t *testing.T) {
 			name:           "accepted: scrollback has chip, visible clear, pane moved",
 			before:         "idle A",
 			after:          chip + "\nnew output line",
-			afterVisible:   "Claude is working…\n" + working,
+			afterVisible:   "Claude is working…\n" + working + "\n" + emptyBox,
 			beforeOK:       true,
 			afterOK:        true,
 			afterVisibleOK: true,
 			want:           briefSubmissionSubmitted,
 		},
 		{
-			name:           "genuinely stranded: chip present in visible viewport",
+			name:           "genuinely stranded: chip present in visible viewport input box",
 			before:         chip,
 			after:          chip,
-			afterVisible:   chip,
+			afterVisible:   chipVisible,
 			beforeOK:       true,
 			afterOK:        true,
 			afterVisibleOK: true,
