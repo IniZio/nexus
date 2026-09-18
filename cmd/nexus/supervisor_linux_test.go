@@ -33,7 +33,6 @@ func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 		DiskPath:             "/data/sb.raw",
 		CredsFile:            "/creds.json",
 		MemoryMiB:            2048,
-		BalloonMiB:           6144,
 		BootVCPUs:            2,
 		HasWorkspaceDisk:     true,
 		WorkspaceDiskIndex:   4,
@@ -83,7 +82,7 @@ func TestParseSupervisorFlags_RoundTrip(t *testing.T) {
 	if got.WorkspaceGuestPath != in.WorkspaceGuestPath {
 		t.Errorf("WorkspaceGuestPath = %q, want %q", got.WorkspaceGuestPath, in.WorkspaceGuestPath)
 	}
-	if got.MemoryMiB != in.MemoryMiB || got.BalloonMiB != in.BalloonMiB || got.BootVCPUs != in.BootVCPUs || got.CredsFile != in.CredsFile {
+	if got.MemoryMiB != in.MemoryMiB || got.BootVCPUs != in.BootVCPUs || got.CredsFile != in.CredsFile {
 		t.Errorf("boot config lost: %+v", got)
 	}
 	if got.GovBounds != in.GovBounds {
@@ -139,7 +138,6 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 		WorkspaceGuestPath:   "/workspace/proj",
 		CredsFile:            "/creds.json",
 		MemoryMiB:            2048,
-		BalloonMiB:           6144,
 		BootVCPUs:            2,
 		HasWorkspaceDisk:     true,
 		WorkspaceDiskIndex:   0,

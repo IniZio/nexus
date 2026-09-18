@@ -128,9 +128,11 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		bootVCPUs = 1
 	}
 	resizer := cloudhypervisor.NewSandboxResizer(drv, sb.ID, cfg.GovBounds, int64(cfg.MemoryMiB)*1024*1024, bootVCPUs)
+	vsockTel := govern.NewVsockTelemetry(drv, sb.ID)
+	govTel := newBalloonNormSource(vsockTel, drv, sb.ID)
 	gov := govern.New(govern.Config{
 		Resizer:   resizer,
-		Telemetry: govern.NewVsockTelemetry(drv, sb.ID),
+		Telemetry: govTel,
 		Bounds:    cfg.GovBounds,
 		Clock:     governClock,
 	})

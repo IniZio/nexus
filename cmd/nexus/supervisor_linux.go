@@ -164,8 +164,7 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		govDiskMax = fs.Int64("gov-disk-max", 0, "governor max disk bytes (0 = passive)")
 		// bootVCPUs: seeds SandboxResizer.CurrentVCPUs() before the first resize.
 		// 0 means the supervisor applies the driver default (1 vCPU).
-		bootVCPUs  = fs.Uint("boot-vcpus", 0, "vCPU count at VM boot (0 = driver default = 1)")
-		balloonMiB = fs.Uint("balloon-mib", 0, "initial balloon MiB for builder VMs (0 = virtio-mem mode)")
+		bootVCPUs = fs.Uint("boot-vcpus", 0, "vCPU count at VM boot (0 = driver default = 1)")
 		// nestedVirt: enables KVM nested virtualisation (D-N3N-02). Default
 		// false. Absent flag means nested-OFF — never nested-ON.
 		nestedVirt = fs.Bool("nested", false, "enable KVM nested virtualisation (D-N3N-02: opt-in only, default-off)")
@@ -259,8 +258,7 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		DiskPath:   *disk,
 		CredsFile:  *credsFile,
 		MemoryMiB:  uint32(*memoryMiB),
-		BootVCPUs:  uint32(*bootVCPUs),  //nolint:gosec // range-checked by flag.Uint; vCPUs fit uint32
-		BalloonMiB: uint32(*balloonMiB), //nolint:gosec
+		BootVCPUs:  uint32(*bootVCPUs), //nolint:gosec // range-checked by flag.Uint; vCPUs fit uint32
 		NestedVirt: *nestedVirt,
 		// HasWorkspaceDisk / WorkspaceDiskIndex: the workspace disk index is
 		// meaningful only when the flag was explicitly passed (>= 0). The -1

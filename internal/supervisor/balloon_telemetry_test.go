@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/resize"
 )
 
@@ -25,8 +25,8 @@ func (h *testLogHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Unlock()
 	return nil
 }
-func (h *testLogHandler) WithAttrs(_ []slog.Attr) slog.Handler  { return h }
-func (h *testLogHandler) WithGroup(_ string) slog.Handler       { return h }
+func (h *testLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *testLogHandler) WithGroup(_ string) slog.Handler      { return h }
 
 func (h *testLogHandler) count(msg string) int {
 	h.mu.Lock()
@@ -69,8 +69,45 @@ func (f *fakeStreamSource) Stream(_ context.Context) (<-chan resize.Sample, <-ch
 	return ch, errCh, nil
 }
 
-func newTestBalloonResizer(totalMiB, minMiB, balloonMiB uint32) *cloudhypervisor.BalloonMemoryResizer {
-	return cloudhypervisor.NewBalloonMemoryResizer(nil, domain.NewSandboxID(), totalMiB, minMiB, balloonMiB)
+type fakeObserveResp struct {
+	status     driver.DriftStatus
+	newBalloon uint32 // MiB
+}
+
+type fakeMemModeReporter struct {
+	mu         sync.Mutex
+	balloonMiB uint32
+	responses  []fakeObserveResp
+}
+
+func newFakeReporter(balloonMiB uint32, responses ...fakeObserveResp) *fakeMemModeReporter {
+	return &fakeMemModeReporter{balloonMiB: balloonMiB, responses: responses}
+}
+
+func (f *fakeMemModeReporter) MemoryMode(_ domain.SandboxID) driver.MemoryMode {
+	return driver.MemoryModeBalloon
+}
+
+func (f *fakeMemModeReporter) BalloonBytes(_ domain.SandboxID) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return int64(f.balloonMiB) * 1024 * 1024
+}
+
+func (f *fakeMemModeReporter) ObserveSample(_ domain.SandboxID, _, _ uint64) (driver.DriftStatus, uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.responses) == 0 {
+		return driver.DriftOK, f.balloonMiB
+	}
+	resp := f.responses[0]
+	f.responses = f.responses[1:]
+	f.balloonMiB = resp.newBalloon
+	return resp.status, resp.newBalloon
+}
+
+func newNorm(inner resize.TelemetrySource, reporter *fakeMemModeReporter) *balloonNormSource {
+	return newBalloonNormSource(inner, reporter, domain.NewSandboxID())
 }
 
 func TestBalloonNormSource_Poll(t *testing.T) {
@@ -83,7 +120,7 @@ func TestBalloonNormSource_Poll(t *testing.T) {
 		MemTotalBytes:     uint64(totalMiB) * 1024 * 1024,
 		MemAvailableBytes: 512 * 1024 * 1024,
 	}}
-	norm := newBalloonNormSource(inner, newTestBalloonResizer(totalMiB, 2048, balloonMiB))
+	norm := newNorm(inner, newFakeReporter(balloonMiB))
 
 	s, err := norm.Poll(context.Background())
 	if err != nil {
@@ -99,7 +136,7 @@ func TestBalloonNormSource_Poll(t *testing.T) {
 
 func TestBalloonNormSource_Poll_NoPollSourceStream(t *testing.T) {
 	inner := &fakePollSource{}
-	norm := newBalloonNormSource(inner, newTestBalloonResizer(8192, 2048, 6144))
+	norm := newNorm(inner, newFakeReporter(6144))
 	_, _, err := norm.Stream(context.Background())
 	if !resize.IsStreamUnsupported(err) {
 		t.Errorf("expected ErrStreamUnsupported, got %v", err)
@@ -118,7 +155,7 @@ func TestBalloonNormSource_Stream(t *testing.T) {
 			{MemTotalBytes: uint64(totalMiB) * 1024 * 1024, MemAvailableBytes: 100 * 1024 * 1024},
 		},
 	}
-	norm := newBalloonNormSource(inner, newTestBalloonResizer(totalMiB, 2048, balloonMiB))
+	norm := newNorm(inner, newFakeReporter(balloonMiB))
 
 	sampleCh, errCh, err := norm.Stream(context.Background())
 	if err != nil {
@@ -143,7 +180,7 @@ func TestBalloonNormSource_Stream(t *testing.T) {
 
 func TestBalloonNormSource_Clamp(t *testing.T) {
 	inner := &fakePollSource{sample: resize.Sample{MemTotalBytes: 100}}
-	norm := newBalloonNormSource(inner, newTestBalloonResizer(8192, 2048, 6144))
+	norm := newNorm(inner, newFakeReporter(6144))
 	s, _ := norm.Poll(context.Background())
 	if s.MemTotalBytes != 0 {
 		t.Errorf("underflow not clamped to 0: %d", s.MemTotalBytes)
@@ -167,10 +204,8 @@ func TestBalloonNormSource_DriftSuspect_Poll(t *testing.T) {
 		MemTotalBytes:     8192 * mib,
 		MemAvailableBytes: 7000 * mib,
 	}}
-	resizer := newTestBalloonResizer(8192, 2048, 6144)
-	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	resizer.SetClock(func() time.Time { return base })
-	norm := newBalloonNormSource(inner, resizer)
+	reporter := newFakeReporter(6144, fakeObserveResp{driver.DriftSuspect, 6144})
+	norm := newNorm(inner, reporter)
 
 	s, err := norm.Poll(context.Background())
 	if err != nil {
@@ -178,7 +213,7 @@ func TestBalloonNormSource_DriftSuspect_Poll(t *testing.T) {
 	}
 	wantTotal := uint64(8192-6144) * mib
 	if s.MemTotalBytes != wantTotal {
-		t.Errorf("MemTotalBytes = %d, want %d (balloon not yet corrected)", s.MemTotalBytes, wantTotal)
+		t.Errorf("MemTotalBytes = %d, want %d", s.MemTotalBytes, wantTotal)
 	}
 	if h.count("govern.balloon.drift_suspect") != 1 {
 		t.Errorf("drift_suspect log count = %d, want 1", h.count("govern.balloon.drift_suspect"))
@@ -195,16 +230,15 @@ func TestBalloonNormSource_DriftCorrected_Poll(t *testing.T) {
 		MemTotalBytes:     8192 * mib,
 		MemAvailableBytes: 7000 * mib,
 	}}
-	resizer := newTestBalloonResizer(8192, 2048, 6144)
-	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	var fakeNow time.Time = base
-	resizer.SetClock(func() time.Time { return fakeNow })
-	norm := newBalloonNormSource(inner, resizer)
+	reporter := newFakeReporter(6144,
+		fakeObserveResp{driver.DriftSuspect, 6144},
+		fakeObserveResp{driver.DriftOK, 6144},
+		fakeObserveResp{driver.DriftCorrected, 1192},
+	)
+	norm := newNorm(inner, reporter)
 
 	norm.Poll(context.Background()) //nolint:errcheck
-	fakeNow = base.Add(8 * time.Second)
 	norm.Poll(context.Background()) //nolint:errcheck
-	fakeNow = base.Add(16 * time.Second)
 	s, err := norm.Poll(context.Background())
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -221,14 +255,11 @@ func TestBalloonNormSource_DriftCorrected_Poll(t *testing.T) {
 func TestBalloonNormSource_DriftCorrected_Stream(t *testing.T) {
 	h := captureLog(t)
 	const mib = 1024 * 1024
-	resizer := newTestBalloonResizer(8192, 2048, 6144)
-	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	var callCount int
-	resizer.SetClock(func() time.Time {
-		t := base.Add(time.Duration(callCount) * 8 * time.Second)
-		callCount++
-		return t
-	})
+	reporter := newFakeReporter(6144,
+		fakeObserveResp{driver.DriftSuspect, 6144},
+		fakeObserveResp{driver.DriftOK, 6144},
+		fakeObserveResp{driver.DriftCorrected, 1192},
+	)
 	inner := &fakeStreamSource{
 		samples: []resize.Sample{
 			{MemTotalBytes: 8192 * mib, MemAvailableBytes: 7000 * mib},
@@ -236,7 +267,7 @@ func TestBalloonNormSource_DriftCorrected_Stream(t *testing.T) {
 			{MemTotalBytes: 8192 * mib, MemAvailableBytes: 7000 * mib},
 		},
 	}
-	norm := newBalloonNormSource(inner, resizer)
+	norm := newNorm(inner, reporter)
 	sampleCh, errCh, err := norm.Stream(context.Background())
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -266,7 +297,7 @@ func TestBalloonNormSource_FirstSampleLog_Once(t *testing.T) {
 		MemTotalBytes:     8192 * 1024 * 1024,
 		MemAvailableBytes: 512 * 1024 * 1024,
 	}}
-	norm := newBalloonNormSource(inner, newTestBalloonResizer(8192, 2048, 6144))
+	norm := newNorm(inner, newFakeReporter(6144))
 	for range 3 {
 		if _, err := norm.Poll(context.Background()); err != nil {
 			t.Fatalf("Poll: %v", err)
@@ -283,7 +314,7 @@ func TestBalloonNormSource_Stream_CancelUnblocksForwarder(t *testing.T) {
 	innerErrCh := make(chan error)
 
 	inner := &blockingStreamSource{sampleCh: sampleCh, errCh: innerErrCh}
-	norm := newBalloonNormSource(inner, newTestBalloonResizer(8192, 2048, 6144))
+	norm := newNorm(inner, newFakeReporter(6144))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -305,5 +336,23 @@ func TestBalloonNormSource_Stream_CancelUnblocksForwarder(t *testing.T) {
 		case <-deadline:
 			t.Fatal("forwarder goroutine did not exit within 2s after ctx cancel")
 		}
+	}
+}
+
+func TestBalloonNormSource_FlatMode_NoOp(t *testing.T) {
+	const mib = 1024 * 1024
+	inner := &fakePollSource{sample: resize.Sample{
+		MemTotalBytes:     4096 * mib,
+		MemAvailableBytes: 1024 * mib,
+	}}
+	reporter := newFakeReporter(0)
+	norm := newNorm(inner, reporter)
+
+	s, err := norm.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if s.MemTotalBytes != 4096*mib {
+		t.Errorf("MemTotalBytes = %d, want %d (flat mode: zero balloon is a no-op)", s.MemTotalBytes, uint64(4096*mib))
 	}
 }

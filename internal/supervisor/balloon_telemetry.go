@@ -6,18 +6,20 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 type balloonNormSource struct {
 	inner           resize.TelemetrySource
-	resizer         *cloudhypervisor.BalloonMemoryResizer
+	reporter        driver.MemoryModeReporter
+	id              domain.SandboxID
 	firstSampleOnce sync.Once
 }
 
-func newBalloonNormSource(inner resize.TelemetrySource, r *cloudhypervisor.BalloonMemoryResizer) *balloonNormSource {
-	return &balloonNormSource{inner: inner, resizer: r}
+func newBalloonNormSource(inner resize.TelemetrySource, reporter driver.MemoryModeReporter, id domain.SandboxID) *balloonNormSource {
+	return &balloonNormSource{inner: inner, reporter: reporter, id: id}
 }
 
 func (b *balloonNormSource) Poll(ctx context.Context) (resize.Sample, error) {
@@ -31,8 +33,8 @@ func (b *balloonNormSource) Poll(ctx context.Context) (resize.Sample, error) {
 
 func (b *balloonNormSource) norm(s *resize.Sample) {
 	const mib = 1024 * 1024
-	oldBalloonMiB := uint32(b.resizer.BalloonBytes() / mib) //nolint:gosec
-	status, newBalloonMiB := b.resizer.ObserveSample(s.MemTotalBytes, s.MemAvailableBytes)
+	oldBalloonMiB := uint32(b.reporter.BalloonBytes(b.id) / mib) //nolint:gosec
+	status, newBalloonMiB := b.reporter.ObserveSample(b.id, s.MemTotalBytes, s.MemAvailableBytes)
 
 	guestTotalMiB := s.MemTotalBytes / mib
 	guestAvailMiB := s.MemAvailableBytes / mib
@@ -52,13 +54,13 @@ func (b *balloonNormSource) norm(s *resize.Sample) {
 		)
 	})
 	switch status {
-	case cloudhypervisor.DriftSuspect:
+	case driver.DriftSuspect:
 		slog.Debug("govern.balloon.drift_suspect",
 			"guest_total_mib", guestTotalMiB,
 			"guest_avail_mib", guestAvailMiB,
 			"balloon_mib", oldBalloonMiB,
 		)
-	case cloudhypervisor.DriftCorrected:
+	case driver.DriftCorrected:
 		slog.Warn("govern.balloon.drift_corrected",
 			"old_balloon_mib", oldBalloonMiB,
 			"new_balloon_mib", newBalloonMiB,
@@ -67,7 +69,7 @@ func (b *balloonNormSource) norm(s *resize.Sample) {
 		)
 	}
 
-	balloon := uint64(b.resizer.BalloonBytes()) //nolint:gosec
+	balloon := uint64(b.reporter.BalloonBytes(b.id)) //nolint:gosec
 	if s.MemTotalBytes > balloon {
 		s.MemTotalBytes -= balloon
 	} else {

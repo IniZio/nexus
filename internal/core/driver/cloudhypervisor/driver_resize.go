@@ -103,69 +103,6 @@ func (r *SandboxResizer) CurrentMemoryBytes() int64 {
 	return r.memBytes.Load()
 }
 
-// BalloonMemoryResizer holds per-sandbox balloon tracking state and satisfies
-// both resize.MemoryResizer and the balloon normalisation source interface
-// used by the supervisor. It can operate standalone (d == nil) for tests.
-type BalloonMemoryResizer struct {
-	d  *CHDriver
-	id domain.SandboxID
-	st *vmMemState
-}
-
-// NewBalloonMemoryResizer initialises a BalloonMemoryResizer for the given
-// sandbox. totalMiB is the hardware ceiling; memMiB is the boot allocation;
-// balloonMiB is the initial balloon size (totalMiB-memMiB when 0).
-func NewBalloonMemoryResizer(d *CHDriver, id domain.SandboxID, totalMiB, memMiB, balloonMiB uint32) *BalloonMemoryResizer {
-	if balloonMiB == 0 && totalMiB > memMiB {
-		balloonMiB = totalMiB - memMiB
-	}
-	st := &vmMemState{
-		bootMiB:  memMiB,
-		totalMiB: totalMiB,
-		mode:     driver.MemoryModeBalloon,
-	}
-	st.balloon.Store(balloonMiB)
-	return &BalloonMemoryResizer{d: d, id: id, st: st}
-}
-
-// SetClock injects a fake clock into the drift-detection state, for testing.
-func (r *BalloonMemoryResizer) SetClock(fn func() time.Time) {
-	r.st.mu.Lock()
-	r.st.clockFn = fn
-	r.st.mu.Unlock()
-}
-
-func (r *BalloonMemoryResizer) BalloonBytes() int64 {
-	return int64(r.st.balloon.Load()) * 1024 * 1024
-}
-
-func (r *BalloonMemoryResizer) ObserveSample(memTotal, memAvail uint64) (driver.DriftStatus, uint32) {
-	return r.st.observeSample(memTotal, memAvail)
-}
-
-func (r *BalloonMemoryResizer) ResizeMemory(ctx context.Context, targetBytes int64) (int64, error) {
-	const mib = 1024 * 1024
-	totalBytes := int64(r.st.totalMiB) * mib
-	if targetBytes > totalBytes {
-		targetBytes = totalBytes
-	}
-	newBalloonMiB := uint32((totalBytes - targetBytes) / mib) //nolint:gosec
-	if r.d != nil {
-		if err := r.d.ResizeBalloon(ctx, r.id, newBalloonMiB); err != nil {
-			return r.CurrentMemoryBytes(), err
-		}
-	}
-	r.st.balloon.Store(newBalloonMiB)
-	return int64(r.st.totalMiB-newBalloonMiB) * mib, nil
-}
-
-func (r *BalloonMemoryResizer) CurrentMemoryBytes() int64 {
-	const mib = int64(1024 * 1024)
-	return (int64(r.st.totalMiB) - int64(r.st.balloon.Load())) * mib //nolint:gosec
-}
-
-var _ resize.MemoryResizer = (*BalloonMemoryResizer)(nil)
-
 func (r *SandboxResizer) ResizeCPU(ctx context.Context, targetVCPUs int32) (int32, error) {
 	if targetVCPUs < r.bounds.VCPUMin {
 		targetVCPUs = r.bounds.VCPUMin

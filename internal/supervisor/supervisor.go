@@ -131,8 +131,6 @@ type Config struct {
 	// applies the cloudhypervisor driver default (1 vCPU).
 	BootVCPUs uint32
 
-	BalloonMiB uint32 // non-zero → balloon-mode: VM boots at ceiling, governor uses BalloonMemoryResizer
-
 	// NestedVirt enables KVM nested virtualisation in the guest VM so the
 	// guest can itself run hardware-accelerated VMs (e.g. `nexus create
 	// --nested` inside a sandbox). The zero value (false) means nested-OFF.
@@ -753,20 +751,11 @@ func RunDetached(cfg Config) error {
 		bootVCPUs = 1 // matches cloudhypervisor driver: Config.VCPUs=0 → 1 vCPU
 	}
 	resizer := cloudhypervisor.NewSandboxResizer(drv, sb.ID, cfg.GovBounds, int64(cfg.MemoryMiB)*1024*1024, bootVCPUs)
-	var memResizer resize.MemoryResizer = resizer
-	var balloonResizer *cloudhypervisor.BalloonMemoryResizer
-	if cfg.BalloonMiB > 0 {
-		totalMiB := uint32(cfg.GovBounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec
-		balloonResizer = cloudhypervisor.NewBalloonMemoryResizer(drv, sb.ID, totalMiB, cfg.MemoryMiB, cfg.BalloonMiB)
-		memResizer = balloonResizer
-	}
 	vsockTel := govern.NewVsockTelemetry(drv, sb.ID)
 	var govTel resize.TelemetrySource = vsockTel
-	if balloonResizer != nil {
-		govTel = newBalloonNormSource(vsockTel, balloonResizer)
-	}
+	govTel = newBalloonNormSource(vsockTel, drv, sb.ID)
 	gov := govern.New(govern.Config{
-		Resizer:   memResizer,
+		Resizer:   resizer,
 		Telemetry: govTel,
 		Bounds:    cfg.GovBounds,
 		Clock:     governClock,
@@ -2016,21 +2005,14 @@ func buildSupervisorDriverConfig(
 	memMaxMiB, vcpuMax uint32,
 	extraDisks []cloudhypervisor.ExtraDisk,
 ) cloudhypervisor.Config {
-	memMiB := cfg.MemoryMiB
-	effectiveMemMaxMiB := memMaxMiB
-	if cfg.BalloonMiB > 0 {
-		memMiB = memMaxMiB
-		effectiveMemMaxMiB = 0
-	}
 	return cloudhypervisor.Config{
 		BinaryPath:        cfg.CHBin,
 		SocketDir:         cfg.SocketDir,
 		KernelPath:        cfg.KernelPath,
 		DiskImagePath:     cfg.DiskPath,
 		StartTimeout:      30 * time.Second,
-		MemoryMiB:         memMiB,
-		MemoryMaxMiB:      effectiveMemMaxMiB,
-		BalloonMiB:        cfg.BalloonMiB,
+		MemoryMiB:         cfg.MemoryMiB,
+		MemoryMaxMiB:      memMaxMiB,
 		VCPUs:             cfg.BootVCPUs, // boot_vcpus — see doc comment above
 		VCPUMax:           vcpuMax,
 		ExtraDisks:        extraDisks,

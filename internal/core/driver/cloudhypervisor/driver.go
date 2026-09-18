@@ -235,10 +235,6 @@ type Config struct {
 	// Must be > MemoryMiB when set; New returns an error otherwise.
 	MemoryMaxMiB uint32
 
-	// BalloonMiB is accepted for backward compat; the driver infers balloon
-	// mode from MemoryMiB/MemoryMaxMiB and ignores this field directly.
-	BalloonMiB uint32
-
 	// FreePageReporting enables passive free-page reporting on the
 	// virtio-balloon device. When true the guest balloon driver advertises
 	// pages it has freed back to the host, allowing the host to reclaim memory
@@ -1042,7 +1038,7 @@ func (d *CHDriver) Resume(ctx context.Context, id domain.SandboxID) error {
 //   - 0  = fully deflated (all pages returned to the guest).
 //   - >0 = inflate to this size (host reclaims that many MiB from the guest).
 //
-// The VM must have been started with a balloon device (Config.BalloonMiB > 0
+// The VM must have been started with a balloon device (MemoryMaxMiB > MemoryMiB
 // or Config.FreePageReporting = true); CH returns an error if no balloon
 // device is present.
 //
