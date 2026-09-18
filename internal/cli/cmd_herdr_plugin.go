@@ -4623,6 +4623,44 @@ func herdrWorktreeSandbox(
 		}
 		nestedCfg = checkoutCfg.Sandbox.Nested
 		fmt.Fprintf(w, "worktree-sandbox: egress policy from %s: %d secret bind(s), nested=%t\n", cfgPath, len(egressSecrets), nestedCfg)
+		if len(checkoutCfg.Sandbox.Mounts) > 0 {
+			projectDir := config.ProjectDir(cfgPath)
+			cfgMounts, resolveErr := config.ResolveMounts(checkoutCfg.Sandbox.Mounts, projectDir)
+			if resolveErr != nil {
+				fmt.Fprintf(w, "worktree-sandbox: warning: resolve config mounts: %v\n", resolveErr)
+			} else {
+				added := 0
+				for _, cm := range cfgMounts {
+					colon := strings.Index(cm, ":")
+					if colon < 0 {
+						extraMounts = append(extraMounts, cm)
+						added++
+						continue
+					}
+					guestRaw := cm[colon+1:]
+					guestClean := strings.SplitN(guestRaw, ":", 2)[0]
+					if guestClean == "/workspace" {
+						fmt.Fprintf(w, "worktree-sandbox: warning: skipping config mount %q — /workspace is reserved\n", cm)
+						continue
+					}
+					hasDotGit := guestClean == ".git" ||
+						strings.HasSuffix(guestClean, "/.git") ||
+						strings.Contains(guestClean, "/.git/")
+					if hasDotGit {
+						fmt.Fprintf(w, "worktree-sandbox: warning: skipping config mount %q — guest path contains .git\n", cm)
+						continue
+					}
+					hostPath := cm[:colon]
+					if _, statErr := os.Stat(hostPath); os.IsNotExist(statErr) {
+						fmt.Fprintf(w, "worktree-sandbox: warning: skipping config mount %q — host path does not exist\n", cm)
+						continue
+					}
+					extraMounts = append(extraMounts, cm)
+					added++
+				}
+				fmt.Fprintf(w, "worktree-sandbox: %d mount(s) from %s\n", added, cfgPath)
+			}
+		}
 	} else {
 		fmt.Fprintf(w, "worktree-sandbox: %s absent in checkout; no egress policy or nested opt-in\n", config.ConfigRelPath)
 	}

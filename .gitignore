@@ -1,6 +1,7 @@
 # Build artifacts (root-level binaries from go build -o ...)
 /nexus
 /nexus-agent
+/nexus-selfuse
 /bin/
 
 # Release binaries — CD publishes linux/amd64 only (never committed).

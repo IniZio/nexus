@@ -745,8 +745,9 @@ func buildUserMountScript(manifest UserMountManifest) string {
 	fmt.Fprintf(&b, "cat > %s << 'NEXUSUMEOF'\n", qProfile)
 	fmt.Fprintf(&b, "# nexus: user-mount PATH for login shells.\n")
 	fmt.Fprintf(&b, "# Written by SeedGuestUserMounts; do not edit.\n")
-	pathSuffix := strings.Join(GuestCuratedPATHDirs, ":")
-	fmt.Fprintf(&b, "export PATH=\"$PATH:%s\"\n", pathSuffix)
+	pathParts := append([]string{}, GuestCuratedPATHDirs...)
+	pathParts = append(pathParts, manifest.ExtraPathDirs...)
+	fmt.Fprintf(&b, "export PATH=\"$PATH:%s\"\n", strings.Join(pathParts, ":"))
 	fmt.Fprintf(&b, "NEXUSUMEOF\n")
 	fmt.Fprintf(&b, "fi\n\n")
 

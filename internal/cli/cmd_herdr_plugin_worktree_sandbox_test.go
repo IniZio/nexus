@@ -2117,6 +2117,154 @@ func TestHerdrWorktreeSandbox_linkedWorktree_gitDirMountPassedToCreate(t *testin
 	}
 }
 
+func TestHerdrWorktreeSandbox_configMounts_appendedToExtraMounts(t *testing.T) {
+	/**
+	 * sandbox.mounts declared in .nexus/config.yaml must reach createFn via
+	 * extraMounts with host paths absolutised. A /workspace guest target must
+	 * be silently dropped (it is always the primary worktree mount).
+	 *
+	 * MUTATION PROOF: remove the cfgMounts resolution block in herdrWorktreeSandbox
+	 * → neither absolutised entry appears in extraMounts → RED on both "want" checks.
+	 */
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir:", err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".cache", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	checkoutDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkoutDir, ".nexus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkoutDir, "rel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".git"), []byte("gitdir: /nonexistent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgYAML := "version: 1\nsandbox:\n  mounts:\n    - ~/.cache/x:/var/cache/x\n    - ./rel:/opt/rel\n    - /reserved:/workspace\n"
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".nexus", "config.yaml"), []byte(cfgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-cfgmounts", "w-src", "feature/cfg-mounts", checkoutDir),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	var gotExtraMounts []string
+	callErr := callHerdrWorktreeSandbox(t, "w-cfgmounts", root, false, false,
+		func(_ context.Context, _, _, _, _ string, extraMounts []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			gotExtraMounts = extraMounts
+			return nil
+		},
+		stubSandboxGet(domain.Sandbox{}, nil),
+	)
+	if callErr != nil {
+		t.Fatalf("unexpected error: %v", callErr)
+	}
+
+	wantTilde := home + "/.cache/x:/var/cache/x"
+	wantRel := checkoutDir + "/rel:/opt/rel"
+	foundTilde, foundRel := false, false
+	for _, m := range gotExtraMounts {
+		if m == wantTilde {
+			foundTilde = true
+		}
+		if m == wantRel {
+			foundRel = true
+		}
+		colon := strings.Index(m, ":")
+		if colon >= 0 {
+			guest := strings.SplitN(m[colon+1:], ":", 2)[0]
+			if guest == "/workspace" {
+				t.Errorf("extraMounts must not contain /workspace guest entry; got %q", m)
+			}
+		}
+	}
+	if !foundTilde {
+		t.Errorf("extraMounts %v missing tilde-expanded entry %q", gotExtraMounts, wantTilde)
+	}
+	if !foundRel {
+		t.Errorf("extraMounts %v missing relative-expanded entry %q", gotExtraMounts, wantRel)
+	}
+}
+
+func TestHerdrWorktreeSandbox_configMounts_dropsGitGuestAndMissingHost(t *testing.T) {
+	/**
+	 * A guest target containing a .git path component must be dropped (existing
+	 * guard). A mount whose host path does not exist must also be dropped (new
+	 * os.Stat guard). An entry with an existing host path and clean guest target
+	 * must survive.
+	 *
+	 * MUTATION PROOF: remove hasDotGit guard → .git entry survives → RED;
+	 * remove os.Stat guard → missing-host entry survives → RED.
+	 */
+	checkoutDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(checkoutDir, ".nexus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".git"), []byte("gitdir: /nonexistent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	existingHost := t.TempDir()
+	nonexistentHost := filepath.Join(t.TempDir(), "no-such-dir")
+	gitGuestHost := t.TempDir()
+
+	cfgYAML := "version: 1\nsandbox:\n  mounts:\n" +
+		"    - " + existingHost + ":/opt/good\n" +
+		"    - " + gitGuestHost + ":/opt/repo/.git\n" +
+		"    - " + nonexistentHost + ":/opt/missing\n"
+	if err := os.WriteFile(filepath.Join(checkoutDir, ".nexus", "config.yaml"), []byte(cfgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-drops", "w-src", "feature/drops", checkoutDir),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	var gotExtraMounts []string
+	callErr := callHerdrWorktreeSandbox(t, "w-drops", root, false, false,
+		func(_ context.Context, _, _, _, _ string, extraMounts []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+			gotExtraMounts = extraMounts
+			return nil
+		},
+		stubSandboxGet(domain.Sandbox{}, nil),
+	)
+	if callErr != nil {
+		t.Fatalf("unexpected error: %v", callErr)
+	}
+
+	wantGood := existingHost + ":/opt/good"
+	foundGood := false
+	for _, m := range gotExtraMounts {
+		if m == wantGood {
+			foundGood = true
+		}
+		colon := strings.Index(m, ":")
+		if colon >= 0 {
+			guest := strings.SplitN(m[colon+1:], ":", 2)[0]
+			if guest == ".git" || strings.HasSuffix(guest, "/.git") || strings.Contains(guest, "/.git/") {
+				t.Errorf("extraMounts must not contain .git guest entry; got %q", m)
+			}
+			if m[:colon] == nonexistentHost {
+				t.Errorf("extraMounts must not contain non-existent host path; got %q", m)
+			}
+		}
+	}
+	if !foundGood {
+		t.Errorf("extraMounts %v missing expected entry %q", gotExtraMounts, wantGood)
+	}
+}
+
 // ── herdrWorktreeRootPane JSON parsing ────────────────────────────────────────
 
 func TestHerdrParseWorktreeRootPane_onePaneForWorkspace_returnsPaneID(t *testing.T) {

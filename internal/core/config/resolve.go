@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -142,6 +143,18 @@ func ResolveMounts(mounts []string, configDir string) ([]string, error) {
 		}
 		host := m[:idx]
 		guest := m[idx+1:]
+
+		if host == "~" || strings.HasPrefix(host, "~/") {
+			home, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				return nil, fmt.Errorf("config: resolve mount %q: home dir: %w", m, homeErr)
+			}
+			if host == "~" {
+				host = home
+			} else {
+				host = home + host[1:]
+			}
+		}
 
 		if !filepath.IsAbs(host) && configDir != "" {
 			abs, err := filepath.Abs(filepath.Join(configDir, host))

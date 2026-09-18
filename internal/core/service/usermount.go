@@ -32,6 +32,10 @@ type ResolvedUserMount struct {
 type UserMountManifest struct {
 	HostHome string              `json:"host_home"`
 	Mounts   []ResolvedUserMount `json:"mounts"`
+	// ExtraPathDirs are additional PATH prefixes seeded into the guest's shell
+	// profile by SeedGuestUserMounts. Used for host-path-identity mounts whose
+	// binaries (e.g. rtk, bun) are not under the standard GuestCuratedPATHDirs.
+	ExtraPathDirs []string `json:"extra_path_dirs,omitempty"`
 }
 
 // BuildUserMountManifest resolves mounts (host:guest[:ro]) for virtiofs; expands ~ and $HOME; curated PATH off-PATH.

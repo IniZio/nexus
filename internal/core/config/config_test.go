@@ -531,6 +531,36 @@ func TestResolveMounts_EmptySlice(t *testing.T) {
 	}
 }
 
+func TestResolveMounts_TildeSlashExpandedToHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir:", err)
+	}
+	got, err := config.ResolveMounts([]string{"~/.cache/x:/var/cache/x"}, "/any/dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := home + "/.cache/x:/var/cache/x"
+	if got[0] != want {
+		t.Fatalf("want %q, got %q", want, got[0])
+	}
+}
+
+func TestResolveMounts_BareTildeExpandedToHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir:", err)
+	}
+	got, err := config.ResolveMounts([]string{"~:/opt/home"}, "/any/dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := home + ":/opt/home"
+	if got[0] != want {
+		t.Fatalf("want %q, got %q", want, got[0])
+	}
+}
+
 // ---- JSON Schema drift test ----
 
 // TestSchemaCoversAllStructFields reads the JSON Schema at

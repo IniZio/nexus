@@ -1466,6 +1466,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 						})
 					}
 				}
+				for _, lm := range service.ResolveHookRuntimeMounts(hostHome, runtime.GOOS, os.Stat) {
+					bootLiveMounts = append(bootLiveMounts, lm)
+				}
 			} else {
 				slog.Warn("sandbox create: os.UserHomeDir failed; /root/.claude mount not added", "err", homeErr)
 			}
@@ -1505,6 +1508,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 						filteredMounts = append(filteredMounts, spec)
 					}
 					manifest := service.BuildUserMountManifest(hostHome, filteredMounts)
+					manifest.ExtraPathDirs = service.ResolveHookRuntimePathDirs(runtime.GOOS, exec.LookPath, []string{
+						filepath.Join(hostHome, ".local", "bin"),
+						filepath.Join(hostHome, ".local", "share", "mise", "installs"),
+					})
 					if len(agentProfile.ToolRecipe.Packages) > 0 {
 						for _, w := range service.CheckRecipeShadows(filteredMounts, agentProfile.ToolRecipe) {
 							slog.Warn("sandbox create: " + w)
@@ -1518,7 +1525,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 							IsFile:    m.IsFile,
 						})
 					}
-					if len(manifest.Mounts) > 0 {
+					if len(manifest.Mounts) > 0 || len(manifest.ExtraPathDirs) > 0 {
 						if writeErr := service.WriteUserMountManifest(stageDir, manifest); writeErr != nil {
 							slog.Warn("sandbox create: failed to write usermounts.json; operator tool dirs will not be visible in guest", "err", writeErr)
 						}
@@ -1559,6 +1566,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 						slog.Warn("sandbox create: failed to load user global config; user mounts disabled", "err", ugErr)
 					}
 					manifest := service.BuildUserMountManifest(hostHome, []string(userGlobalCfg.Sandbox.Mounts))
+					manifest.ExtraPathDirs = service.ResolveHookRuntimePathDirs(runtime.GOOS, exec.LookPath, []string{
+						filepath.Join(hostHome, ".local", "bin"),
+						filepath.Join(hostHome, ".local", "share", "mise", "installs"),
+					})
 					if len(agentProfile.ToolRecipe.Packages) > 0 {
 						for _, w := range service.CheckRecipeShadows([]string(userGlobalCfg.Sandbox.Mounts), agentProfile.ToolRecipe) {
 							slog.Warn("sandbox create: " + w)
@@ -1572,7 +1583,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 							IsFile:    m.IsFile,
 						})
 					}
-					if len(manifest.Mounts) > 0 {
+					if len(manifest.Mounts) > 0 || len(manifest.ExtraPathDirs) > 0 {
 						if writeErr := service.WriteUserMountManifest(stageDir, manifest); writeErr != nil {
 							slog.Warn("sandbox create: failed to write usermounts.json; operator tool dirs will not be visible in guest",
 								"err", writeErr)
