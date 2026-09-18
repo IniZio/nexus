@@ -5,9 +5,17 @@ package main
 // (sample collection, disk grow, CPU onliner, ZRAM, /tmp resize) is in the
 // _linux.go / _other.go companions.
 //
-// Design: D-DC-10 (serve-and-poll, host connects per sample), D-DC-11
-// (vsock port 3002). The server is intentionally stateless — each connection
-// is one request→one reply → close.
+// Design: D-DC-10 (two transports share vsock port 3002):
+//   (a) host-poll path — host opens a connection, writes "sample.request",
+//       reads one "sample.response", and closes (one request → one reply).
+//   (b) guest-push streaming — host opens a connection, writes "sample.stream";
+//       the guest sends a "sample.response" frame immediately (Trigger=heartbeat),
+//       then one frame per PSI trigger (Trigger=psi_mem or psi_cpu, leading-edge
+//       coalesced to ≤1 per 500 ms), plus a heartbeat every 5 s, until either
+//       side closes. Old guests that do not know "sample.stream" reply with an
+//       ErrorResponse containing "unknown kind"; the host detects this via
+//       resize.IsStreamUnsupported and falls back to poll.
+// D-DC-11: vsock port 3002, adjacent to the port-forward mux (3001).
 
 import (
 	"bufio"
@@ -16,6 +24,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"github.com/IniZio/nexus/internal/core/resize"
 	"github.com/mdlayher/vsock"
@@ -30,6 +39,10 @@ type resizeEnvelope struct {
 	Kind    string          `json:"kind"`
 	Payload json.RawMessage `json:"payload"`
 }
+
+// psiWatcherFunc is the PSI trigger watcher factory used by serveStream.
+// Replaced in tests to inject a fake trigger channel.
+var psiWatcherFunc = newPSIWatcher
 
 // startResizeServices starts all auto-resize subsystems. Auto-resize is
 // unconditional: the agent starts these services whenever it runs as PID 1,
@@ -53,7 +66,7 @@ func startResizeServices(ctx context.Context, con *os.File, disks []resizableDis
 	// ZRAM — synchronous, before the workload can start.
 	setupZRAMSwap(con)
 
-	// telemetry server — handles sample.request and disk.grow.
+	// telemetry server — handles sample.request, sample.stream, and disk.grow.
 	go startResizeTelemetryServer(ctx, con, disks)
 
 	// vCPU onliner — brings hot-plugged CPUs online on a 3 s ticker.
@@ -67,12 +80,12 @@ func startResizeServices(ctx context.Context, con *os.File, disks []resizableDis
 }
 
 // startResizeTelemetryServer binds vsock port [resize.TelemetryVsockPort]
-// (3002) and serves the resize wire protocol. Per D-DC-10 the host polls:
-// it connects, sends one request, reads one reply, and closes. Two request
-// kinds are handled per connection:
+// (3002) and serves the resize wire protocol. Three request kinds are handled
+// per connection:
 //
-//   - "sample.request" → collectSample → "sample.response"
-//   - "disk.grow"      → handleDiskGrow → "disk.grew"
+//   - "sample.request" → collectSample → "sample.response" (one-shot, then close)
+//   - "sample.stream"  → serveStream (long-lived push; see D-DC-10b)
+//   - "disk.grow"      → handleDiskGrow → "disk.grew" (one-shot, then close)
 //
 // disks is the list of resizable (index, mountPath) pairs to report per-disk
 // DiskStats for on each sample.request poll.
@@ -109,9 +122,12 @@ func startResizeTelemetryServer(ctx context.Context, con *os.File, disks []resiz
 	}
 }
 
-// handleResizeConn reads one request from conn, dispatches it, and writes one
-// reply. The connection is closed on return. All errors are best-effort logged.
-// disks is passed through to collectSample for per-disk telemetry.
+// handleResizeConn reads one request from conn and dispatches it. For
+// "sample.request" and "disk.grow" the connection is one-shot (one reply,
+// then close). For "sample.stream" the connection is kept open by serveStream
+// until a write error or until the underlying context ends. All errors are
+// best-effort logged. disks is passed through to collectSample for per-disk
+// telemetry. Unknown kinds return an ErrorResponse so old hosts fail cleanly.
 func handleResizeConn(con *os.File, conn net.Conn, disks []resizableDisk) {
 	defer conn.Close()
 
@@ -144,6 +160,9 @@ func handleResizeConn(con *os.File, conn net.Conn, disks []resizableDisk) {
 			consoleLog(con, "nexus-agent: resize-telemetry: encode sample response: %v\n", err)
 		}
 
+	case "sample.stream":
+		serveStream(context.Background(), con, conn, disks)
+
 	case "disk.grow":
 		var req resize.GrowRequest
 		if err := json.Unmarshal(env.Payload, &req); err != nil {
@@ -166,4 +185,62 @@ func handleResizeConn(con *os.File, conn net.Conn, disks []resizableDisk) {
 		consoleLog(con, "nexus-agent: resize-telemetry: %s\n", msg)
 		_ = resize.EncodeErrorResponse(conn, resize.ErrorResponse{Message: msg})
 	}
+}
+
+// serveStream implements the D-DC-10b guest-push streaming path. It sends a
+// "sample.response" frame immediately on connect (Trigger=heartbeat), then one
+// frame whenever psiWatcherFunc fires a PSI event (Trigger=psi_mem or psi_cpu),
+// plus a heartbeat every 5 s. Coalescing is leading-edge: the first trigger in
+// any 500 ms window is sent immediately; subsequent triggers within the window
+// are suppressed to avoid flooding the host governor. Returns when conn write
+// fails or parentCtx is done. A derived context ensures the PSI watcher
+// goroutine exits on return even when parentCtx is context.Background().
+func serveStream(parentCtx context.Context, con *os.File, conn net.Conn, disks []resizableDisk) {
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	psiCh := psiWatcherFunc(ctx, con)
+	hb := time.NewTicker(5 * time.Second)
+	defer hb.Stop()
+
+	if err := sendStreamFrame(con, conn, disks, resize.TriggerHeartbeat); err != nil {
+		return
+	}
+
+	var lastTriggerSent time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case trigger, ok := <-psiCh:
+			if !ok {
+				return
+			}
+			if time.Since(lastTriggerSent) < 500*time.Millisecond {
+				continue
+			}
+			lastTriggerSent = time.Now()
+			if err := sendStreamFrame(con, conn, disks, trigger); err != nil {
+				return
+			}
+		case <-hb.C:
+			if err := sendStreamFrame(con, conn, disks, resize.TriggerHeartbeat); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// sendStreamFrame collects a sample, sets its Trigger field, and encodes it
+// as a "sample.response" envelope on conn. The frame is byte-identical to a
+// one-shot "sample.request" reply, satisfying the StreamDecoder contract.
+// Returns any encode error so the caller can stop the stream.
+func sendStreamFrame(con *os.File, conn net.Conn, disks []resizableDisk, trigger string) error {
+	s, err := collectSample(disks)
+	if err != nil {
+		consoleLog(con, "nexus-agent: resize-stream: collectSample: %v\n", err)
+		return err
+	}
+	s.Trigger = trigger
+	return resize.EncodeSampleResponse(conn, resize.SampleResponse{Sample: s})
 }
