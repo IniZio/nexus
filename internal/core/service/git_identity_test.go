@@ -701,6 +701,13 @@ func TestGitCredentialHelper_ShellBehavior(t *testing.T) {
 	})
 }
 
+func TestGuestGitconfigPath_IsSystemConfig(t *testing.T) {
+	const want = "/etc/gitconfig" // system config is read by every uid, not just root
+	if GuestGitconfigPath != want {
+		t.Errorf("GuestGitconfigPath = %q; want %q — non-root users cannot read /root/.gitconfig", GuestGitconfigPath, want)
+	}
+}
+
 // TestGitCredentialHelper_EndToEnd verifies end-to-end git credential fill.
 func TestGitCredentialHelper_EndToEnd(t *testing.T) {
 	git, err := exec.LookPath("git")

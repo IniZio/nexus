@@ -12,7 +12,7 @@ import (
 
 // ── git configuration constants ──
 // GuestGitconfigPath is where per-sandbox git identity is written.
-const GuestGitconfigPath = "/root/.gitconfig"
+const GuestGitconfigPath = "/etc/gitconfig"
 
 // GuestGitCredentialHelperPath is the guest path for the credential-helper script.
 const GuestGitCredentialHelperPath = "/usr/local/bin/nexus-git-credential"
