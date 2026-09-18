@@ -6,8 +6,8 @@
 | Tag object SHA | 13ee2e13024eaf40cdedb4bcb0a49d5695ade0b8 |
 | Commit SHA | bbf82173682a3e48083771a0a23331e5c23b4924 |
 | Patch file | fakeowner.patch |
-| Patch SHA-256 | 0c3f5cb8521f0586ed88e86f188ee74c573dd43cc2b9e35cf11483536228eb8e |
-| Patch lines | 235 |
+| Patch SHA-256 | fad57c756f38b8274aa1f91f3a346f9806171c9f89170ab7dfddae703afe30c3 |
+| Patch lines | 344 |
 
 ## Rationale
 
@@ -19,20 +19,18 @@ virtiofsd is vendored as a patched build rather than distro-packaged for two rea
 
 ## Caller-uid finding
 
-All FUSE requests (including `lookup`, `create`, and `getattr`) from this guest
-kernel arrive with `ctx.uid = 4294967295` (`u32::MAX`, `FUSE_UNKNOWN_UID`).
-Confirmed empirically: a TRUE-fakeowner build that returns `ctx.uid` when valid
-(falling back to 0 for `FUSE_UNKNOWN_UID`) produced identical results — files
-always show `0:0` — proving the guest kernel sends `FUSE_UNKNOWN_UID` for all
-FUSE operations under the nexus virtiofs stack (vhost-user, `--sandbox=none`,
-kernel 7.0.0-30-generic).
+`CREATE` (opcode 35) carries the real caller uid in `InHeader.uid` (confirmed
+empirically via raw-header probe on kernel 7.0.0-30-generic, vhost-user,
+`--sandbox=none`). All other FUSE ops (`LOOKUP`, `GETATTR`, `SETATTR`,
+`OPENDIR`, `READDIR`) arrive with `uid = 4294967295` (`FUSE_UNKNOWN_UID`).
 
-Consequence: the daemon cannot dynamically report each file as owned by its
-caller. All files are reported as `0:0` in fake-owner mode, with widened modes
-(`a+rwX`). This makes write and read accessible to any guest uid; however,
-`chmod` and `chown` from non-root guest processes fail at the guest kernel VFS
-layer (`may_setattr` / `inode_owner_or_capable`) before the FUSE request
-reaches the daemon. This is a known limitation documented in README.md.
+The patch stores the caller uid from `CREATE`/`mkdir`/`mknod`/`symlink` in a
+per-inode `HashMap<u64,(u32,u32)>` on `PassthroughFs`. Every attr-returning
+path (`lookup`, `getattr`, `setattr`, `link`) reads from that map (falling back
+to `0:0` for inodes not in the map). `chmod`/`chown` are no-oped on the host;
+the guest VFS allows them because `inode_owner_or_capable` sees the reported uid
+matching the caller. Result: `echo x > f && chmod +x f && chown 1000:1000 f &&
+cp -p f g` as guest uid 1000 returns `rc=0` and `ls -ln` shows `1000:1000`.
 
 ## Rebuild
 

@@ -1,6 +1,6 @@
-diff --git c/Cargo.toml w/Cargo.toml
+diff --git i/Cargo.toml w/Cargo.toml
 index 2f03eb8..404f49b 100644
---- c/Cargo.toml
+--- i/Cargo.toml
 +++ w/Cargo.toml
 @@ -31,7 +31,7 @@ futures = { version = "0.3", features = ["thread-pool"] }
  libc = "0.2.177"
@@ -11,9 +11,9 @@ index 2f03eb8..404f49b 100644
  postcard = { version = "1.0", features = ["use-std"] }
  serde = { version = "1.0", features = ["derive"] }
  vhost-user-backend = "0.17.0"
-diff --git c/src/main.rs w/src/main.rs
+diff --git i/src/main.rs w/src/main.rs
 index d4c72e7..69ccaa9 100644
---- c/src/main.rs
+--- i/src/main.rs
 +++ w/src/main.rs
 @@ -412,6 +412,10 @@ struct Opt {
      /// This parameter is ignored on the destination side.
@@ -55,10 +55,19 @@ index d4c72e7..69ccaa9 100644
          ..Default::default()
      };
  
-diff --git c/src/passthrough/mod.rs w/src/passthrough/mod.rs
-index 38f49db..759af1a 100644
---- c/src/passthrough/mod.rs
+diff --git i/src/passthrough/mod.rs w/src/passthrough/mod.rs
+index 38f49db..7676901 100644
+--- i/src/passthrough/mod.rs
 +++ w/src/passthrough/mod.rs
+@@ -36,7 +36,7 @@ use guest_fd_limit::{GuestFdSemaphore, GuestFile};
+ use mount_fd::{MPRError, MountFds};
+ pub(crate) use stat::{statx, StatExt};
+ use std::borrow::Cow;
+-use std::collections::{btree_map, BTreeMap};
++use std::collections::{btree_map, BTreeMap, HashMap};
+ use std::convert::TryInto;
+ use std::ffi::{CStr, CString};
+ use std::fs::File;
 @@ -390,6 +390,8 @@ pub struct Config {
      ///
      /// The default is `u64::MAX`.
@@ -76,7 +85,41 @@ index 38f49db..759af1a 100644
          }
      }
  }
-@@ -1465,6 +1468,9 @@ impl PassthroughFs {
+@@ -491,6 +494,8 @@ pub struct PassthroughFs {
+ 
+     /// Map to translate between host and guest GIDs.
+     gid_map: IdMap<GuestGid, HostGid>,
++
++    creator_uids: RwLock<HashMap<u64, (u32, u32)>>,
+ }
+ 
+ impl PassthroughFs {
+@@ -558,6 +563,7 @@ impl PassthroughFs {
+             cfg,
+             uid_map,
+             gid_map,
++            creator_uids: RwLock::new(HashMap::new()),
+         };
+ 
+         // Check to see if the client remapped "security.capability", if so,
+@@ -579,6 +585,16 @@ impl PassthroughFs {
+         Ok(fs)
+     }
+ 
++    fn store_creator_uid(&self, inode: u64, uid: u32, gid: u32) {
++        if let Ok(mut m) = self.creator_uids.write() {
++            m.insert(inode, (uid, gid));
++        }
++    }
++
++    fn get_creator_uid(&self, inode: u64) -> Option<(u32, u32)> {
++        self.creator_uids.read().ok().and_then(|m| m.get(&inode).copied())
++    }
++
+     fn switch_to_proc_self_fd(&self) -> ScopedWorkingDirectory {
+         ScopedWorkingDirectory::new(self.proc_self_fd.as_raw_fd(), self.orig_wd_fd.as_raw_fd())
+     }
+@@ -1465,6 +1481,9 @@ impl PassthroughFs {
          ctx: &Context,
          extensions: &Extensions,
      ) -> io::Result<Option<UnixCredentialsGuard>> {
@@ -86,7 +129,7 @@ index 38f49db..759af1a 100644
          let host_uid = self.map_guest_uid(ctx.uid)?;
          let host_gid = self.map_guest_gid(ctx.gid)?;
          let supp_gid = extensions
-@@ -1498,6 +1504,14 @@ impl PassthroughFs {
+@@ -1498,6 +1517,14 @@ impl PassthroughFs {
      }
  }
  
@@ -101,65 +144,104 @@ index 38f49db..759af1a 100644
  impl FileSystem for PassthroughFs {
      type Inode = Inode;
      type Handle = Handle;
-@@ -1596,7 +1610,13 @@ impl FileSystem for PassthroughFs {
+@@ -1596,15 +1623,39 @@ impl FileSystem for PassthroughFs {
      }
  
      fn lookup(&self, _ctx: Context, parent: Inode, name: &CStr) -> io::Result<Entry> {
 -        self.do_lookup(parent, name)
 +        let mut entry = self.do_lookup(parent, name)?;
 +        if self.cfg.fake_owner {
-+            entry.attr.uid = GuestUid::from(0u32);
-+            entry.attr.gid = GuestGid::from(0u32);
++            let (ou, og) = self.get_creator_uid(entry.inode).unwrap_or((0, 0));
++            entry.attr.uid = GuestUid::from(ou);
++            entry.attr.gid = GuestGid::from(og);
 +            entry.attr.mode = fake_mode(entry.attr.mode);
 +        }
 +        Ok(entry)
      }
  
      fn forget(&self, _ctx: Context, inode: Inode, count: u64) {
-@@ -1666,7 +1686,13 @@ impl FileSystem for PassthroughFs {
+-        self.inodes.forget_one(inode, count)
++        self.inodes.forget_one(inode, count);
++        if self.cfg.fake_owner && self.inodes.get(inode).is_none() {
++            if let Ok(mut m) = self.creator_uids.write() {
++                m.remove(&inode);
++            }
++        }
+     }
+ 
+     fn batch_forget(&self, _ctx: Context, requests: Vec<(Inode, u64)>) {
+-        self.inodes.forget_many(requests)
++        if self.cfg.fake_owner {
++            let inodes: Vec<Inode> = requests.iter().map(|(i, _)| *i).collect();
++            self.inodes.forget_many(requests);
++            if let Ok(mut m) = self.creator_uids.write() {
++                for inode in inodes {
++                    if self.inodes.get(inode).is_none() {
++                        m.remove(&inode);
++                    }
++                }
++            }
++        } else {
++            self.inodes.forget_many(requests)
++        }
+     }
+ 
+     fn opendir(
+@@ -1666,7 +1717,18 @@ impl FileSystem for PassthroughFs {
              }
          }
  
 -        self.do_lookup(parent, name)
 +        let mut entry = self.do_lookup(parent, name)?;
 +        if self.cfg.fake_owner {
-+            entry.attr.uid = GuestUid::from(0u32);
-+            entry.attr.gid = GuestGid::from(0u32);
++            let ru = ctx.uid.into_inner();
++            let rg = ctx.gid.into_inner();
++            let su = if ru == u32::MAX { 0u32 } else { ru };
++            let sg = if rg == u32::MAX { 0u32 } else { rg };
++            entry.attr.uid = GuestUid::from(su);
++            entry.attr.gid = GuestGid::from(sg);
 +            entry.attr.mode = fake_mode(entry.attr.mode);
++            self.store_creator_uid(entry.inode, su, sg);
 +        }
 +        Ok(entry)
      }
  
      fn rmdir(&self, _ctx: Context, parent: Inode, name: &CStr) -> io::Result<()> {
-@@ -1793,6 +1819,12 @@ impl FileSystem for PassthroughFs {
+@@ -1793,6 +1855,17 @@ impl FileSystem for PassthroughFs {
              _ => {}
          };
  
 +        let mut entry = entry;
 +        if self.cfg.fake_owner {
-+            entry.attr.uid = GuestUid::from(0u32);
-+            entry.attr.gid = GuestGid::from(0u32);
++            let ru = ctx.uid.into_inner();
++            let rg = ctx.gid.into_inner();
++            let su = if ru == u32::MAX { 0u32 } else { ru };
++            let sg = if rg == u32::MAX { 0u32 } else { rg };
++            entry.attr.uid = GuestUid::from(su);
++            entry.attr.gid = GuestGid::from(sg);
 +            entry.attr.mode = fake_mode(entry.attr.mode);
++            self.store_creator_uid(entry.inode, su, sg);
 +        }
          Ok((entry, Some(handle), opts))
      }
  
-@@ -1868,7 +1900,13 @@ impl FileSystem for PassthroughFs {
+@@ -1868,7 +1941,14 @@ impl FileSystem for PassthroughFs {
          inode: Inode,
          _handle: Option<Handle>,
      ) -> io::Result<(fuse::Attr, Duration)> {
 -        self.do_getattr(inode)
 +        let (mut attr, dur) = self.do_getattr(inode)?;
 +        if self.cfg.fake_owner {
-+            attr.uid = GuestUid::from(0u32);
-+            attr.gid = GuestGid::from(0u32);
++            let (ou, og) = self.get_creator_uid(inode).unwrap_or((0, 0));
++            attr.uid = GuestUid::from(ou);
++            attr.gid = GuestGid::from(og);
 +            attr.mode = fake_mode(attr.mode);
 +        }
 +        Ok((attr, dur))
      }
  
      fn setattr(
-@@ -1908,8 +1946,7 @@ impl FileSystem for PassthroughFs {
+@@ -1908,8 +1988,7 @@ impl FileSystem for PassthroughFs {
              Data::ProcPath(pathname)
          };
  
@@ -169,7 +251,7 @@ index 38f49db..759af1a 100644
              let res = unsafe {
                  match data {
                      Data::Handle(_, fd) => libc::fchmod(fd, attr.mode),
-@@ -1923,7 +1960,7 @@ impl FileSystem for PassthroughFs {
+@@ -1923,7 +2002,7 @@ impl FileSystem for PassthroughFs {
              }
          }
  
@@ -178,52 +260,79 @@ index 38f49db..759af1a 100644
              let uid = if valid.contains(SetattrValid::UID) {
                  self.map_guest_uid(attr.uid)?.into_inner()
              } else {
-@@ -2118,7 +2155,13 @@ impl FileSystem for PassthroughFs {
+@@ -2021,7 +2100,14 @@ impl FileSystem for PassthroughFs {
+             }
+         }
+ 
+-        self.do_getattr(inode)
++        let (mut attr, dur) = self.do_getattr(inode)?;
++        if self.cfg.fake_owner {
++            let (ou, og) = self.get_creator_uid(inode).unwrap_or((0, 0));
++            attr.uid = GuestUid::from(ou);
++            attr.gid = GuestGid::from(og);
++            attr.mode = fake_mode(attr.mode);
++        }
++        Ok((attr, dur))
+     }
+ 
+     fn rename(
+@@ -2118,7 +2204,18 @@ impl FileSystem for PassthroughFs {
                  return Err(e);
              }
          }
 -        self.do_lookup(parent, name)
 +        let mut entry = self.do_lookup(parent, name)?;
 +        if self.cfg.fake_owner {
-+            entry.attr.uid = GuestUid::from(0u32);
-+            entry.attr.gid = GuestGid::from(0u32);
++            let ru = ctx.uid.into_inner();
++            let rg = ctx.gid.into_inner();
++            let su = if ru == u32::MAX { 0u32 } else { ru };
++            let sg = if rg == u32::MAX { 0u32 } else { rg };
++            entry.attr.uid = GuestUid::from(su);
++            entry.attr.gid = GuestGid::from(sg);
 +            entry.attr.mode = fake_mode(entry.attr.mode);
++            self.store_creator_uid(entry.inode, su, sg);
 +        }
 +        Ok(entry)
      }
  
      fn link(
-@@ -2152,7 +2195,13 @@ impl FileSystem for PassthroughFs {
+@@ -2152,7 +2249,14 @@ impl FileSystem for PassthroughFs {
              self.after_invalidating_path(invalidated_inode, "Overwrote (via link)");
          }
          if res == 0 {
 -            self.do_lookup(newparent, newname)
 +            let mut entry = self.do_lookup(newparent, newname)?;
 +            if self.cfg.fake_owner {
-+                entry.attr.uid = GuestUid::from(0u32);
-+                entry.attr.gid = GuestGid::from(0u32);
++                let (ou, og) = self.get_creator_uid(entry.inode).unwrap_or((0, 0));
++                entry.attr.uid = GuestUid::from(ou);
++                entry.attr.gid = GuestGid::from(og);
 +                entry.attr.mode = fake_mode(entry.attr.mode);
 +            }
 +            Ok(entry)
          } else {
              Err(io::Error::last_os_error())
          }
-@@ -2194,7 +2243,13 @@ impl FileSystem for PassthroughFs {
+@@ -2194,7 +2298,18 @@ impl FileSystem for PassthroughFs {
              }
          }
  
 -        self.do_lookup(parent, name)
 +        let mut entry = self.do_lookup(parent, name)?;
 +        if self.cfg.fake_owner {
-+            entry.attr.uid = GuestUid::from(0u32);
-+            entry.attr.gid = GuestGid::from(0u32);
++            let ru = ctx.uid.into_inner();
++            let rg = ctx.gid.into_inner();
++            let su = if ru == u32::MAX { 0u32 } else { ru };
++            let sg = if rg == u32::MAX { 0u32 } else { rg };
++            entry.attr.uid = GuestUid::from(su);
++            entry.attr.gid = GuestGid::from(sg);
 +            entry.attr.mode = fake_mode(entry.attr.mode);
++            self.store_creator_uid(entry.inode, su, sg);
 +        }
 +        Ok(entry)
      }
  
      fn readlink(&self, _ctx: Context, inode: Inode) -> io::Result<Vec<u8>> {
-@@ -2281,6 +2336,9 @@ impl FileSystem for PassthroughFs {
+@@ -2281,6 +2396,9 @@ impl FileSystem for PassthroughFs {
      }
  
      fn access(&self, ctx: Context, inode: Inode, mask: u32) -> io::Result<()> {

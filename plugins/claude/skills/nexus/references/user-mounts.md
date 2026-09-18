@@ -87,22 +87,10 @@ enables `--fake-owner` automatically (override with `NEXUS_VIRTIOFS_FAKE_OWNER=0
 
 What fake-owner guarantees:
 
-- Any guest uid can read and write all files in the mount
-- Host file ownership is unchanged — all guest writes land as the daemon uid (host owner)
-- Exec bits are preserved; `a+rwX` is reported so directories are always traversable
-- `chown` requests are silently accepted (no-op) and return success
-
-**Limitation — chmod/chown by non-root guest processes:** files appear owned by
-`0:0` in the guest. The guest kernel's VFS layer (`may_setattr` →
-`inode_owner_or_capable`) blocks `chmod` and `chown` from any process that is
-not uid 0 and lacks `CAP_FOWNER`, before the FUSE request reaches virtiofsd.
-Both return `EPERM`. Because fake-owner widens modes to `a+rwX`, workload
-access is unaffected by what `chmod` would set. Steps that require `chmod` must
-run as guest root, or use the `NEXUS_HOST_UID` recipe below.
-
-Root cause: the guest kernel sends `FUSE_UNKNOWN_UID` (`0xFFFFFFFF`) in all
-FUSE request headers under the nexus vhost-user virtiofs stack; virtiofsd cannot
-recover the caller's uid to report per-caller ownership.
+- Files created inside the guest (`create`/`mkdir`/`mknod`/`symlink`) report the creating uid/gid as owner — `chmod +x`, `chown`, and `cp -p` all return rc=0 from any guest uid.
+- Pre-existing host files appear as `0:0` with `a+rwX` modes (read/write for all uids; `chmod` on pre-existing files needs root).
+- Host ownership never changes — all guest writes land as the daemon uid.
+- `chown` and `chmod` are silently no-oped on the host; `access()` always succeeds.
 
 ### Without fake-owner / per-uid matching
 
