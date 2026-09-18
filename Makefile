@@ -122,11 +122,12 @@ build:
 # The base-image agent (images/kernel/nexus-agent, baked into nexus-agent-base)
 # is a SEPARATE binary rebuilt by images/kernel/rebuild-base.sh — see AGENT-REBUILD.md.
 NEXUS_AGENT_INSTALL_DIR ?= $(HOME)/.local/bin
+AGENT_BUILD_TAG ?= $(shell date -u +%Y%m%d)-$(shell git rev-parse --short=7 HEAD)
 
 install-agent:
 	@mkdir -p $(NEXUS_AGENT_INSTALL_DIR)
-	CGO_ENABLED=0 go build -o $(NEXUS_AGENT_INSTALL_DIR)/nexus-agent ./cmd/nexus-agent
-	@echo "OK: nexus-agent installed → $(NEXUS_AGENT_INSTALL_DIR)/nexus-agent"
+	CGO_ENABLED=0 go build -trimpath -ldflags "-X main.agentBuildTag=$(AGENT_BUILD_TAG)" -o $(NEXUS_AGENT_INSTALL_DIR)/nexus-agent ./cmd/nexus-agent
+	@echo "OK: nexus-agent installed → $(NEXUS_AGENT_INSTALL_DIR)/nexus-agent (build=$(AGENT_BUILD_TAG))"
 
 # install-kernel: dev flow — symlinks the in-tree kernel image into the XDG
 # data path so resolveKernelPath finds it from any cwd (e.g. herdr panes).
