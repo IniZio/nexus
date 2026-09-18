@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -227,5 +229,85 @@ func TestProbeAndSeedGuest_OverlaySkippedWithLiveRWMount(t *testing.T) {
 	if overlayCalled {
 		t.Fatal("seedOverlayClaudeConfigFn was called when HasClaudeRWMount=true — " +
 			"overlay must be skipped when a live rw /root/.claude mount is present (D-1 mutation guard)")
+	}
+}
+
+func TestProbeAndSeedGuest_ClaudeHomeSymlinkSeeded(t *testing.T) {
+	called := false
+	var gotHome string
+	old := seedClaudeHomeSymlinkFn
+	seedClaudeHomeSymlinkFn = func(_ context.Context, _ domain.SandboxID, hostHome string, _ service.GuestExecer) error {
+		called = true
+		gotHome = hostHome
+		return nil
+	}
+	t.Cleanup(func() { seedClaudeHomeSymlinkFn = old })
+
+	err := probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
+		HasClaudeRWMount: true,
+		ClaudeHostHome:   "/home/testuser",
+	})
+	if err != nil {
+		t.Fatalf("probeAndSeedGuest: %v", err)
+	}
+	if !called {
+		t.Fatal("seedClaudeHomeSymlinkFn was not called — companion symlink wiring missing")
+	}
+	if gotHome != "/home/testuser" {
+		t.Fatalf("seedClaudeHomeSymlinkFn got hostHome=%q, want /home/testuser", gotHome)
+	}
+}
+
+func TestProbeAndSeedGuest_ClaudeHomeSymlinkSkippedRootHome(t *testing.T) {
+	called := false
+	old := seedClaudeHomeSymlinkFn
+	seedClaudeHomeSymlinkFn = func(_ context.Context, _ domain.SandboxID, _ string, _ service.GuestExecer) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { seedClaudeHomeSymlinkFn = old })
+
+	_ = probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
+		HasClaudeRWMount: true,
+		ClaudeHostHome:   "/root",
+	})
+	if called {
+		t.Fatal("seedClaudeHomeSymlinkFn must not be called when ClaudeHostHome==/root")
+	}
+}
+
+func TestProbeAndSeedGuest_ClaudeHomeSymlinkSkippedEmptyHome(t *testing.T) {
+	called := false
+	old := seedClaudeHomeSymlinkFn
+	seedClaudeHomeSymlinkFn = func(_ context.Context, _ domain.SandboxID, _ string, _ service.GuestExecer) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { seedClaudeHomeSymlinkFn = old })
+
+	_ = probeAndSeedGuest(context.Background(), &alwaysOKProber{}, guestSeedInputs{
+		HasClaudeRWMount: true,
+		ClaudeHostHome:   "",
+	})
+	if called {
+		t.Fatal("seedClaudeHomeSymlinkFn must not be called when ClaudeHostHome is empty")
+	}
+}
+
+func TestSeedClaudeHomeSymlink_ScriptContent(t *testing.T) {
+	var capturedScript string
+	execer := service.GuestExecer(func(_ context.Context, _ domain.SandboxID, argv []string, _ io.Reader) (int32, error) {
+		if len(argv) >= 3 {
+			capturedScript = argv[2]
+		}
+		return 0, nil
+	})
+	if err := seedClaudeHomeSymlink(context.Background(), domain.SandboxID{}, "/home/newman", execer); err != nil {
+		t.Fatalf("seedClaudeHomeSymlink: %v", err)
+	}
+	for _, want := range []string{"mkdir -p /home/newman", "ln -sfn /root/.claude /home/newman/.claude"} {
+		if !strings.Contains(capturedScript, want) {
+			t.Errorf("script missing %q\nscript:\n%s", want, capturedScript)
+		}
 	}
 }

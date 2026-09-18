@@ -496,9 +496,11 @@ func RunDetached(cfg Config) error {
 	// sandboxes that use the live-mount cred design. Used to skip the overlayfs
 	// setup and to arm the cred guardian instead of the Refresher loop.
 	hasClaudeRWMount := false
+	claudeHostHome := ""
 	for _, lm := range cfg.LiveMounts {
 		if lm.GuestPath == "/root/.claude" && !lm.ReadOnly {
 			hasClaudeRWMount = true
+			claudeHostHome = filepath.Dir(lm.HostPath)
 			break
 		}
 	}
@@ -926,6 +928,7 @@ func RunDetached(cfg Config) error {
 			// routes through the MITM proxy on this boot and every restart.
 			IsHumanGitVM:     sb.AgentName == "",
 			HasClaudeRWMount: hasClaudeRWMount,
+			ClaudeHostHome:   claudeHostHome,
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -1428,6 +1431,25 @@ fi
 	}
 }
 
+var seedClaudeHomeSymlinkFn = seedClaudeHomeSymlink
+
+func seedClaudeHomeSymlink(ctx context.Context, id domain.SandboxID, hostHome string, execer service.GuestExecer) error {
+	script := fmt.Sprintf(`set -eu
+mkdir -p %s
+if [ ! -e %s/.claude ] || [ -L %s/.claude ]; then
+    ln -sfn /root/.claude %s/.claude
+fi
+`, hostHome, hostHome, hostHome, hostHome)
+	code, err := execer(ctx, id, []string{"/bin/bash", "-c", script}, nil)
+	if err != nil {
+		return fmt.Errorf("claude home symlink: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("claude home symlink script exited %d", code)
+	}
+	return nil
+}
+
 // seedGitIdentityFn is the function called by probeAndSeedGuest to write the
 // guest gitconfig (operator identity, safe.directory for every source path,
 // per-sandbox branch). Default is service.SeedGitIdentity; tests replace it
@@ -1475,6 +1497,7 @@ type guestSeedInputs struct {
 	// /root/.claude. When true, the overlayfs mount via seedOverlayClaudeConfigFn
 	// is skipped — the live mount is the direct source, no overlay needed.
 	HasClaudeRWMount bool
+	ClaudeHostHome   string // host home dir when HasClaudeRWMount; "" or "/root" skips companion symlink
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential
@@ -1517,6 +1540,16 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 		default:
 			// D-RAM-13: Branch 3 or attach error — fail closed, boot aborts.
 			return fmt.Errorf("supervisor: agentcfg overlay mount failed (fail-closed): %w", ovlErr)
+		}
+	}
+
+	if in.HasClaudeRWMount && in.ClaudeHostHome != "" && in.ClaudeHostHome != "/root" {
+		if symlinkErr := seedClaudeHomeSymlinkFn(ctx, id, in.ClaudeHostHome, in.Execer); symlinkErr != nil {
+			slog.Warn("supervisor.claude_home_symlink_failed",
+				"sandbox", id, "host_home", in.ClaudeHostHome, "err", symlinkErr,
+				"action", "plugin paths using host-absolute form will not resolve in guest")
+		} else {
+			slog.Info("supervisor.claude_home_symlink_seeded", "sandbox", id, "link", in.ClaudeHostHome+"/.claude")
 		}
 	}
 

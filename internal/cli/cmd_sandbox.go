@@ -1449,6 +1449,19 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 					ReadOnly:  false,
 				})
 				slog.Info("sandbox create: live ~/.claude mount wired", "host", filepath.Join(hostHome, ".claude"))
+				pluginSpecs, pluginWarns := service.ResolvePluginSymlinkMounts(hostHome)
+				for _, w := range pluginWarns {
+					slog.Warn("sandbox create: plugin external mount", "msg", w)
+				}
+				for _, spec := range pluginSpecs {
+					if parts := strings.SplitN(spec, ":", 3); len(parts) >= 2 {
+						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
+							HostPath:  parts[0],
+							GuestPath: parts[1],
+							ReadOnly:  true,
+						})
+					}
+				}
 			} else {
 				slog.Warn("sandbox create: os.UserHomeDir failed; /root/.claude mount not added", "err", homeErr)
 			}
@@ -1473,7 +1486,15 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 					var filteredMounts []string
 					for _, spec := range allMounts {
 						gp := service.MountSpecGuestPath(spec)
-						if gp == "/root/.claude" || strings.HasPrefix(gp, "/root/.claude/") {
+						claudeGuestPaths := []string{"/root/.claude", filepath.Join(hostHome, ".claude")}
+						skip := false
+						for _, cp := range claudeGuestPaths {
+							if gp == cp || strings.HasPrefix(gp, cp+"/") {
+								skip = true
+								break
+							}
+						}
+						if skip {
 							slog.Info("sandbox create: skipping user mount nested under live ~/.claude mount", "spec", spec)
 							continue
 						}
