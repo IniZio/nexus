@@ -5,6 +5,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -51,9 +52,31 @@ func planMountOrder(mounts []GuestMount) []GuestMount {
 // On failure the returned error names both the device and the target so the
 // caller can identify which mount step failed. Previously-completed mounts
 // remain in place — the VM is responsible for overall cleanup on exit.
+var guestBindMountFn = func(src, dst string, flags uintptr) error {
+	if err := syscall.Mount(src, dst, "", syscall.MS_BIND|flags, ""); err != nil {
+		return err
+	}
+	if flags&syscall.MS_RDONLY != 0 {
+		return syscall.Mount("", dst, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
+	}
+	return nil
+}
+
+var fileMountScratchBase = "/run/nexus/filemounts"
+
+var guestVirtiofsTagMountFn = func(device, target string, flags uintptr) error {
+	return syscall.Mount(device, target, "virtiofs", flags, "")
+}
+
 func MountWorkspace(mounts []GuestMount) error {
 	ordered := planMountOrder(mounts)
 	for _, m := range ordered {
+		if m.IsFile && m.FSType == "virtiofs" {
+			if err := mountFileVirtiofs(m); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := os.MkdirAll(m.Target, 0o755); err != nil {
 			return fmt.Errorf("workspace mount: mkdir %s: %w", m.Target, err)
 		}
@@ -61,6 +84,32 @@ func MountWorkspace(mounts []GuestMount) error {
 			return fmt.Errorf("workspace mount: mount %s → %s (%s): %w",
 				m.Device, m.Target, m.FSType, err)
 		}
+	}
+	return nil
+}
+
+func mountFileVirtiofs(m GuestMount) error {
+	scratch := filepath.Join(fileMountScratchBase, m.Device)
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
+		return fmt.Errorf("workspace mount: mkdir scratch %s: %w", scratch, err)
+	}
+	if err := guestVirtiofsTagMountFn(m.Device, scratch, m.mountFlags()); err != nil {
+		return fmt.Errorf("workspace mount: mount virtiofs tag %s → %s: %w", m.Device, scratch, err)
+	}
+	src := filepath.Join(scratch, m.FileName)
+
+	if err := os.MkdirAll(filepath.Dir(m.Target), 0o755); err != nil {
+		return fmt.Errorf("workspace mount: mkdir parent of %s: %w", m.Target, err)
+	}
+	if _, statErr := os.Stat(m.Target); os.IsNotExist(statErr) {
+		f, err := os.OpenFile(m.Target, os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return fmt.Errorf("workspace mount: create bind target %s: %w", m.Target, err)
+		}
+		f.Close()
+	}
+	if err := guestBindMountFn(src, m.Target, m.mountFlags()); err != nil {
+		return fmt.Errorf("workspace mount: bind-mount %s → %s: %w", src, m.Target, err)
 	}
 	return nil
 }

@@ -24,7 +24,8 @@ type ResolvedUserMount struct {
 	Overlay          bool   `json:"overlay"`
 	Curated          bool   `json:"curated"`
 	CuratedSubPath   string `json:"curated_sub_path,omitempty"`
-	StagingGuestPath string `json:"staging_guest_path"` // virtiofs landing point
+	StagingGuestPath string `json:"staging_guest_path"`
+	IsFile           bool   `json:"is_file,omitempty"`
 }
 
 // UserMountManifest is the schema of usermounts.json for the guest seed.
@@ -48,9 +49,11 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 		}
 
 		hostPath := expandHome(hostRaw, hostHome)
-		if _, err := os.Stat(hostPath); err != nil {
+		info, err := os.Stat(hostPath)
+		if err != nil {
 			continue
 		}
+		isFile := !info.IsDir()
 
 		curated := false
 		var curatedSubPath string
@@ -90,6 +93,7 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 			Curated:          curated,
 			CuratedSubPath:   curatedSubPath,
 			StagingGuestPath: stagingGuestPath,
+			IsFile:           isFile,
 		})
 	}
 	return m

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -181,6 +182,99 @@ func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir strin
 	}
 }
 
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func checkUnshare() (string, error) {
+	p, err := exec.LookPath("unshare")
+	if err != nil {
+		return "", fmt.Errorf("cloudhypervisor: unshare not found: file mounts require unshare (util-linux)")
+	}
+	if out, err := exec.Command(p, "-Urm", "true").CombinedOutput(); err != nil {
+		return "", fmt.Errorf("cloudhypervisor: unshare -Urm true failed (need unprivileged_userns_clone=1): %w\n%s", err, out)
+	}
+	return p, nil
+}
+
+func virtiofsdStageDirPath(socketDir string, id domain.SandboxID, idx int) string {
+	return filepath.Join(socketDir, fmt.Sprintf("%s.vfsfile%d", id.String(), idx))
+}
+
+func spawnVirtiofsdForFile(ctx context.Context, unshare, binaryPath, socketPath, stageDir, hostFile string, readOnly bool) (*managedProcess, error) {
+	_ = os.Remove(socketPath)
+
+	bindTarget := filepath.Join(stageDir, filepath.Base(hostFile))
+	f, err := os.OpenFile(bindTarget, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("cloudhypervisor: virtiofsd file-mount bind target %s: %w", bindTarget, err)
+	}
+	f.Close()
+
+	vParts := []string{shellQuote(binaryPath),
+		"--shared-dir", shellQuote(stageDir),
+		"--socket-path", shellQuote(socketPath),
+		"--sandbox", "none",
+		"--seccomp", "none",
+	}
+	if readOnly {
+		vParts = append(vParts, "--readonly")
+	}
+	script := fmt.Sprintf("mount --bind %s %s && exec %s",
+		shellQuote(hostFile), shellQuote(bindTarget), strings.Join(vParts, " "))
+
+	stderrBuf := newVMMStderrBuf(64 * 1024)
+	cmd := exec.Command(unshare, "--user", "--map-root-user", "--mount", "--", "sh", "-c", script)
+	cmd.Stdout = nil
+	cmd.Stderr = stderrBuf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setPdeathsig(cmd.SysProcAttr)
+
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(bindTarget)
+		return nil, fmt.Errorf("cloudhypervisor: virtiofsd file-mount start %s: %w", socketPath, err)
+	}
+	pid := cmd.Process.Pid
+
+	cleanup := func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = cmd.Wait()
+		_ = os.Remove(socketPath)
+	}
+
+	const readyTimeout = 10 * time.Second
+	deadline := time.Now().Add(readyTimeout)
+	for {
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			tail := stderrBuf.Tail()
+			cleanup()
+			if tail != "" {
+				return nil, fmt.Errorf("cloudhypervisor: virtiofsd file-mount socket %s not ready within %s\nstderr:\n%s",
+					socketPath, readyTimeout, tail)
+			}
+			return nil, fmt.Errorf("cloudhypervisor: virtiofsd file-mount socket %s not ready within %s",
+				socketPath, readyTimeout)
+		}
+		if exited, state := processExited(pid); exited {
+			tail := stderrBuf.Tail()
+			cleanup()
+			if tail != "" {
+				return nil, fmt.Errorf("cloudhypervisor: virtiofsd file-mount for %s exited (state %s)\nstderr:\n%s",
+					hostFile, state, tail)
+			}
+			return nil, fmt.Errorf("cloudhypervisor: virtiofsd file-mount for %s exited (state %s) with no stderr",
+				hostFile, state)
+		}
+		if _, statErr := os.Stat(socketPath); statErr == nil {
+			return newManagedProcess(cmd, pid, stderrBuf), nil
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
 // spawnVirtiofsdForMounts spawns one virtiofsd per LiveMount in d.cfg.LiveMounts,
 // registering each *managedProcess in d.virtiofsdProcs[id] immediately after a
 // successful spawn so that clearState (via cleanup() in Start) can kill it even
@@ -204,21 +298,55 @@ func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.Sandbo
 		)
 	}
 
+	hasFileMounts := false
+	for _, lm := range mounts {
+		if lm.IsFile {
+			hasFileMounts = true
+			break
+		}
+	}
+	var unsharePath string
+	if hasFileMounts {
+		up, uerr := checkUnshare()
+		if uerr != nil {
+			return nil, uerr
+		}
+		unsharePath = up
+	}
+
 	fsCfgs := make([]vmFsConfig, 0, len(mounts))
 	for i, lm := range mounts {
 		sockPath := virtiofsdSockPath(d.cfg.SocketDir, id, i)
-		spawnFn := d.spawnVirtiofsdFn
-		if spawnFn == nil {
-			spawnFn = spawnVirtiofsd
+		var vp *managedProcess
+		var err error
+		if lm.IsFile {
+			stageDir := virtiofsdStageDirPath(d.cfg.SocketDir, id, i)
+			if mkErr := os.MkdirAll(stageDir, 0o700); mkErr != nil {
+				return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] stage dir %s: %w", i, stageDir, mkErr)
+			}
+			vp, err = spawnVirtiofsdForFile(ctx, unsharePath, d.cfg.VirtiofsdPath, sockPath, stageDir, lm.HostPath, lm.ReadOnly)
+			if err != nil {
+				_ = os.RemoveAll(stageDir)
+				return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] file-mount for %s: %w", i, lm.HostPath, err)
+			}
+			d.mu.Lock()
+			d.virtiofsdProcs[id] = append(d.virtiofsdProcs[id], vp)
+			d.virtiofsdStageDirs[id] = append(d.virtiofsdStageDirs[id], stageDir)
+			d.mu.Unlock()
+		} else {
+			spawnFn := d.spawnVirtiofsdFn
+			if spawnFn == nil {
+				spawnFn = spawnVirtiofsd
+			}
+			vp, err = spawnFn(ctx, d.cfg.VirtiofsdPath, sockPath, lm.HostPath, lm.ReadOnly)
+			if err != nil {
+				return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] for %s: %w", i, lm.HostPath, err)
+			}
+			d.mu.Lock()
+			d.virtiofsdProcs[id] = append(d.virtiofsdProcs[id], vp)
+			d.virtiofsdStageDirs[id] = append(d.virtiofsdStageDirs[id], "")
+			d.mu.Unlock()
 		}
-		vp, err := spawnFn(ctx, d.cfg.VirtiofsdPath, sockPath, lm.HostPath, lm.ReadOnly)
-		if err != nil {
-			return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] for %s: %w", i, lm.HostPath, err)
-		}
-		// Register immediately: if the next iteration fails, clearState kills this proc.
-		d.mu.Lock()
-		d.virtiofsdProcs[id] = append(d.virtiofsdProcs[id], vp)
-		d.mu.Unlock()
 
 		fsCfgs = append(fsCfgs, vmFsConfig{
 			Tag:    VirtiofsTag(i),

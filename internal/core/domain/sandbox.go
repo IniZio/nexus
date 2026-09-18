@@ -241,6 +241,8 @@ type LiveMount struct {
 	// ReadOnly is true when the share is exposed read-only inside the guest;
 	// false means read-write.
 	ReadOnly bool `json:"read_only"`
+
+	IsFile bool `json:"is_file,omitempty"`
 }
 
 // VolumeAttachment describes a single named volume attached to a sandbox.

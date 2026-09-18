@@ -44,4 +44,7 @@ type GuestMount struct {
 	// orthogonal: a workspace mount never needs Resizable (IsWorkspace already
 	// implies it); a named-volume mount uses Resizable instead.
 	Resizable bool
+
+	IsFile   bool
+	FileName string
 }

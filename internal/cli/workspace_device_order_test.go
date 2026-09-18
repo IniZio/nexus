@@ -179,3 +179,14 @@ func TestWorkspaceMountCmdline_ReadOnly(t *testing.T) {
 		t.Errorf("expected :true suffix for ReadOnly=true mount, got: %q", got)
 	}
 }
+
+func TestWorkspaceMountCmdline_FileMount(t *testing.T) {
+	mounts := []agent.GuestMount{
+		{Device: "nxfs4", Target: "/root/.tmux.conf", FSType: "virtiofs", ReadOnly: true, IsFile: true, FileName: ".tmux.conf"},
+	}
+	got := workspaceMountCmdline(mounts)
+	want := "nxfs4:/root/.tmux.conf:virtiofs:true:false:false:.tmux.conf"
+	if !strings.Contains(got, want) {
+		t.Errorf("file mount token %q not found in: %q", want, got)
+	}
+}

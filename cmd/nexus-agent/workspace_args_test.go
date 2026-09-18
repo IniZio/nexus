@@ -263,3 +263,40 @@ func TestParseWorkspaceMountArg_RoundTrip_Virtiofs(t *testing.T) {
 		}
 	}
 }
+
+func TestParseWorkspaceMountArg_FileMountField(t *testing.T) {
+	arg := "--workspace-mount=nxfs4:/root/.tmux.conf:virtiofs:true:false:false:.tmux.conf"
+	m, ok := parseWorkspaceMountArg(arg)
+	if !ok {
+		t.Fatal("parseWorkspaceMountArg returned ok=false for 7-field file mount arg")
+	}
+	if !m.IsFile {
+		t.Error("IsFile must be true when FileName field is non-empty")
+	}
+	if m.FileName != ".tmux.conf" {
+		t.Errorf("FileName = %q, want .tmux.conf", m.FileName)
+	}
+	if m.Device != "nxfs4" {
+		t.Errorf("Device = %q, want nxfs4", m.Device)
+	}
+	if m.Target != "/root/.tmux.conf" {
+		t.Errorf("Target = %q, want /root/.tmux.conf", m.Target)
+	}
+	if !m.ReadOnly {
+		t.Error("ReadOnly must be true")
+	}
+}
+
+func TestParseWorkspaceMountArg_DirMount_NoFilename(t *testing.T) {
+	arg := "--workspace-mount=nxfs0:/workspace/repo:virtiofs:false:false:false"
+	m, ok := parseWorkspaceMountArg(arg)
+	if !ok {
+		t.Fatal("parseWorkspaceMountArg returned ok=false for 6-field dir mount arg")
+	}
+	if m.IsFile {
+		t.Error("IsFile must be false for dir mount (no 7th field)")
+	}
+	if m.FileName != "" {
+		t.Errorf("FileName = %q, want empty for dir mount", m.FileName)
+	}
+}

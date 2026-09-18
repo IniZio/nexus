@@ -17,32 +17,35 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 )
 
-// EncodeLiveMount renders lm as "<host-path>:<guest-path>[:ro]", the same spec
-// shape the user types for `nexus create --mount`.
 func EncodeLiveMount(lm domain.LiveMount) string {
 	spec := lm.HostPath + ":" + lm.GuestPath
-	if lm.ReadOnly {
+	if lm.ReadOnly && !lm.IsFile {
 		spec += ":ro"
+	} else if lm.ReadOnly && lm.IsFile {
+		spec += ":ro:file"
+	} else if !lm.ReadOnly && lm.IsFile {
+		spec += ":rw:file"
 	}
 	return spec
 }
 
-// ParseLiveMountSpec is the inverse of EncodeLiveMount.
-//
-// It deliberately does NOT stat the host path: the path was validated when the
-// sandbox was created, and the supervisor may start long afterwards. Only the
-// spec's shape is checked.
 func ParseLiveMountSpec(spec string) (domain.LiveMount, error) {
-	parts := strings.SplitN(spec, ":", 3)
+	parts := strings.SplitN(spec, ":", 4)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return domain.LiveMount{}, fmt.Errorf("supervisor: --mount %q: want <host-path>:<guest-path>[:ro]", spec)
+		return domain.LiveMount{}, fmt.Errorf("supervisor: --mount %q: want <host-path>:<guest-path>[:ro|:rw][:file]", spec)
 	}
 	lm := domain.LiveMount{HostPath: parts[0], GuestPath: parts[1]}
-	if len(parts) == 3 {
-		if parts[2] != "ro" {
-			return domain.LiveMount{}, fmt.Errorf("supervisor: --mount %q: unknown option %q; want <host-path>:<guest-path>[:ro]", spec, parts[2])
+	for _, opt := range parts[2:] {
+		switch opt {
+		case "ro":
+			lm.ReadOnly = true
+		case "rw":
+			// default, no-op
+		case "file":
+			lm.IsFile = true
+		default:
+			return domain.LiveMount{}, fmt.Errorf("supervisor: --mount %q: unknown option %q", spec, opt)
 		}
-		lm.ReadOnly = true
 	}
 	return lm, nil
 }

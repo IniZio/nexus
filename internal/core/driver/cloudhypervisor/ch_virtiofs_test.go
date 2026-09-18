@@ -57,9 +57,10 @@ func testDriver(t *testing.T, virtiofsdBin string, mounts []domain.LiveMount) *C
 			VirtiofsdPath: virtiofsdBin,
 			LiveMounts:    mounts,
 		},
-		procs:          make(map[domain.SandboxID]*managedProcess),
-		nets:           make(map[domain.SandboxID]*netState),
-		virtiofsdProcs: make(map[domain.SandboxID][]*managedProcess),
+		procs:              make(map[domain.SandboxID]*managedProcess),
+		nets:               make(map[domain.SandboxID]*netState),
+		virtiofsdProcs:     make(map[domain.SandboxID][]*managedProcess),
+		virtiofsdStageDirs: make(map[domain.SandboxID][]string),
 	}
 }
 
@@ -153,10 +154,11 @@ func TestSpawnVirtiofsdForMounts_FailureKillsOrphans(t *testing.T) {
 				{HostPath: shared, GuestPath: "/bad"},
 			},
 		},
-		procs:            make(map[domain.SandboxID]*managedProcess),
-		nets:             make(map[domain.SandboxID]*netState),
-		virtiofsdProcs:   make(map[domain.SandboxID][]*managedProcess),
-		spawnVirtiofsdFn: seam,
+		procs:              make(map[domain.SandboxID]*managedProcess),
+		nets:               make(map[domain.SandboxID]*netState),
+		virtiofsdProcs:     make(map[domain.SandboxID][]*managedProcess),
+		virtiofsdStageDirs: make(map[domain.SandboxID][]string),
+		spawnVirtiofsdFn:   seam,
 	}
 
 	_, spawnErr := d.spawnVirtiofsdForMounts(t.Context(), id)

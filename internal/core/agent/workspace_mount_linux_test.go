@@ -3,6 +3,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 )
@@ -164,5 +166,106 @@ func TestMountFlags_VirtioFSReadOnly(t *testing.T) {
 	}
 	if rw.mountFlags() != 0 {
 		t.Errorf("virtiofs ReadOnly=false: want 0 flags, got %d", rw.mountFlags())
+	}
+}
+
+func TestMountFileVirtiofs_BindCallArgs(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(t.TempDir(), ".tmux.conf")
+
+	origBase := fileMountScratchBase
+	origTag := guestVirtiofsTagMountFn
+	origBind := guestBindMountFn
+	t.Cleanup(func() {
+		fileMountScratchBase = origBase
+		guestVirtiofsTagMountFn = origTag
+		guestBindMountFn = origBind
+	})
+
+	fileMountScratchBase = base
+
+	var tagDevice, tagTarget string
+	var tagFlags uintptr
+	guestVirtiofsTagMountFn = func(device, tgt string, flags uintptr) error {
+		tagDevice = device
+		tagTarget = tgt
+		tagFlags = flags
+		return os.WriteFile(filepath.Join(tgt, ".tmux.conf"), []byte("# test"), 0o600)
+	}
+
+	var bindSrc, bindDst string
+	var bindFlags uintptr
+	guestBindMountFn = func(src, dst string, flags uintptr) error {
+		bindSrc = src
+		bindDst = dst
+		bindFlags = flags
+		return nil
+	}
+
+	m := GuestMount{
+		Device:   "nxfs4",
+		Target:   target,
+		FSType:   "virtiofs",
+		ReadOnly: true,
+		IsFile:   true,
+		FileName: ".tmux.conf",
+	}
+	if err := mountFileVirtiofs(m); err != nil {
+		t.Fatalf("mountFileVirtiofs: %v", err)
+	}
+
+	if tagDevice != "nxfs4" {
+		t.Errorf("tag mount device = %q, want nxfs4", tagDevice)
+	}
+	if tagTarget != filepath.Join(base, "nxfs4") {
+		t.Errorf("tag mount target = %q, want %q", tagTarget, filepath.Join(base, "nxfs4"))
+	}
+	if tagFlags != syscall.MS_RDONLY {
+		t.Errorf("tag mount flags = %d, want MS_RDONLY (%d)", tagFlags, syscall.MS_RDONLY)
+	}
+	wantSrc := filepath.Join(base, "nxfs4", ".tmux.conf")
+	if bindSrc != wantSrc {
+		t.Errorf("bind src = %q, want %q", bindSrc, wantSrc)
+	}
+	if bindDst != target {
+		t.Errorf("bind dst = %q, want %q", bindDst, target)
+	}
+	if bindFlags != syscall.MS_RDONLY {
+		t.Errorf("bind flags = %d, want MS_RDONLY (%d)", bindFlags, syscall.MS_RDONLY)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("target file not created: %v", err)
+	}
+}
+
+func TestMountFileVirtiofs_RW(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(t.TempDir(), ".gitconfig")
+
+	origBase := fileMountScratchBase
+	origTag := guestVirtiofsTagMountFn
+	origBind := guestBindMountFn
+	t.Cleanup(func() {
+		fileMountScratchBase = origBase
+		guestVirtiofsTagMountFn = origTag
+		guestBindMountFn = origBind
+	})
+	fileMountScratchBase = base
+	guestVirtiofsTagMountFn = func(device, tgt string, flags uintptr) error {
+		return os.WriteFile(filepath.Join(tgt, ".gitconfig"), []byte("[user]"), 0o600)
+	}
+
+	var bindFlags uintptr
+	guestBindMountFn = func(_, _ string, flags uintptr) error {
+		bindFlags = flags
+		return nil
+	}
+
+	m := GuestMount{Device: "nxfs1", Target: target, FSType: "virtiofs", ReadOnly: false, IsFile: true, FileName: ".gitconfig"}
+	if err := mountFileVirtiofs(m); err != nil {
+		t.Fatalf("mountFileVirtiofs rw: %v", err)
+	}
+	if bindFlags != 0 {
+		t.Errorf("rw bind flags = %d, want 0", bindFlags)
 	}
 }

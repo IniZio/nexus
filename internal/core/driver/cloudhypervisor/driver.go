@@ -327,10 +327,11 @@ type Config struct {
 type CHDriver struct {
 	cfg Config
 
-	mu             sync.Mutex
-	procs          map[domain.SandboxID]*managedProcess
-	nets           map[domain.SandboxID]*netState         // per-sandbox network resources; see ch_net.go
-	virtiofsdProcs map[domain.SandboxID][]*managedProcess // per-sandbox virtiofsd processes; see ch_virtiofs.go
+	mu                 sync.Mutex
+	procs              map[domain.SandboxID]*managedProcess
+	nets               map[domain.SandboxID]*netState // per-sandbox network resources; see ch_net.go
+	virtiofsdProcs     map[domain.SandboxID][]*managedProcess
+	virtiofsdStageDirs map[domain.SandboxID][]string
 
 	snapshotStore *artifact.Store
 
@@ -413,12 +414,13 @@ func New(cfg Config) (*CHDriver, error) {
 	}
 
 	return &CHDriver{
-		cfg:              cfg,
-		procs:            make(map[domain.SandboxID]*managedProcess),
-		nets:             make(map[domain.SandboxID]*netState),
-		virtiofsdProcs:   make(map[domain.SandboxID][]*managedProcess),
-		snapshotStore:    snapshotStore,
-		spawnVirtiofsdFn: spawnVirtiofsd,
+		cfg:                cfg,
+		procs:              make(map[domain.SandboxID]*managedProcess),
+		nets:               make(map[domain.SandboxID]*netState),
+		virtiofsdProcs:     make(map[domain.SandboxID][]*managedProcess),
+		virtiofsdStageDirs: make(map[domain.SandboxID][]string),
+		snapshotStore:      snapshotStore,
+		spawnVirtiofsdFn:   spawnVirtiofsd,
 	}, nil
 }
 
@@ -570,10 +572,17 @@ func (d *CHDriver) clearState(id domain.SandboxID) {
 	d.mu.Lock()
 	vprocs := d.virtiofsdProcs[id]
 	delete(d.virtiofsdProcs, id)
+	vstageDirs := d.virtiofsdStageDirs[id]
+	delete(d.virtiofsdStageDirs, id)
 	d.mu.Unlock()
 	for i, vp := range vprocs {
 		vp.kill()
 		_ = os.Remove(virtiofsdSockPath(d.cfg.SocketDir, id, i))
+	}
+	for _, sd := range vstageDirs {
+		if sd != "" {
+			_ = os.RemoveAll(sd)
+		}
 	}
 
 	// teardownSandboxNet acquires d.mu internally; must not be called while

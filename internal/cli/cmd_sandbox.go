@@ -716,7 +716,11 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 		if m.Resizable {
 			rs = "true"
 		}
-		b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws, rs)
+		if m.IsFile {
+			b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws, rs, m.FileName)
+		} else {
+			b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws, rs)
+		}
 	}
 	return b
 }
@@ -1511,6 +1515,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 							HostPath:  m.HostPath,
 							GuestPath: m.StagingGuestPath,
 							ReadOnly:  true,
+							IsFile:    m.IsFile,
 						})
 					}
 					if len(manifest.Mounts) > 0 {
@@ -1564,6 +1569,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 							HostPath:  m.HostPath,
 							GuestPath: m.StagingGuestPath,
 							ReadOnly:  true,
+							IsFile:    m.IsFile,
 						})
 					}
 					if len(manifest.Mounts) > 0 {
@@ -2390,7 +2396,12 @@ func liveMountsToGuestMounts(mounts []domain.LiveMount) []agent.GuestMount {
 			Target:      m.GuestPath,
 			FSType:      "virtiofs",
 			ReadOnly:    m.ReadOnly,
-			IsWorkspace: false, // live mounts are not the disk-telemetry workspace
+			IsWorkspace: false,
+			IsFile:      m.IsFile,
+			FileName:    filepath.Base(m.HostPath),
+		}
+		if !m.IsFile {
+			out[i].FileName = ""
 		}
 	}
 	return out
