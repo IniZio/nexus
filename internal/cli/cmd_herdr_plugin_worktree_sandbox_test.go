@@ -2114,3 +2114,229 @@ func TestHerdrWorktreeSandbox_linkedWorktree_gitDirMountPassedToCreate(t *testin
 			"git will be unusable inside the worktree sandbox", gotExtraMounts, wantGitMount)
 	}
 }
+
+// ── herdrWorktreeRootPane JSON parsing ────────────────────────────────────────
+
+func TestHerdrParseWorktreeRootPane_onePaneForWorkspace_returnsPaneID(t *testing.T) {
+	raw := `{"id":"cli:pane:list","result":{"panes":[` +
+		`{"pane_id":"w5:p1","workspace_id":"w5","tab_id":"w5:t1","revision":1},` +
+		`{"pane_id":"w6:p2","workspace_id":"w6","tab_id":"w6:t2","revision":1}` +
+		`]}}`
+	got := herdrParseWorktreeRootPane([]byte(raw), "w5")
+	if got != "w5:p1" {
+		t.Errorf("got %q; want %q", got, "w5:p1")
+	}
+}
+
+func TestHerdrParseWorktreeRootPane_rootPlusProvisioningPane_returnsRoot(t *testing.T) {
+	raw := `{"id":"cli:pane:list","result":{"panes":[` +
+		`{"pane_id":"w5:p1","workspace_id":"w5","tab_id":"w5:t1","revision":1},` +
+		`{"pane_id":"w5:p2","workspace_id":"w5","tab_id":"w5:t2","revision":1,"label":"nexus sandbox this worktree"}` +
+		`]}}`
+	got := herdrParseWorktreeRootPane([]byte(raw), "w5")
+	if got != "w5:p1" {
+		t.Errorf("got %q; want %q", got, "w5:p1")
+	}
+}
+
+func TestHerdrParseWorktreeRootPane_multiUnlabeledPanes_returnsEmpty(t *testing.T) {
+	raw := `{"id":"cli:pane:list","result":{"panes":[` +
+		`{"pane_id":"w5:p1","workspace_id":"w5","tab_id":"w5:t1","revision":1},` +
+		`{"pane_id":"w5:p2","workspace_id":"w5","tab_id":"w5:t2","revision":2}` +
+		`]}}`
+	got := herdrParseWorktreeRootPane([]byte(raw), "w5")
+	if got != "" {
+		t.Errorf("multi-unlabeled: got %q; want empty", got)
+	}
+}
+
+func TestHerdrParseWorktreeRootPane_noPaneForWorkspace_returnsEmpty(t *testing.T) {
+	raw := `{"id":"cli:pane:list","result":{"panes":[{"pane_id":"w6:p1","workspace_id":"w6","tab_id":"w6:t1","revision":1}]}}`
+	got := herdrParseWorktreeRootPane([]byte(raw), "w5")
+	if got != "" {
+		t.Errorf("no match: got %q; want empty", got)
+	}
+}
+
+func TestHerdrParseWorktreeRootPane_invalidJSON_returnsEmpty(t *testing.T) {
+	got := herdrParseWorktreeRootPane([]byte("not-json"), "w5")
+	if got != "" {
+		t.Errorf("invalid JSON: got %q; want empty", got)
+	}
+}
+
+// ── step 9: root-pane split → single-tab guest workspace ─────────────────────
+
+func swapRootPaneFn(t *testing.T, fn func(ctx context.Context, herdrBin, workspaceID string) string) {
+	t.Helper()
+	old := herdrWorktreeRootPaneFn
+	herdrWorktreeRootPaneFn = fn
+	t.Cleanup(func() { herdrWorktreeRootPaneFn = old })
+}
+
+func containsSeq(haystack []string, needle ...string) bool {
+outer:
+	for i := range haystack {
+		if i+len(needle) > len(haystack) {
+			break
+		}
+		for j, n := range needle {
+			if haystack[i+j] != n {
+				continue outer
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func newOpenPaneExec(t *testing.T, calls *[][]string, paneID string) func(ctx context.Context, name string, args ...string) *exec.Cmd {
+	t.Helper()
+	paneJSON := `{"id":"cli:plugin","result":{"plugin_pane":{"pane":{"pane_id":"` + paneID + `"}},"type":"plugin_pane_opened"}}`
+	return func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		cp := make([]string, len(args))
+		copy(cp, args)
+		*calls = append(*calls, cp)
+		if len(args) >= 3 && args[0] == "plugin" && args[1] == "pane" && args[2] == "open" {
+			return exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' "+shellescape(paneJSON))
+		}
+		return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+	}
+}
+
+func shellescape(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+
+func TestHerdrWorktreeSandbox_step9_onePaneWorkspace_splitsAndClosesRoot(t *testing.T) {
+	root := t.TempDir()
+	const rootPaneID = "w-split:pROOT"
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-split", "w-src", "feature/split-test", "/path/st"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+	swapRootPaneFn(t, func(_ context.Context, _, _ string) string { return rootPaneID })
+
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	old := herdrExecCommandContext
+	var calls [][]string
+	herdrExecCommandContext = newOpenPaneExec(t, &calls, "w-split:pGUEST")
+	t.Cleanup(func() { herdrExecCommandContext = old })
+
+	err := herdrWorktreeSandbox(context.Background(), "w-split", &strings.Builder{}, root,
+		true, false, false, false, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var openArgs, closeArgs []string
+	for _, call := range calls {
+		if len(call) >= 3 && call[0] == "plugin" && call[1] == "pane" && call[2] == "open" {
+			openArgs = call
+		}
+		if len(call) >= 2 && call[0] == "pane" && call[1] == "close" {
+			closeArgs = call
+		}
+	}
+	if openArgs == nil {
+		t.Fatalf("plugin pane open not called; all calls: %v", calls)
+	}
+	if !containsSeq(openArgs, "--placement", "split") {
+		t.Errorf("open argv missing --placement split; got %v", openArgs)
+	}
+	if !containsSeq(openArgs, "--target-pane", rootPaneID) {
+		t.Errorf("open argv missing --target-pane %s; got %v", rootPaneID, openArgs)
+	}
+	if closeArgs == nil {
+		t.Fatalf("pane close not called; all calls: %v", calls)
+	}
+	if len(closeArgs) < 3 || closeArgs[2] != rootPaneID {
+		t.Errorf("pane close arg = %v; want pane_id %s", closeArgs, rootPaneID)
+	}
+}
+
+func TestHerdrWorktreeSandbox_step9_multiPaneWorkspace_usesTab(t *testing.T) {
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-multipane", "w-src", "feature/multi-pane", "/path/mp"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+	swapRootPaneFn(t, func(_ context.Context, _, _ string) string { return "" })
+
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	old := herdrExecCommandContext
+	var calls [][]string
+	herdrExecCommandContext = newOpenPaneExec(t, &calls, "w-multipane:pGUEST")
+	t.Cleanup(func() { herdrExecCommandContext = old })
+
+	err := herdrWorktreeSandbox(context.Background(), "w-multipane", &strings.Builder{}, root,
+		true, false, false, false, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var openArgs []string
+	closeFound := false
+	for _, call := range calls {
+		if len(call) >= 3 && call[0] == "plugin" && call[1] == "pane" && call[2] == "open" {
+			openArgs = call
+		}
+		if len(call) >= 2 && call[0] == "pane" && call[1] == "close" {
+			closeFound = true
+		}
+	}
+	if openArgs == nil {
+		t.Fatalf("plugin pane open not called; all calls: %v", calls)
+	}
+	if !containsSeq(openArgs, "--workspace", "w-multipane") {
+		t.Errorf("multi-pane: open argv must use --workspace; got %v", openArgs)
+	}
+	for _, a := range openArgs {
+		if a == "--placement" {
+			t.Errorf("multi-pane: open argv must not contain --placement; got %v", openArgs)
+			break
+		}
+	}
+	if closeFound {
+		t.Errorf("multi-pane: pane close must not be called; all calls: %v", calls)
+	}
+}
+
+func TestHerdrWorktreeSandbox_step9_paneListFailure_usesTab(t *testing.T) {
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-plfail", "w-src", "feature/pl-fail", "/path/plf"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+	swapRootPaneFn(t, func(_ context.Context, _, _ string) string { return "" })
+
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	old := herdrExecCommandContext
+	var calls [][]string
+	herdrExecCommandContext = newOpenPaneExec(t, &calls, "w-plfail:pGUEST")
+	t.Cleanup(func() { herdrExecCommandContext = old })
+
+	err := herdrWorktreeSandbox(context.Background(), "w-plfail", &strings.Builder{}, root,
+		true, false, false, false, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var openArgs []string
+	closeFound := false
+	for _, call := range calls {
+		if len(call) >= 3 && call[0] == "plugin" && call[1] == "pane" && call[2] == "open" {
+			openArgs = call
+		}
+		if len(call) >= 2 && call[0] == "pane" && call[1] == "close" {
+			closeFound = true
+		}
+	}
+	if openArgs == nil {
+		t.Fatalf("plugin pane open not called; all calls: %v", calls)
+	}
+	if !containsSeq(openArgs, "--workspace", "w-plfail") {
+		t.Errorf("pane-list failure: open argv must use --workspace; got %v", openArgs)
+	}
+	if closeFound {
+		t.Errorf("pane-list failure: pane close must not be called; all calls: %v", calls)
+	}
+}

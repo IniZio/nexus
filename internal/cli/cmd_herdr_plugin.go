@@ -1628,10 +1628,10 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
  * the server falls back to the manifest-declared placement for the shell
  * entrypoint, which must be "tab" — see TestHerdrManifest_ShellPlacementIsTab).
  *
- * When rootPaneID is empty — no root pane id could be parsed, or an existing
- * workspace is being reused rather than freshly created (its root pane id
- * from creation time is not retained) — --workspace is used instead: today's
- * separate-tab behaviour. That is a degradation, not a failure.
+ * When rootPaneID is empty — no root pane id could be resolved (pane list
+ * failed, workspace already has multiple panes, or the workspace is being
+ * reused rather than freshly created) — --workspace is used instead: the
+ * separate-tab fallback. That is a degradation, not a failure.
  *
  * focus controls whether --focus is passed. herdr agent start requires
  * --pane <ID>, which is why this function's return value matters: without it
@@ -3550,6 +3550,67 @@ var herdrListWorktreeForWorkspaceFn = herdrListWorktreeForWorkspace
 var herdrWorkspaceRenameFn = herdrWorkspaceRename
 
 /**
+ * herdrWorktreeRootPaneFn is the injectable function for resolving the root pane
+ * of a freshly-created worktree workspace. Replaced in tests to avoid calling
+ * the live herdr binary.
+ */
+var herdrWorktreeRootPaneFn = herdrWorktreeRootPane
+
+/**
+ * herdrParseWorktreeRootPane parses the JSON response from `herdr pane list`
+ * and returns the pane_id of the workspace's sole UNLABELED pane.
+ *
+ * Plugin panes carry a non-empty label (e.g. "nexus sandbox this worktree" for
+ * the provisioning pane that runs worktree-sandbox, "nexus guest shell" for
+ * the sandbox shell). The root pane herdr minted at workspace creation has no
+ * label. Filtering on label == "" isolates it even while the provisioning pane
+ * is still open in the same workspace.
+ *
+ * Returns "" when: the JSON cannot be parsed, the workspace has no unlabeled
+ * panes, or it has more than one (e.g. the operator opened a second host
+ * shell before the hook ran — closing the root pane would not be safe).
+ */
+func herdrParseWorktreeRootPane(data []byte, workspaceID string) string {
+	var resp struct {
+		Result struct {
+			Panes []struct {
+				PaneID      string `json:"pane_id"`
+				WorkspaceID string `json:"workspace_id"`
+				Label       string `json:"label"`
+			} `json:"panes"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return ""
+	}
+	var unlabeled []string
+	for _, p := range resp.Result.Panes {
+		if p.WorkspaceID == workspaceID && p.Label == "" {
+			unlabeled = append(unlabeled, p.PaneID)
+		}
+	}
+	if len(unlabeled) != 1 {
+		return ""
+	}
+	return unlabeled[0]
+}
+
+/**
+ * herdrWorktreeRootPane calls `herdr pane list` and returns the pane_id of the
+ * workspace's sole existing pane. An empty string is returned (falling back to
+ * the separate-tab behaviour) when: the command fails, the JSON cannot be
+ * parsed, or the workspace has any count of panes other than exactly one.
+ */
+func herdrWorktreeRootPane(ctx context.Context, herdrBin, workspaceID string) string {
+	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "list")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return herdrParseWorktreeRootPane(out, workspaceID)
+}
+
+/**
  * herdrParseWorktreeListForWorkspace parses the JSON response from
  * `herdr worktree list --workspace <id>` and returns the
  * herdrWorktreeInfo for the entry whose open_workspace_id matches workspaceID.
@@ -4264,7 +4325,12 @@ func herdrWorktreeSandboxParseArgs(args []string) (rest []string, conditional bo
  *     Binding is written BEFORE the pane opens so idempotency is safe on crash.
  *     On error: same policy as step 7.
  *
- *  9. Open guest shell pane; if successful, patch GuestPaneID into the stored binding.
+ *  9. Resolve root pane via herdrWorktreeRootPaneFn: returns the pane_id when
+ *     the workspace has exactly one pane (the fresh host shell herdr opened),
+ *     or "" when multi-pane or probe fails (falls back to separate-tab).
+ *     Open guest shell pane via herdrOpenGuestShellPane; when rootPaneID is
+ *     non-empty the pane opens as a split and herdrCloseRootPane removes the
+ *     host pane, leaving a single guest-only tab. Patch GuestPaneID on success.
  *     On error: always printed. Explicit mode (conditional==false) returns the error
  *     (sandbox+binding exist and are recoverable, but silence is not acceptable).
  *     Conditional mode continues — the binding committed and the workspace is usable.
@@ -4635,10 +4701,22 @@ func herdrWorktreeSandbox(
 	 * auto/conditional mode continues because the binding committed and the workspace is usable.
 	 */
 	if openPane {
-		paneID, paneErr := herdrOpenGuestShellPane(ctx, herdrBin, handle, workspaceID, "", false)
+		/**
+		 * Resolve the workspace's root pane. When exactly one pane exists it was
+		 * freshly minted by herdr for this workspace and nobody has typed into it —
+		 * the licence described in herdrOpenGuestShellPane applies and we can
+		 * close it after the guest pane opens, leaving a single-tab guest-only
+		 * workspace.  Any other count (multi-pane or pane list failure) falls back
+		 * to the separate-tab behaviour.
+		 */
+		rootPaneID := herdrWorktreeRootPaneFn(ctx, herdrBin, workspaceID)
+		paneID, paneErr := herdrOpenGuestShellPane(ctx, herdrBin, handle, workspaceID, rootPaneID, false)
 		if paneID != "" {
 			binding.GuestPaneID = paneID
 			_ = HerdrSpacePut(ctx, storeRoot, binding) // best-effort patch
+		}
+		if paneErr == nil && rootPaneID != "" {
+			herdrCloseRootPane(ctx, herdrBin, "worktree-sandbox", rootPaneID)
 		}
 		if paneErr != nil {
 			/**
