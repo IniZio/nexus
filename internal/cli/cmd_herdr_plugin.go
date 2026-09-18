@@ -3014,7 +3014,20 @@ func briefInputBoxRegion(visible string) string {
 		}
 	}
 	if len(ruleIdxs) >= 2 {
-		return strings.Join(lines[ruleIdxs[len(ruleIdxs)-2]:], "\n")
+		top := ruleIdxs[len(ruleIdxs)-2]
+		bot := ruleIdxs[len(ruleIdxs)-1]
+		hasPrompt := false
+		for _, line := range lines[top+1 : bot] {
+			t := strings.TrimLeft(line, " \t")
+			if strings.HasPrefix(t, "❯") || strings.HasPrefix(t, "│ >") {
+				hasPrompt = true
+				break
+			}
+		}
+		if !hasPrompt {
+			return ""
+		}
+		return strings.Join(lines[top:], "\n")
 	}
 	return ""
 }
@@ -3048,16 +3061,18 @@ var briefWorkingMarkers = []string{
  *
  *  1. Either read unobtainable → UNKNOWN. Refusing here is the whole point: a
  *     pane we cannot read is a pane we cannot vouch for.
- *  2. No input-box border (╭─) in visible viewport → UNKNOWN. Without the
- *     box we cannot separate transcript from input region.
- *  3. A stranded marker in the TRANSCRIPT region (lines above the last ╭─
- *     border) → SUBMITTED. The [Pasted text #N] chip appears there as an
- *     echoed user turn after the brief is accepted; its presence is positive
- *     acceptance evidence. This beats the stranded check (step 4) because the
- *     chip legitimately occupies both regions across the submit boundary.
- *  4. A stranded marker in the INPUT-BOX region (from the last ╭─ border
- *     onwards) → STRANDED. Scoped to the box so transcript echoes cannot
- *     trigger a false STRANDED on an accepted brief.
+ *  2. No input-box border (╭─ for old TUI style; a pair of ─ rules enclosing
+ *     a ❯ / │ > prompt line for the new 2.1+ style) in visible viewport →
+ *     UNKNOWN. Without the box we cannot separate transcript from input region.
+ *  3. A stranded marker in the INPUT-BOX region (from the box top border
+ *     onwards) → STRANDED. Checked before the transcript: on re-dispatch into
+ *     a live pane the transcript still shows the previous chip, so checking
+ *     the transcript first would misread a genuinely stranded new brief as
+ *     SUBMITTED.
+ *  4. A stranded marker in the TRANSCRIPT region (lines above the box top) →
+ *     SUBMITTED. The [Pasted text #N] chip appears there as an echoed user
+ *     turn after the brief is accepted; its presence is positive acceptance
+ *     evidence.
  *  5. The pane changed between the two reads → SUBMITTED (movement).
  *  6. A working affordance in the later read → SUBMITTED (fast path).
  *  7. Otherwise → UNKNOWN. Static, no markers, nothing to go on. NOT a pass.
@@ -3075,13 +3090,13 @@ func classifyBriefSubmission(before, after, afterVisible string, beforeOK, after
 	}
 	transcript := afterVisible[:len(afterVisible)-len(inputBox)]
 	for _, re := range briefStrandedMarkers {
-		if re.MatchString(transcript) {
-			return briefSubmissionSubmitted, "brief chip in transcript (brief accepted): matched " + re.String()
+		if re.MatchString(inputBox) {
+			return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
 		}
 	}
 	for _, re := range briefStrandedMarkers {
-		if re.MatchString(inputBox) {
-			return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
+		if re.MatchString(transcript) {
+			return briefSubmissionSubmitted, "brief chip in transcript (brief accepted): matched " + re.String()
 		}
 	}
 	if before != after {

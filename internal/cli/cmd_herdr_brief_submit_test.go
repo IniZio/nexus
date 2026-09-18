@@ -10,21 +10,7 @@ import (
 	"time"
 )
 
-// Transcripts below are the two states observed live on 2026-09-02 while
-// dispatching a three-slice wave through `nexus herdr agent --autonomous
-// --no-focus`. Two briefs submitted; the third stranded. The CLI reported
-// success on all three.
-//
-// Note what is IDENTICAL in both: the footer line
-// "⏵⏵ bypass permissions on (shift+tab to cycle)". That is claudeReadyMatch's
-// token for the autonomous path — present before the paste, after the paste,
-// and after submission alike. The dispatch waited on it and called that
-// delivery. It is the marker that proves nothing, and both fixtures carry it so
-// any classifier that leans on it fails here.
-
-// paneStranded is pane w7P:p2 after the brief was pasted and Enter was pressed
-// but never took: the input box still renders the paste placeholder and the
-// footer offers to expand it. No working indicator anywhere.
+// paneStranded: box holds paste placeholder, no working indicator (2026-09-02 live capture).
 const paneStranded = `● I'll start by reading the actual state of things.
 
 ╭──────────────────────────────────────────────────────────────╮
@@ -33,8 +19,6 @@ const paneStranded = `● I'll start by reading the actual state of things.
   ⏵⏵ bypass permissions on (shift+tab to cycle) · paste again to expand
 `
 
-// paneSubmitted is a sibling pane from the same wave whose brief DID submit:
-// the input box is empty and the agent is working.
 const paneSubmitted = `● I'll start by reading the actual state of things.
 
 ● Read(internal/cli/cmd_herdr_plugin.go)
@@ -48,26 +32,30 @@ const paneSubmitted = `● I'll start by reading the actual state of things.
   ⏵⏵ bypass permissions on (shift+tab to cycle)
 `
 
-// paneSubmittedTick is paneSubmitted one second later: only the spinner's
-// elapsed timer moved. This is the movement signal the classifier decides on.
 var paneSubmittedTick = strings.Replace(paneSubmitted, "12s", "13s", 1)
 
-const paneSubmittedWithChip = `> [Pasted text #1 +13 lines]
-  paste again to expand
+const paneSubmittedWithChip = "" +
+	"❯ [Pasted text #1 +13 lines]\n" +
+	"\n" +
+	"● Create(/workspace/hello.txt)\n" +
+	"  ⎿  Created /workspace/hello.txt\n" +
+	"\n" +
+	"────────────────────────────────────────────────────────────────────────────\n" +
+	"❯\n" +
+	"────────────────────────────────────────────────────────────────────────────\n" +
+	"  ⏸ manual mode on · ? for shortcuts\n"
 
-● Create(/workspace/hello.txt)
-  ⎿  Created /workspace/hello.txt
+const paneNewStyleWithSidePanel = "" +
+	"                                                      ────────────────────────────────────────────────────────\n" +
+	"❯ --no-focus Create a file named hello.txt            hello.txt (untracked)\n" +
+	"                                                      ────────────────────────────────────────────────────────\n" +
+	"● Done. Created /workspace/hello.txt\n" +
+	"\n" +
+	"────────────────────────────────────────────────────────────────────────────────────\n" +
+	"❯\n" +
+	"────────────────────────────────────────────────────────────────────────────────────\n" +
+	"  ⏸ manual mode on · ? for shortcuts\n"
 
-╭──────────────────────────────────────────────────────────────╮
-│ >                                                            │
-╰──────────────────────────────────────────────────────────────╯
-  ⏵⏵ bypass permissions on (shift+tab to cycle)
-`
-
-// paneIdleAtPrompt is a submitted-and-finished agent: empty box, no working
-// indicator, no stranded marker, and static across reads. There is genuinely no
-// evidence either way here, so the classifier must say UNKNOWN — not
-// SUBMITTED. This is the fixture that catches a fail-open rewrite.
 const paneIdleAtPrompt = `● Done. The change is in internal/cli/cmd_herdr_plugin.go.
 
 ╭──────────────────────────────────────────────────────────────╮
@@ -76,8 +64,6 @@ const paneIdleAtPrompt = `● Done. The change is in internal/cli/cmd_herdr_plug
   ⏵⏵ bypass permissions on (shift+tab to cycle)
 `
 
-// TestClassifyBriefSubmission_LiveTranscripts drives the classifier over the
-// observed pane states.
 func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -100,10 +86,7 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			wantReasonContains: "Pasted text",
 		},
 		{
-			name: "stranded beats movement: a stranded pane still repaints",
-			// The placeholder blinks and the footer cycles, so a stranded pane
-			// is NOT static. If movement were checked first this would pass as
-			// submitted — which is the original defect wearing a new hat.
+			name:               "stranded beats movement: a stranded pane still repaints",
 			before:             paneStranded,
 			after:              strings.Replace(paneStranded, "+79 lines", "+79 lines ", 1),
 			afterVisible:       strings.Replace(paneStranded, "+79 lines", "+79 lines ", 1),
@@ -125,9 +108,7 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			wantReasonContains: "repainted",
 		},
 		{
-			name: "submitted fast path: static but shows the interrupt affordance",
-			// A working agent between repaints. Movement is absent; the
-			// affordance carries it.
+			name:               "submitted fast path: static but shows the interrupt affordance",
 			before:             paneSubmitted,
 			after:              paneSubmitted,
 			afterVisible:       paneSubmitted,
@@ -203,6 +184,60 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			want:               briefSubmissionUnknown,
 			wantReasonContains: "no input box",
 		},
+		{
+			name: "ordering: input-box chip beats transcript chip",
+			before: "❯ [Pasted text #1 +79 lines]\n\n● prior work\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"❯ [Pasted text #2 +12 lines]\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"  ⏵⏵ auto mode on · paste again to expand\n",
+			after: "❯ [Pasted text #1 +79 lines]\n\n● prior work\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"❯ [Pasted text #2 +12 lines]\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"  ⏵⏵ auto mode on · paste again to expand\n",
+			afterVisible: "❯ [Pasted text #1 +79 lines]\n\n● prior work\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"❯ [Pasted text #2 +12 lines]\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"  ⏵⏵ auto mode on · paste again to expand\n",
+			beforeOK: true, afterOK: true, afterVisibleOK: true,
+			want:               briefSubmissionStranded,
+			wantReasonContains: "Pasted text",
+		},
+		{
+			name: "rule below box: prompt guard fires, must not be SUBMITTED",
+			afterVisible: "transcript\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"❯ [Pasted text #1 +10 lines]\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"            ──────────────────────────────────────────────────────────────\n" +
+				"  ⏸ auto mode on\n",
+			before: "transcript\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"❯ [Pasted text #1 +10 lines]\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"            ──────────────────────────────────────────────────────────────\n" +
+				"  ⏸ auto mode on\n",
+			after: "transcript\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"❯ [Pasted text #1 +10 lines]\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"            ──────────────────────────────────────────────────────────────\n" +
+				"  ⏸ auto mode on\n",
+			beforeOK: true, afterOK: true, afterVisibleOK: true,
+			want:               briefSubmissionUnknown,
+			wantReasonContains: "no input box",
+		},
+		{
+			name:         "real capture layout: side-panel rules above idle box",
+			before:       paneNewStyleWithSidePanel,
+			after:        paneNewStyleWithSidePanel,
+			afterVisible: paneNewStyleWithSidePanel,
+			beforeOK:     true, afterOK: true, afterVisibleOK: true,
+			want:               briefSubmissionUnknown,
+			wantReasonContains: "static",
+		},
 	}
 
 	for _, tc := range cases {
@@ -218,10 +253,6 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 	}
 }
 
-// TestClassifyBriefSubmission_ReadyTokenIsNotEvidence pins the specific marker
-// that caused the defect. "shift+tab to cycle" is what step 7 waits on, and it
-// is present in BOTH the stranded and the submitted transcript. A classifier
-// that treats it as delivery evidence would call the stranded pane submitted.
 func TestClassifyBriefSubmission_ReadyTokenIsNotEvidence(t *testing.T) {
 	const readyToken = "shift+tab to cycle"
 	if !strings.Contains(paneStranded, readyToken) || !strings.Contains(paneSubmitted, readyToken) {
@@ -412,18 +443,6 @@ func TestDeliverBriefConfirmed_RetryRecovers(t *testing.T) {
 	}
 }
 
-// TestSpaceAgentDispatch_UsesConfirmedDelivery pins the CALL SITE.
-//
-// The classifier and the retry loop can both be perfect and the defect still
-// ship, if herdrPluginSpaceAgent goes on calling the unconfirmed
-// herdrPaneSubmitToAgent directly. That function is reachable only through a
-// real *service.Service and a real store, so this is asserted against the
-// source: step 8 of the dispatch must delegate to herdrDeliverBriefConfirmed,
-// and must not paste-and-hope.
-//
-// herdrPaneSubmitToAgent is NOT banned outright — herdrDeliverBriefConfirmed
-// calls it, which is the one legitimate call site. The guard is scoped to the
-// body of herdrPluginSpaceAgent.
 func TestSpaceAgentDispatch_UsesConfirmedDelivery(t *testing.T) {
 	src, err := os.ReadFile("cmd_herdr_plugin.go")
 	if err != nil {
@@ -494,6 +513,24 @@ func TestBriefInputBoxRegion(t *testing.T) {
 				"❯ [Pasted text #1 +10 lines]\n" +
 				"──────────────────────────\n" +
 				"  ⏵⏵ auto mode · paste again to expand\n",
+		},
+		{
+			name: "rule below box: prompt guard returns empty",
+			visible: "transcript\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"❯ [Pasted text #1 +10 lines]\n" +
+				"──────────────────────────────────────────────────────────────────────────\n" +
+				"            ──────────────────────────────────────────────────────────────\n" +
+				"  ⏸ auto mode on\n",
+			want: "",
+		},
+		{
+			name:    "real capture: side-panel rules above, box selected correctly",
+			visible: paneNewStyleWithSidePanel,
+			want: "────────────────────────────────────────────────────────────────────────────────────\n" +
+				"❯\n" +
+				"────────────────────────────────────────────────────────────────────────────────────\n" +
+				"  ⏸ manual mode on · ? for shortcuts\n",
 		},
 	}
 	for _, tc := range cases {
