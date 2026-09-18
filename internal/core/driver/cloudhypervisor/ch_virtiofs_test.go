@@ -25,13 +25,16 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 )
 
-// fakeVirtiofsd writes a shell script to a temp dir that, when executed,
-// creates the file at --socket-path and then sleeps until killed.
-// Simulates a ready virtiofsd without the real binary.
+/*
+	fakeVirtiofsd writes a shell script that answers --help quickly (exit 0,
+
+no --fake-owner in output) and otherwise creates the socket and sleeps.
+*/
 func fakeVirtiofsd(t *testing.T) string {
 	t.Helper()
 	script := filepath.Join(t.TempDir(), "virtiofsd")
 	src := `#!/bin/sh
+case "$1" in --help) exit 0 ;; esac
 sock=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,6 +47,56 @@ sleep 300
 `
 	if err := os.WriteFile(script, []byte(src), 0o755); err != nil {
 		t.Fatalf("write fake virtiofsd: %v", err)
+	}
+	return script
+}
+
+/* fakeVirtiofsdWithFakeOwner is like fakeVirtiofsd but --help advertises --fake-owner. */
+func fakeVirtiofsdWithFakeOwner(t *testing.T) string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "virtiofsd")
+	src := `#!/bin/sh
+case "$1" in --help) echo "--fake-owner"; exit 0 ;; esac
+sock=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --socket-path) sock="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$sock" ] && touch "$sock"
+sleep 300
+`
+	if err := os.WriteFile(script, []byte(src), 0o755); err != nil {
+		t.Fatalf("write fake virtiofsd with fake-owner: %v", err)
+	}
+	return script
+}
+
+/*
+	fakeVirtiofsdMarked is like fakeVirtiofsdWithFakeOwner but appends a byte to
+
+markerFile on each --help invocation so tests can count probe executions.
+*/
+func fakeVirtiofsdMarked(t *testing.T, markerFile string) string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "virtiofsd")
+	src := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  --help) echo "--fake-owner"; printf '1' >> %s; exit 0 ;;
+esac
+sock=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --socket-path) sock="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$sock" ] && touch "$sock"
+sleep 300
+`, shellQuote(markerFile))
+	if err := os.WriteFile(script, []byte(src), 0o755); err != nil {
+		t.Fatalf("write marked fake virtiofsd: %v", err)
 	}
 	return script
 }
@@ -352,4 +405,122 @@ func TestVirtiofsdSockPath_SunPathLimit(t *testing.T) {
 		t.Errorf("path len=%d > %d: %q", len(path), maxSocketPathLen, path)
 	}
 	t.Logf("path len=%d (limit=%d)", len(path), maxSocketPathLen)
+}
+
+func TestVirtiofsdArgs_NoFlags(t *testing.T) {
+	args := virtiofsdArgs("/shared", "/run/vfs0.sock", false, false)
+	want := []string{"--shared-dir", "/shared", "--socket-path", "/run/vfs0.sock", "--sandbox", "none", "--seccomp", "none"}
+	if len(args) != len(want) {
+		t.Fatalf("len=%d want=%d: %v", len(args), len(want), args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("[%d] got %q want %q", i, args[i], want[i])
+		}
+	}
+}
+
+func TestVirtiofsdArgs_ReadOnly(t *testing.T) {
+	args := virtiofsdArgs("/s", "/sock", true, false)
+	last := args[len(args)-1]
+	if last != "--readonly" {
+		t.Errorf("last arg = %q, want --readonly", last)
+	}
+	for _, a := range args {
+		if a == "--fake-owner" {
+			t.Error("unexpected --fake-owner when fakeOwner=false")
+		}
+	}
+}
+
+func TestVirtiofsdArgs_FakeOwner(t *testing.T) {
+	args := virtiofsdArgs("/s", "/sock", false, true)
+	found := false
+	for _, a := range args {
+		if a == "--fake-owner" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("--fake-owner not in args: %v", args)
+	}
+}
+
+func TestVirtiofsdArgs_BothFlags(t *testing.T) {
+	args := virtiofsdArgs("/s", "/sock", true, true)
+	hasRO, hasFO := false, false
+	for _, a := range args {
+		if a == "--readonly" {
+			hasRO = true
+		}
+		if a == "--fake-owner" {
+			hasFO = true
+		}
+	}
+	if !hasRO || !hasFO {
+		t.Errorf("missing flags in %v", args)
+	}
+}
+
+func TestVirtiofsdSupportsFakeOwner_HasFlag(t *testing.T) {
+	bin := fakeVirtiofsdWithFakeOwner(t)
+	if !virtiofsdSupportsFakeOwner(bin) {
+		t.Error("expected true for binary advertising --fake-owner")
+	}
+}
+
+func TestVirtiofsdSupportsFakeOwner_NoFlag(t *testing.T) {
+	bin := fakeVirtiofsd(t)
+	if virtiofsdSupportsFakeOwner(bin) {
+		t.Error("expected false for binary without --fake-owner in help")
+	}
+}
+
+func TestVirtiofsdSupportsFakeOwner_NotExecutable(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "virtiofsd")
+	if err := os.WriteFile(f, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if virtiofsdSupportsFakeOwner(f) {
+		t.Error("expected false for non-executable binary")
+	}
+}
+
+func TestVirtiofsdSupportsFakeOwner_CacheHit(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "marker")
+	bin := fakeVirtiofsdMarked(t, marker)
+
+	r1 := virtiofsdSupportsFakeOwner(bin)
+	if !r1 {
+		t.Error("first call: expected true")
+	}
+	b1, _ := os.ReadFile(marker)
+	if string(b1) != "1" {
+		t.Errorf("after first call marker=%q, want 1", b1)
+	}
+
+	r2 := virtiofsdSupportsFakeOwner(bin)
+	if r1 != r2 {
+		t.Errorf("cache inconsistency: first=%v second=%v", r1, r2)
+	}
+	b2, _ := os.ReadFile(marker)
+	if string(b2) != "1" {
+		t.Errorf("after second call marker=%q, want 1 (cache should prevent re-exec)", b2)
+	}
+}
+
+func TestFakeOwnerEnabled_EnvForce0(t *testing.T) {
+	t.Setenv("NEXUS_VIRTIOFS_FAKE_OWNER", "0")
+	bin := fakeVirtiofsdWithFakeOwner(t)
+	if fakeOwnerEnabled(bin) {
+		t.Error("expected false with NEXUS_VIRTIOFS_FAKE_OWNER=0")
+	}
+}
+
+func TestFakeOwnerEnabled_EnvForce1(t *testing.T) {
+	t.Setenv("NEXUS_VIRTIOFS_FAKE_OWNER", "1")
+	bin := fakeVirtiofsd(t)
+	if !fakeOwnerEnabled(bin) {
+		t.Error("expected true with NEXUS_VIRTIOFS_FAKE_OWNER=1")
+	}
 }

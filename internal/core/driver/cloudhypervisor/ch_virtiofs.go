@@ -16,15 +16,108 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 )
+
+/*
+	fakeOwnerCacheKey identifies a virtiofsd binary by path and mtime so the
+
+probe result is invalidated when the binary is replaced.
+*/
+type fakeOwnerCacheKey struct {
+	path  string
+	mtime int64
+}
+
+var (
+	fakeOwnerProbeCache sync.Map
+	fakeOwnerLogOnce    sync.Map
+)
+
+/*
+virtiofsdArgs builds the argv slice for a virtiofsd invocation.
+
+Extracted so the args can be unit-tested independently of process lifecycle
+and so spawnVirtiofsd / spawnVirtiofsdForFile share a single construction path.
+*/
+func virtiofsdArgs(sharedDir, socketPath string, readOnly, fakeOwner bool) []string {
+	args := []string{
+		"--shared-dir", sharedDir,
+		"--socket-path", socketPath,
+		"--sandbox", "none",
+		"--seccomp", "none",
+	}
+	if readOnly {
+		args = append(args, "--readonly")
+	}
+	if fakeOwner {
+		args = append(args, "--fake-owner")
+	}
+	return args
+}
+
+/*
+virtiofsdSupportsFakeOwner probes binaryPath with --help (5 s timeout) and
+returns true iff the output contains "--fake-owner". Results are cached per
+(path, mtime) so the exec runs at most once per process per binary version.
+Any error, including a non-zero exit or timeout, returns false.
+*/
+func virtiofsdSupportsFakeOwner(binaryPath string) bool {
+	info, err := os.Stat(binaryPath)
+	if err != nil {
+		return false
+	}
+	key := fakeOwnerCacheKey{path: binaryPath, mtime: info.ModTime().UnixNano()}
+	if v, ok := fakeOwnerProbeCache.Load(key); ok {
+		return v.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, binaryPath, "--help").CombinedOutput()
+	result := bytes.Contains(out, []byte("--fake-owner"))
+	fakeOwnerProbeCache.Store(key, result)
+	return result
+}
+
+/*
+fakeOwnerEnabled returns whether --fake-owner should be passed to the virtiofsd
+at binaryPath. Precedence:
+ 1. NEXUS_VIRTIOFS_FAKE_OWNER=0 → false (opt-out, no probe).
+ 2. NEXUS_VIRTIOFS_FAKE_OWNER=1 → true (force-on, no probe; for testing).
+ 3. Otherwise → virtiofsdSupportsFakeOwner(binaryPath).
+
+Logs the decision once per binary via slog.Info.
+*/
+func fakeOwnerEnabled(binaryPath string) bool {
+	var result bool
+	var mode string
+	switch os.Getenv("NEXUS_VIRTIOFS_FAKE_OWNER") {
+	case "0":
+		result, mode = false, "disabled via NEXUS_VIRTIOFS_FAKE_OWNER=0"
+	case "1":
+		result, mode = true, "forced via NEXUS_VIRTIOFS_FAKE_OWNER=1"
+	default:
+		result = virtiofsdSupportsFakeOwner(binaryPath)
+		if result {
+			mode = "enabled (binary supports --fake-owner)"
+		} else {
+			mode = "disabled (binary does not support --fake-owner)"
+		}
+	}
+	if _, loaded := fakeOwnerLogOnce.LoadOrStore(binaryPath, struct{}{}); !loaded {
+		slog.Info("virtiofsd fake-owner decision", "binary", binaryPath, "decision", mode)
+	}
+	return result
+}
 
 // vmFsConfig is the JSON representation of a CH virtio-fs device in vm.create.
 //
@@ -97,20 +190,7 @@ func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir strin
 	// Remove any stale socket from a previous run so virtiofsd can bind.
 	_ = os.Remove(socketPath)
 
-	args := []string{
-		"--shared-dir", sharedDir,
-		"--socket-path", socketPath,
-		// "none" disables virtiofsd's own sandboxing (no user-namespace pivot),
-		// required when running without CAP_SYS_ADMIN. In nexus the sandbox
-		// boundary is the VM itself; per-process isolation is not needed here.
-		"--sandbox", "none",
-		// Disable seccomp so virtiofsd starts in environments where the
-		// necessary syscalls are not in the allow-list (e.g. nested KVM VMs).
-		"--seccomp", "none",
-	}
-	if readOnly {
-		args = append(args, "--readonly")
-	}
+	args := virtiofsdArgs(sharedDir, socketPath, readOnly, fakeOwnerEnabled(binaryPath))
 
 	stderrBuf := newVMMStderrBuf(64 * 1024)
 	cmd := exec.Command(binaryPath, args...)
@@ -219,6 +299,9 @@ func spawnVirtiofsdForFile(ctx context.Context, unshare, binaryPath, socketPath,
 	}
 	if readOnly {
 		vParts = append(vParts, "--readonly")
+	}
+	if fakeOwnerEnabled(binaryPath) {
+		vParts = append(vParts, "--fake-owner")
 	}
 	script := fmt.Sprintf("mount --bind %s %s && exec %s",
 		shellQuote(hostFile), shellQuote(bindTarget), strings.Join(vParts, " "))
