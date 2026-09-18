@@ -40,6 +40,9 @@ type bootConfig struct {
 	// mountWorkspace mounts workspace and shadow disks from wsMounts.
 	// Returns an error that the caller handles (consoleFatal in production).
 	mountWorkspace func(mounts []agent.GuestMount) error
+	// applyGuestSysctls raises kernel limits (inotify) before user workloads.
+	// Idempotent; nil in tests that do not care.
+	applyGuestSysctls func()
 	// runBootTasks runs /etc/nexus/startup and other image boot hooks.
 	runBootTasks func()
 }
@@ -83,6 +86,10 @@ func runColdBootInit(
 		cfg.setupNetwork()
 		record("startSSHD")
 		cfg.startSSHD()
+		if cfg.applyGuestSysctls != nil {
+			record("applyGuestSysctls")
+			cfg.applyGuestSysctls()
+		}
 	}
 
 	// ── Workspace mount (runs regardless of isPid1, skipped on hot-swap) ──

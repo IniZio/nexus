@@ -155,6 +155,11 @@ func main() {
 			consoleLog(con, "nexus-agent: workspace mounts complete\n")
 			return nil
 		},
+		applyGuestSysctls: func() {
+			if err := applyGuestSysctls("/proc/sys"); err != nil {
+				consoleLog(con, "nexus-agent: guest-sysctl: %v (non-fatal)\n", err)
+			}
+		},
 		runBootTasks: func() { runBootTasks(con) },
 	}
 	if err := runColdBootInit(hotSwap, isPid1, wsMounts, scratchDev, coldBootCfg, nil); err != nil {
