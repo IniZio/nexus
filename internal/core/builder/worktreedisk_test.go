@@ -1104,3 +1104,124 @@ func TestForceIncludeContainerfile_DockerignoreExcludesNexus(t *testing.T) {
 		t.Error(".nexus/config.yaml should be excluded by .dockerignore but was found in staging")
 	}
 }
+
+func TestForceIncludeContainerfile_ExistingHardlinkNotTruncated(t *testing.T) {
+	const want = "FROM ubuntu:22.04\nRUN echo hardlink-test\n"
+
+	t.Run("hardlink", func(t *testing.T) {
+		src := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(src, ".nexus"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, ".nexus", "Containerfile"), []byte(want), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		pm, err := loadDockerIgnore(src)
+		if err != nil {
+			t.Fatalf("loadDockerIgnore: %v", err)
+		}
+		allPatterns := append([]string(nil), nexusAlwaysExclude...)
+		if pm != nil {
+			for _, p := range pm.Patterns() {
+				allPatterns = append(allPatterns, p.String())
+			}
+		}
+		combinedPM, err := patternmatcher.New(allPatterns)
+		if err != nil {
+			t.Fatalf("patternmatcher.New: %v", err)
+		}
+
+		staging, cleanup, err := filteredWorktreeDir(src, combinedPM, "")
+		if err != nil {
+			t.Fatalf("filteredWorktreeDir: %v", err)
+		}
+		defer cleanup()
+
+		srcFI, err := os.Stat(filepath.Join(src, ".nexus", "Containerfile"))
+		if err != nil {
+			t.Fatalf("stat src Containerfile: %v", err)
+		}
+		dstFI, err := os.Stat(filepath.Join(staging, ".nexus", "Containerfile"))
+		if err != nil {
+			t.Fatalf("filteredWorktreeDir did not produce .nexus/Containerfile in staging: %v", err)
+		}
+		if !os.SameFile(srcFI, dstFI) {
+			t.Skip("filteredWorktreeDir did not create a hardlink (cross-device?); skipping hardlink sub-case")
+		}
+
+		if err := forceIncludeContainerfile(src, staging); err != nil {
+			t.Fatalf("forceIncludeContainerfile: %v", err)
+		}
+
+		srcData, err := os.ReadFile(filepath.Join(src, ".nexus", "Containerfile"))
+		if err != nil {
+			t.Fatalf("read src Containerfile after forceInclude: %v", err)
+		}
+		if string(srcData) != want {
+			t.Errorf("source file content = %q, want %q (truncated?)", string(srcData), want)
+		}
+		if int64(len(srcData)) != srcFI.Size() {
+			t.Errorf("source file size changed: got %d, want %d", int64(len(srcData)), srcFI.Size())
+		}
+
+		dstData, err := os.ReadFile(filepath.Join(staging, ".nexus", "Containerfile"))
+		if err != nil {
+			t.Fatalf("read staging Containerfile after forceInclude: %v", err)
+		}
+		if string(dstData) != want {
+			t.Errorf("staging file content = %q, want %q", string(dstData), want)
+		}
+
+		srcFI2, err := os.Stat(filepath.Join(src, ".nexus", "Containerfile"))
+		if err != nil {
+			t.Fatalf("stat src Containerfile after forceInclude: %v", err)
+		}
+		dstFI2, err := os.Stat(filepath.Join(staging, ".nexus", "Containerfile"))
+		if err != nil {
+			t.Fatalf("stat staging Containerfile after forceInclude: %v", err)
+		}
+		if !os.SameFile(srcFI2, dstFI2) {
+			t.Error("forceIncludeContainerfile replaced the hardlink; expected SameFile after guard")
+		}
+	})
+
+	t.Run("separate_nonempty_dst", func(t *testing.T) {
+		src := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(src, ".nexus"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, ".nexus", "Containerfile"), []byte(want), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		staging := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(staging, ".nexus"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		const dstWant = "FROM alpine:3.18\n"
+		if err := os.WriteFile(filepath.Join(staging, ".nexus", "Containerfile"), []byte(dstWant), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := forceIncludeContainerfile(src, staging); err != nil {
+			t.Fatalf("forceIncludeContainerfile: %v", err)
+		}
+
+		srcData, err := os.ReadFile(filepath.Join(src, ".nexus", "Containerfile"))
+		if err != nil {
+			t.Fatalf("read src Containerfile: %v", err)
+		}
+		if string(srcData) != want {
+			t.Errorf("source content = %q, want %q", string(srcData), want)
+		}
+
+		dstData, err := os.ReadFile(filepath.Join(staging, ".nexus", "Containerfile"))
+		if err != nil {
+			t.Fatalf("read staging Containerfile: %v", err)
+		}
+		if string(dstData) != dstWant {
+			t.Errorf("staging content = %q, want %q (should be untouched)", string(dstData), dstWant)
+		}
+	})
+}

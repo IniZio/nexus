@@ -23,6 +23,12 @@ func forceIncludeContainerfile(src, staging string) error {
 		return err
 	}
 	dst := filepath.Join(staging, containerfilePath)
+	// dst is usually already a hardlink to srcFile; copying over it would O_TRUNC the shared inode.
+	if dfi, err := os.Lstat(dst); err == nil {
+		if os.SameFile(fi, dfi) || dfi.Size() > 0 {
+			return nil
+		}
+	}
 	if err := os.Link(srcFile, dst); err == nil {
 		return nil
 	}
