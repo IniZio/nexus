@@ -2342,3 +2342,76 @@ func TestHerdrWorktreeSandbox_step9_paneListFailure_usesTab(t *testing.T) {
 		t.Errorf("pane-list failure: pane close must not be called; all calls: %v", calls)
 	}
 }
+
+func TestClassifyBriefSubmission(t *testing.T) {
+	chip := "[Pasted text #1 +79 lines]\npaste again to expand"
+	const working = "esc to interrupt"
+
+	tests := []struct {
+		name           string
+		before         string
+		after          string
+		afterVisible   string
+		beforeOK       bool
+		afterOK        bool
+		afterVisibleOK bool
+		want           briefSubmissionVerdict
+	}{
+		{
+			name:           "accepted: scrollback has chip, visible clear, pane moved",
+			before:         "idle A",
+			after:          chip + "\nnew output line",
+			afterVisible:   "Claude is working…\n" + working,
+			beforeOK:       true,
+			afterOK:        true,
+			afterVisibleOK: true,
+			want:           briefSubmissionSubmitted,
+		},
+		{
+			name:           "genuinely stranded: chip present in visible viewport",
+			before:         chip,
+			after:          chip,
+			afterVisible:   chip,
+			beforeOK:       true,
+			afterOK:        true,
+			afterVisibleOK: true,
+			want:           briefSubmissionStranded,
+		},
+		{
+			name:           "visible unreadable: falls through to movement check",
+			before:         "pane A",
+			after:          "pane B",
+			afterVisible:   "",
+			beforeOK:       true,
+			afterOK:        true,
+			afterVisibleOK: false,
+			want:           briefSubmissionSubmitted,
+		},
+		{
+			name:           "unreadable pane returns UNKNOWN",
+			beforeOK:       false,
+			afterOK:        false,
+			afterVisibleOK: false,
+			want:           briefSubmissionUnknown,
+		},
+		{
+			name:           "static pane no markers returns UNKNOWN",
+			before:         "same",
+			after:          "same",
+			afterVisible:   "same",
+			beforeOK:       true,
+			afterOK:        true,
+			afterVisibleOK: true,
+			want:           briefSubmissionUnknown,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, reason := classifyBriefSubmission(tc.before, tc.after, tc.afterVisible, tc.beforeOK, tc.afterOK, tc.afterVisibleOK)
+			if got != tc.want {
+				t.Errorf("verdict = %v (%s), want %v", got, reason, tc.want)
+			}
+		})
+	}
+}

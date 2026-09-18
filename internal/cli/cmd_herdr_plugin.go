@@ -2898,6 +2898,31 @@ func herdrPaneReadText(ctx context.Context, herdrBin, paneID string) (text strin
 var herdrPaneReadFn = herdrPaneReadText
 
 /**
+ * herdrPaneReadVisible reads paneID's current viewport only.
+ *
+ * Used specifically for stranded-marker detection: the [Pasted text #N] chip
+ * exists in the input box, so it is visible on screen. After the brief is
+ * submitted the chip is gone from the viewport, but it persists indefinitely in
+ * the scrollback that --source recent-unwrapped returns. Checking the stranded
+ * markers against the visible viewport avoids that false positive.
+ */
+func herdrPaneReadVisible(ctx context.Context, herdrBin, paneID string) (text string, ok bool) {
+	var buf strings.Builder
+	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "read", paneID, "--source", "visible")
+	cmd.Stdout = &buf
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", false
+	}
+	if strings.TrimSpace(buf.String()) != "" {
+		return buf.String(), true
+	}
+	return "", false
+}
+
+var herdrPaneReadVisibleFn = herdrPaneReadVisible
+
+/**
  * briefSubmissionVerdict is the outcome of asking "did the brief actually leave
  * claude's input box?".
  *
@@ -2985,22 +3010,26 @@ var briefWorkingMarkers = []string{
  *
  *  1. Either read unobtainable → UNKNOWN. Refusing here is the whole point: a
  *     pane we cannot read is a pane we cannot vouch for.
- *  2. A stranded marker in the LATER read → STRANDED. Positive evidence beats
- *     movement, because a stranded pane still repaints (the placeholder blinks,
- *     the footer cycles) and would otherwise pass step 3.
+ *  2. A stranded marker in the LATER VISIBLE read → STRANDED. Checked against
+ *     the viewport only: the [Pasted text #N] chip persists indefinitely in
+ *     --source recent-unwrapped scrollback, so matching it there produces a
+ *     false positive on every accepted brief. Positive viewport evidence beats
+ *     movement (step 3) because a stranded pane still repaints.
  *  3. The pane changed between the two reads → SUBMITTED. Movement is the
  *     decider: a working agent repaints, a pane holding an unsent buffer that
  *     shows no stranded marker at all is not a shape that has been observed.
  *  4. A working affordance in the later read → SUBMITTED (fast path).
  *  5. Otherwise → UNKNOWN. Static, no markers, nothing to go on. NOT a pass.
  */
-func classifyBriefSubmission(before, after string, beforeOK, afterOK bool) (briefSubmissionVerdict, string) {
+func classifyBriefSubmission(before, after, afterVisible string, beforeOK, afterOK, afterVisibleOK bool) (briefSubmissionVerdict, string) {
 	if !beforeOK || !afterOK {
 		return briefSubmissionUnknown, "pane read returned no text (both --source recent-unwrapped and --source visible were empty or failed)"
 	}
-	for _, re := range briefStrandedMarkers {
-		if re.MatchString(after) {
-			return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
+	if afterVisibleOK {
+		for _, re := range briefStrandedMarkers {
+			if re.MatchString(afterVisible) {
+				return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
+			}
 		}
 	}
 	if before != after {
@@ -3063,8 +3092,9 @@ func herdrDeliverBriefConfirmed(ctx context.Context, herdrBin, paneID, brief str
 		case <-time.After(briefConfirmSettle):
 		}
 		after, afterOK := herdrPaneReadFn(ctx, herdrBin, paneID)
+		afterVisible, afterVisibleOK := herdrPaneReadVisibleFn(ctx, herdrBin, paneID)
 
-		lastVerdict, lastReason = classifyBriefSubmission(before, after, beforeOK, afterOK)
+		lastVerdict, lastReason = classifyBriefSubmission(before, after, afterVisible, beforeOK, afterOK, afterVisibleOK)
 		if lastVerdict == briefSubmissionSubmitted {
 			fmt.Fprintf(w, "space-agent: brief submitted (confirmed on attempt %d/%d: %s)\n",
 				attempt, briefSubmitAttempts, lastReason)

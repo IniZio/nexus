@@ -70,7 +70,9 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 	cases := []struct {
 		name               string
 		before, after      string
+		afterVisible       string
 		beforeOK, afterOK  bool
+		afterVisibleOK     bool
 		want               briefSubmissionVerdict
 		wantReasonContains string
 	}{
@@ -78,8 +80,10 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			name:               "stranded: paste placeholder still in the input box",
 			before:             paneStranded,
 			after:              paneStranded,
+			afterVisible:       paneStranded,
 			beforeOK:           true,
 			afterOK:            true,
+			afterVisibleOK:     true,
 			want:               briefSubmissionStranded,
 			wantReasonContains: "Pasted text",
 		},
@@ -90,8 +94,10 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			// submitted — which is the original defect wearing a new hat.
 			before:             paneStranded,
 			after:              strings.Replace(paneStranded, "+79 lines", "+79 lines ", 1),
+			afterVisible:       strings.Replace(paneStranded, "+79 lines", "+79 lines ", 1),
 			beforeOK:           true,
 			afterOK:            true,
+			afterVisibleOK:     true,
 			want:               briefSubmissionStranded,
 			wantReasonContains: "Pasted text",
 		},
@@ -99,8 +105,10 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			name:               "submitted: pane repainted between reads",
 			before:             paneSubmitted,
 			after:              paneSubmittedTick,
+			afterVisible:       paneSubmittedTick,
 			beforeOK:           true,
 			afterOK:            true,
+			afterVisibleOK:     true,
 			want:               briefSubmissionSubmitted,
 			wantReasonContains: "repainted",
 		},
@@ -110,8 +118,10 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			// affordance carries it.
 			before:             paneSubmitted,
 			after:              paneSubmitted,
+			afterVisible:       paneSubmitted,
 			beforeOK:           true,
 			afterOK:            true,
+			afterVisibleOK:     true,
 			want:               briefSubmissionSubmitted,
 			wantReasonContains: "esc to interrupt",
 		},
@@ -119,8 +129,10 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			name:               "unknown: static, no working indicator, no stranded marker",
 			before:             paneIdleAtPrompt,
 			after:              paneIdleAtPrompt,
+			afterVisible:       paneIdleAtPrompt,
 			beforeOK:           true,
 			afterOK:            true,
+			afterVisibleOK:     true,
 			want:               briefSubmissionUnknown,
 			wantReasonContains: "static",
 		},
@@ -128,8 +140,10 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			name:               "unknown: first read unobtainable",
 			before:             "",
 			after:              paneSubmitted,
+			afterVisible:       paneSubmitted,
 			beforeOK:           false,
 			afterOK:            true,
+			afterVisibleOK:     true,
 			want:               briefSubmissionUnknown,
 			wantReasonContains: "no text",
 		},
@@ -137,16 +151,29 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			name:               "unknown: second read unobtainable",
 			before:             paneSubmitted,
 			after:              "",
+			afterVisible:       "",
 			beforeOK:           true,
 			afterOK:            false,
+			afterVisibleOK:     false,
 			want:               briefSubmissionUnknown,
 			wantReasonContains: "no text",
+		},
+		{
+			name:               "scrollback chip does not strand an accepted brief",
+			before:             paneSubmitted,
+			after:              paneStranded + "\n" + paneSubmittedTick,
+			afterVisible:       paneSubmittedTick,
+			beforeOK:           true,
+			afterOK:            true,
+			afterVisibleOK:     true,
+			want:               briefSubmissionSubmitted,
+			wantReasonContains: "repainted",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason := classifyBriefSubmission(tc.before, tc.after, tc.beforeOK, tc.afterOK)
+			got, reason := classifyBriefSubmission(tc.before, tc.after, tc.afterVisible, tc.beforeOK, tc.afterOK, tc.afterVisibleOK)
 			if got != tc.want {
 				t.Errorf("classifyBriefSubmission = %s (%s); want %s", got, reason, tc.want)
 			}
@@ -171,7 +198,7 @@ func TestClassifyBriefSubmission_ReadyTokenIsNotEvidence(t *testing.T) {
 			t.Errorf("working marker %q matches the STRANDED transcript; it cannot discriminate", m)
 		}
 	}
-	got, reason := classifyBriefSubmission(paneStranded, paneStranded, true, true)
+	got, reason := classifyBriefSubmission(paneStranded, paneStranded, paneStranded, true, true, true)
 	if got != briefSubmissionStranded {
 		t.Errorf("stranded pane classified %s (%s); want STRANDED", got, reason)
 	}
@@ -214,10 +241,16 @@ func stubHerdrExec(t *testing.T, argv *[][]string) {
 func stubPaneRead(t *testing.T, reads []readStep, calls *int) {
 	t.Helper()
 	old := herdrPaneReadFn
+	oldVis := herdrPaneReadVisibleFn
 	herdrPaneReadFn = scriptedPaneReader(reads, calls)
+	herdrPaneReadVisibleFn = func(context.Context, string, string) (string, bool) { return "", false }
 	oldSettle := briefConfirmSettle
 	briefConfirmSettle = time.Millisecond
-	t.Cleanup(func() { herdrPaneReadFn = old; briefConfirmSettle = oldSettle })
+	t.Cleanup(func() {
+		herdrPaneReadFn = old
+		herdrPaneReadVisibleFn = oldVis
+		briefConfirmSettle = oldSettle
+	})
 }
 
 // TestDeliverBriefConfirmed_StrandedFailsLoudly is the regression test for the
