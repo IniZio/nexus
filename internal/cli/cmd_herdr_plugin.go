@@ -2971,6 +2971,14 @@ func (v briefSubmissionVerdict) String() string {
  * while the CLI printed "space-agent: agent running in pane w7P:p2" and exited
  * 0. A single `herdr pane send-keys <pane> Enter` submitted it.
  *
+ * NOTE: "paste again to expand" was removed from this list. Verified 2026-09-18
+ * (Claude Code 2.1.276, new-style rule-delimited box): after a successful
+ * submission the box is EMPTY and the brief appears inline in the transcript,
+ * but "paste again to expand" persists in the FOOTER below the box's bottom
+ * rule — a false STRANDED that wastes 3×1.5 s and then presses Enter on
+ * whatever is on screen (e.g. a permission dialog). Inline pastes that ARE
+ * still in the box are detected by briefInputBoxInteriorHasContent below.
+ *
  * These markers are the STRANDED discriminator, not the submitted one. They are
  * only meaningful in the positive: their presence proves the buffer still holds
  * the brief; their absence proves nothing, because a pane can be unreadable,
@@ -2978,7 +2986,6 @@ func (v briefSubmissionVerdict) String() string {
  */
 var briefStrandedMarkers = []*regexp.Regexp{
 	regexp.MustCompile(`\[Pasted text #\d+`),
-	regexp.MustCompile(`paste again to expand`),
 }
 
 /**
@@ -3033,6 +3040,51 @@ func briefInputBoxRegion(visible string) string {
 }
 
 /**
+ * briefInputBoxInteriorHasContent returns true when the new-style (rule-
+ * delimited) input box has non-whitespace content in the prompt line — i.e.
+ * the brief is still sitting in the box as an inline paste, not yet submitted.
+ *
+ * Complements briefInputBoxRegion's chip-regex path: Claude Code 2.1.276+
+ * stopped rendering large pastes as "[Pasted text #N +M lines]" chips in the
+ * new-style layout; the text is shown inline instead. The chip regex still
+ * covers the old ╭─ box style; this function covers the new rule-delimited one.
+ *
+ * Returns false for old-style (╭─) boxes — their stranded state is already
+ * caught by the chip regex. Returns false for empty boxes (❯ alone or ❯ with
+ * only spaces), which is the normal idle / post-submit state.
+ */
+func briefInputBoxInteriorHasContent(visible string) bool {
+	lines := strings.Split(visible, "\n")
+	var ruleIdxs []int
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if len(t) >= 20 && strings.TrimLeft(t, "─") == "" {
+			ruleIdxs = append(ruleIdxs, i)
+		}
+	}
+	if len(ruleIdxs) < 2 {
+		return false
+	}
+	top := ruleIdxs[len(ruleIdxs)-2]
+	bot := ruleIdxs[len(ruleIdxs)-1]
+	for _, line := range lines[top+1 : bot] {
+		t := strings.TrimLeft(line, " \t")
+		var after string
+		if strings.HasPrefix(t, "❯") {
+			after = strings.TrimSpace(t[len("❯"):])
+		} else if strings.HasPrefix(t, "│ >") {
+			after = strings.TrimSpace(t[len("│ >"):])
+		} else {
+			continue
+		}
+		if after != "" {
+			return true
+		}
+	}
+	return false
+}
+
+/**
  * briefWorkingMarkers are working-agent affordances. FAST PATH ONLY.
  *
  * The same rule the pane watcher lives by applies here: movement decides, and a
@@ -3068,7 +3120,8 @@ var briefWorkingMarkers = []string{
  *     onwards) → STRANDED. Checked before the transcript: on re-dispatch into
  *     a live pane the transcript still shows the previous chip, so checking
  *     the transcript first would misread a genuinely stranded new brief as
- *     SUBMITTED.
+ *     SUBMITTED. Also covers new-style (rule-delimited) boxes where the brief
+ *     appears inline (briefInputBoxInteriorHasContent) rather than as a chip.
  *  4. A stranded marker in the TRANSCRIPT region (lines above the box top) →
  *     SUBMITTED. The [Pasted text #N] chip appears there as an echoed user
  *     turn after the brief is accepted; its presence is positive acceptance
@@ -3093,6 +3146,9 @@ func classifyBriefSubmission(before, after, afterVisible string, beforeOK, after
 		if re.MatchString(inputBox) {
 			return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
 		}
+	}
+	if briefInputBoxInteriorHasContent(afterVisible) {
+		return briefSubmissionStranded, "input box interior has inline paste content (new-style layout)"
 	}
 	for _, re := range briefStrandedMarkers {
 		if re.MatchString(transcript) {
@@ -3150,6 +3206,7 @@ func herdrDeliverBriefConfirmed(ctx context.Context, herdrBin, paneID, brief str
 
 	var lastVerdict briefSubmissionVerdict
 	var lastReason string
+	var lastAfterVisible string
 	for attempt := 1; attempt <= briefSubmitAttempts; attempt++ {
 		before, beforeOK := herdrPaneReadFn(ctx, herdrBin, paneID)
 		select {
@@ -3160,6 +3217,7 @@ func herdrDeliverBriefConfirmed(ctx context.Context, herdrBin, paneID, brief str
 		}
 		after, afterOK := herdrPaneReadFn(ctx, herdrBin, paneID)
 		afterVisible, afterVisibleOK := herdrPaneReadVisibleFn(ctx, herdrBin, paneID)
+		lastAfterVisible = afterVisible
 
 		lastVerdict, lastReason = classifyBriefSubmission(before, after, afterVisible, beforeOK, afterOK, afterVisibleOK)
 		if lastVerdict == briefSubmissionSubmitted {
@@ -3172,18 +3230,25 @@ func herdrDeliverBriefConfirmed(ctx context.Context, herdrBin, paneID, brief str
 		}
 		fmt.Fprintf(w, "space-agent: brief not confirmed submitted (%s: %s); pressing Enter again (attempt %d/%d)\n",
 			lastVerdict, lastReason, attempt+1, briefSubmitAttempts)
+		for _, vl := range strings.Split(afterVisible, "\n") {
+			fmt.Fprintf(w, "    | %s\n", vl)
+		}
 		if err := herdrPaneSendEnter(ctx, herdrBin, paneID); err != nil {
 			return &CodedError{Code: ErrCodeInternalError,
 				Msg: "space-agent: re-submit brief: " + err.Error(), Err: err}
 		}
 	}
 
+	viewportDump := new(strings.Builder)
+	for _, vl := range strings.Split(lastAfterVisible, "\n") {
+		fmt.Fprintf(viewportDump, "    | %s\n", vl)
+	}
 	return &CodedError{
 		Code: ErrCodeInternalError,
 		Msg: fmt.Sprintf("space-agent: brief was NOT confirmed submitted in pane %s after %d Enter presses "+
 			"(final verdict %s: %s); the agent is running but its brief may still be sitting unsent in the "+
-			"input box — inspect with: herdr pane read %s --source visible",
-			paneID, briefSubmitAttempts, lastVerdict, lastReason, paneID),
+			"input box — inspect with: herdr pane read %s --source visible\nvisible viewport at final attempt:\n%s",
+			paneID, briefSubmitAttempts, lastVerdict, lastReason, paneID, viewportDump.String()),
 	}
 }
 

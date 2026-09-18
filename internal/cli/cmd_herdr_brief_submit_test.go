@@ -10,7 +10,25 @@ import (
 	"time"
 )
 
-// paneStranded: box holds paste placeholder, no working indicator (2026-09-02 live capture).
+/**
+ * Transcripts below are the two states observed live on 2026-09-02 while
+ * dispatching a three-slice wave through `nexus herdr agent --autonomous
+ * --no-focus`. Two briefs submitted; the third stranded. The CLI reported
+ * success on all three.
+ *
+ * Note what is IDENTICAL in both: the footer line
+ * "⏵⏵ bypass permissions on (shift+tab to cycle)". That is claudeReadyMatch's
+ * token for the autonomous path — present before the paste, after the paste,
+ * and after submission alike. The dispatch waited on it and called that
+ * delivery. It is the marker that proves nothing, and both fixtures carry it so
+ * any classifier that leans on it fails here.
+ */
+
+/**
+ * paneStranded is pane w7P:p2 after the brief was pasted and Enter was pressed
+ * but never took: the input box still renders the paste placeholder and the
+ * footer offers to expand it. No working indicator anywhere.
+ */
 const paneStranded = `● I'll start by reading the actual state of things.
 
 ╭──────────────────────────────────────────────────────────────╮
@@ -19,6 +37,12 @@ const paneStranded = `● I'll start by reading the actual state of things.
   ⏵⏵ bypass permissions on (shift+tab to cycle) · paste again to expand
 `
 
+/**
+ * paneSubmitted is a sibling pane from the same wave whose brief DID submit:
+ * the input box is empty and the agent is working.
+ * paneSubmittedTick is paneSubmitted one second later: only the spinner's
+ * elapsed timer moved. This is the movement signal the classifier decides on.
+ */
 const paneSubmitted = `● I'll start by reading the actual state of things.
 
 ● Read(internal/cli/cmd_herdr_plugin.go)
@@ -33,6 +57,43 @@ const paneSubmitted = `● I'll start by reading the actual state of things.
 `
 
 var paneSubmittedTick = strings.Replace(paneSubmitted, "12s", "13s", 1)
+
+/**
+ * pane2126PostSubmit is a live capture from a 2026-09-18 MCP dispatch run using
+ * Claude Code 2.1.276. The brief was SUBMITTED: it appears inline in the
+ * transcript as "❯ Create a file named hello.txt..." and the agent is thinking.
+ * The input box is empty. "paste again to expand" persists in the footer.
+ *
+ * With briefStrandedMarkers previously containing "paste again to expand", this
+ * classified as STRANDED — a false positive that wasted 3×1.5 s and pressed
+ * Enter on the permission dialog the agent had opened. Verified case (ii): the
+ * hint lives in the footer below the empty box, not the box interior.
+ */
+const pane2126PostSubmit = "" +
+	"❯ Create a file named hello.txt containing the word hello, then stop.\n" +
+	"\n" +
+	"* Gusting… (1s · thinking)\n" +
+	"──────────────────────────────────────────────────────\n" +
+	"❯ \n" +
+	"──────────────────────────────────────────────────────\n" +
+	"  paste again to expand\n"
+
+var pane2126PostSubmitTick = strings.Replace(pane2126PostSubmit, "1s", "2s", 1)
+
+/**
+ * pane2126Stranded is a deliberately produced genuine-stranded viewport from
+ * 2026-09-18, Claude Code 2.1.276, new-style rule-delimited box. The brief text
+ * is shown inline between the rules (no [Pasted text #N] chip), which is how
+ * 2.1.276 renders an unsubmitted paste. Produced by `herdr pane send-text`
+ * without Enter and then reading the visible viewport.
+ */
+const pane2126Stranded = "" +
+	"● Done. Previous task.\n" +
+	"\n" +
+	"──────────────────────────────────────────────────────\n" +
+	"❯ Create a file named hello.txt containing the word hello, then stop.\n" +
+	"──────────────────────────────────────────────────────\n" +
+	"  ⏵⏵ auto mode on (shift+tab to cycle) · paste again to expand\n"
 
 const paneSubmittedWithChip = "" +
 	"❯ [Pasted text #1 +13 lines]\n" +
@@ -56,6 +117,14 @@ const paneNewStyleWithSidePanel = "" +
 	"────────────────────────────────────────────────────────────────────────────────────\n" +
 	"  ⏸ manual mode on · ? for shortcuts\n"
 
+/**
+ * paneIdleAtPrompt is a submitted-and-finished agent: empty box, no working
+ * indicator, no stranded marker, and static across reads. There is genuinely no
+ * evidence either way here, so the classifier must say UNKNOWN — not SUBMITTED.
+ * This is the fixture that catches a fail-open rewrite.
+ * TestClassifyBriefSubmission_LiveTranscripts drives the classifier over the
+ * observed pane states.
+ */
 const paneIdleAtPrompt = `● Done. The change is in internal/cli/cmd_herdr_plugin.go.
 
 ╭──────────────────────────────────────────────────────────────╮
@@ -86,6 +155,11 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			wantReasonContains: "Pasted text",
 		},
 		{
+			/**
+			 * The placeholder blinks and the footer cycles, so a stranded pane
+			 * is NOT static. If movement were checked first this would pass as
+			 * submitted — which is the original defect wearing a new hat.
+			 */
 			name:               "stranded beats movement: a stranded pane still repaints",
 			before:             paneStranded,
 			after:              strings.Replace(paneStranded, "+79 lines", "+79 lines ", 1),
@@ -108,6 +182,7 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			wantReasonContains: "repainted",
 		},
 		{
+			/** A working agent between repaints. Movement is absent; the affordance carries it. */
 			name:               "submitted fast path: static but shows the interrupt affordance",
 			before:             paneSubmitted,
 			after:              paneSubmitted,
@@ -238,6 +313,39 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 			want:               briefSubmissionUnknown,
 			wantReasonContains: "static",
 		},
+		{
+			/**
+			 * 2.1.276 live capture: brief was submitted (inline in transcript),
+			 * box is empty, but "paste again to expand" persists in the footer.
+			 * Motion (spinner tick) confirms SUBMITTED. The old code would have
+			 * returned STRANDED here on the first attempt — the defect this fixes.
+			 */
+			name:               "2.1.276 post-submit: paste-again-footer does not prevent SUBMITTED on motion",
+			before:             pane2126PostSubmit,
+			after:              pane2126PostSubmitTick,
+			afterVisible:       pane2126PostSubmitTick,
+			beforeOK:           true,
+			afterOK:            true,
+			afterVisibleOK:     true,
+			want:               briefSubmissionSubmitted,
+			wantReasonContains: "repainted",
+		},
+		{
+			/**
+			 * 2.1.276 genuinely stranded: inline brief text between the two rules
+			 * (new-style layout). No [Pasted text #N] chip; the text is shown
+			 * verbatim. briefInputBoxInteriorHasContent catches this.
+			 */
+			name:               "2.1.276 stranded: inline brief in new-style box",
+			before:             pane2126Stranded,
+			after:              pane2126Stranded,
+			afterVisible:       pane2126Stranded,
+			beforeOK:           true,
+			afterOK:            true,
+			afterVisibleOK:     true,
+			want:               briefSubmissionStranded,
+			wantReasonContains: "inline paste content",
+		},
 	}
 
 	for _, tc := range cases {
@@ -253,6 +361,12 @@ func TestClassifyBriefSubmission_LiveTranscripts(t *testing.T) {
 	}
 }
 
+/**
+ * TestClassifyBriefSubmission_ReadyTokenIsNotEvidence pins the specific marker
+ * that caused the defect. "shift+tab to cycle" is what step 7 waits on, and it
+ * is present in BOTH the stranded and the submitted transcript. A classifier
+ * that treats it as delivery evidence would call the stranded pane submitted.
+ */
 func TestClassifyBriefSubmission_ReadyTokenIsNotEvidence(t *testing.T) {
 	const readyToken = "shift+tab to cycle"
 	if !strings.Contains(paneStranded, readyToken) || !strings.Contains(paneSubmitted, readyToken) {
@@ -443,6 +557,20 @@ func TestDeliverBriefConfirmed_RetryRecovers(t *testing.T) {
 	}
 }
 
+/**
+ * TestSpaceAgentDispatch_UsesConfirmedDelivery pins the CALL SITE.
+ *
+ * The classifier and the retry loop can both be perfect and the defect still
+ * ship, if herdrPluginSpaceAgent goes on calling the unconfirmed
+ * herdrPaneSubmitToAgent directly. That function is reachable only through a
+ * real *service.Service and a real store, so this is asserted against the
+ * source: step 8 of the dispatch must delegate to herdrDeliverBriefConfirmed,
+ * and must not paste-and-hope.
+ *
+ * herdrPaneSubmitToAgent is NOT banned outright — herdrDeliverBriefConfirmed
+ * calls it, which is the one legitimate call site. The guard is scoped to the
+ * body of herdrPluginSpaceAgent.
+ */
 func TestSpaceAgentDispatch_UsesConfirmedDelivery(t *testing.T) {
 	src, err := os.ReadFile("cmd_herdr_plugin.go")
 	if err != nil {
