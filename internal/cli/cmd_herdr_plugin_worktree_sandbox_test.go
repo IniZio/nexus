@@ -567,9 +567,11 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	if !found.WorktreeManaged {
 		t.Errorf("WorktreeManaged = false; want true for worktree-sandbox binding")
 	}
-	// Workspace was renamed to the correct label.
-	if renamedLabel != wantLabel {
-		t.Errorf("workspace rename label = %q; want %q", renamedLabel, wantLabel)
+	// Workspace was renamed to the display label: repo segment dropped, since
+	// herdr already groups the workspace under its repo space.
+	const wantDisplayLabel = "nexus:worktree-silver-forest-225f"
+	if renamedLabel != wantDisplayLabel {
+		t.Errorf("workspace rename label = %q; want %q", renamedLabel, wantDisplayLabel)
 	}
 }
 

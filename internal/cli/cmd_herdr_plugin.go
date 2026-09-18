@@ -1378,6 +1378,25 @@ func herdrSpaceLabelForRef(ref string) string {
 }
 
 /**
+ * herdrWorkspaceDisplayLabel is the name pushed to herdr for a worktree
+ * workspace: the space label with the "<repo>/" segment dropped, so
+ * "nexus:hanlun-lms/EX-871" shows as "nexus:EX-871". The herdr UI already
+ * groups the workspace under its repo space, so repeating the repo name in
+ * every tab is noise.
+ *
+ * This is DISPLAY ONLY. The binding key (HerdrSpaceBinding.SpaceLabel) keeps
+ * the full "nexus:<repo>/<branch>" form because it must stay unique across
+ * repos ("nexus:main" would collide), so nothing may resolve a binding by
+ * reading a workspace's label back from herdr — match on HerdrWorkspaceID.
+ */
+func herdrWorkspaceDisplayLabel(spaceLabel string) string {
+	if i := strings.LastIndexByte(spaceLabel, '/'); i >= 0 {
+		return "nexus:" + spaceLabel[i+1:]
+	}
+	return spaceLabel
+}
+
+/**
  * herdrPluginSpaceCreate creates (or reuses) a herdr workspace for the sandbox,
  * opens the primary guest-shell pane, and stores the binding.
  */
@@ -2162,11 +2181,26 @@ func herdrSpaceSweepOrphanWorkspaces(ctx context.Context, w io.Writer, storeRoot
 		slog.Warn("space-prune: orphan sweep: parse workspace list", "err", err)
 		return
 	}
+	bindings, err := HerdrSpaceList(ctx, storeRoot)
+	if err != nil {
+		slog.Warn("space-prune: orphan sweep: binding list failed", "err", err)
+		return
+	}
+	/**
+	 * Match on workspace ID, not label: worktree workspaces are renamed to the
+	 * short display label (herdrWorkspaceDisplayLabel), which differs from
+	 * the binding's SpaceLabel, so a label lookup would wrongly close every
+	 * bound worktree workspace.
+	 */
+	bound := make(map[string]bool, len(bindings))
+	for _, b := range bindings {
+		bound[b.HerdrWorkspaceID] = true
+	}
 	for _, ws := range resp.Result.Workspaces {
 		if !strings.HasPrefix(ws.Label, "nexus:") {
 			continue
 		}
-		if _, err := HerdrSpaceGetByLabel(ctx, storeRoot, ws.Label); err == nil {
+		if bound[ws.WorkspaceID] {
 			continue // binding exists — not orphaned
 		}
 		if err := closer(ctx, ws.WorkspaceID); err != nil {
@@ -2449,12 +2483,13 @@ func herdrClassifyBindinglessSandbox(
 
 	/** G4 — nothing live in herdr still refers to it. */
 	label := herdrSpaceLabelForRef(v.Handle)
+	displayLabel := herdrWorkspaceDisplayLabel(label)
 	for _, ws := range workspaces {
 		if ws.CheckoutPath != "" && filepath.Clean(ws.CheckoutPath) == shape.CheckoutPath {
 			v.Reason = "live herdr workspace " + ws.WorkspaceID + " still opens this checkout"
 			return v
 		}
-		if ws.Label != "" && ws.Label == label {
+		if ws.Label != "" && (ws.Label == label || ws.Label == displayLabel) {
 			v.Reason = "live herdr workspace " + ws.WorkspaceID + " is labelled for this sandbox"
 			return v
 		}
@@ -4747,7 +4782,7 @@ func herdrWorktreeSandbox(
 		}
 	}
 
-	if err := herdrWorkspaceRenameFn(ctx, herdrBin, workspaceID, label); err != nil {
+	if err := herdrWorkspaceRenameFn(ctx, herdrBin, workspaceID, herdrWorkspaceDisplayLabel(label)); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: rename workspace: %v\n", err)
 	}
 
