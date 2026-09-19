@@ -1324,3 +1324,99 @@ func TestHerdrInstallDefaultShell_ForeignNexusGuestShellNotChained(t *testing.T)
 		t.Errorf("output missing note about nexus-guest-shell: %s", outStr)
 	}
 }
+
+// fakeStartingGetter is a sandboxGetter + sandboxStarter: Get reports the
+// current state; Start flips it to Running and records the call.
+type fakeStartingGetter struct {
+	sb       domain.Sandbox
+	started  []string
+	startErr error
+}
+
+func (f *fakeStartingGetter) Get(_ context.Context, _ string) (domain.Sandbox, error) { return f.sb, nil }
+func (f *fakeStartingGetter) Start(_ context.Context, ref string) (domain.Sandbox, error) {
+	f.started = append(f.started, ref)
+	if f.startErr != nil {
+		return domain.Sandbox{}, f.startErr
+	}
+	f.sb.State = domain.Running
+	return f.sb, nil
+}
+
+// A Stopped WORKTREE sandbox is what the last-pane stop leaves behind; opening
+// a guest pane again must start it and exec into the guest, not drop to a host
+// shell. A non-worktree binding keeps the old fall-open behaviour.
+//
+// Mutation proof: delete the Stopped→Start block → state stays Stopped →
+// host shell → argv0 "/bin/bash" ≠ "/fake/nexus" → RED.
+func TestHerdrDefaultShell_StoppedWorktreeSandboxIsStarted(t *testing.T) {
+	root := t.TempDir()
+	wt := testBinding
+	wt.WorktreeManaged = true
+	makeBindings(t, root, []HerdrSpaceBinding{wt})
+	getenv := func(k string) string {
+		switch k {
+		case "HERDR_WORKSPACE_ID":
+			return wt.HerdrWorkspaceID
+		case "SHELL":
+			return "/bin/bash"
+		}
+		return ""
+	}
+
+	// Worktree bindings run the guest shell through the supervised child
+	// runner (so the last-pane reaper can follow), not execFn.
+	var childArgv []string
+	oldChild, oldSpawn := herdrWtChildRunnerFn, herdrWtSpawnDetachedReapFn
+	herdrWtChildRunnerFn = func(_ context.Context, _ string, argv []string) error {
+		childArgv = argv
+		return nil
+	}
+	herdrWtSpawnDetachedReapFn = func(HerdrSpaceBinding) error { return nil }
+	t.Cleanup(func() { herdrWtChildRunnerFn = oldChild; herdrWtSpawnDetachedReapFn = oldSpawn })
+
+	svc := &fakeStartingGetter{sb: domain.Sandbox{State: domain.Stopped}}
+	cap := &capturedExec{}
+	if err := runCore(context.Background(), getenv, root, svc, cap.fn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(svc.started) != 1 || svc.started[0] != wt.SandboxHandle {
+		t.Fatalf("Start calls = %v; want [%s]", svc.started, wt.SandboxHandle)
+	}
+	if len(childArgv) < 2 || childArgv[0] != "/fake/nexus" || childArgv[1] != "exec" {
+		t.Fatalf("guest shell argv = %q; want /fake/nexus exec ... after start", childArgv)
+	}
+	if cap.calls != 0 {
+		t.Fatalf("host shell exec'd (%q) after a successful start", cap.argv0)
+	}
+
+	failing := &fakeStartingGetter{sb: domain.Sandbox{State: domain.Stopped}, startErr: errors.New("boot failed")}
+	cap = &capturedExec{}
+	if err := runCore(context.Background(), getenv, root, failing, cap.fn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertHostShell(t, cap, "/bin/bash")
+}
+
+func TestHerdrDefaultShell_StoppedNonWorktreeSandboxStaysHost(t *testing.T) {
+	root := t.TempDir()
+	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
+	svc := &fakeStartingGetter{sb: domain.Sandbox{State: domain.Stopped}}
+	cap := &capturedExec{}
+	getenv := func(k string) string {
+		switch k {
+		case "HERDR_WORKSPACE_ID":
+			return testBinding.HerdrWorkspaceID
+		case "SHELL":
+			return "/bin/bash"
+		}
+		return ""
+	}
+	if err := runCore(context.Background(), getenv, root, svc, cap.fn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(svc.started) != 0 {
+		t.Fatalf("non-worktree sandbox must not be auto-started; got %v", svc.started)
+	}
+	assertHostShell(t, cap, "/bin/bash")
+}

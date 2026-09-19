@@ -27,6 +27,11 @@ const herdrSidecarSuffix = ".nexusbin"
 
 type herdrExecFn func(argv0 string, argv []string, envv []string) error
 
+/** sandboxStarter is the optional Start capability the guest shell uses to resume a stopped worktree sandbox. */
+type sandboxStarter interface {
+	Start(ctx context.Context, ref string) (domain.Sandbox, error)
+}
+
 type sandboxDialer interface {
 	sandboxGetter
 	DialGuest(ctx context.Context, ref string, port uint32) (net.Conn, error)
@@ -346,7 +351,29 @@ func herdrDefaultShellCore(
 	cwd := "/root"
 	if svc != nil {
 		sb, sbErr := svc.Get(ctx, binding.SandboxHandle)
-		if sbErr != nil || sb.State != domain.Running {
+		if sbErr != nil {
+			return execHostShell()
+		}
+		/**
+		 * A Stopped worktree sandbox is the normal state after its last pane
+		 * closed (herdrWtTeardownFn stops rather than removes). Opening a pane
+		 * again is the operator asking to continue, so start it here; boot
+		 * output is shown because it takes seconds, not milliseconds. Any
+		 * other non-Running state (paused, error, mid-create) still falls
+		 * open to a host shell.
+		 */
+		if sb.State == domain.Stopped && binding.IsWorktreeManaged() {
+			if st, ok := svc.(sandboxStarter); ok {
+				fmt.Fprintf(os.Stderr, "nexus-guest-shell: sandbox %s is stopped; starting it ...\n", binding.SandboxHandle)
+				started, startErr := st.Start(ctx, binding.SandboxHandle)
+				if startErr != nil {
+					fmt.Fprintf(os.Stderr, "nexus-guest-shell: start %s: %v; opening host shell\n", binding.SandboxHandle, startErr)
+					return execHostShell()
+				}
+				sb = started
+			}
+		}
+		if sb.State != domain.Running {
 			return execHostShell()
 		}
 		if d, ok := svc.(sandboxDialer); ok {
@@ -982,10 +1009,10 @@ func runHerdrWtDetachedReap(ctx context.Context, binding HerdrSpaceBinding) {
 	storeRoot, storeErr := store.DefaultRoot()
 	herdrBin, _ := resolveHerdrBin()
 	if storeErr != nil {
-		slog.Warn("nexus-guest-shell: wt/ store root unavailable; falling back to VM-only reap",
+		slog.Warn("nexus-guest-shell: wt/ store root unavailable; stopping VM without record checks",
 			"handle", binding.SandboxHandle, "err", storeErr)
-		if err := herdrWtSandboxRemoverFn(ctx, binding.SandboxHandle); err != nil {
-			slog.Warn("nexus-guest-shell: wt/ sandbox rm failed; prune will catch it",
+		if err := herdrWtSandboxStopperFn(ctx, binding.SandboxHandle, binding.SandboxID); err != nil {
+			slog.Warn("nexus-guest-shell: wt/ sandbox stop failed; sandbox left running",
 				"handle", binding.SandboxHandle, "err", err)
 		}
 		return
@@ -993,21 +1020,21 @@ func runHerdrWtDetachedReap(ctx context.Context, binding HerdrSpaceBinding) {
 	herdrWtTeardownFn(ctx, storeRoot, binding.SandboxHandle, herdrBin, binding.SandboxID)
 }
 
+/**
+ * herdrWtTeardownFn is the last-pane action for a worktree sandbox. It STOPS
+ * the VM and leaves the sandbox record, its binding and its named volumes in
+ * place. It used to run the full teardown transaction (remove VM, close
+ * workspace, delete binding), which turned every "close the last tab" —
+ * including the ones a reaper bug (fixed 2026-09-19) mistook for the last
+ * tab — into losing the running agent and its root disk. Removal is now the
+ * job of the worktree.removed hook alone (prune --workspace); re-opening the
+ * worktree rebinds the stopped sandbox and the guest shell starts it again.
+ * sandboxID guards against acting on a sandbox that replaced the one this
+ * pane belonged to.
+ */
 var herdrWtTeardownFn = func(ctx context.Context, storeRoot, handle, herdrBin, sandboxID string) {
-	deps := txnDeps{
-		svcRemove: func(ctx context.Context, ref string) error {
-			return herdrWtSandboxRemoverFn(ctx, ref)
-		},
-		workspaceClose: func(ctx context.Context, wsID string) error {
-			return herdrWorkspaceClose(ctx, herdrBin, wsID)
-		},
-		bindingDelete: func(ctx context.Context, label string) error {
-			return HerdrSpaceDelete(ctx, storeRoot, label)
-		},
-	}
-	if err := herdrSpaceTeardown(ctx, storeRoot, handle, deps, teardownOpts{failOpen: true, expectedSandboxID: sandboxID}); err != nil {
-		// herdrSpaceTeardown with failOpen:true never returns non-nil; belt-and-suspenders.
-		slog.Warn("nexus-guest-shell: wt/ teardown error (swallowed)", "handle", handle, "err", err)
+	if err := herdrWtSandboxStopperFn(ctx, handle, sandboxID); err != nil {
+		slog.Warn("nexus-guest-shell: wt/ stop on last pane failed (sandbox left running)", "handle", handle, "err", err)
 	}
 }
 
@@ -1065,6 +1092,32 @@ func parseWtPaneListRemaining(out []byte, cmdErr error, ownPaneID string) (int, 
 		return 0, fmt.Errorf("wt/ pane-list: herdr pane list: %w: %s", cmdErr, strings.TrimSpace(string(out)))
 	}
 	return 0, fmt.Errorf("wt/ pane-list: parse output: %q", strings.TrimSpace(string(out)))
+}
+
+var herdrWtSandboxStopperFn = herdrWtSandboxStopper
+
+/**
+ * herdrWtSandboxStopper stops the worktree sandbox once its last pane is
+ * gone. A sandbox that is not Running (already stopped, paused, mid-create)
+ * is left alone, as is one whose ID no longer matches the pane's binding.
+ */
+func herdrWtSandboxStopper(ctx context.Context, handle, sandboxID string) error {
+	svc, err := newSandboxService()
+	if err != nil {
+		return fmt.Errorf("wt/ sandbox stop: open service: %w", err)
+	}
+	sb, err := svc.Get(ctx, handle)
+	if err != nil {
+		return fmt.Errorf("wt/ sandbox stop: %w", err)
+	}
+	if sandboxID != "" && sb.ID.String() != sandboxID {
+		return fmt.Errorf("wt/ sandbox stop: %s is now %s, pane belonged to %s; leaving it", handle, sb.ID, sandboxID)
+	}
+	if sb.State != domain.Running {
+		return nil
+	}
+	_, err = svc.Stop(ctx, handle)
+	return err
 }
 
 func herdrWtSandboxRemover(ctx context.Context, handle string) error {

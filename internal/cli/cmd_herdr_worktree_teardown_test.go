@@ -659,3 +659,39 @@ func TestParseWtPaneListRemaining_secondTabCloseKeepsSpace(t *testing.T) {
 		t.Fatalf("sanity: excluding the live pane yields %d; the fix depends on this being 0", n)
 	}
 }
+
+// The last-pane action must STOP the sandbox and touch nothing else: no
+// Remove, no binding delete, no workspace close. Removal belongs to the
+// worktree.removed hook. A sandbox that is no longer the pane's (ID changed)
+// or not Running is left alone.
+//
+// Mutation proof: call herdrWtSandboxRemoverFn instead of the stopper → the
+// remover stub fails the test; drop the ID guard → stopped=[h] in the
+// mismatch case → RED.
+func TestHerdrWtTeardownFn_StopsInsteadOfRemoving(t *testing.T) {
+	root := t.TempDir()
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:repo/wt", HerdrWorkspaceID: "wS", SandboxHandle: "repo/wt", SandboxID: "sb-1", WorktreeManaged: true}
+	if err := HerdrSpacePut(context.Background(), root, b); err != nil {
+		t.Fatal(err)
+	}
+	oldRm := herdrWtSandboxRemoverFn
+	herdrWtSandboxRemoverFn = func(_ context.Context, h string) error {
+		t.Errorf("last-pane action must not remove; Remove(%s) called", h)
+		return nil
+	}
+	oldStop := herdrWtSandboxStopperFn
+	var stopped []string
+	herdrWtSandboxStopperFn = func(_ context.Context, h, id string) error {
+		stopped = append(stopped, h+"@"+id)
+		return nil
+	}
+	t.Cleanup(func() { herdrWtSandboxRemoverFn = oldRm; herdrWtSandboxStopperFn = oldStop })
+
+	herdrWtTeardownFn(context.Background(), root, b.SandboxHandle, "/bin/true", b.SandboxID)
+	if len(stopped) != 1 || stopped[0] != "repo/wt@sb-1" {
+		t.Fatalf("stopped = %v; want [repo/wt@sb-1]", stopped)
+	}
+	if _, err := HerdrSpaceGetByLabel(context.Background(), root, b.SpaceLabel); err != nil {
+		t.Fatalf("binding must survive the last-pane stop: %v", err)
+	}
+}
