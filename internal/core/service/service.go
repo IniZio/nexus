@@ -712,8 +712,14 @@ func (s *Service) Resume(ctx context.Context, ref string) (domain.Sandbox, error
 	return updated, nil
 }
 
-// removeDetachTimeout bounds each volume detach inside Remove. A var so tests
-// that hold the volume lock on purpose can shrink the wait they are proving.
+// removeDetachTimeout bounds each volume's lock acquisition inside Remove. A
+// var so tests that hold the volume lock on purpose can shrink the wait they
+// are proving. Detach's own reclaim work runs on a separately-decoupled
+// budget (volumestore.reclaimTimeout) unaffected by this value, so it does
+// not need to be widened for reclaim duration — but it is allocated fresh
+// per volume below, not once for the whole sweep, because a synchronous
+// reclaim on an earlier volume can otherwise burn the shared budget before
+// later volumes ever attempt their lock acquisition.
 var removeDetachTimeout = 10 * time.Second
 
 // Remove deletes the sandbox identified by ref.
@@ -832,14 +838,13 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	// this internal bound. WithoutCancel prevents a pre-cancelled ctx (already
 	// returned an error) from skipping detach entirely.
 	if s.volumes != nil {
-		detachCtx, detachCancel := context.WithTimeout(context.WithoutCancel(ctx), removeDetachTimeout)
-		defer detachCancel()
-
 		// Primary path: detach volumes listed in the sandbox record.
 		mountedNames := make(map[string]bool, len(sb.MountedVolumes))
 		for _, va := range sb.MountedVolumes {
 			mountedNames[va.Name] = true
+			detachCtx, detachCancel := context.WithTimeout(context.WithoutCancel(ctx), removeDetachTimeout)
 			_ = detachVolumeLocked(detachCtx, s.volumes, va.Name, sb.ID.String())
+			detachCancel()
 		}
 
 		// TBD-PD-22: also sweep every volume whose meta.json Attachments list
@@ -855,7 +860,9 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 				}
 				for _, att := range rec.Attachments {
 					if att.SandboxID == sbIDStr {
+						detachCtx, detachCancel := context.WithTimeout(context.WithoutCancel(ctx), removeDetachTimeout)
 						_ = detachVolumeLocked(detachCtx, s.volumes, rec.Name, sbIDStr)
+						detachCancel()
 						break
 					}
 				}

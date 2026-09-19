@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -616,10 +617,11 @@ func (s *VolumeStore) Detach(ctx context.Context, name, sandboxID string) error 
 		}
 		return fmt.Errorf("volume %s: detach: open lock: %w", name, err)
 	}
-	defer lk.Close() //nolint:errcheck
 	if err := lk.TryExclusive(ctx); err != nil {
+		_ = lk.Close()
 		return fmt.Errorf("volume %s: detach: acquire lock: %w", name, err)
 	}
+	defer lk.Close()  //nolint:errcheck
 	defer lk.Unlock() //nolint:errcheck
 
 	rec, err := s.readRecord(name)
@@ -629,12 +631,37 @@ func (s *VolumeStore) Detach(ctx context.Context, name, sandboxID string) error 
 		}
 		return fmt.Errorf("volume %s: detach: %w", name, err)
 	}
+	removed := false
 	filtered := rec.Attachments[:0]
 	for _, a := range rec.Attachments {
 		if a.SandboxID != sandboxID {
 			filtered = append(filtered, a)
+		} else {
+			removed = true
 		}
 	}
 	rec.Attachments = filtered
-	return s.writeRecord(rec)
+
+	// Reclaim only when this call caused full detachment, not on a no-op Detach.
+	shouldReclaim := removed && rec.Kind == KindDisk && len(rec.Attachments) == 0
+
+	// rec.SizeBytes stays unchanged — declared capacity must survive reclaim —
+	// so no writeRecord/UpdateSizeBytes call is needed after it runs.
+	if err := s.writeRecord(rec); err != nil {
+		return fmt.Errorf("volume %s: detach: %w", name, err)
+	}
+
+	if shouldReclaim {
+		// Own generous budget, decoupled from the caller's short detach ctx, but
+		// run in-process (not backgrounded) so the flock stays held by this live
+		// process for the whole reclaim — a short-lived CLI caller that returns
+		// early would otherwise let e2fsck/resize2fs keep running unlocked.
+		reclaimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reclaimTimeout)
+		defer cancel()
+		if err := reclaimExt4(reclaimCtx, s.DiskPath(name), rec.SizeBytes); err != nil {
+			slog.Warn("volumestore.detach.reclaim_failed", "volume", name, "err", err)
+		}
+	}
+
+	return nil
 }
