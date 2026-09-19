@@ -1299,6 +1299,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		BootMemMiB: f.memoryMiB,
 		BootVCPUs:  f.vcpus,
 		MemMaxMiB:  f.memoryMaxMiB,
+		Nested:     f.nestedVirt,
 		VCPUsMax:   f.vcpusMax,
 		DiskMaxGiB: f.diskMaxGiB,
 	})

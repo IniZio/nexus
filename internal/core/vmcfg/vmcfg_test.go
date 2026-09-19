@@ -268,3 +268,20 @@ func TestResolveResultAndBoundsConsistency(t *testing.T) {
 		}
 	}
 }
+
+func TestResolve_nestedRaisesMemMaxFloor(t *testing.T) {
+	// A nested guest must be able to admit its own builder VM (3072 MiB) with
+	// the agent still resident; the 4096 floor cannot. Explicit ceilings win.
+	//
+	// MUTATION PROOF: drop the c.Nested branch → 4096 → RED.
+	r := vmcfg.Resolve(vmcfg.Config{BootMemMiB: 512, Nested: true})
+	if r.MemoryMaxMiB != vmcfg.NestedMemMaxFloorMiB {
+		t.Fatalf("nested MemoryMaxMiB = %d; want %d", r.MemoryMaxMiB, vmcfg.NestedMemMaxFloorMiB)
+	}
+	if got := vmcfg.Resolve(vmcfg.Config{BootMemMiB: 512, Nested: true, MemMaxMiB: 6144}).MemoryMaxMiB; got != 6144 {
+		t.Fatalf("explicit ceiling overridden: got %d, want 6144", got)
+	}
+	if got := vmcfg.Resolve(vmcfg.Config{BootMemMiB: 512}).MemoryMaxMiB; got != 4096 {
+		t.Fatalf("non-nested floor changed: got %d, want 4096", got)
+	}
+}

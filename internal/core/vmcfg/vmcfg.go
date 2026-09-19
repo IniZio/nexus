@@ -35,7 +35,18 @@ type Config struct {
 	// DiskMaxGiB is the explicit disk-grow ceiling in GiB.
 	// 0 applies the default: 100 GiB (matches OLD-nexus diskMaxBytes, D-DC-20).
 	DiskMaxGiB uint32
+
+	// Nested is set when the guest gets /dev/kvm to run VMs of its own. It
+	// raises the default RAM ceiling floor to NestedMemMaxFloorMiB.
+	Nested bool
 }
+
+// NestedMemMaxFloorMiB is the default RAM ceiling floor for a nested guest.
+// The inner nexus admits a builder VM only with 3072 MiB available (2048
+// boot + 1024 floor) on top of whatever the agent and toolchain hold; under
+// the plain 4096 MiB floor the first in-guest `sandbox create --file` was
+// refused with "host has 559 MiB available, need 3072 MiB" (2026-09-19).
+const NestedMemMaxFloorMiB = 8192
 
 // Result holds the resolved auto-resize boot configuration.
 // All fields are ready to be assigned directly to a driver Config and cmdline.
@@ -67,7 +78,7 @@ type Result struct {
 // the kernel cmdline.
 //
 // Ceiling defaults (applied when the corresponding Config field is 0):
-//   - MemMaxMiB:  4× BootMemMiB, minimum 4096 MiB.
+//   - MemMaxMiB:  4× BootMemMiB, minimum 4096 MiB (NestedMemMaxFloorMiB when Nested).
 //     Rationale: the nested-build OOM workload that motivated auto-resize
 //     consumed >4 GiB; 4096 MiB is the measured lower bound.  4× reaches
 //     4096 MiB only when boot memory ≥ 1024 MiB; the floor prevents a
@@ -94,8 +105,12 @@ func Resolve(c Config) Result {
 	memMax := c.MemMaxMiB
 	if memMax == 0 {
 		memMax = bootMem * 4
-		if memMax < 4096 {
-			memMax = 4096
+		floor := uint32(4096)
+		if c.Nested {
+			floor = NestedMemMaxFloorMiB
+		}
+		if memMax < floor {
+			memMax = floor
 		}
 	}
 	vcpuMax := c.VCPUsMax
