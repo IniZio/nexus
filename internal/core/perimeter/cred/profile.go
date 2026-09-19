@@ -5,25 +5,19 @@ import "sort"
 type CredentialFormat string
 
 const (
-	CredentialFormatNone CredentialFormat = ""
-
-	CredentialFormatCursorJWT CredentialFormat = "cursor-jwt"
-
-	// CredentialFormatOpencodeAPIKey is a static provider API key
-	// (auth.json entry {type:"api", key}), not an OAuth refresh grant and not a JWT.
+	CredentialFormatNone           CredentialFormat = ""
+	CredentialFormatCursorJWT      CredentialFormat = "cursor-jwt"
 	CredentialFormatOpencodeAPIKey CredentialFormat = "opencode-api-key"
+	CredentialFormatOhMyPiVault    CredentialFormat = "ohmypi-vault"
 )
 
 type MCPConfigFormat string
 
 const (
-	MCPConfigFormatNone MCPConfigFormat = ""
-
-	MCPConfigFormatClaudeJSON MCPConfigFormat = "claude-json"
-
+	MCPConfigFormatNone         MCPConfigFormat = ""
+	MCPConfigFormatClaudeJSON   MCPConfigFormat = "claude-json"
 	MCPConfigFormatOpencodeJSON MCPConfigFormat = "opencode-json"
-
-	MCPConfigFormatCursorJSON MCPConfigFormat = "cursor-json"
+	MCPConfigFormatCursorJSON   MCPConfigFormat = "cursor-json"
 )
 
 type AgentCapabilities struct {
@@ -38,7 +32,7 @@ type AgentProfile struct {
 
 	CredentialedHostSuffix string
 
-	// PlaceholderIsJWT: cursor JWT-parses its token; hex placeholder triggers refresh POST (not MITM-intercepted → fails). JWT-shaped placeholder with exp=2099 prevents that.
+	// PlaceholderIsJWT: cursor JWT-parses its token; hex placeholder triggers refresh POST. JWT-shaped placeholder with exp=2099 prevents that.
 	PlaceholderIsJWT bool
 
 	CredentialedHost string
@@ -151,8 +145,6 @@ var ClaudeCodeProfile = AgentProfile{
 		BinPath: "/usr/local/bin/claude",
 		Packages: []RecipePackage{
 			{
-				// Version floats: resolved to a concrete digest against the image
-				// tag on the host at create time, upstream of the image-cache key.
 				Kind:       RecipeKindOCI,
 				Name:       "claude-code",
 				Version:    FloatingVersion,
@@ -218,8 +210,6 @@ var CursorAgentProfile = AgentProfile{
 		BinPath: "/usr/local/bin/cursor-agent",
 		Packages: []RecipePackage{
 			{
-				// Version floats: resolved to a concrete digest against the image
-				// tag on the host at create time, upstream of the image-cache key.
 				Kind:       RecipeKindOCI,
 				Name:       "cursor-agent",
 				Version:    FloatingVersion,
@@ -237,26 +227,6 @@ var CursorAgentProfile = AgentProfile{
 
 const OpencodeProfileName = "opencode"
 
-// OpencodeProfile is the OpenCode CLI (npm package opencode-ai).
-//
-// Auth is a static per-provider API key, not browser-OAuth and not a JWT.
-// v1.18.31 stores it at $XDG_DATA_HOME/opencode/auth.json (default
-// ~/.local/share/opencode/auth.json) as a provider map. The opencode-go
-// entry is {"type":"api","key":"..."} (packages/opencode/src/auth/index.ts).
-// oauth and wellknown grants are different shapes and are refused.
-//
-// models.dev lists opencode-go.env = ["OPENCODE_API_KEY"] and
-// api = https://opencode.ai/zen/go/v1. OpenCode Zen (provider id "opencode")
-// uses the same env var and https://opencode.ai/zen/v1. Both are hostname
-// opencode.ai. The key is an apiKey string for @ai-sdk/openai-compatible;
-// the CLI does not JWT-parse it, so a hex placeholder is enough
-// (PlaceholderIsJWT stays false). The catalog fetch host is
-// models.opencode.ai, not a credential host; OPENCODE_DISABLE_MODELS_FETCH
-// keeps the guest off it.
-//
-// The guest seed writer can only emit a flat credential JSON object. OpenCode
-// requires the key nested under "opencode-go", so the working guest channel
-// is OPENCODE_API_KEY. The host importer still reads the nested file.
 var OpencodeProfile = AgentProfile{
 	Name:              OpencodeProfileName,
 	CredentialedHost:  "opencode.ai",
@@ -266,9 +236,6 @@ var OpencodeProfile = AgentProfile{
 	APIKeyEnvVar:      "OPENCODE_API_KEY",
 	CACertEnvVars:     []string{"NODE_EXTRA_CA_CERTS"},
 	GuestEnv: map[string]string{
-		// flag.ts truthy() accepts "1" or "true". Skips the npm/github
-		// update check and the models.opencode.ai catalog fetch. Neither
-		// host is credentialed, and neither is in EgressHosts.
 		"OPENCODE_DISABLE_AUTOUPDATE":   "1",
 		"OPENCODE_DISABLE_MODELS_FETCH": "1",
 	},
@@ -279,15 +246,10 @@ var OpencodeProfile = AgentProfile{
 	CredentialFileKey: "key",
 	CredentialFormat:  CredentialFormatOpencodeAPIKey,
 	MCPConfigFormat:   MCPConfigFormatOpencodeJSON,
-	// opencode.json may carry provider.options.apiKey. Do not mount it.
-	// An empty SettingsAllowlist drops every key if a later change adds the file.
 	ToolRecipe: ToolRecipe{
 		BinPath: "/usr/local/bin/opencode",
 		Packages: []RecipePackage{
 			{
-				// npm is not in the default base image. This worktree's
-				// Containerfile has curl but not npm; the pinned Node tarball
-				// supplies npm so the following package can install.
 				Kind:        RecipeKindTarball,
 				Name:        "node",
 				Version:     "22.23.2",
@@ -308,10 +270,54 @@ var OpencodeProfile = AgentProfile{
 	},
 }
 
+const OhMyPiProfileName = "oh-my-pi"
+
+// OhMyPiProfile uses a SQLite vault (no single bearer); CheckCred must not block sandbox create. See ohmypi.go.
+var OhMyPiProfile = AgentProfile{
+	Name:              OhMyPiProfileName,
+	CredentialFormat:  CredentialFormatOhMyPiVault,
+	CredentialedHost:  "api.anthropic.com",
+	EgressHosts:       []string{"api.anthropic.com", "api.openai.com", "auth.openai.com"},
+	PlaceholderEnvVar: "ANTHROPIC_OAUTH_TOKEN",
+	APIKeyEnvVar:      "ANTHROPIC_API_KEY",
+	CACertEnvVars:     []string{"NODE_EXTRA_CA_CERTS"},
+	SettingsPath:      "~/.omp/agent/config.yml",
+	CredDirEnvVar:     "PI_CODING_AGENT_DIR",
+	ConfigDirEnvVar:   "PI_CODING_AGENT_DIR",
+	ToolRecipe: ToolRecipe{
+		BinPath: "/usr/local/bin/omp",
+		Packages: []RecipePackage{
+			{
+				Kind:        RecipeKindTarball,
+				Name:        "node",
+				Version:     "22.23.2",
+				URLTemplate: "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz",
+				SHA256ByArch: map[string]string{
+					"x64":   "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
+					"arm64": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
+				},
+				InstallDir: "/usr/local",
+				VersionCmd: "node --version",
+			},
+			{
+				Kind:    RecipeKindNPM,
+				Name:    "bun",
+				Version: "1.4.2",
+			},
+			{
+				Kind:    RecipeKindNPM,
+				Name:    "@oh-my-pi/pi-coding-agent",
+				Version: "18.2.6",
+			},
+		},
+	},
+}
+
 var profiles = map[string]AgentProfile{
 	ClaudeCodeProfileName:  ClaudeCodeProfile,
 	CursorAgentProfileName: CursorAgentProfile,
 	OpencodeProfileName:    OpencodeProfile,
+	OhMyPiProfileName:      OhMyPiProfile,
 }
 
 func ProfileByName(name string) (AgentProfile, bool) {
