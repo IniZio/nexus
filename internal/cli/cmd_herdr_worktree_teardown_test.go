@@ -627,3 +627,35 @@ func TestWtTeardownFn_sandboxIDMismatch_guardRefusesSvcRemove(t *testing.T) {
 		t.Error("svcRemove was called despite SandboxID mismatch; expectedSandboxID guard is not wired")
 	}
 }
+
+// ── reaper own-pane identity ─────────────────────────────────────────────────
+
+func TestHerdrWtReapOwnPane_usesExitingPaneNotBindingPane(t *testing.T) {
+	// Two guest tabs: p1 (recorded on the binding at create) and p7 (opened
+	// later). Closing p7 must exclude p7 from the remaining count — not p1,
+	// which is still alive. Excluding p1 is what tore the space down on a
+	// ctrl+d in the second tab.
+	//
+	// MUTATION PROOF: return binding.GuestPaneID unconditionally → got p1 → RED.
+	b := HerdrSpaceBinding{GuestPaneID: "wG:p1"}
+	env := map[string]string{"HERDR_PANE_ID": "wG:p7"}
+	if got := herdrWtReapOwnPane(func(k string) string { return env[k] }, b); got != "wG:p7" {
+		t.Fatalf("own pane = %q; want the exiting pane wG:p7", got)
+	}
+	if got := herdrWtReapOwnPane(func(string) string { return "" }, b); got != "wG:p1" {
+		t.Fatalf("without HERDR_PANE_ID own pane = %q; want binding fallback wG:p1", got)
+	}
+}
+
+func TestParseWtPaneListRemaining_secondTabCloseKeepsSpace(t *testing.T) {
+	// herdr has already dropped the closed pane p7 from the list; p1 is live.
+	// Excluding p7 leaves 1 remaining → no reap. Excluding p1 (the old bug)
+	// left 0 → reap.
+	out := []byte(`{"result":{"panes":[{"pane_id":"wG:p1"}]}}`)
+	if n, err := parseWtPaneListRemaining(out, nil, "wG:p7"); err != nil || n != 1 {
+		t.Fatalf("remaining = %d, %v; want 1 (p1 still open)", n, err)
+	}
+	if n, _ := parseWtPaneListRemaining(out, nil, "wG:p1"); n != 0 {
+		t.Fatalf("sanity: excluding the live pane yields %d; the fix depends on this being 0", n)
+	}
+}

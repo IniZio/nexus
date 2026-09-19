@@ -914,6 +914,25 @@ func herdrWtSpawnDetachedReap(binding HerdrSpaceBinding) error {
 	return nil
 }
 
+/**
+ * herdrWtReapOwnPane is the pane the reaper must NOT count as "remaining":
+ * the one whose shell just exited. That is this process's own pane, which
+ * herdr exports as HERDR_PANE_ID — not binding.GuestPaneID, which is the
+ * FIRST guest pane opened at create time and may well still be alive. Using
+ * the binding's pane made closing any second guest tab tear the whole space
+ * down: the reaper excluded the live first pane as if it were itself, saw
+ * zero remaining, and removed the VM under a working agent (2026-09-19,
+ * nexus/main; and the earlier "ctrl+d on one of two tabs removes the space"
+ * reports). The binding pane is only a fallback for a shell started outside
+ * a herdr pane, where HERDR_PANE_ID is unset.
+ */
+func herdrWtReapOwnPane(getenv func(string) string, binding HerdrSpaceBinding) string {
+	if own := getenv("HERDR_PANE_ID"); own != "" {
+		return own
+	}
+	return binding.GuestPaneID
+}
+
 // real reaper: Setsid (escapes herdr's process-group SIGKILL) and the binding
 func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.File) *osexec.Cmd {
 	return &osexec.Cmd{
@@ -922,7 +941,7 @@ func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.
 		Env: append(os.Environ(),
 			herdrWtReapHandleEnv+"="+binding.SandboxHandle,
 			herdrWtReapWorkspaceEnv+"="+binding.HerdrWorkspaceID,
-			herdrWtReapPaneEnv+"="+binding.GuestPaneID,
+			herdrWtReapPaneEnv+"="+herdrWtReapOwnPane(os.Getenv, binding),
 			herdrWtReapSandboxIDEnv+"="+binding.SandboxID,
 		),
 		Stdin:       devNull,
