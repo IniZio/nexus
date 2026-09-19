@@ -416,3 +416,23 @@ func TestSeedClaudePrivateState_NonZeroExitIsError(t *testing.T) {
 		t.Fatal("exit 1 from the bind script must surface as an error")
 	}
 }
+
+func TestSeedClaudePrivateState_CreatesVarLibNexusBeforeStat(t *testing.T) {
+	// A bare `sandbox create` guest has no /var/lib/nexus at all (the dir only
+	// appears with the herdr agentcfg volume mount). The script must create
+	// it before probing, or `set -e` aborts and the fail-closed caller refuses
+	// to boot every non-herdr claude-code sandbox (live 2026-09-19).
+	var script string
+	execer := service.GuestExecer(func(_ context.Context, _ domain.SandboxID, argv []string, _ io.Reader) (int32, error) {
+		script = argv[2]
+		return 0, nil
+	})
+	if err := seedClaudePrivateState(context.Background(), domain.NewSandboxID(), execer); err != nil {
+		t.Fatal(err)
+	}
+	mk := strings.Index(script, "mkdir -p /var/lib/nexus\n")
+	st := strings.Index(script, "stat -c '%d' /var/lib/nexus)")
+	if mk < 0 || st < 0 || mk > st {
+		t.Fatalf("script must mkdir -p /var/lib/nexus before stat'ing it:\n%s", script)
+	}
+}

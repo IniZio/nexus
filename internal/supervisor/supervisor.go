@@ -1469,7 +1469,9 @@ var seedClaudePrivateStateFn = seedClaudePrivateState
  * entry of claudePrivateDirs/claudePrivateFiles inside /root/.claude while
  * the parent stays the shared live host mount. Backings persist across
  * stop/start on the agentcfg volume (or root ext4 when that volume is not
- * attached — isolation over governor visibility). Idempotent: an entry
+ * attached — a bare `sandbox create` has neither the volume nor even
+ * /var/lib/nexus, and must still boot: isolation over governor visibility).
+ * Idempotent: an entry
  * already on a different device than its parent is left alone. Nothing is
  * copied out of the shared dir: those transcripts were written under one
  * slug by every sandbox and cannot be attributed to this one.
@@ -1478,8 +1480,9 @@ func seedClaudePrivateState(ctx context.Context, id domain.SandboxID, execer ser
 	script := fmt.Sprintf(`set -eu
 root=/root/.claude
 backing=%s
+mkdir -p /var/lib/nexus
 _mp_dev=$(stat -c '%%d' /var/lib/nexus/agentcfg 2>/dev/null) || _mp_dev=""
-_par_dev=$(stat -c '%%d' /var/lib/nexus 2>/dev/null) || { echo 'claude-private: stat /var/lib/nexus failed' >&2; exit 1; }
+_par_dev=$(stat -c '%%d' /var/lib/nexus)
 if [ -z "$_mp_dev" ] || [ "$_mp_dev" = "$_par_dev" ]; then
     backing=/var/lib/nexus/agentcfg-private
     echo "claude-private: agentcfg volume absent; backings on root ext4 at $backing" >&2
