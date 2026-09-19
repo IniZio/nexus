@@ -18,12 +18,16 @@ import (
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
-// Version vars sourced from cred.ClaudeCodeProfile.ToolRecipe so agent image and recipe layer install the same builds.
-var (
-	NodeVersion       = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].Version
-	nodeSHA256AMD64   = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].SHA256ByArch["x64"]
-	ClaudeCodeVersion = cred.ClaudeCodeProfile.ToolRecipe.Packages[1].Version
+const (
+	// NodeVersion pins the Node.js LTS used by this integration-test base image.
+	// The production sandbox recipe switched to OCI; this fixture still builds
+	// with node+npm for the agent image.
+	NodeVersion     = "22.23.2"
+	nodeSHA256AMD64 = "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
 )
+
+// ClaudeCodeVersion is sourced from the profile recipe (FloatingVersion = "latest").
+var ClaudeCodeVersion = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].Version
 
 const (
 	GHVersion = "2.98.0"

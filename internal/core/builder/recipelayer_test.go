@@ -57,13 +57,6 @@ func TestRenderRecipeLayer_NodeGuardGolden(t *testing.T) {
 	if string(got) != nodeLayerGolden {
 		t.Errorf("rendered layer differs from golden\ngot:\n%s\nwant:\n%s", got, nodeLayerGolden)
 	}
-	live, err := RenderRecipeLayer(cred.ClaudeCodeProfile.ToolRecipe, "x64")
-	if err != nil {
-		t.Fatalf("RenderRecipeLayer(live profile): %v", err)
-	}
-	if !strings.Contains(string(live), `existing="$(node --version 2>/dev/null || true)"`) {
-		t.Errorf("live ClaudeCodeProfile node recipe does not declare VersionCmd; guard absent:\n%s", live)
-	}
 }
 
 func TestRenderRecipeLayer_VersionCmdRequiresNumericVersion(t *testing.T) {

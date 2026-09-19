@@ -27,21 +27,6 @@ func TestClaudeCodeProfile_Fields(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeProfile_NodeRecipeDeclaresVersionCmd(t *testing.T) {
-	var node *cred.RecipePackage
-	for i := range cred.ClaudeCodeProfile.ToolRecipe.Packages {
-		if p := &cred.ClaudeCodeProfile.ToolRecipe.Packages[i]; p.Kind == cred.RecipeKindTarball && p.Name == "node" {
-			node = p
-		}
-	}
-	if node == nil {
-		t.Fatal("ClaudeCodeProfile has no tarball package named node")
-	}
-	if node.VersionCmd != "node --version" {
-		t.Fatalf("node recipe VersionCmd = %q, want %q (guard against clobbering a user-installed node)", node.VersionCmd, "node --version")
-	}
-}
-
 func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 	p := cred.ClaudeCodeProfile
 
@@ -73,12 +58,6 @@ func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 }
 
 // ── TestCursorAgentProfile_CredentialPaths ──
-// Pins cursor's dual credential delivery: File path auth.json gets
-// {accessToken, refreshToken} = placeholder (S11). Env var path
-// CURSOR_AUTH_TOKEN=placeholder (S11). Placeholder is JWT-shaped
-// (PlaceholderIsJWT=true) so cursor's JWT parser sees exp=2099 and does not
-// trigger a refresh grant (which would send refresh_token in POST body —
-// not intercepted by the MITM proxy).
 func TestCursorAgentProfile_CredentialPaths(t *testing.T) {
 	p := cred.CursorAgentProfile
 
@@ -103,10 +82,6 @@ func TestCursorAgentProfile_CredentialPaths(t *testing.T) {
 }
 
 // ── TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath ──
-// Mutation-relevant invariant: cursor's settings file (cli-config.json)
-// must be filtered even though nexus never brokers cursor's credential.
-// authInfo carries identity and PII (email, displayName, userId, authId),
-// and must not be shared into a sandbox regardless of credential path.
 func TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath(t *testing.T) {
 	p := cred.CursorAgentProfile
 

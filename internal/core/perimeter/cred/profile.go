@@ -147,23 +147,18 @@ var ClaudeCodeProfile = AgentProfile{
 		BinPath: "/usr/local/bin/claude",
 		Packages: []RecipePackage{
 			{
-				Kind:        RecipeKindTarball,
-				Name:        "node",
-				Version:     "22.23.2",
-				URLTemplate: "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz",
-				SHA256ByArch: map[string]string{
-					"x64": "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
+				// Version floats: resolved to a concrete digest against the image
+				// tag on the host at create time, upstream of the image-cache key.
+				Kind:       RecipeKindOCI,
+				Name:       "claude-code",
+				Version:    FloatingVersion,
+				Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+				SrcPath:    "/home/agent/.local/share/claude/versions/",
+				InstallDir: "/usr/local/share/claude/versions",
+				BinRel:     "",
+				Symlinks: []RecipeSymlink{
+					{LinkPath: "/usr/local/bin/claude"},
 				},
-				InstallDir: "/usr/local",
-				VersionCmd: "node --version",
-			},
-			{
-				// Floats: resolved against the npm registry on the host at create
-				// time, upstream of the image-cache key. A concrete pin here
-				// freezes every future sandbox at that version.
-				Kind:    RecipeKindNPM,
-				Name:    "@anthropic-ai/claude-code",
-				Version: FloatingVersion,
 			},
 		},
 	},
@@ -219,20 +214,17 @@ var CursorAgentProfile = AgentProfile{
 		BinPath: "/usr/local/bin/cursor-agent",
 		Packages: []RecipePackage{
 			{
-				Kind:        RecipeKindTarball,
-				Name:        "cursor-agent",
-				Version:     "2026.08.25-3e8eec8",
-				URLTemplate: "https://downloads.cursor.com/lab/{VERSION}/linux/{ARCH}/agent-cli-package.tar.gz",
-				SHA256ByArch: map[string]string{
-					"x64":   "7a212e5a17ff9316f5acc78808e33c536940d5455645022e6388d99ba48c8425",
-					"arm64": "",
-				},
-				InstallDir: "/usr/local/share/cursor-agent/versions/{VERSION}",
+				// Version floats: resolved to a concrete digest against the image
+				// tag on the host at create time, upstream of the image-cache key.
+				Kind:       RecipeKindOCI,
+				Name:       "cursor-agent",
+				Version:    FloatingVersion,
+				Image:      "docker/sandbox-templates:cursor-agent-nightly",
+				SrcPath:    "/home/agent/.local/share/cursor-agent/versions/",
+				InstallDir: "/usr/local/share/cursor-agent/versions",
+				BinRel:     "cursor-agent",
 				Symlinks: []RecipeSymlink{
-					{
-						LinkPath:   "/usr/local/bin/cursor-agent",
-						TargetPath: "/usr/local/share/cursor-agent/versions/{VERSION}/cursor-agent",
-					},
+					{LinkPath: "/usr/local/bin/cursor-agent"},
 				},
 			},
 		},

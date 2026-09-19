@@ -265,41 +265,36 @@ func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 	if r.BinPath != "/usr/local/bin/claude" {
 		t.Errorf("ClaudeCodeProfile.ToolRecipe.BinPath = %q; want /usr/local/bin/claude", r.BinPath)
 	}
-	if len(r.Packages) != 2 {
-		t.Fatalf("ClaudeCodeProfile.ToolRecipe.Packages has %d entries; want 2 (Node tarball + npm)", len(r.Packages))
+	if len(r.Packages) != 1 {
+		t.Fatalf("ClaudeCodeProfile.ToolRecipe.Packages has %d entries; want 1 (OCI package)", len(r.Packages))
 	}
-	node := r.Packages[0]
-	if node.Kind != RecipeKindTarball {
-		t.Errorf("Packages[0].Kind = %q; want %q", node.Kind, RecipeKindTarball)
+	pkg := r.Packages[0]
+	if pkg.Kind != RecipeKindOCI {
+		t.Errorf("Packages[0].Kind = %q; want %q", pkg.Kind, RecipeKindOCI)
 	}
-	const wantNodeVersion = "22.23.2"
-	if node.Version != wantNodeVersion {
-		t.Errorf("Packages[0] (node) Version = %q; want %q (exact pin required — non-emptiness does not guard against typos)", node.Version, wantNodeVersion)
+	if pkg.Name != "claude-code" {
+		t.Errorf("Packages[0].Name = %q; want %q", pkg.Name, "claude-code")
 	}
-	const wantNodeURLTemplate = "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz"
-	if node.URLTemplate != wantNodeURLTemplate {
-		t.Errorf("Packages[0] (node) URLTemplate = %q; want %q (exact pin required — a wrong platform or path segment fails only at image-build time)", node.URLTemplate, wantNodeURLTemplate)
+	if !pkg.IsFloating() {
+		t.Errorf("Packages[0].Version = %q; want FloatingVersion (%q)", pkg.Version, FloatingVersion)
 	}
-	// --strip-components=1 into /usr/local; wrong dir breaks npm install -g.
-	const wantNodeInstallDir = "/usr/local"
-	if node.InstallDir != wantNodeInstallDir {
-		t.Errorf("Packages[0] (node) InstallDir = %q; want %q (exact pin required — wrong dir breaks npm install -g)", node.InstallDir, wantNodeInstallDir)
+	const wantImage = "docker/sandbox-templates:claude-code-minimal-nightly"
+	if pkg.Image != wantImage {
+		t.Errorf("Packages[0].Image = %q; want %q", pkg.Image, wantImage)
 	}
-	const wantNodeX64SHA = "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
-	if node.SHA256ByArch["x64"] != wantNodeX64SHA {
-		t.Errorf("Packages[0] (node) SHA256ByArch[x64] = %q; want %q (exact pin required)", node.SHA256ByArch["x64"], wantNodeX64SHA)
+	const wantSrcPath = "/home/agent/.local/share/claude/versions/"
+	if pkg.SrcPath != wantSrcPath {
+		t.Errorf("Packages[0].SrcPath = %q; want %q", pkg.SrcPath, wantSrcPath)
 	}
-	npm := r.Packages[1]
-	if npm.Kind != RecipeKindNPM {
-		t.Errorf("Packages[1].Kind = %q; want %q", npm.Kind, RecipeKindNPM)
+	const wantInstallDir = "/usr/local/share/claude/versions"
+	if pkg.InstallDir != wantInstallDir {
+		t.Errorf("Packages[0].InstallDir = %q; want %q", pkg.InstallDir, wantInstallDir)
 	}
-	const wantClaudeCodeName = "@anthropic-ai/claude-code"
-	if npm.Name != wantClaudeCodeName {
-		t.Errorf("Packages[1] (claude-code) Name = %q; want %q (exact pin required — non-emptiness does not guard against renames)", npm.Name, wantClaudeCodeName)
+	if pkg.BinRel != "" {
+		t.Errorf("Packages[0].BinRel = %q; want empty (version dir entry is the executable)", pkg.BinRel)
 	}
-	// S4 changes this package to FloatingVersion; assert floating, not a pinned number.
-	if !npm.IsFloating() {
-		t.Errorf("Packages[1] (@anthropic-ai/claude-code) Version = %q; want FloatingVersion (%q) — the npm package must float so new sandboxes get the current release; a concrete pin here silently freezes every future sandbox", npm.Version, FloatingVersion)
+	if len(pkg.Symlinks) != 1 || pkg.Symlinks[0].LinkPath != "/usr/local/bin/claude" {
+		t.Errorf("Packages[0].Symlinks = %v; want [{LinkPath: /usr/local/bin/claude}]", pkg.Symlinks)
 	}
 }
 
@@ -309,47 +304,34 @@ func TestCursorAgentProfile_ToolRecipeShape(t *testing.T) {
 		t.Errorf("CursorAgentProfile.ToolRecipe.BinPath = %q; want /usr/local/bin/cursor-agent", r.BinPath)
 	}
 	if len(r.Packages) != 1 {
-		t.Fatalf("CursorAgentProfile.ToolRecipe.Packages has %d entries; want 1 (self-contained tarball)", len(r.Packages))
+		t.Fatalf("CursorAgentProfile.ToolRecipe.Packages has %d entries; want 1 (OCI package)", len(r.Packages))
 	}
 	pkg := r.Packages[0]
-	if pkg.Kind != RecipeKindTarball {
-		t.Errorf("Packages[0].Kind = %q; want %q", pkg.Kind, RecipeKindTarball)
+	if pkg.Kind != RecipeKindOCI {
+		t.Errorf("Packages[0].Kind = %q; want %q", pkg.Kind, RecipeKindOCI)
 	}
-	// Verified 2026-09-05 (R1): linux/x64, 84,518,977 bytes.
-	// Vendor publishes no checksum file; version and hash from direct artifact fetch.
-	const wantCursorVersion = "2026.08.25-3e8eec8"
-	if pkg.Version != wantCursorVersion {
-		t.Errorf("Packages[0] (cursor-agent) Version = %q; want %q (exact pin required — non-emptiness does not guard against typos)", pkg.Version, wantCursorVersion)
+	if pkg.Name != "cursor-agent" {
+		t.Errorf("Packages[0].Name = %q; want %q", pkg.Name, "cursor-agent")
 	}
-	const wantCursorX64SHA = "7a212e5a17ff9316f5acc78808e33c536940d5455645022e6388d99ba48c8425"
-	if pkg.SHA256ByArch["x64"] != wantCursorX64SHA {
-		t.Errorf("Packages[0] (cursor-agent) SHA256ByArch[x64] = %q; want %q (exact pin required)", pkg.SHA256ByArch["x64"], wantCursorX64SHA)
+	if !pkg.IsFloating() {
+		t.Errorf("Packages[0].Version = %q; want FloatingVersion (%q)", pkg.Version, FloatingVersion)
 	}
-	// arm64 entry must exist (even as empty sentinel) to make the gap explicit.
-	if _, ok := pkg.SHA256ByArch["arm64"]; !ok {
-		t.Error("Packages[0] (cursor-agent) SHA256ByArch has no arm64 key; add an empty sentinel to make the gap explicit")
+	const wantImage = "docker/sandbox-templates:cursor-agent-nightly"
+	if pkg.Image != wantImage {
+		t.Errorf("Packages[0].Image = %q; want %q", pkg.Image, wantImage)
 	}
-	// Must have a symlink from /usr/local/bin/cursor-agent whose TargetPath
-	// points to the actual binary name inside the versioned directory.
-	// The tarball (agent-cli-package.tar.gz) extracts a top-level dist-package/
-	// directory; with --strip-components=1 the binary lands at
-	// {InstallDir}/cursor-agent (not "agent-cli" — that would be a dangling
-	// symlink). Pin the exact string so a rename in the tarball fails loudly.
-	if len(pkg.Symlinks) == 0 {
-		t.Error("Packages[0] (cursor-agent) has no Symlinks; expected at least one for /usr/local/bin/cursor-agent")
+	const wantSrcPath = "/home/agent/.local/share/cursor-agent/versions/"
+	if pkg.SrcPath != wantSrcPath {
+		t.Errorf("Packages[0].SrcPath = %q; want %q", pkg.SrcPath, wantSrcPath)
 	}
-	const wantLinkPath = "/usr/local/bin/cursor-agent"
-	const wantTargetPath = "/usr/local/share/cursor-agent/versions/{VERSION}/cursor-agent"
-	found := false
-	for _, s := range pkg.Symlinks {
-		if s.LinkPath == wantLinkPath {
-			found = true
-			if s.TargetPath != wantTargetPath {
-				t.Errorf("cursor-agent symlink TargetPath = %q; want %q (exact pin required — a wrong name produces a dangling symlink)", s.TargetPath, wantTargetPath)
-			}
-		}
+	const wantInstallDir = "/usr/local/share/cursor-agent/versions"
+	if pkg.InstallDir != wantInstallDir {
+		t.Errorf("Packages[0].InstallDir = %q; want %q", pkg.InstallDir, wantInstallDir)
 	}
-	if !found {
-		t.Errorf("cursor-agent Symlinks does not contain a link at %q", wantLinkPath)
+	if pkg.BinRel != "cursor-agent" {
+		t.Errorf("Packages[0].BinRel = %q; want %q", pkg.BinRel, "cursor-agent")
+	}
+	if len(pkg.Symlinks) != 1 || pkg.Symlinks[0].LinkPath != "/usr/local/bin/cursor-agent" {
+		t.Errorf("Packages[0].Symlinks = %v; want [{LinkPath: /usr/local/bin/cursor-agent}]", pkg.Symlinks)
 	}
 }
