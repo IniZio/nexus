@@ -12,6 +12,7 @@ type RecipePackageKind string
 const (
 	RecipeKindTarball RecipePackageKind = "tarball"
 	RecipeKindNPM     RecipePackageKind = "npm"
+	RecipeKindOCI     RecipePackageKind = "oci" // copied from a digest-pinned OCI image; Version = sha256:<hex> or FloatingVersion ("resolve Image tag at create time")
 )
 
 // FloatingVersion ("latest") is resolved to a concrete version on the host before the recipe reaches the cache key or renderer.
@@ -24,10 +25,13 @@ type RecipePackage struct {
 	URLTemplate string
 	// SHA256ByArch: empty string means hash not yet verified; renderer must refuse to build if target-arch entry is absent or empty.
 	SHA256ByArch map[string]string
-	InstallDir   string
+	InstallDir   string // destination directory; reused as the copy target for OCI packages
 	Symlinks     []RecipeSymlink
 	// VersionCmd (tarball only): POSIX sh command printing the version of a copy already in the image; the layer skips install when it is >= Version (Version must be dotted-numeric).
 	VersionCmd string
+	Image      string // OCI-only: image reference with tag, e.g. docker/sandbox-templates:claude-code-minimal-nightly; tag floats, render appends @<Version>
+	SrcPath    string // absolute path inside the image to copy, e.g. /home/agent/.local/share/claude/versions/
+	BinRel     string // path of the executable relative to the single entry under SrcPath; "" when the entry itself is the executable
 }
 
 func (p RecipePackage) IsFloating() bool {
@@ -73,6 +77,17 @@ func (r ToolRecipe) Validate() error {
 				PackageName:  p.Name,
 				Field:        "Kind",
 				Reason:       "must not be empty",
+			}
+		}
+		if p.Kind == RecipeKindOCI {
+			if p.Image == "" {
+				return &RecipeValidationError{PackageIndex: i, PackageName: p.Name, Field: "Image", Reason: "must not be empty for oci packages"}
+			}
+			if p.SrcPath == "" {
+				return &RecipeValidationError{PackageIndex: i, PackageName: p.Name, Field: "SrcPath", Reason: "must not be empty for oci packages"}
+			}
+			if p.InstallDir == "" {
+				return &RecipeValidationError{PackageIndex: i, PackageName: p.Name, Field: "InstallDir", Reason: "must not be empty for oci packages"}
 			}
 		}
 	}

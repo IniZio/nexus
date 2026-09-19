@@ -135,6 +135,119 @@ func TestToolRecipeValidate_RejectsFloatingVersionForTarball(t *testing.T) {
 	}
 }
 
+func TestToolRecipeValidate_AcceptsFloatingOCI(t *testing.T) {
+	recipe := ToolRecipe{
+		BinPath: "/usr/local/bin/claude-code",
+		Packages: []RecipePackage{{
+			Kind:       RecipeKindOCI,
+			Name:       "claude-code-oci",
+			Version:    FloatingVersion,
+			Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+			SrcPath:    "/home/agent/.local/share/claude/versions/",
+			InstallDir: "/usr/local/share/claude",
+		}},
+	}
+	if err := recipe.Validate(); err != nil {
+		t.Fatalf("Validate() error for floating OCI package: %v", err)
+	}
+}
+
+func TestToolRecipeValidate_AcceptsDigestPinnedOCI(t *testing.T) {
+	recipe := ToolRecipe{
+		BinPath: "/usr/local/bin/claude-code",
+		Packages: []RecipePackage{{
+			Kind:       RecipeKindOCI,
+			Name:       "claude-code-oci",
+			Version:    "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+			Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+			SrcPath:    "/home/agent/.local/share/claude/versions/",
+			InstallDir: "/usr/local/share/claude",
+		}},
+	}
+	if err := recipe.Validate(); err != nil {
+		t.Fatalf("Validate() error for digest-pinned OCI package: %v", err)
+	}
+}
+
+func TestToolRecipeValidate_RejectsOCIMissingImage(t *testing.T) {
+	recipe := ToolRecipe{
+		BinPath: "/usr/local/bin/claude-code",
+		Packages: []RecipePackage{{
+			Kind:       RecipeKindOCI,
+			Name:       "claude-code-oci",
+			Version:    FloatingVersion,
+			SrcPath:    "/home/agent/.local/share/claude/versions/",
+			InstallDir: "/usr/local/share/claude",
+		}},
+	}
+	err := recipe.Validate()
+	if err == nil {
+		t.Fatal("Validate() returned nil for OCI package with empty Image; want non-nil error")
+	}
+	var rve *RecipeValidationError
+	if !errors.As(err, &rve) {
+		t.Fatalf("error is %T, want *RecipeValidationError", err)
+	}
+	if rve.Field != "Image" {
+		t.Errorf("RecipeValidationError.Field = %q; want \"Image\"", rve.Field)
+	}
+}
+
+func TestToolRecipeValidate_RejectsOCIMissingSrcPath(t *testing.T) {
+	recipe := ToolRecipe{
+		BinPath: "/usr/local/bin/claude-code",
+		Packages: []RecipePackage{{
+			Kind:       RecipeKindOCI,
+			Name:       "claude-code-oci",
+			Version:    FloatingVersion,
+			Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+			InstallDir: "/usr/local/share/claude",
+		}},
+	}
+	err := recipe.Validate()
+	if err == nil {
+		t.Fatal("Validate() returned nil for OCI package with empty SrcPath; want non-nil error")
+	}
+	var rve *RecipeValidationError
+	if !errors.As(err, &rve) {
+		t.Fatalf("error is %T, want *RecipeValidationError", err)
+	}
+	if rve.Field != "SrcPath" {
+		t.Errorf("RecipeValidationError.Field = %q; want \"SrcPath\"", rve.Field)
+	}
+}
+
+func TestToolRecipeValidate_RejectsOCIMissingInstallDir(t *testing.T) {
+	recipe := ToolRecipe{
+		BinPath: "/usr/local/bin/claude-code",
+		Packages: []RecipePackage{{
+			Kind:    RecipeKindOCI,
+			Name:    "claude-code-oci",
+			Version: FloatingVersion,
+			Image:   "docker/sandbox-templates:claude-code-minimal-nightly",
+			SrcPath: "/home/agent/.local/share/claude/versions/",
+		}},
+	}
+	err := recipe.Validate()
+	if err == nil {
+		t.Fatal("Validate() returned nil for OCI package with empty InstallDir; want non-nil error")
+	}
+	var rve *RecipeValidationError
+	if !errors.As(err, &rve) {
+		t.Fatalf("error is %T, want *RecipeValidationError", err)
+	}
+	if rve.Field != "InstallDir" {
+		t.Errorf("RecipeValidationError.Field = %q; want \"InstallDir\"", rve.Field)
+	}
+}
+
+func TestRecipePackage_IsFloatingOCI(t *testing.T) {
+	p := RecipePackage{Kind: RecipeKindOCI, Version: FloatingVersion}
+	if !p.IsFloating() {
+		t.Error("IsFloating() = false for OCI package with FloatingVersion; want true")
+	}
+}
+
 func TestRecipePackage_IsFloating(t *testing.T) {
 	if p := (RecipePackage{Version: FloatingVersion}); !p.IsFloating() {
 		t.Error("IsFloating() = false for FloatingVersion; want true")
