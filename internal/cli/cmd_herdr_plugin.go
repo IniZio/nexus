@@ -28,6 +28,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/portfwd"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 	"github.com/IniZio/nexus/internal/supervisor"
 	ociname "github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -2133,6 +2134,22 @@ func herdrSpacePruneBindings(
 			}
 			fmt.Fprintf(w, "  REAPED sandbox=%s (workspace gone)\n", b.SandboxHandle)
 		}
+		/**
+		 * A worktree sandbox's named volumes (docker, agentcfg, go caches,
+		 * nested state) exist to survive re-creation of the SAME worktree;
+		 * Service.Remove only detaches them, by design. Here the worktree's
+		 * workspace is gone, so nothing will ever reattach them, and each set
+		 * is ~42 GiB of sparse allocation that host disk admission charges in
+		 * full: 17 such orphans were found on 2026-09-19 after routine
+		 * "remove worktree checkout" actions. Best-effort — Rm refuses a
+		 * volume that is still attached, and a failure never retains the
+		 * binding (the binding is not what leaks).
+		 */
+		if b.IsWorktreeManaged() && !wsPresent {
+			for _, name := range herdrWtRemoveVolumesFn(ctx, storeRoot, b.SandboxHandle) {
+				fmt.Fprintf(w, "  REMOVED volume=%s (worktree gone)\n", name)
+			}
+		}
 
 		/** All other stale cases (both absent, or sandbox absent): close workspace + delete binding. */
 		if err := closer(ctx, b.HerdrWorkspaceID); err != nil {
@@ -4009,10 +4026,13 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 		 * is virtiofs, which cloud-hypervisor cannot open a raw disk on. Seen
 		 * live 2026-09-19 in nexus/main: pull + ext4 build succeeded, then
 		 * vm.boot: "Cannot open disk path ... Permission denied". Sized above
-		 * the floor with headroom for a base image plus a few guest disks;
-		 * sparse, so it costs only the blocks written.
+		 * the inner floor with headroom for a base image plus sparse guest
+		 * disks, and no larger: the volume itself is sparse, but host
+		 * admission charges the FULL requested size against free space
+		 * (free - size >= 15 GiB), and 32g refused to create on a host with
+		 * 30 GiB free (2026-09-19). 24g needs 39 GiB free on the host.
 		 */
-		args = append(args, "--mount-named", herdrNexusStateDiskVolumeName(handle)+":/root/.local/state/nexus:size=32g")
+		args = append(args, "--mount-named", herdrNexusStateDiskVolumeName(handle)+":/root/.local/state/nexus:size=24g")
 	}
 	args = append(args, "--agent", herdrPrimaryAgent(), "--egress", "open", handle)
 	return args
@@ -4087,6 +4107,47 @@ func herdrAgentCfgDiskVolumeName(handle string) string {
  */
 func herdrNexusStateDiskVolumeName(handle string) string {
 	return herdrHandleSlug(handle) + "-nexusstate"
+}
+
+/** herdrWorktreeVolumeNames lists every named volume herdrWorktreeSandboxCreateArgs may attach for a handle. */
+func herdrWorktreeVolumeNames(handle string) []string {
+	return []string{
+		herdrDockerDiskVolumeName(handle),
+		herdrAgentCfgDiskVolumeName(handle),
+		herdrGoCacheDiskVolumeName(handle),
+		herdrGoPathDiskVolumeName(handle),
+		herdrNexusStateDiskVolumeName(handle),
+	}
+}
+
+var herdrWtRemoveVolumesFn = herdrWtRemoveVolumes
+
+/**
+ * herdrWtRemoveVolumes deletes the detached named volumes of a worktree
+ * sandbox whose worktree is gone and returns the names it removed. Volumes
+ * that do not exist are skipped silently (the docker disk is only created
+ * for Containerfile sandboxes, nexusstate only for nested ones); any other
+ * failure — still attached, lock contention — is logged and skipped.
+ * storeRoot is the sandbox store root; volumes live in its volumes/ subdir,
+ * exactly as cmd_sandbox wires them.
+ */
+func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string) []string {
+	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+	var removed []string
+	for _, name := range herdrWorktreeVolumeNames(handle) {
+		if _, getErr := vs.Get(name); getErr != nil {
+			continue
+		}
+		rmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		rmErr := vs.Rm(rmCtx, name)
+		cancel()
+		if rmErr != nil {
+			slog.Warn("space-prune: remove worktree volume", "volume", name, "err", rmErr)
+			continue
+		}
+		removed = append(removed, name)
+	}
+	return removed
 }
 
 /**

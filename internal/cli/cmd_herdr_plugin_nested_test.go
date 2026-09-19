@@ -61,7 +61,7 @@ func TestHerdrWorktreeSandboxCreateArgs_nested_attaches_state_disk(t *testing.T)
 	// MUTATION PROOF: drop the --mount-named append inside `if nested` → the
 	// nested case lacks the spec → RED. Move it outside the `if` → the
 	// non-nested case gains the spec → RED.
-	wantSpec := herdrNexusStateDiskVolumeName("repo/branch") + ":/root/.local/state/nexus:size=32g"
+	wantSpec := herdrNexusStateDiskVolumeName("repo/branch") + ":/root/.local/state/nexus:size=24g"
 	hasSpec := func(args []string) bool {
 		for i := 0; i+1 < len(args); i++ {
 			if args[i] == "--mount-named" && args[i+1] == wantSpec {
