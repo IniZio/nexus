@@ -52,6 +52,18 @@ case "$1" in
         # guest prompt classifies as idle (herdr's known-agent fallback).
         # Exported on the exec'd process only; not set globally.
         export HERDR_AGENT="${HERDR_AGENT:-claude}"
+        # Prefer the installed guest-shell entry point (herdr's default_shell,
+        # a symlink to nexus dispatched on argv[0]). It resolves the same
+        # binding from HERDR_WORKSPACE_ID and, unlike a bare `nexus exec`,
+        # runs the supervised shell whose last-pane reaper STOPS the sandbox
+        # when the workspace closes. Without it a workspace holding only this
+        # plugin pane left the VM running after close (2026-09-19). Fall back
+        # to the raw exec when the entry point is not installed.
+        NEXUS_BIN=$(sed -n 's/^exec "\(.*\)" "\$@"$/\1/p' "$SHIM" 2>/dev/null | head -n 1)
+        GUEST_ENTRY="${NEXUS_BIN%/*}/nexus-guest-shell"
+        if [ -n "${HERDR_WORKSPACE_ID:-}" ] && [ -x "$GUEST_ENTRY" ] && [ -f "$GUEST_ENTRY.nexusbin" ]; then
+            exec "$GUEST_ENTRY"
+        fi
         case "$GUEST_SHELL" in
             */bash) exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" "$GUEST_SHELL" -l ;;
             *)      exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" "$GUEST_SHELL" ;;

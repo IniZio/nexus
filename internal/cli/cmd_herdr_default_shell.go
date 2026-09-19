@@ -12,6 +12,7 @@ import (
 	osexec "os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,11 +27,6 @@ import (
 const herdrSidecarSuffix = ".nexusbin"
 
 type herdrExecFn func(argv0 string, argv []string, envv []string) error
-
-/** sandboxStarter is the optional Start capability the guest shell uses to resume a stopped worktree sandbox. */
-type sandboxStarter interface {
-	Start(ctx context.Context, ref string) (domain.Sandbox, error)
-}
 
 type sandboxDialer interface {
 	sandboxGetter
@@ -363,14 +359,13 @@ func herdrDefaultShellCore(
 		 * open to a host shell.
 		 */
 		if sb.State == domain.Stopped && binding.IsWorktreeManaged() {
-			if st, ok := svc.(sandboxStarter); ok {
-				fmt.Fprintf(os.Stderr, "nexus-guest-shell: sandbox %s is stopped; starting it ...\n", binding.SandboxHandle)
-				started, startErr := st.Start(ctx, binding.SandboxHandle)
-				if startErr != nil {
-					fmt.Fprintf(os.Stderr, "nexus-guest-shell: start %s: %v; opening host shell\n", binding.SandboxHandle, startErr)
-					return execHostShell()
-				}
-				sb = started
+			fmt.Fprintf(os.Stderr, "nexus-guest-shell: sandbox %s is stopped; starting it ...\n", binding.SandboxHandle)
+			if startErr := herdrWtStartFn(ctx, binding.SandboxHandle); startErr != nil {
+				fmt.Fprintf(os.Stderr, "nexus-guest-shell: start %s: %v; opening host shell\n", binding.SandboxHandle, startErr)
+				return execHostShell()
+			}
+			if sb, sbErr = svc.Get(ctx, binding.SandboxHandle); sbErr != nil {
+				return execHostShell()
 			}
 		}
 		if sb.State != domain.Running {
@@ -530,11 +525,7 @@ func herdrApplyGuestShellNext(nextShell string, getenv func(string) string, sete
 // binary returns the hard link's own path. Using that as nexusBin would cause
 // resolveKernelPath (CRITICAL 1): herdr opens panes from the user's home dir,
 func herdrReadSidecar() (nexusBin, kernelPath, nextShell string) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", "", ""
-	}
-	data, err := os.ReadFile(self + herdrSidecarSuffix)
+	data, err := os.ReadFile(herdrSidecarPath(os.Args[0], os.Executable))
 	if err != nil {
 		return "", "", ""
 	}
@@ -546,6 +537,25 @@ func herdrReadSidecar() (nexusBin, kernelPath, nextShell string) {
 		return "", "", "" // sidecar path stale; fail-open
 	}
 	return nexusBin, kernelPath, nextShell
+}
+
+/**
+ * herdrSidecarPath is <install path>.nexusbin, where the install path is the
+ * entry point herdr exec'd — argv[0] — not os.Executable(). The install is a
+ * symlink to the nexus binary, and os.Executable() resolves it, which would
+ * look for nexus.nexusbin beside the target and silently fail open to a host
+ * shell (2026-09-19). argv[0] is used as given when absolute; a bare name
+ * falls back to the resolved executable (hard-link or copy installs).
+ */
+func herdrSidecarPath(argv0 string, executable func() (string, error)) string {
+	if filepath.IsAbs(argv0) {
+		return argv0 + herdrSidecarSuffix
+	}
+	self, err := executable()
+	if err != nil {
+		return ""
+	}
+	return self + herdrSidecarSuffix
 }
 
 // herdrParseSidecar splits the sidecar body into its three optional lines.
@@ -638,11 +648,23 @@ func runHerdrInstallDefaultShell(_ context.Context, args []string, out *Output) 
 		}
 	}
 
-	// Hard-link this binary to the install path. A hard link means the
-	// installed entry point IS this binary's inode: no PATH lookup, no stale
-	if err := os.Link(self, installPath); err != nil {
+	/**
+	 * Symlink this binary to the install path. It used to be a hard link,
+	 * which pins the inode that existed at install time — and the supported
+	 * way to install nexus is an atomic rename (`mv -f nexus.new nexus`),
+	 * which mints a new inode every time. So after the first rebuild the
+	 * "guest shell" herdr ran was a frozen copy from install day: every
+	 * pane-side fix (reaper, stop-not-remove, restart) shipped to
+	 * ~/.local/bin/nexus but never to herdr (2026-09-19; the stale copy was
+	 * from 09-17 and tore down a sandbox the new code would have stopped).
+	 * A symlink resolves at exec time, so it always runs the installed nexus;
+	 * argv[0] is still the link path, so the nexus-guest-shell dispatch in
+	 * cmd/nexus/main.go is unchanged. Copy remains the fallback for
+	 * filesystems that cannot symlink.
+	 */
+	if err := herdrInstallSymlink(self, installPath); err != nil {
 		if err2 := herdrCopyBinary(self, installPath); err2 != nil {
-			return fmt.Errorf("install-default-shell: install binary (link: %v; copy: %w)", err, err2)
+			return fmt.Errorf("install-default-shell: install binary (symlink: %v; copy: %w)", err, err2)
 		}
 	}
 
@@ -846,6 +868,23 @@ func herdrInstallProbeCmd(installPath string) *osexec.Cmd {
 		Args: []string{"nexus-guest-shell"},
 		Env:  append(os.Environ(), "NEXUS_HOST_SHELL=1", "SHELL=/bin/true"),
 	}
+}
+
+/**
+ * herdrInstallSymlink atomically (re)points dst at target via a temp link and
+ * rename, so a pane opening mid-install never sees a missing entry point.
+ */
+func herdrInstallSymlink(target, dst string) error {
+	tmp := dst + ".tmp-" + strconv.Itoa(os.Getpid())
+	_ = os.Remove(tmp)
+	if err := os.Symlink(target, tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func herdrCopyBinary(src, dst string) error {
@@ -1095,6 +1134,31 @@ func parseWtPaneListRemaining(out []byte, cmdErr error, ownPaneID string) (int, 
 }
 
 var herdrWtSandboxStopperFn = herdrWtSandboxStopper
+
+/**
+ * herdrWtStartFn starts a stopped worktree sandbox through `nexus sandbox
+ * start`, never svc.Start: the latter boots the VM in THIS process, and the
+ * guest shell / worktree-sandbox process that calls it exits or execs moments
+ * later, taking the VM with it (2026-09-19: sandbox reported running, guest
+ * never dialable, pane died, herdr closed the emptied workspace). The CLI
+ * path hands the VM to a detached supervisor first.
+ */
+var herdrWtStartFn = func(ctx context.Context, handle string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("wt/ sandbox start: resolve self: %w", err)
+	}
+	if bin, _, _ := herdrReadSidecar(); bin != "" {
+		exe = bin
+	}
+	cmd := herdrExecCommandContext(ctx, exe, "sandbox", "start", handle)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("wt/ sandbox start %s: %w", handle, err)
+	}
+	return nil
+}
 
 /**
  * herdrWtSandboxStopper stops the worktree sandbox once its last pane is

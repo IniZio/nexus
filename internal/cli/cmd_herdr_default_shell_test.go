@@ -1325,24 +1325,31 @@ func TestHerdrInstallDefaultShell_ForeignNexusGuestShellNotChained(t *testing.T)
 	}
 }
 
-// fakeStartingGetter is a sandboxGetter + sandboxStarter: Get reports the
-// current state; Start flips it to Running and records the call.
+// fakeStartingGetter is a sandboxGetter whose reported state flips to Running
+// once the (stubbed) herdrWtStartFn has been invoked for it.
 type fakeStartingGetter struct {
-	sb       domain.Sandbox
-	started  []string
-	startErr error
+	sb      domain.Sandbox
+	started []string
 }
 
 func (f *fakeStartingGetter) Get(_ context.Context, _ string) (domain.Sandbox, error) {
 	return f.sb, nil
 }
-func (f *fakeStartingGetter) Start(_ context.Context, ref string) (domain.Sandbox, error) {
-	f.started = append(f.started, ref)
-	if f.startErr != nil {
-		return domain.Sandbox{}, f.startErr
+
+// stubWtStart routes herdrWtStartFn to the fake: records the handle and, on
+// success, flips the fake's state to Running as a real `sandbox start` would.
+func stubWtStart(t *testing.T, f *fakeStartingGetter, startErr error) {
+	t.Helper()
+	old := herdrWtStartFn
+	herdrWtStartFn = func(_ context.Context, h string) error {
+		f.started = append(f.started, h)
+		if startErr != nil {
+			return startErr
+		}
+		f.sb.State = domain.Running
+		return nil
 	}
-	f.sb.State = domain.Running
-	return f.sb, nil
+	t.Cleanup(func() { herdrWtStartFn = old })
 }
 
 // A Stopped WORKTREE sandbox is what the last-pane stop leaves behind; opening
@@ -1378,6 +1385,7 @@ func TestHerdrDefaultShell_StoppedWorktreeSandboxIsStarted(t *testing.T) {
 	t.Cleanup(func() { herdrWtChildRunnerFn = oldChild; herdrWtSpawnDetachedReapFn = oldSpawn })
 
 	svc := &fakeStartingGetter{sb: domain.Sandbox{State: domain.Stopped}}
+	stubWtStart(t, svc, nil)
 	cap := &capturedExec{}
 	if err := runCore(context.Background(), getenv, root, svc, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1392,7 +1400,8 @@ func TestHerdrDefaultShell_StoppedWorktreeSandboxIsStarted(t *testing.T) {
 		t.Fatalf("host shell exec'd (%q) after a successful start", cap.argv0)
 	}
 
-	failing := &fakeStartingGetter{sb: domain.Sandbox{State: domain.Stopped}, startErr: errors.New("boot failed")}
+	failing := &fakeStartingGetter{sb: domain.Sandbox{State: domain.Stopped}}
+	stubWtStart(t, failing, errors.New("boot failed"))
 	cap = &capturedExec{}
 	if err := runCore(context.Background(), getenv, root, failing, cap.fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1404,6 +1413,7 @@ func TestHerdrDefaultShell_StoppedNonWorktreeSandboxStaysHost(t *testing.T) {
 	root := t.TempDir()
 	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
 	svc := &fakeStartingGetter{sb: domain.Sandbox{State: domain.Stopped}}
+	stubWtStart(t, svc, nil)
 	cap := &capturedExec{}
 	getenv := func(k string) string {
 		switch k {
@@ -1421,4 +1431,53 @@ func TestHerdrDefaultShell_StoppedNonWorktreeSandboxStaysHost(t *testing.T) {
 		t.Fatalf("non-worktree sandbox must not be auto-started; got %v", svc.started)
 	}
 	assertHostShell(t, cap, "/bin/bash")
+}
+
+// The installed guest shell must FOLLOW rebuilds of the nexus binary. A hard
+// link pinned the inode, and the atomic-rename install mints a new inode, so
+// herdr kept running an install-day copy. A symlink resolves at exec time.
+//
+// Mutation proof: revert to os.Link → Lstat shows a regular file → RED.
+func TestHerdrInstallSymlink_followsRebuilds(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "nexus")
+	if err := os.WriteFile(target, []byte("v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "nexus-guest-shell")
+	if err := herdrInstallSymlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Lstat(link); st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("installed entry point is not a symlink: %v", st.Mode())
+	}
+	// Atomic-rename reinstall of the target, as CLAUDE.md prescribes.
+	if err := os.WriteFile(target+".new", []byte("v2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(target+".new", target); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(link)
+	if string(got) != "v2" {
+		t.Fatalf("guest shell resolves to %q after reinstall; want v2", got)
+	}
+	// Re-install over an existing link is atomic and idempotent.
+	if err := herdrInstallSymlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHerdrSidecarPath_usesArgv0NotResolvedExecutable(t *testing.T) {
+	// The guest shell is a symlink; the sidecar sits beside the LINK. Resolving
+	// the executable would look beside the target and fail open (host shell).
+	//
+	// Mutation proof: always use executable() → "/bin/nexus.nexusbin" → RED.
+	exe := func() (string, error) { return "/bin/nexus", nil }
+	if got := herdrSidecarPath("/bin/nexus-guest-shell", exe); got != "/bin/nexus-guest-shell"+herdrSidecarSuffix {
+		t.Fatalf("sidecar path = %q; want beside argv0", got)
+	}
+	if got := herdrSidecarPath("nexus-guest-shell", exe); got != "/bin/nexus"+herdrSidecarSuffix {
+		t.Fatalf("relative argv0 must fall back to the executable; got %q", got)
+	}
 }

@@ -5031,6 +5031,24 @@ func herdrWorktreeSandbox(
 		} else {
 			fmt.Fprintf(w, "worktree-sandbox: sandbox %s already exists (binding absent) — reconciling\n", handle)
 		}
+		/**
+		 * A Stopped sandbox is the normal shape of an adopt: its last pane
+		 * closed, the reaper stopped it, and the operator re-opened the
+		 * worktree. The guest pane opened below runs `nexus exec`, which
+		 * needs a running guest; without this start the pane died on open,
+		 * the root pane was closed as usual, and herdr closed the emptied
+		 * workspace — the re-open appeared to do nothing (2026-09-19).
+		 */
+		if sb.State == domain.Stopped {
+			fmt.Fprintf(w, "worktree-sandbox: sandbox %s is stopped; starting it ...\n", handle)
+			if startErr := herdrWtStartFn(ctx, handle); startErr != nil {
+				fmt.Fprintf(w, "worktree-sandbox: start %s: %v\n", handle, startErr)
+				if !failSafe {
+					return fmt.Errorf("worktree-sandbox: start %s: %w", handle, startErr)
+				}
+				return nil
+			}
+		}
 	} else {
 		/**
 		 * The binding is written BEFORE opening the pane so the idempotency check

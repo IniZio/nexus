@@ -2712,3 +2712,46 @@ func TestHerdrWorktreeIdentity_followsCheckoutDirNotBranch(t *testing.T) {
 		t.Fatalf("handle = %q; want nexus/main", got)
 	}
 }
+
+func TestHerdrWorktreeSandbox_staleRebind_startsStoppedSandbox(t *testing.T) {
+	// Re-opening a worktree adopts the sandbox the last-pane reaper STOPPED.
+	// The guest pane opened next needs a running guest, so adopt must start
+	// it; a Running sandbox must not be started again.
+	//
+	// MUTATION PROOF: drop the Stopped→start block → started=[] → RED.
+	root := t.TempDir()
+	const handle = "nexus/main"
+	seedBinding(t, root, "w-old", handle)
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-new", "main", "/srv/wt/nexus/main", "/srv/repos/nexus/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+	var started []string
+	old := herdrWtStartFn
+	herdrWtStartFn = func(_ context.Context, h string) error { started = append(started, h); return nil }
+	t.Cleanup(func() { herdrWtStartFn = old })
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	swapHerdrWorkspaceList(t, "w-new")
+
+	stopped := domain.Sandbox{ID: domain.NewSandboxID(), State: domain.Stopped,
+		LiveMounts: []domain.LiveMount{{HostPath: "/srv/wt/nexus/main", GuestPath: "/workspace"}}}
+	var w strings.Builder
+	if err := herdrWorktreeSandbox(context.Background(), "w-new", &w, root, false, false, false, false, noopCreate, stubSandboxGet(stopped, nil)); err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, w.String())
+	}
+	if len(started) != 1 || started[0] != handle {
+		t.Fatalf("Start calls = %v; want [%s]\n%s", started, handle, w.String())
+	}
+
+	started = nil
+	seedBinding(t, root, "w-old2", handle)
+	running := stopped
+	running.State = domain.Running
+	w.Reset()
+	if err := herdrWorktreeSandbox(context.Background(), "w-new", &w, root, false, false, false, false, noopCreate, stubSandboxGet(running, nil)); err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, w.String())
+	}
+	if len(started) != 0 {
+		t.Fatalf("a Running sandbox must not be started again; got %v", started)
+	}
+}
