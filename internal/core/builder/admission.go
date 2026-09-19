@@ -60,24 +60,28 @@ func GuestMemCeiling(readCmdline func() ([]byte, error)) (ceiling int64, ok bool
 	return 0, false
 }
 
-// ElasticMeminfo is the readMem for admission INSIDE a nexus guest. A guest's
-// MemTotal is only its current balloon size: the outer governor grows it on
-// PSI pressure up to --mem-ceiling, so measuring against MemAvailable at one
-// instant refuses builds the guest could run a second later ("host has 559
-// MiB available, need 3072 MiB" with 3 GiB of ceiling unused, 2026-09-19).
-// Here avail = ceiling - used and total = ceiling, so admission bounds only
-// what the governor could never provide. Outside a guest it is ProcfsMeminfo.
-func ElasticMeminfo() (avail, total int64, err error) {
-	avail, total, err = ProcfsMeminfo()
-	if err != nil {
-		return 0, 0, err
+// InNexusGuest reports whether this process runs inside a nexus guest, which
+// is exactly when the kernel cmdline carries --mem-ceiling.
+func InNexusGuest() bool {
+	_, ok := GuestMemCeiling(func() ([]byte, error) { return os.ReadFile("/proc/cmdline") })
+	return ok
+}
+
+// AdmitBuilderBootHere is AdmitBuilderBoot against this machine's meminfo,
+// except inside a nexus guest, where admission is skipped: the guest's
+// MemTotal is its ceiling and MemAvailable is whatever the balloon has left
+// it at this instant (77 MiB of 8 GiB was observed idle, 2026-09-19), and the
+// balloon size is not visible from inside. The outer governor grows the guest
+// on PSI pressure, so the builder is admitted and memory follows demand; the
+// ceiling remains the hard bound, enforced by the outer host, not by a guess
+// made here. Nested builds therefore rely on resource governance, not
+// admission (operator decision 2026-09-19).
+func AdmitBuilderBootHere(bootMemMiB uint32) error {
+	if InNexusGuest() {
+		log.Printf("builder: admission: inside a nexus guest; relying on the outer governor to grow memory (boot %d MiB)", bootMemMiB)
+		return nil
 	}
-	ceiling, ok := GuestMemCeiling(func() ([]byte, error) { return os.ReadFile("/proc/cmdline") })
-	if !ok || ceiling <= total {
-		return avail, total, nil
-	}
-	used := total - avail
-	return ceiling - used, ceiling, nil
+	return AdmitBuilderBoot(bootMemMiB, ProcfsMeminfo)
 }
 
 func ProcfsMeminfo() (avail, total int64, err error) {

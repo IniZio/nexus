@@ -82,27 +82,13 @@ func TestGuestMemCeiling(t *testing.T) {
 	}
 }
 
-func TestAdmitBuilderBoot_elasticGuestAdmitsAgainstCeiling(t *testing.T) {
-	// The live refusal: 4036 MiB balloon, 1160 MiB available, 8 GiB ceiling.
-	// Against the instant the builder (2048 boot + floor) is refused; against
-	// the ceiling (8192 - 2876 used = 5316 avail) it is admitted, and the
-	// outer governor grows the guest under the resulting PSI pressure.
+func TestAdmitBuilderBoot_hostStillRefusesWhenShort(t *testing.T) {
+	// Host semantics are unchanged: the live refusal figures (4036 MiB total,
+	// 1160 MiB available) still refuse a 2048 MiB builder. Only a nexus guest
+	// (cmdline --mem-ceiling, see InNexusGuest) skips admission.
 	const mib = 1024 * 1024
 	instant := func() (int64, int64, error) { return 1160 * mib, 4036 * mib, nil }
 	if err := AdmitBuilderBoot(2048, instant); err == nil {
-		t.Fatal("sanity: instantaneous meminfo must refuse the builder in this scenario")
-	}
-	elastic := func() (int64, int64, error) {
-		avail, total, _ := instant()
-		ceiling := int64(8192 * mib)
-		return ceiling - (total - avail), ceiling, nil
-	}
-	if err := AdmitBuilderBoot(2048, elastic); err != nil {
-		t.Fatalf("ceiling-aware admission refused: %v", err)
-	}
-	// A ceiling the governor can never exceed still bounds admission.
-	tiny := func() (int64, int64, error) { return 500 * mib, 4096 * mib, nil }
-	if err := AdmitBuilderBoot(2048, tiny); err == nil {
-		t.Fatal("builder larger than the whole ceiling must still be refused")
+		t.Fatal("host admission must refuse a builder that does not fit")
 	}
 }
