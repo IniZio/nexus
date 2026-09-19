@@ -1153,7 +1153,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			// Admit before any side effects: EnsureBuilderImage, the worktree copy
 			// and SelectCacheDisks (which fences the cache disk dirty) all come after.
 			builderBootMemMiB := uint32(builder.MemMiB(builder.BuilderVMSpec{MemoryMiB: uint16(f.builderMemoryMiB)}))
-			if err := builder.AdmitBuilderBoot(builderBootMemMiB, builder.ProcfsMeminfo); err != nil {
+			if err := builder.AdmitBuilderBoot(builderBootMemMiB, builder.ElasticMeminfo); err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
 			}
 

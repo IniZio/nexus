@@ -40,6 +40,46 @@ func AdmitBuilderBoot(bootMemMiB uint32, readMem func() (avail, total int64, err
 	return nil
 }
 
+// GuestMemCeiling reports the RAM ceiling a nexus guest was booted with, from
+// the --mem-ceiling=<bytes> argument the outer nexus puts on the kernel
+// cmdline for its guest agent. ok is false outside a nexus guest.
+func GuestMemCeiling(readCmdline func() ([]byte, error)) (ceiling int64, ok bool) {
+	raw, err := readCmdline()
+	if err != nil {
+		return 0, false
+	}
+	for _, f := range strings.Fields(string(raw)) {
+		if v, found := strings.CutPrefix(f, "--mem-ceiling="); found {
+			n, perr := strconv.ParseInt(v, 10, 64)
+			if perr != nil || n <= 0 {
+				return 0, false
+			}
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// ElasticMeminfo is the readMem for admission INSIDE a nexus guest. A guest's
+// MemTotal is only its current balloon size: the outer governor grows it on
+// PSI pressure up to --mem-ceiling, so measuring against MemAvailable at one
+// instant refuses builds the guest could run a second later ("host has 559
+// MiB available, need 3072 MiB" with 3 GiB of ceiling unused, 2026-09-19).
+// Here avail = ceiling - used and total = ceiling, so admission bounds only
+// what the governor could never provide. Outside a guest it is ProcfsMeminfo.
+func ElasticMeminfo() (avail, total int64, err error) {
+	avail, total, err = ProcfsMeminfo()
+	if err != nil {
+		return 0, 0, err
+	}
+	ceiling, ok := GuestMemCeiling(func() ([]byte, error) { return os.ReadFile("/proc/cmdline") })
+	if !ok || ceiling <= total {
+		return avail, total, nil
+	}
+	used := total - avail
+	return ceiling - used, ceiling, nil
+}
+
 func ProcfsMeminfo() (avail, total int64, err error) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
