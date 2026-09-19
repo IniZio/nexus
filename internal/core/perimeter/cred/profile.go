@@ -341,12 +341,48 @@ var KiroProfile = AgentProfile{
 	},
 }
 
+const CodexProfileName = "codex"
+
+// CodexProfile installs the Codex CLI and does not broker a credential.
+// Live (codex-cli 0.155.1): a ChatGPT auth.json refresh hits auth.openai.com
+// and the same session also connects to chatgpt.com; a hex CODEX_ACCESS_TOKEN
+// connects to both chatgpt.com and api.openai.com. The one-host placeholder
+// cannot cover that. See ImportCodexCredentials.
+var CodexProfile = AgentProfile{
+	Name:             CodexProfileName,
+	CredentialedHost: "chatgpt.com",
+	EgressHosts:      []string{"chatgpt.com"},
+	CredentialFormat: CredentialFormatNone,
+	ToolRecipe: ToolRecipe{
+		BinPath: "/usr/local/bin/codex",
+		Packages: []RecipePackage{
+			{
+				// Version floats: resolved to the image digest at create time.
+				// The nightly image's standalone layout (measured 2026-09-19,
+				// Codex 0.155.1) is
+				// /home/agent/.codex/packages/standalone/releases/<ver>/bin/codex.
+				Kind:       RecipeKindOCI,
+				Name:       "codex",
+				Version:    FloatingVersion,
+				Image:      "docker/sandbox-templates:codex-nightly",
+				SrcPath:    "/home/agent/.codex/packages/standalone/releases/",
+				InstallDir: "/usr/local/share/codex/versions",
+				BinRel:     "bin/codex",
+				Symlinks: []RecipeSymlink{
+					{LinkPath: "/usr/local/bin/codex"},
+				},
+			},
+		},
+	},
+}
+
 var profiles = map[string]AgentProfile{
 	ClaudeCodeProfileName:  ClaudeCodeProfile,
 	CursorAgentProfileName: CursorAgentProfile,
 	OpencodeProfileName:    OpencodeProfile,
 	OhMyPiProfileName:      OhMyPiProfile,
 	KiroProfileName:        KiroProfile,
+	CodexProfileName:       CodexProfile,
 }
 
 func ProfileByName(name string) (AgentProfile, bool) {
