@@ -42,6 +42,16 @@ case "$1" in
         if [ -z "$GUEST_SHELL" ]; then
             GUEST_SHELL=/bin/sh
         fi
+        # Herdr detects agents from the pane's HOST foreground process. Here
+        # that is `nexus exec`, never the claude running inside the VM, so the
+        # pane read agent_status=unknown and the agent was missing from the
+        # sidebar. HERDR_AGENT is herdr's documented hint for exactly this
+        # (docs: "VMs and sandbox wrappers"): it names the screen manifest to
+        # apply to this foreground process, and detection then runs on the
+        # terminal buffer — which the guest's claude UI already paints. A bare
+        # guest prompt classifies as idle (herdr's known-agent fallback).
+        # Exported on the exec'd process only; not set globally.
+        export HERDR_AGENT="${HERDR_AGENT:-claude}"
         case "$GUEST_SHELL" in
             */bash) exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" "$GUEST_SHELL" -l ;;
             *)      exec "$SHIM" exec --pty --cwd "$SHELL_CWD" "$REF" "$GUEST_SHELL" ;;

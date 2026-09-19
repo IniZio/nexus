@@ -3720,6 +3720,14 @@ const herdrWorktreeCreateTimeout = 240 * time.Second
 const herdrWorktreeCreateLockTimeout = 330 * time.Second
 
 /**
+ * errHerdrWorktreeRebindStale drives the reconcile branch of
+ * herdrWorktreeSandbox when the handle's existing binding names a herdr
+ * workspace that no longer exists: no create is attempted, the existing
+ * sandbox is adopted for the new workspace.
+ */
+var errHerdrWorktreeRebindStale = errors.New("worktree-sandbox: binding workspace gone; rebinding existing sandbox")
+
+/**
  * herdrWorktreeCreateLockPath returns the path to the per-handle create-intent
  * lock file.  The lock serialises concurrent auto-create attempts for the same
  * sandbox handle (e.g. two panes opening in the same worktree workspace within
@@ -3991,6 +3999,20 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	}
 	if nested {
 		args = append(args, "--nested")
+		/**
+		 * Inner-nexus state disk. Nested KVM exists so an agent can boot
+		 * nexus VMs inside the sandbox, but the inner nexus keeps its images
+		 * and raw guest disks under $XDG_STATE_HOME/nexus = /root/.local/
+		 * state/nexus — on the 4 GiB root disk. The inner `sandbox create`
+		 * refuses there outright (15 GiB free-space floor; --force does not
+		 * bypass it), and the only big filesystem in the guest, /workspace,
+		 * is virtiofs, which cloud-hypervisor cannot open a raw disk on. Seen
+		 * live 2026-09-19 in nexus/main: pull + ext4 build succeeded, then
+		 * vm.boot: "Cannot open disk path ... Permission denied". Sized above
+		 * the floor with headroom for a base image plus a few guest disks;
+		 * sparse, so it costs only the blocks written.
+		 */
+		args = append(args, "--mount-named", herdrNexusStateDiskVolumeName(handle)+":/root/.local/state/nexus:size=32g")
 	}
 	args = append(args, "--agent", herdrPrimaryAgent(), "--egress", "open", handle)
 	return args
@@ -4055,6 +4077,16 @@ func herdrGoPathDiskVolumeName(handle string) string {
  */
 func herdrAgentCfgDiskVolumeName(handle string) string {
 	return herdrHandleSlug(handle) + "-agentcfg"
+}
+
+/**
+ * herdrNexusStateDiskVolumeName derives the per-sandbox volume name for the
+ * /root/.local/state/nexus disk that backs an inner nexus in a nested sandbox
+ * (images, raw guest disks, supervisors). Only attached when nested=true.
+ * Follows the same D-PD-84 slug rule as herdrDockerDiskVolumeName.
+ */
+func herdrNexusStateDiskVolumeName(handle string) string {
+	return herdrHandleSlug(handle) + "-nexusstate"
 }
 
 /**
@@ -4687,6 +4719,8 @@ func herdrWorktreeSandbox(
 	 * Explicit mode (neither flag) returns errors; auto/conditional is fail-safe.
 	 */
 	failSafe := conditional || auto
+	/** rebindStale: the handle's binding names a workspace herdr no longer has; skip create and adopt. */
+	rebindStale := false
 	{
 		lk, lkErr := store.OpenLock(herdrWorktreeCreateLockPath(storeRoot, handle))
 		if lkErr != nil {
@@ -4714,9 +4748,26 @@ func herdrWorktreeSandbox(
 		 * on one sandbox; the loser sees the binding the winner wrote. Reuse is
 		 * idempotent success in every mode, so this returns nil unconditionally.
 		 */
-		if _, boundErr := HerdrSpaceGetByHandle(ctx, storeRoot, handle); boundErr == nil {
-			fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
-			return nil
+		if bound, boundErr := HerdrSpaceGetByHandle(ctx, storeRoot, handle); boundErr == nil {
+			/**
+			 * Same handle, different workspace, and that workspace is gone from
+			 * herdr: the operator closed the worktree's workspace and re-opened
+			 * one for the same checkout (seen live 2026-09-19: nexus/main bound
+			 * to wAV, new workspace wBD). Returning "reusing" here left wBD with
+			 * no binding at all — every guest pane fell back to a host shell
+			 * while the sandbox kept running under a dead workspace id. Fall
+			 * through to the reconcile path instead: it re-verifies the
+			 * /workspace mount and state, then HerdrSpacePut replaces the stale
+			 * row (same handle) with one for this workspace. The liveness
+			 * probe fails open (all alive) when herdr cannot be listed, so an
+			 * unreachable herdr keeps today's reuse behaviour.
+			 */
+			if bound.HerdrWorkspaceID == workspaceID || herdrSpacePruneWorkspaceExistsFn(ctx, herdrBin)(bound) {
+				fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
+				return nil
+			}
+			fmt.Fprintf(w, "worktree-sandbox: handle %s bound to workspace %s, which no longer exists in herdr — rebinding to %s\n", handle, bound.HerdrWorkspaceID, workspaceID)
+			rebindStale = true
 		}
 	}
 
@@ -4811,7 +4862,18 @@ func herdrWorktreeSandbox(
 	 * binding-write block below without re-declaring.
 	 */
 	var sb domain.Sandbox
-	if createErr := createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag || nestedCfg); createErr != nil {
+	/**
+	 * A stale rebind must not create: the sandbox already exists under this
+	 * handle. Feeding a sentinel error into the reconcile branch reuses its
+	 * adopt checks (/workspace mount, state, removal marker) unchanged.
+	 */
+	var createErr error
+	if rebindStale {
+		createErr = errHerdrWorktreeRebindStale
+	} else {
+		createErr = createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag || nestedCfg)
+	}
+	if createErr != nil {
 		/**
 		 * Create failed. Probe getFn: a prior run may have committed the sandbox
 		 * store record (e.g. crashed after store.Create but before HerdrSpacePut),
@@ -4873,7 +4935,11 @@ func herdrWorktreeSandbox(
 			}
 			return nil
 		}
-		fmt.Fprintf(w, "worktree-sandbox: sandbox %s already exists (binding absent) — reconciling\n", handle)
+		if rebindStale {
+			fmt.Fprintf(w, "worktree-sandbox: sandbox %s adopted for workspace %s (stale binding replaced)\n", handle, workspaceID)
+		} else {
+			fmt.Fprintf(w, "worktree-sandbox: sandbox %s already exists (binding absent) — reconciling\n", handle)
+		}
 	} else {
 		/**
 		 * The binding is written BEFORE opening the pane so the idempotency check

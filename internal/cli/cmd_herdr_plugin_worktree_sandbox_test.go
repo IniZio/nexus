@@ -2576,3 +2576,119 @@ func TestClassifyBriefSubmission(t *testing.T) {
 		})
 	}
 }
+
+// ── stale binding: workspace closed, same worktree re-opened ─────────────────
+
+// swapHerdrWorkspaceList makes every herdrExecCommandContext call print a
+// `herdr workspace list` envelope carrying exactly liveIDs, so the liveness
+// probe inside herdrWorktreeSandbox sees those workspaces and no others.
+func swapHerdrWorkspaceList(t *testing.T, liveIDs ...string) {
+	t.Helper()
+	var sb strings.Builder
+	sb.WriteString(`{"result":{"workspaces":[`)
+	for i, id := range liveIDs {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"workspace_id":%q}`, id)
+	}
+	sb.WriteString(`]}}`)
+	payload := sb.String()
+	old := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"$0\"", payload)
+	}
+	t.Cleanup(func() { herdrExecCommandContext = old })
+}
+
+func TestHerdrWorktreeSandbox_staleBinding_rebindsToNewWorkspace(t *testing.T) {
+	// Live 2026-09-19: nexus/main was bound to workspace wAV; the operator
+	// closed wAV and herdr opened wBD for the same checkout. The under-lock
+	// handle re-check said "already bound, reusing" and returned — wBD never
+	// got a binding, so every guest pane fell back to a host shell.
+	//
+	// When the bound workspace is absent from `herdr workspace list`, the
+	// existing sandbox must be adopted for the new workspace without a create.
+	//
+	// MUTATION PROOF: restore the unconditional `return nil` on a bound handle
+	// → binding stays on w-old, createCalled=false but HerdrWorkspaceID ≠ w-new → RED.
+	root := t.TempDir()
+	const handle = "nexus/main"
+	seedBinding(t, root, "w-old", handle)
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-new", "main", "/srv/wt/nexus/main", "/srv/repos/nexus/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+
+	existingSB := domain.Sandbox{
+		ID:    domain.NewSandboxID(),
+		State: domain.Running,
+		LiveMounts: []domain.LiveMount{
+			{HostPath: "/srv/wt/nexus/main", GuestPath: "/workspace"},
+		},
+	}
+	createCalled := false
+	create := func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+		createCalled = true
+		return nil
+	}
+
+	// callHerdrWorktreeSandbox installs its own exec seam; override it after.
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	swapHerdrWorkspaceList(t, "w-new", "w-other")
+	var w strings.Builder
+	err := herdrWorktreeSandbox(context.Background(), "w-new", &w, root, false, false, false, false, create, stubSandboxGet(existingSB, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, w.String())
+	}
+	if createCalled {
+		t.Errorf("createFn must not run for a stale rebind — the sandbox already exists\n%s", w.String())
+	}
+	binding, lookupErr := HerdrSpaceGetByHandle(context.Background(), root, handle)
+	if lookupErr != nil {
+		t.Fatalf("binding for %s missing after rebind: %v\n%s", handle, lookupErr, w.String())
+	}
+	if binding.HerdrWorkspaceID != "w-new" {
+		t.Errorf("binding.HerdrWorkspaceID = %q; want w-new\n%s", binding.HerdrWorkspaceID, w.String())
+	}
+	if binding.SandboxID != existingSB.ID.String() {
+		t.Errorf("binding.SandboxID = %q; want %q", binding.SandboxID, existingSB.ID.String())
+	}
+	all, _ := herdrSpaceReadAll(root)
+	if len(all) != 1 {
+		t.Errorf("want exactly one binding for the handle after rebind; got %d: %+v", len(all), all)
+	}
+}
+
+func TestHerdrWorktreeSandbox_boundToLiveWorkspace_stillReuses(t *testing.T) {
+	// The concurrent-create race is unchanged: when the bound workspace is
+	// still alive, the loser must return without creating or rebinding.
+	//
+	// MUTATION PROOF: drop the liveness check and always rebind → binding
+	// moves from w-a to w-b → RED.
+	root := t.TempDir()
+	const handle = "nexus/main"
+	seedBinding(t, root, "w-a", handle)
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfoAuto("w-b", "main", "/srv/wt/nexus/main", "/srv/repos/nexus/.git"),
+	}.fn())
+	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	swapHerdrWorkspaceList(t, "w-a", "w-b")
+	createCalled := false
+	create := func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+		createCalled = true
+		return nil
+	}
+	var w strings.Builder
+	if err := herdrWorktreeSandbox(context.Background(), "w-b", &w, root, false, false, false, false, create, stubSandboxGet(domain.Sandbox{}, nil)); err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, w.String())
+	}
+	if createCalled {
+		t.Errorf("createFn must not run when the handle is bound to a live workspace")
+	}
+	binding, _ := HerdrSpaceGetByHandle(context.Background(), root, handle)
+	if binding.HerdrWorkspaceID != "w-a" {
+		t.Errorf("binding moved to %q; want it to stay on w-a", binding.HerdrWorkspaceID)
+	}
+}

@@ -49,6 +49,37 @@ func TestHerdrWorktreeSandboxCreateArgs_nested_true_adds_flag(t *testing.T) {
 	}
 }
 
+// ── herdrWorktreeSandboxCreateArgs — inner-nexus state disk ───────────────────
+
+func TestHerdrWorktreeSandboxCreateArgs_nested_attaches_state_disk(t *testing.T) {
+	// A nested sandbox exists so an inner nexus can boot VMs. Its state dir
+	// (/root/.local/state/nexus) must sit on its own disk: root is 4 GiB and
+	// under the inner 15 GiB floor, /workspace is virtiofs and cannot back a
+	// raw guest disk. The mount is nested-only — a non-nested sandbox has no
+	// inner nexus to give a disk to.
+	//
+	// MUTATION PROOF: drop the --mount-named append inside `if nested` → the
+	// nested case lacks the spec → RED. Move it outside the `if` → the
+	// non-nested case gains the spec → RED.
+	wantSpec := herdrNexusStateDiskVolumeName("repo/branch") + ":/root/.local/state/nexus:size=32g"
+	hasSpec := func(args []string) bool {
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--mount-named" && args[i+1] == wantSpec {
+				return true
+			}
+		}
+		return false
+	}
+	nested := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, true)
+	if !hasSpec(nested) {
+		t.Errorf("nested=true must attach %q; got args: %v", wantSpec, nested)
+	}
+	flat := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, false)
+	if hasSpec(flat) {
+		t.Errorf("nested=false must NOT attach %q; got args: %v", wantSpec, flat)
+	}
+}
+
 // ── herdrWorktreeSandboxParseArgs — --nested flag ─────────────────────────────
 
 func TestHerdrWorktreeSandboxParseArgs_nestedFlag(t *testing.T) {
