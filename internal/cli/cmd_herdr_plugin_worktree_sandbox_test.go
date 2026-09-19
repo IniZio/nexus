@@ -366,13 +366,13 @@ func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
 	seedBinding(t, root, "w-src", "wt/src-sandbox")
 
 	swapListFn(t, stubWorktreeList{
-		info: linkedWorktreeInfo("w-new", "w-src", "worktree/feat", "/path/feat"),
+		info: linkedWorktreeInfo("w-new", "w-src", "worktree/feat", "/path/worktree-feat"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	// Expect createSandbox to be called with handle "repo/worktree-feat" (full
 	// branch path "worktree/feat" encoded; no RepoKey → repoName fallback "repo") and
-	// mount "/path/feat:/workspace".
+	// mount "/path/worktree-feat:/workspace".
 	const wantHandle = "repo/worktree-feat"
 	var gotHandle, gotMount string
 	err := callHerdrWorktreeSandbox(t, "w-new", root, true, false, /*auto*/
@@ -389,8 +389,8 @@ func TestHerdrWorktreeSandbox_conditional_sourceBound_binds(t *testing.T) {
 	if gotHandle != wantHandle {
 		t.Errorf("createSandbox called with handle=%q; want %q", gotHandle, wantHandle)
 	}
-	if gotMount != "/path/feat:/workspace" {
-		t.Errorf("createSandbox called with mount=%q; want %q", gotMount, "/path/feat:/workspace")
+	if gotMount != "/path/worktree-feat:/workspace" {
+		t.Errorf("createSandbox called with mount=%q; want %q", gotMount, "/path/worktree-feat:/workspace")
 	}
 
 	// Confirm the binding for "w-new" was written.
@@ -516,7 +516,7 @@ func TestHerdrWorktreeSandbox_happyPath_bindingFields(t *testing.T) {
 	// RED: "SpaceLabel = ''; want 'nexus:repo/worktree-silver-forest-225f'".
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
-		info: linkedWorktreeInfo("w-new", "w-src", "worktree/silver-forest-225f", "/checkout/sf225f"),
+		info: linkedWorktreeInfo("w-new", "w-src", "worktree/silver-forest-225f", "/checkout/worktree-silver-forest-225f"),
 	}.fn())
 
 	var renamedLabel string
@@ -586,7 +586,7 @@ func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 	// RED: "mount spec = '/checkout/b'; want '/checkout/b:/workspace'".
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
-		info: linkedWorktreeInfo("w-c", "w-s", "feature/branch-b", "/checkout/b"),
+		info: linkedWorktreeInfo("w-c", "w-s", "feature/branch-b", "/checkout/feature-branch-b"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -603,8 +603,8 @@ func TestHerdrWorktreeSandbox_createArgs(t *testing.T) {
 	if gotHandle != "repo/feature-branch-b" {
 		t.Errorf("handle = %q; want %q", gotHandle, "repo/feature-branch-b")
 	}
-	if gotMount != "/checkout/b:/workspace" {
-		t.Errorf("mount spec = %q; want %q", gotMount, "/checkout/b:/workspace")
+	if gotMount != "/checkout/feature-branch-b:/workspace" {
+		t.Errorf("mount spec = %q; want %q", gotMount, "/checkout/feature-branch-b:/workspace")
 	}
 }
 
@@ -1205,7 +1205,7 @@ func TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding(t *testing
 	// handle = "nexus/worktree-quiet-stone-1e35" ✓
 	swapListFn(t, stubWorktreeList{
 		info: linkedWorktreeInfoAuto(wantWorkspaceID, "worktree/quiet-stone-1e35",
-			"/srv/repos/nexus", "/srv/repos/nexus/.git"),
+			"/srv/wt/nexus/worktree-quiet-stone-1e35", "/srv/repos/nexus/.git"),
 	}.fn())
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
@@ -1218,7 +1218,7 @@ func TestHerdrWorktreeSandbox_reconcile_orphanedSandbox_writesBinding(t *testing
 		ID:    domain.NewSandboxID(),
 		State: domain.Running,
 		LiveMounts: []domain.LiveMount{
-			{HostPath: "/srv/repos/nexus", GuestPath: "/workspace"},
+			{HostPath: "/srv/wt/nexus/worktree-quiet-stone-1e35", GuestPath: "/workspace"},
 		},
 	}
 	wantSandboxID := existingSB.ID.String() // record for assertion below
@@ -2690,5 +2690,25 @@ func TestHerdrWorktreeSandbox_boundToLiveWorkspace_stillReuses(t *testing.T) {
 	binding, _ := HerdrSpaceGetByHandle(context.Background(), root, handle)
 	if binding.HerdrWorkspaceID != "w-a" {
 		t.Errorf("binding moved to %q; want it to stay on w-a", binding.HerdrWorkspaceID)
+	}
+}
+
+// ── handle identity: checkout dir, not branch ────────────────────────────────
+
+func TestHerdrWorktreeIdentity_followsCheckoutDirNotBranch(t *testing.T) {
+	// An agent running `git checkout -b` inside the sandbox must not change
+	// the sandbox handle: the handle names the volumes (caches, sessions), and
+	// a new handle orphans them all on the next re-provision (2026-09-19).
+	//
+	// MUTATION PROOF: return info.Branch first → "nexus-in-nexus-refine" → RED.
+	info := herdrWorktreeInfo{Branch: "nexus-in-nexus-refine", Path: "/home/u/.herdr/worktrees/nexus/main", IsLinkedWorktree: true}
+	if got := herdrWorktreeIdentity(info); got != "main" {
+		t.Fatalf("identity = %q; want checkout dir name \"main\"", got)
+	}
+	if got := herdrWorktreeIdentity(herdrWorktreeInfo{Branch: "feature/x"}); got != "feature/x" {
+		t.Fatalf("without a path identity = %q; want branch fallback", got)
+	}
+	if got := herdrWorktreeSandboxHandle("nexus", herdrWorktreeIdentity(info)); got != "nexus/main" {
+		t.Fatalf("handle = %q; want nexus/main", got)
 	}
 }

@@ -9,6 +9,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,10 +43,12 @@ func TestHerdrWorktreeSandboxConcurrentCreateConverges(t *testing.T) {
 	handle := herdrWorktreeSandboxHandle("repo", branch) // "repo/feature-raceproof"
 
 	// stubInfo is the worktree info both callers will see.
+	// The handle is keyed on the checkout dir name (herdr names it after the
+	// branch at creation), so the fixture path must end in the branch slug.
 	stubInfo := herdrWorktreeInfo{
 		IsLinkedWorktree: true,
 		Branch:           branch,
-		Path:             t.TempDir(),
+		Path:             filepath.Join(t.TempDir(), "feature-raceproof"),
 		RepoKey:          repoKey,
 	}
 

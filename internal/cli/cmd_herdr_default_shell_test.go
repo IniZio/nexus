@@ -1333,7 +1333,9 @@ type fakeStartingGetter struct {
 	startErr error
 }
 
-func (f *fakeStartingGetter) Get(_ context.Context, _ string) (domain.Sandbox, error) { return f.sb, nil }
+func (f *fakeStartingGetter) Get(_ context.Context, _ string) (domain.Sandbox, error) {
+	return f.sb, nil
+}
 func (f *fakeStartingGetter) Start(_ context.Context, ref string) (domain.Sandbox, error) {
 	f.started = append(f.started, ref)
 	if f.startErr != nil {

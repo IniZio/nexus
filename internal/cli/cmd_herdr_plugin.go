@@ -450,6 +450,17 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, nested bool) error {
 			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, nested)
 			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
+			/**
+			 * Run the create from the worktree checkout. `sandbox create` reads
+			 * project config by walking up from its cwd, and herdr runs plugin
+			 * panes with cwd inside the installed plugin checkout — the nexus
+			 * repo itself — whose .nexus/config.yaml (sandbox.nested: true)
+			 * then applied to EVERY worktree sandbox of every repo. The
+			 * checkout is the host side of the /workspace mount spec.
+			 */
+			if hostPath, _, ok := strings.Cut(mountSpec, ":"); ok && hostPath != "" {
+				cmd.Dir = hostPath
+			}
 			cmd.Stdout = out.w
 			cmd.Stderr = out.w
 			return cmd.Run()
@@ -4497,6 +4508,25 @@ func nexusContainerfileDir(startDir string) string {
  *  2. Consecutive "-" are collapsed to one; leading/trailing "-" are trimmed.
  *  3. An empty result falls back: repoName → "repo", branch → "worktree".
  */
+/**
+ * herdrWorktreeIdentity is the part of a worktree's identity that goes into
+ * its sandbox handle: the checkout directory name (herdr creates worktrees at
+ * <root>/worktrees/<repo>/<name>), not the branch that happens to be checked
+ * out. The branch changes whenever an agent runs `git checkout -b` inside the
+ * sandbox; when the handle followed it, the next re-provision minted a NEW
+ * sandbox with fresh volumes and the old sandbox's docker/go caches and
+ * Claude session state were orphaned under the old handle (2026-09-19:
+ * nexus/main → nexus/nexus-in-nexus-refine, history recovered by hand from
+ * the detached agentcfg volume). Falls back to the branch when the path is
+ * unknown so the handle is never empty.
+ */
+func herdrWorktreeIdentity(info herdrWorktreeInfo) string {
+	if base := filepath.Base(filepath.Clean(info.Path)); info.Path != "" && base != "." && base != "/" {
+		return base
+	}
+	return info.Branch
+}
+
 func herdrWorktreeSandboxHandle(repoName, branch string) string {
 	sanitize := func(s, fallback string) string {
 		var b strings.Builder
@@ -4723,7 +4753,7 @@ func herdrWorktreeSandbox(
 			repoNameForHandle = base // herdrWorktreeSandboxHandle sanitises it
 		}
 	}
-	handle := herdrWorktreeSandboxHandle(repoNameForHandle, info.Branch)
+	handle := herdrWorktreeSandboxHandle(repoNameForHandle, herdrWorktreeIdentity(info))
 	mountSpec := info.Path + ":/workspace"
 
 	/**
