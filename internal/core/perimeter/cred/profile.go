@@ -313,11 +313,40 @@ var OhMyPiProfile = AgentProfile{
 	},
 }
 
+const KiroProfileName = "kiro"
+
+var KiroProfile = AgentProfile{
+	Name:             KiroProfileName,
+	CredentialedHost: "management.us-east-1.kiro.dev",
+	EgressHosts:      []string{"management.us-east-1.kiro.dev"},
+	CredentialFormat: CredentialFormatNone,
+	ToolRecipe: ToolRecipe{
+		BinPath: "/usr/local/bin/kiro-cli",
+		Packages: []RecipePackage{
+			{
+				Kind:        RecipeKindTarball,
+				Name:        "kiro-cli",
+				Version:     KiroCLIVersion,
+				URLTemplate: "https://prod.download.cli.kiro.dev/stable/{VERSION}/kirocli-x86_64-linux.tar.gz",
+				SHA256ByArch: map[string]string{
+					"x64": KiroTarballSHA256X64,
+				},
+				InstallDir: "/usr/local/share/kiro-cli/{VERSION}",
+				Symlinks: []RecipeSymlink{
+					{LinkPath: "/usr/local/bin/kiro-cli", TargetPath: "/usr/local/share/kiro-cli/{VERSION}/bin/kiro-cli"},
+					{LinkPath: "/usr/local/bin/kiro-cli-chat", TargetPath: "/usr/local/share/kiro-cli/{VERSION}/bin/kiro-cli-chat"},
+				},
+			},
+		},
+	},
+}
+
 var profiles = map[string]AgentProfile{
 	ClaudeCodeProfileName:  ClaudeCodeProfile,
 	CursorAgentProfileName: CursorAgentProfile,
 	OpencodeProfileName:    OpencodeProfile,
 	OhMyPiProfileName:      OhMyPiProfile,
+	KiroProfileName:        KiroProfile,
 }
 
 func ProfileByName(name string) (AgentProfile, bool) {
