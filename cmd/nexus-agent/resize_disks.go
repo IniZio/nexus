@@ -10,6 +10,7 @@ package main
 // by the host DiskAxis for ExtraDisks[i].
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/IniZio/nexus/internal/core/agent"
@@ -74,6 +75,40 @@ func resizableDisksFromWorkspaceMounts(mounts []agent.GuestMount) []resizableDis
 		out = append(out, resizableDisk{Index: idx, MountPath: m.Target})
 	}
 	return out
+}
+
+// sandboxResizableDisks derives the normal-sandbox telemetry disk list from the
+// parsed --workspace-mount= args and returns it together with a one-line
+// console diagnostic.
+//
+// The list is derived whether or not a workspace mount exists: herdr worktree
+// sandboxes mount /workspace over virtiofs (IsWorkspace=false) yet still carry
+// Resizable=true named-volume disks (/var/lib/docker, /root/.cache, ...) whose
+// governor axes the host registered via ResizableDiskIndices. Gating the list on
+// the workspace mount silently dropped those volumes and disabled disk
+// governance for every such sandbox.
+//
+// Returns an error only when more than one mount claims IsWorkspace=true.
+func sandboxResizableDisks(mounts []agent.GuestMount) ([]resizableDisk, string, error) {
+	wsMount, hasWS, err := selectWorkspaceMount(mounts)
+	if err != nil {
+		return nil, "", err
+	}
+	disks := resizableDisksFromWorkspaceMounts(mounts)
+	var b strings.Builder
+	switch {
+	case len(disks) == 0 && hasWS:
+		fmt.Fprintf(&b, "nexus-agent: auto-resize: workspace mount %q: cannot derive disk index from device %q; disk telemetry disabled\n", wsMount.Target, wsMount.Device)
+	case len(disks) == 0:
+		fmt.Fprintf(&b, "nexus-agent: auto-resize: no workspace or resizable block mount in %d mount(s); disk telemetry disabled\n", len(mounts))
+	default:
+		fmt.Fprintf(&b, "nexus-agent: auto-resize: disk telemetry: %d disk(s) (workspace mount: %t) at index(es):", len(disks), hasWS)
+		for _, d := range disks {
+			fmt.Fprintf(&b, " [%d]%s", d.Index, d.MountPath)
+		}
+		b.WriteString("\n")
+	}
+	return disks, b.String(), nil
 }
 
 // selectResizableDisks returns the resizableDisk list appropriate for the agent

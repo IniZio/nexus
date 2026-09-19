@@ -167,26 +167,11 @@ func main() {
 	}
 
 	// Workspace mount selection and disk telemetry
-	workspacePath := ""
-	var resizableDisks []resizableDisk
-	if wsMount, ok, err := selectWorkspaceMount(wsMounts); err != nil {
+	resizableDisks, diskMsg, err := sandboxResizableDisks(wsMounts)
+	if err != nil {
 		consoleFatal(con, isPid1, "nexus-agent: workspace mount selection: %v\n", err)
-	} else if ok {
-		workspacePath = wsMount.Target
-		resizableDisks = resizableDisksFromWorkspaceMounts(wsMounts)
-		if len(resizableDisks) == 0 {
-			consoleLog(con, "nexus-agent: auto-resize: workspace mount %q: cannot derive disk index from device %q; disk telemetry disabled\n", wsMount.Target, wsMount.Device)
-		} else {
-			consoleLog(con, "nexus-agent: auto-resize: disk telemetry: %d disk(s) at index(es):", len(resizableDisks))
-			for _, d := range resizableDisks {
-				consoleLog(con, " [%d]%s", d.Index, d.MountPath)
-			}
-			consoleLog(con, "\n")
-		}
-	} else {
-		consoleLog(con, "nexus-agent: auto-resize: NO workspace mount found in %d mount(s); disk telemetry disabled (host may predate the 5-field mount spec)\n", len(wsMounts))
 	}
-	_ = workspacePath // retained for possible future diagnostic use
+	consoleLog(con, "%s", diskMsg)
 
 	resizableDisks = selectResizableDisks(isBuilderRole, cacheDiskMounts, resizableDisks)
 	if isBuilderRole && len(resizableDisks) > 0 {

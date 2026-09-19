@@ -5,6 +5,7 @@ package main
 // No build tag — these helpers are compiled on all platforms.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/agent"
@@ -85,6 +86,43 @@ func TestResizableDisksFromWorkspaceMounts_NoWorkspaceMount(t *testing.T) {
 	got := resizableDisksFromWorkspaceMounts(mounts)
 	if len(got) != 0 {
 		t.Errorf("len = %d, want 0 (not workspace, not resizable)", len(got))
+	}
+}
+
+func TestSandboxResizableDisks_VirtiofsWorkspaceKeepsResizableVolumes(t *testing.T) {
+	mounts := []agent.GuestMount{
+		{Device: "/dev/vdb", Target: "/var/lib/docker", FSType: "ext4", Resizable: true},
+		{Device: "/dev/vdd", Target: "/root/.cache", FSType: "ext4", Resizable: true},
+		{Device: "nxfs0", Target: "/workspace", FSType: "virtiofs"},
+		{Device: "nxfs1", Target: "/root/.claude", FSType: "virtiofs"},
+	}
+	got, msg, err := sandboxResizableDisks(mounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Index != 0 || got[1].Index != 2 {
+		t.Fatalf("got %+v, want docker@0 and cache@2", got)
+	}
+	if !strings.Contains(msg, "2 disk(s) (workspace mount: false)") {
+		t.Errorf("msg = %q", msg)
+	}
+}
+
+func TestSandboxResizableDisks_NoBlockMounts(t *testing.T) {
+	mounts := []agent.GuestMount{{Device: "nxfs0", Target: "/workspace", FSType: "virtiofs"}}
+	got, msg, err := sandboxResizableDisks(mounts)
+	if err != nil || len(got) != 0 || !strings.Contains(msg, "disk telemetry disabled") {
+		t.Fatalf("got %+v msg=%q err=%v", got, msg, err)
+	}
+}
+
+func TestSandboxResizableDisks_TwoWorkspaceMountsIsError(t *testing.T) {
+	mounts := []agent.GuestMount{
+		{Device: "/dev/vdb", Target: "/a", FSType: "ext4", IsWorkspace: true},
+		{Device: "/dev/vdc", Target: "/b", FSType: "ext4", IsWorkspace: true},
+	}
+	if _, _, err := sandboxResizableDisks(mounts); err == nil {
+		t.Fatal("expected error for two workspace mounts")
 	}
 }
 
