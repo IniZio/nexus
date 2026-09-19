@@ -48,6 +48,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -1439,6 +1440,79 @@ fi
 	}
 }
 
+/**
+ * claudePrivateDirs / claudePrivateFiles are the entries under /root/.claude
+ * that hold per-session or per-machine state and must never be shared
+ * between the host and a sandbox, or between sandboxes: transcripts
+ * (projects), prompt history, todos, shell snapshots, caches, IDE and job
+ * locks. Everything else in ~/.claude — credentials, settings, CLAUDE.md,
+ * plugins, skills, commands, hooks — is operator configuration and stays on
+ * the shared live mount so a credential refresh in either direction is seen
+ * by both. Files must be listed separately: a bind onto a file needs a file
+ * backing, and a mkdir at that path would shadow the host's file with a dir.
+ */
+var claudePrivateDirs = []string{
+	"projects", "sessions", "session-env", "todos", "file-history",
+	"shell-snapshots", "debug", "cache", "paste-cache", "tmp", "transcripts",
+	"telemetry", "statsig", "ide", "jobs", "daemon",
+}
+
+var claudePrivateFiles = []string{"history.jsonl", "daemon.lock", "scheduled_tasks.lock"}
+
+/** claudePrivateBackingRoot is where the private backings live: the governor-visible agentcfg volume when mounted, else root ext4. */
+const claudePrivateBackingRoot = "/var/lib/nexus/agentcfg/private"
+
+var seedClaudePrivateStateFn = seedClaudePrivateState
+
+/**
+ * seedClaudePrivateState bind-mounts a sandbox-private backing over each
+ * entry of claudePrivateDirs/claudePrivateFiles inside /root/.claude while
+ * the parent stays the shared live host mount. Backings persist across
+ * stop/start on the agentcfg volume (or root ext4 when that volume is not
+ * attached — isolation over governor visibility). Idempotent: an entry
+ * already on a different device than its parent is left alone. Nothing is
+ * copied out of the shared dir: those transcripts were written under one
+ * slug by every sandbox and cannot be attributed to this one.
+ */
+func seedClaudePrivateState(ctx context.Context, id domain.SandboxID, execer service.GuestExecer) error {
+	script := fmt.Sprintf(`set -eu
+root=/root/.claude
+backing=%s
+_mp_dev=$(stat -c '%%d' /var/lib/nexus/agentcfg 2>/dev/null) || _mp_dev=""
+_par_dev=$(stat -c '%%d' /var/lib/nexus 2>/dev/null) || { echo 'claude-private: stat /var/lib/nexus failed' >&2; exit 1; }
+if [ -z "$_mp_dev" ] || [ "$_mp_dev" = "$_par_dev" ]; then
+    backing=/var/lib/nexus/agentcfg-private
+    echo "claude-private: agentcfg volume absent; backings on root ext4 at $backing" >&2
+fi
+mkdir -p "$root" "$backing"
+root_dev=$(stat -c '%%d' "$root")
+is_masked() { [ "$(stat -c '%%d' "$1" 2>/dev/null || echo "$root_dev")" != "$root_dev" ]; }
+for d in %s; do
+    is_masked "$root/$d" && continue
+    mkdir -p "$backing/$d" "$root/$d"
+    mount --bind "$backing/$d" "$root/$d"
+done
+for f in %s; do
+    is_masked "$root/$f" && continue
+    [ -e "$backing/$f" ] || : > "$backing/$f"
+    [ -e "$root/$f" ] || : > "$root/$f"
+    mount --bind "$backing/$f" "$root/$f"
+done
+for p in %s %s; do
+    is_masked "$root/$p" || { echo "claude-private: $root/$p is still on the shared mount" >&2; exit 1; }
+done
+`, claudePrivateBackingRoot, strings.Join(claudePrivateDirs, " "), strings.Join(claudePrivateFiles, " "),
+		strings.Join(claudePrivateDirs, " "), strings.Join(claudePrivateFiles, " "))
+	code, err := execer(ctx, id, []string{"/bin/bash", "-c", script}, nil)
+	if err != nil {
+		return fmt.Errorf("claude private state: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("claude private state script exited %d", code)
+	}
+	return nil
+}
+
 var seedClaudeHomeSymlinkFn = seedClaudeHomeSymlink
 
 func seedClaudeHomeSymlink(ctx context.Context, id domain.SandboxID, hostHome string, execer service.GuestExecer) error {
@@ -1552,6 +1626,23 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 			// D-RAM-13: Branch 3 or attach error — fail closed, boot aborts.
 			return fmt.Errorf("supervisor: agentcfg overlay mount failed (fail-closed): %w", ovlErr)
 		}
+	}
+
+	/**
+	 * Live rw ~/.claude mount: the whole host dir is the guest's /root/.claude,
+	 * so without masking every sandbox's session transcripts land in the
+	 * host's ~/.claude/projects/-workspace/ (one slug for every sandbox) and
+	 * the guest lists the host's sessions as its own. This is the 2026-06-22
+	 * leak (NEX3-39) reintroduced by the live-mount design; the private binds
+	 * restore per-sandbox state while the parent stays shared for credential
+	 * write-through. Fail-closed like the overlay above: a sandbox that cannot
+	 * isolate its sessions must not boot and silently write into the host's.
+	 */
+	if in.HasClaudeRWMount {
+		if privErr := seedClaudePrivateStateFn(ctx, id, in.Execer); privErr != nil {
+			return fmt.Errorf("supervisor: claude private state binds failed (fail-closed): %w", privErr)
+		}
+		slog.Info("supervisor.claude_private_state_seeded", "sandbox", id, "dirs", claudePrivateDirs, "files", claudePrivateFiles)
 	}
 
 	if in.HasClaudeRWMount && in.ClaudeHostHome != "" && in.ClaudeHostHome != "/root" {
