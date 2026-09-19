@@ -1225,3 +1225,53 @@ func TestForceIncludeContainerfile_ExistingHardlinkNotTruncated(t *testing.T) {
 		}
 	})
 }
+
+// A cross-device staging dir that is DISK-backed is allowed: files are copied
+// instead of hardlinked. This is the nested-guest layout (/workspace on
+// virtiofs, /tmp on its own ext4 disk), where no writable same-device sibling
+// exists. The test needs two disk-backed devices; it skips when the temp dir
+// and the cwd's filesystem coincide.
+func TestFilteredWorktreeDir_CrossDeviceDiskBackedCopies(t *testing.T) {
+	srcDir := t.TempDir()
+	staging := t.TempDir()
+	cwd, _ := os.Getwd()
+	srcDev, _ := deviceIDOf(srcDir)
+	cwdDev, _ := deviceIDOf(cwd)
+	if srcDev == cwdDev {
+		t.Skip("temp dir and cwd share a device; no disk-backed cross-device pair on this host")
+	}
+	if mem, _ := memoryBackedFS(cwd); mem {
+		t.Skip("cwd is memory-backed")
+	}
+	staging = filepath.Join(cwd, ".wt-staging-test")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(staging) })
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pm, _ := patternmatcher.New(nil)
+	out, cleanup, err := filteredWorktreeDir(srcDir, pm, staging)
+	if err != nil {
+		t.Fatalf("disk-backed cross-device staging must be allowed: %v", err)
+	}
+	defer cleanup()
+	got, err := os.ReadFile(filepath.Join(out, "file.txt"))
+	if err != nil || string(got) != "hello" {
+		t.Fatalf("staged copy = %q, %v; want hello", got, err)
+	}
+}
+
+func TestMemoryBackedFS_tmpfsDetected(t *testing.T) {
+	if st, err := os.Stat("/dev/shm"); err != nil || !st.IsDir() {
+		t.Skip("/dev/shm unavailable")
+	}
+	mem, err := memoryBackedFS("/dev/shm")
+	if err != nil || !mem {
+		t.Fatalf("/dev/shm memory-backed = %v, %v; want true", mem, err)
+	}
+	if mem, _ := memoryBackedFS(t.TempDir()); mem && os.Getenv("TMPDIR") == "" {
+		t.Log("note: default temp dir is tmpfs on this host")
+	}
+}

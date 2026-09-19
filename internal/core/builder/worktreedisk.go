@@ -387,11 +387,11 @@ func preflightCaptureSize(srcDir, outExt4 string, combinedPM *patternmatcher.Pat
 //   - Sockets, device files, named pipes, irregular files: skipped.
 //
 // stagingBase is passed as the first argument to os.MkdirTemp. An empty string
-// uses the OS default (honouring TMPDIR). The staging directory MUST be on the
-// same filesystem as src: hardlinking across devices is impossible, and the copy
-// fallback would move all captured file data into memory-backed storage, risking
-// host OOM. filteredWorktreeDir detects a cross-device staging target and returns
-// an actionable error rather than silently falling back.
+// uses the OS default (honouring TMPDIR). The staging directory should be on the
+// same filesystem as src so files are hardlinked; on a different device they are
+// copied, which is refused only when that device is memory-backed (tmpfs/ramfs),
+// since copying a whole worktree into RAM is the host-OOM hazard this package
+// exists to prevent.
 //
 // Multiple hard links to the same source inode are naturally materialised as
 // independent files in the resulting ext4 image because mke2fs reads each path
@@ -405,11 +405,15 @@ func filteredWorktreeDir(src string, combinedPM *patternmatcher.PatternMatcher, 
 	}
 	cleanup := func() { os.RemoveAll(tmpDir) }
 
-	// Guard: refuse if the staging directory is on a different device than the
-	// source tree. A cross-device layout makes os.Link impossible, and the copy
-	// fallback would write all captured file data into whatever backing store
-	// tmpDir sits on (often a tmpfs) — the exact host-OOM hazard this package
-	// exists to prevent.
+	// Guard: a staging directory on a different device than the source makes
+	// os.Link impossible, so every captured file is COPIED there. That is only
+	// a hazard when the staging device is memory-backed (a tmpfs /tmp), the
+	// host-OOM case this package exists to prevent. A disk-backed staging dir
+	// just costs disk, and it is the only option when the source cannot host
+	// a sibling at all: inside a nexus guest /workspace is a virtiofs share of
+	// the host checkout, so "a parent directory of the source" would mean
+	// staging into the operator's worktree over the wire (2026-09-19,
+	// nested `sandbox create --file` refused with /tmp on its own ext4 disk).
 	srcDev, err := deviceIDOf(src)
 	if err != nil {
 		cleanup()
@@ -421,15 +425,22 @@ func filteredWorktreeDir(src string, combinedPM *patternmatcher.PatternMatcher, 
 		return "", nil, fmt.Errorf("worktreedisk: stat staging dir %q: %w", tmpDir, err)
 	}
 	if srcDev != tmpDev {
-		cleanup()
-		return "", nil, fmt.Errorf(
-			"worktreedisk: staging temp dir is on a different device than the source tree.\n"+
-				"  source:  %s (device %d)\n"+
-				"  staging: %s (device %d)\n"+
-				"Staging on a different device falls back to copying file data into memory-backed\n"+
-				"storage, risking host OOM. Set TMPDIR to a path on the same filesystem as the\n"+
-				"source tree (e.g. a parent directory of %s).",
-			src, srcDev, tmpDir, tmpDev, src)
+		memBacked, fsErr := memoryBackedFS(tmpDir)
+		if fsErr != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("worktreedisk: statfs staging dir %q: %w", tmpDir, fsErr)
+		}
+		if memBacked {
+			cleanup()
+			return "", nil, fmt.Errorf(
+				"worktreedisk: staging temp dir is on a different device than the source tree.\n"+
+					"  source:  %s (device %d)\n"+
+					"  staging: %s (device %d, memory-backed)\n"+
+					"Staging on a different device falls back to copying file data, and this staging\n"+
+					"filesystem is memory-backed, risking host OOM. Set TMPDIR to a disk-backed path\n"+
+					"(ideally on the same filesystem as the source tree, e.g. a parent directory of %s).",
+				src, srcDev, tmpDir, tmpDev, src)
+		}
 	}
 
 	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, werr error) error {
