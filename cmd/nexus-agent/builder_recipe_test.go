@@ -2,19 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
-// TestParseBuilderToolRecipe_RoundTrip is the primary guard for the
-// --tool-recipe argv decode (cmd/nexus-agent/main.go lines 304-309, now
-// delegated to parseBuilderToolRecipe). It proves that a fully-populated
-// ToolRecipe — including the SHA256ByArch map and nested Packages/Symlinks
-// slices — survives the JSON encode/decode round-trip intact. A decode that
-// silently produced a zero-value recipe would fail this test.
-//
-// This test is compiled by `make test` (no build tag).
 func TestParseBuilderToolRecipe_RoundTrip(t *testing.T) {
 	want := cred.ToolRecipe{
 		BinPath: "/usr/local/bin/cursor-agent",
@@ -39,7 +33,6 @@ func TestParseBuilderToolRecipe_RoundTrip(t *testing.T) {
 		},
 	}
 
-	// Encode to JSON (as the host vmbuilder does) then decode (as the guest does).
 	encoded, err := json.Marshal(want)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
@@ -50,7 +43,6 @@ func TestParseBuilderToolRecipe_RoundTrip(t *testing.T) {
 		t.Fatalf("parseBuilderToolRecipe: %v", err)
 	}
 
-	// Assert Packages length — a zero-value recipe has nil/empty Packages.
 	if len(got.Packages) != len(want.Packages) {
 		t.Fatalf("Packages len: got %d, want %d", len(got.Packages), len(want.Packages))
 	}
@@ -74,7 +66,6 @@ func TestParseBuilderToolRecipe_RoundTrip(t *testing.T) {
 		t.Errorf("Packages[0].InstallDir: got %q, want %q", pkg.InstallDir, wantPkg.InstallDir)
 	}
 
-	// SHA256ByArch — this is the key field: a dropped recipe produces nil here.
 	for arch, wantHash := range wantPkg.SHA256ByArch {
 		gotHash, ok := pkg.SHA256ByArch[arch]
 		if !ok {
@@ -89,7 +80,6 @@ func TestParseBuilderToolRecipe_RoundTrip(t *testing.T) {
 		t.Errorf("Packages[0].SHA256ByArch len: got %d, want %d", len(pkg.SHA256ByArch), len(wantPkg.SHA256ByArch))
 	}
 
-	// Symlinks slice.
 	if len(pkg.Symlinks) != len(wantPkg.Symlinks) {
 		t.Fatalf("Packages[0].Symlinks len: got %d, want %d", len(pkg.Symlinks), len(wantPkg.Symlinks))
 	}
@@ -103,14 +93,43 @@ func TestParseBuilderToolRecipe_RoundTrip(t *testing.T) {
 		}
 	}
 
-	// BinPath on the outer ToolRecipe.
 	if got.BinPath != want.BinPath {
 		t.Errorf("BinPath: got %q, want %q", got.BinPath, want.BinPath)
 	}
 }
 
-// TestParseBuilderToolRecipe_Empty confirms an absent --tool-recipe flag
-// (empty string) returns a zero-value recipe and no error.
+func TestParseBuilderToolRecipe_RoundTrip_OCI(t *testing.T) {
+	want := cred.ToolRecipe{
+		BinPath: "/usr/local/bin/claude",
+		Packages: []cred.RecipePackage{
+			{
+				Kind:       cred.RecipeKindOCI,
+				Name:       "claude-code",
+				Version:    "sha256:" + strings.Repeat("a", 64),
+				Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+				SrcPath:    "/home/agent/.local/share/claude/versions/",
+				InstallDir: "/usr/local/share/claude/versions",
+				BinRel:     "",
+				Symlinks:   []cred.RecipeSymlink{{LinkPath: "/usr/local/bin/claude"}},
+			},
+		},
+	}
+
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	got, err := parseBuilderToolRecipe(string(encoded))
+	if err != nil {
+		t.Fatalf("parseBuilderToolRecipe: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round-trip mismatch:\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
 func TestParseBuilderToolRecipe_Empty(t *testing.T) {
 	got, err := parseBuilderToolRecipe("")
 	if err != nil {
@@ -121,8 +140,6 @@ func TestParseBuilderToolRecipe_Empty(t *testing.T) {
 	}
 }
 
-// TestParseBuilderToolRecipe_InvalidJSON confirms a malformed flag value
-// returns an error rather than a zero-value recipe.
 func TestParseBuilderToolRecipe_InvalidJSON(t *testing.T) {
 	_, err := parseBuilderToolRecipe("{not valid json")
 	if err == nil {

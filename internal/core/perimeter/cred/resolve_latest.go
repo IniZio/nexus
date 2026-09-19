@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
 var registryBaseURL = "https://registry.npmjs.org"
@@ -17,27 +20,59 @@ func setRegistryBaseURL(u string) func() {
 	return func() { registryBaseURL = old }
 }
 
+var ociRemoteOptions []remote.Option
+
+func setOCIRemoteOptions(opts ...remote.Option) func() {
+	old := ociRemoteOptions
+	ociRemoteOptions = opts
+	return func() { ociRemoteOptions = old }
+}
+
 // ResolveFloatingVersions returns a copy of recipe where every floating npm
 // package version is replaced by the concrete dist-tags.latest from the npm
-// registry. Concrete versions pass through unchanged with no network call.
+// registry, and every floating OCI package version is replaced by the image's
+// manifest/index digest. Concrete versions pass through unchanged with no
+// network call.
 func ResolveFloatingVersions(ctx context.Context, recipe ToolRecipe) (ToolRecipe, error) {
 	pkgs := make([]RecipePackage, len(recipe.Packages))
 	copy(pkgs, recipe.Packages)
 
 	for i, p := range pkgs {
-		if p.Kind != RecipeKindNPM || !p.IsFloating() {
+		if !p.IsFloating() {
 			continue
 		}
-		version, err := resolveNPMLatest(ctx, p.Name)
-		if err != nil {
-			return ToolRecipe{}, err
+		switch p.Kind {
+		case RecipeKindNPM:
+			version, err := resolveNPMLatest(ctx, p.Name)
+			if err != nil {
+				return ToolRecipe{}, err
+			}
+			pkgs[i].Version = version
+		case RecipeKindOCI:
+			digest, err := resolveOCIDigest(ctx, p.Image)
+			if err != nil {
+				return ToolRecipe{}, err
+			}
+			pkgs[i].Version = digest
 		}
-		pkgs[i].Version = version
 	}
 
 	out := recipe
 	out.Packages = pkgs
 	return out, nil
+}
+
+func resolveOCIDigest(ctx context.Context, image string) (string, error) {
+	ref, err := name.ParseReference(image)
+	if err != nil {
+		return "", fmt.Errorf("resolve oci digest for %s: %w", image, err)
+	}
+	opts := append([]remote.Option{remote.WithContext(ctx)}, ociRemoteOptions...)
+	desc, err := remote.Head(ref, opts...)
+	if err != nil {
+		return "", fmt.Errorf("resolve oci digest for %s: %w", image, err)
+	}
+	return desc.Digest.String(), nil
 }
 
 func resolveNPMLatest(ctx context.Context, name string) (string, error) {

@@ -1,24 +1,5 @@
 package builder_test
 
-// Tests that guestBuild (the real production function that assembles the argv
-// exec'd into the builder VM as RunBuilderRole) correctly propagates ToolRecipe
-// and TargetArch to the exec argv.
-//
-// This is the test that catches the S7 bug class: recipe declared on the host
-// profile but silently dropped before reaching the SolveRequest inside the VM.
-//
-// Coverage claim: the test drives the REAL guestBuild production code path via
-// the GuestBuild export shim. The path it covers is:
-//
-//	BuildInVM → guestBuild → argv → nexus-agent --builder-role --tool-recipe=... --target-arch=...
-//
-// What remains uncovered by make test (//go:build integration files):
-//   - The in-VM half: nexus-agent parsing --tool-recipe → RunBuilderRole →
-//     BuildInGuestImage → buildkit_linux.go → SolveRequest.
-//     That wiring is tested end-to-end by the S4 live proof
-//     (internal/test/selfhost/builder_vm_e2e_test.go, //go:build integration).
-//   - The cmd_sandbox.go → BuildInVM → guestBuild chain (requires a KVM host).
-
 import (
 	"context"
 	"encoding/json"
@@ -30,8 +11,6 @@ import (
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
-// fakeExecFn is a GuestExecFn substitute that captures argv without executing
-// anything. It returns success (exitCode=0, err=nil).
 func captureArgvFn(captured *[]string) builder.GuestExecFn {
 	return func(_ context.Context, argv []string, _ io.Writer) (int32, error) {
 		*captured = append([]string(nil), argv...) // defensive copy
@@ -39,10 +18,6 @@ func captureArgvFn(captured *[]string) builder.GuestExecFn {
 	}
 }
 
-// minimalRecipe returns a ToolRecipe with one package and a non-empty SHA for
-// the given arch. The renderer requires a non-empty SHA to emit the layer (it
-// errors on the empty-sentinel); using a known-good value keeps the test
-// focused on argv propagation, not renderer validation.
 func minimalRecipe() cred.ToolRecipe {
 	return cred.ToolRecipe{
 		BinPath: "/usr/local/bin",
@@ -64,12 +39,24 @@ func minimalRecipe() cred.ToolRecipe {
 	}
 }
 
-// TestGuestBuild_RecipeReachesArgv is the primary regression test for S7.
-//
-// It calls the REAL guestBuild via the GuestBuild export shim with a non-empty
-// recipe and asserts that --tool-recipe=<json> and --target-arch=x64 appear in
-// the exec argv. Revert the plumbing in vmbuilder.go (remove the JSON append
-// block) and this test goes RED.
+func minimalOCIRecipe() cred.ToolRecipe {
+	return cred.ToolRecipe{
+		BinPath: "/usr/local/bin/claude",
+		Packages: []cred.RecipePackage{
+			{
+				Kind:       cred.RecipeKindOCI,
+				Name:       "claude-code",
+				Version:    "sha256:" + strings.Repeat("b", 64),
+				Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+				SrcPath:    "/home/agent/.local/share/claude/versions/",
+				InstallDir: "/usr/local/share/claude/versions",
+				BinRel:     "",
+				Symlinks:   []cred.RecipeSymlink{{LinkPath: "/usr/local/bin/claude"}},
+			},
+		},
+	}
+}
+
 func TestGuestBuild_RecipeReachesArgv(t *testing.T) {
 	recipe := minimalRecipe()
 	targetArch := "x64"
@@ -82,12 +69,10 @@ func TestGuestBuild_RecipeReachesArgv(t *testing.T) {
 		t.Fatalf("GuestBuild failed: %v", err)
 	}
 
-	// Assert --builder-role is present (invariant).
 	if !sliceContains(capturedArgv, "--builder-role") {
 		t.Errorf("argv missing --builder-role: %v", capturedArgv)
 	}
 
-	// Assert --tool-recipe= is present and carries parseable JSON.
 	recipeArg := argWithPrefix(capturedArgv, "--tool-recipe=")
 	if recipeArg == "" {
 		t.Fatalf("argv missing --tool-recipe=: %v\n\nThis is the S7 regression: the recipe is not reaching the SolveRequest inside the builder VM.", capturedArgv)
@@ -98,7 +83,6 @@ func TestGuestBuild_RecipeReachesArgv(t *testing.T) {
 		t.Fatalf("--tool-recipe value is not valid JSON: %v\nraw: %s", err, recipeJSON)
 	}
 
-	// Assert --target-arch= is present with the expected value.
 	archArg := argWithPrefix(capturedArgv, "--target-arch=")
 	if archArg == "" {
 		t.Fatalf("argv missing --target-arch=: %v", capturedArgv)
@@ -108,9 +92,6 @@ func TestGuestBuild_RecipeReachesArgv(t *testing.T) {
 	}
 }
 
-// TestGuestBuild_ZeroRecipeNoRecipeArgs verifies that when no recipe is set
-// (zero value), no --tool-recipe or --target-arch args are added to argv.
-// This prevents spurious args on builds that have no agent tool configured.
 func TestGuestBuild_ZeroRecipeNoRecipeArgs(t *testing.T) {
 	var capturedArgv []string
 	execFn := captureArgvFn(&capturedArgv)
@@ -128,9 +109,6 @@ func TestGuestBuild_ZeroRecipeNoRecipeArgs(t *testing.T) {
 	}
 }
 
-// TestGuestBuild_RecipeRoundTrip asserts that a populated ToolRecipe survives
-// JSON marshal → unmarshal intact. This proves the VM-boundary serialisation
-// is lossless for the cred.ToolRecipe type (maps, nested slices).
 func TestGuestBuild_RecipeRoundTrip(t *testing.T) {
 	original := minimalRecipe()
 
@@ -144,11 +122,9 @@ func TestGuestBuild_RecipeRoundTrip(t *testing.T) {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 
-	// BinPath round-trips.
 	if decoded.BinPath != original.BinPath {
 		t.Errorf("BinPath: got %q, want %q", decoded.BinPath, original.BinPath)
 	}
-	// Package count round-trips.
 	if len(decoded.Packages) != len(original.Packages) {
 		t.Fatalf("Packages length: got %d, want %d", len(decoded.Packages), len(original.Packages))
 	}
@@ -171,7 +147,48 @@ func TestGuestBuild_RecipeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestGoArchToVendorArch validates the explicit arch-namespace conversion.
+func TestGuestBuild_RecipeReachesArgv_OCI(t *testing.T) {
+	recipe := minimalOCIRecipe()
+	targetArch := "x64"
+
+	var capturedArgv []string
+	execFn := captureArgvFn(&capturedArgv)
+
+	err := builder.GuestBuild(context.Background(), execFn, nil, recipe, targetArch)
+	if err != nil {
+		t.Fatalf("GuestBuild failed: %v", err)
+	}
+
+	recipeArg := argWithPrefix(capturedArgv, "--tool-recipe=")
+	if recipeArg == "" {
+		t.Fatalf("argv missing --tool-recipe=: %v", capturedArgv)
+	}
+
+	var decoded cred.ToolRecipe
+	recipeJSON := strings.TrimPrefix(recipeArg, "--tool-recipe=")
+	if err := json.Unmarshal([]byte(recipeJSON), &decoded); err != nil {
+		t.Fatalf("--tool-recipe value is not valid JSON: %v\nraw: %s", err, recipeJSON)
+	}
+
+	if len(decoded.Packages) != 1 {
+		t.Fatalf("Packages len: got %d, want 1", len(decoded.Packages))
+	}
+	pkg := decoded.Packages[0]
+	wantPkg := recipe.Packages[0]
+	if pkg.Kind != cred.RecipeKindOCI {
+		t.Errorf("Kind: got %q, want %q", pkg.Kind, cred.RecipeKindOCI)
+	}
+	if pkg.Image != wantPkg.Image {
+		t.Errorf("Image: got %q, want %q", pkg.Image, wantPkg.Image)
+	}
+	if pkg.SrcPath != wantPkg.SrcPath {
+		t.Errorf("SrcPath: got %q, want %q", pkg.SrcPath, wantPkg.SrcPath)
+	}
+	if pkg.BinRel != wantPkg.BinRel {
+		t.Errorf("BinRel: got %q, want %q", pkg.BinRel, wantPkg.BinRel)
+	}
+}
+
 func TestGoArchToVendorArch(t *testing.T) {
 	cases := []struct {
 		goArch string

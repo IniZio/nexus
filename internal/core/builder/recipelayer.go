@@ -42,6 +42,12 @@ func RenderRecipeLayer(recipe cred.ToolRecipe, arch string) ([]byte, error) {
 			sb.WriteString(block)
 		case cred.RecipeKindNPM:
 			sb.WriteString(renderNPM(pkg))
+		case cred.RecipeKindOCI:
+			block, err := renderOCI(pkg)
+			if err != nil {
+				return nil, err
+			}
+			sb.WriteString(block)
 		default:
 			return nil, fmt.Errorf("recipelayer: unknown package kind %q for package %q", pkg.Kind, pkg.Name)
 		}
@@ -143,9 +149,77 @@ func isDottedNumeric(v string) bool {
 	return true
 }
 
-// renderNPM emits one RUN instruction that installs an npm package globally at
-// the pinned version. npm manages its own bin symlinks; no explicit link step
-// is needed.
+func renderOCI(pkg cred.RecipePackage) (string, error) {
+	if pkg.Version == cred.FloatingVersion || !strings.HasPrefix(pkg.Version, "sha256:") {
+		return "", fmt.Errorf(
+			"recipelayer: %s: OCI digest unresolved (Version %q) — ResolveFloatingVersions must run before render",
+			pkg.Name, pkg.Version,
+		)
+	}
+	if len(pkg.Symlinks) == 0 {
+		return "", fmt.Errorf("recipelayer: %s: OCI package has no symlinks — at least one PATH entry required", pkg.Name)
+	}
+
+	repo := ociRepo(pkg.Image)
+	var sb strings.Builder
+
+	sb.WriteString("COPY --chown=0:0 --from=")
+	sb.WriteString(repo)
+	sb.WriteString("@")
+	sb.WriteString(pkg.Version)
+	sb.WriteString(" ")
+	sb.WriteString(pkg.SrcPath)
+	sb.WriteString(" ")
+	sb.WriteString(pkg.InstallDir)
+	sb.WriteString("/\n")
+
+	sb.WriteString("RUN set -e; d=\"$(ls -1d ")
+	sb.WriteString(pkg.InstallDir)
+	sb.WriteString("/* | head -n 1)\"; [ -n \"$d\" ] || { echo \"recipe ")
+	sb.WriteString(pkg.Name)
+	sb.WriteString(": nothing copied into ")
+	sb.WriteString(pkg.InstallDir)
+	sb.WriteString("\" >&2; exit 1; }; \\\n")
+
+	var linkTarget string
+	if pkg.BinRel == "" {
+		linkTarget = "\"$d\""
+	} else {
+		linkTarget = "\"$d/" + pkg.BinRel + "\""
+	}
+	for i, sl := range pkg.Symlinks {
+		if i == 0 {
+			sb.WriteString("    ln -sf ")
+		} else {
+			sb.WriteString(" && ln -sf ")
+		}
+		sb.WriteString(linkTarget)
+		sb.WriteString(" ")
+		sb.WriteString(sl.LinkPath)
+	}
+	sb.WriteString("\n")
+	return sb.String(), nil
+}
+
+func ociRepo(image string) string {
+	if i := strings.Index(image, "@"); i >= 0 {
+		image = image[:i]
+	}
+	lastSlash := strings.LastIndex(image, "/")
+	if lastSlash < 0 {
+		if i := strings.Index(image, ":"); i >= 0 {
+			return image[:i]
+		}
+		return image
+	}
+	prefix := image[:lastSlash]
+	lastSeg := image[lastSlash+1:]
+	if i := strings.Index(lastSeg, ":"); i >= 0 {
+		lastSeg = lastSeg[:i]
+	}
+	return prefix + "/" + lastSeg
+}
+
 func renderNPM(pkg cred.RecipePackage) string {
 	return "RUN npm install -g " + pkg.Name + "@" + pkg.Version + "\n"
 }

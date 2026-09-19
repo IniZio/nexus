@@ -327,6 +327,138 @@ func TestRenderRecipeLayer_NoAgentBranching(t *testing.T) {
 	}
 }
 
+const ociDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+var ociClaudeRecipe = cred.ToolRecipe{
+	Packages: []cred.RecipePackage{
+		{
+			Kind:       cred.RecipeKindOCI,
+			Name:       "claude",
+			Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+			Version:    ociDigest,
+			SrcPath:    "/home/agent/.local/share/claude/versions/",
+			InstallDir: "/usr/local/share/claude/versions",
+			BinRel:     "",
+			Symlinks:   []cred.RecipeSymlink{{LinkPath: "/usr/local/bin/claude"}},
+		},
+	},
+}
+
+const ociClaudeGolden = "COPY --chown=0:0 --from=docker/sandbox-templates@" + ociDigest + " /home/agent/.local/share/claude/versions/ /usr/local/share/claude/versions/\n" +
+	"RUN set -e; d=\"$(ls -1d /usr/local/share/claude/versions/* | head -n 1)\"; [ -n \"$d\" ] || { echo \"recipe claude: nothing copied into /usr/local/share/claude/versions\" >&2; exit 1; }; \\\n" +
+	"    ln -sf \"$d\" /usr/local/bin/claude\n"
+
+func TestRenderRecipeLayer_OCIGolden(t *testing.T) {
+	got, err := RenderRecipeLayer(ociClaudeRecipe, "x64")
+	if err != nil {
+		t.Fatalf("RenderRecipeLayer: %v", err)
+	}
+	if string(got) != ociClaudeGolden {
+		t.Errorf("OCI golden mismatch\ngot:\n%s\nwant:\n%s", got, ociClaudeGolden)
+	}
+}
+
+func TestRenderRecipeLayer_OCIBinRel(t *testing.T) {
+	recipe := cred.ToolRecipe{
+		Packages: []cred.RecipePackage{
+			{
+				Kind:       cred.RecipeKindOCI,
+				Name:       "cursor",
+				Image:      "docker/sandbox-templates:cursor-nightly",
+				Version:    ociDigest,
+				SrcPath:    "/home/agent/.local/share/cursor/versions/",
+				InstallDir: "/usr/local/share/cursor/versions",
+				BinRel:     "cursor-agent",
+				Symlinks:   []cred.RecipeSymlink{{LinkPath: "/usr/local/bin/cursor-agent"}},
+			},
+		},
+	}
+	got, err := RenderRecipeLayer(recipe, "x64")
+	if err != nil {
+		t.Fatalf("RenderRecipeLayer: %v", err)
+	}
+	if !strings.Contains(string(got), `"$d/cursor-agent"`) {
+		t.Errorf("BinRel not embedded in link target; got:\n%s", got)
+	}
+}
+
+func TestRenderRecipeLayer_OCIUnresolvedDigest(t *testing.T) {
+	recipe := cred.ToolRecipe{
+		Packages: []cred.RecipePackage{
+			{
+				Kind:       cred.RecipeKindOCI,
+				Name:       "claude",
+				Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+				Version:    cred.FloatingVersion,
+				SrcPath:    "/home/agent/.local/share/claude/versions/",
+				InstallDir: "/usr/local/share/claude/versions",
+				Symlinks:   []cred.RecipeSymlink{{LinkPath: "/usr/local/bin/claude"}},
+			},
+		},
+	}
+	_, err := RenderRecipeLayer(recipe, "x64")
+	if err == nil || !strings.Contains(err.Error(), "unresolved") {
+		t.Fatalf("expected unresolved error, got %v", err)
+	}
+}
+
+func TestRenderRecipeLayer_OCINoSymlinks(t *testing.T) {
+	recipe := cred.ToolRecipe{
+		Packages: []cred.RecipePackage{
+			{
+				Kind:       cred.RecipeKindOCI,
+				Name:       "claude",
+				Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
+				Version:    ociDigest,
+				SrcPath:    "/home/agent/.local/share/claude/versions/",
+				InstallDir: "/usr/local/share/claude/versions",
+			},
+		},
+	}
+	_, err := RenderRecipeLayer(recipe, "x64")
+	if err == nil {
+		t.Fatal("expected error for no symlinks, got nil")
+	}
+}
+
+func TestOCIRepo(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"docker/sandbox-templates:claude-code-minimal-nightly", "docker/sandbox-templates"},
+		{"localhost:5000/foo:bar", "localhost:5000/foo"},
+		{"ghcr.io/x/y", "ghcr.io/x/y"},
+		{"docker/x:t@sha256:abc", "docker/x"},
+	}
+	for _, tc := range cases {
+		got := ociRepo(tc.in)
+		if got != tc.want {
+			t.Errorf("ociRepo(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRenderRecipeLayer_OCISyntax(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	got, err := RenderRecipeLayer(ociClaudeRecipe, "x64")
+	if err != nil {
+		t.Fatalf("RenderRecipeLayer: %v", err)
+	}
+	lines := strings.SplitN(string(got), "\n", -1)
+	var runLine string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "RUN ") {
+			runLine = l
+			break
+		}
+	}
+	script := strings.ReplaceAll(strings.TrimPrefix(runLine, "RUN "), "\\\n", "")
+	cmd := exec.Command("sh", "-n", "-c", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("sh -n syntax check failed: %v\n%s", err, out)
+	}
+}
+
 // TestExpandPlaceholders verifies {VERSION} and {ARCH} substitution and
 // confirms {OS} is intentionally passed through unexpanded.
 func TestExpandPlaceholders(t *testing.T) {
