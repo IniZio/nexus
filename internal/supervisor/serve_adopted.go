@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/govern"
 	"github.com/IniZio/nexus/internal/core/perimeter"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/resize"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/statedir"
 	"github.com/IniZio/nexus/internal/core/store"
@@ -139,6 +141,9 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	diskIndices := cfg.ResizableDiskIndices
 	if len(diskIndices) == 0 && cfg.HasWorkspaceDisk {
 		diskIndices = []int{cfg.WorkspaceDiskIndex}
+	}
+	if !cfg.Ephemeral && !slices.Contains(diskIndices, resize.RootDiskIndex) {
+		diskIndices = append([]int{resize.RootDiskIndex}, diskIndices...)
 	}
 	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, diskIndices)
 	go gov.Run(ctx)

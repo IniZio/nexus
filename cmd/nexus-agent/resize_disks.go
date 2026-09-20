@@ -3,11 +3,9 @@ package main
 // Platform-agnostic helpers for deriving the list of resizable (index, mount)
 // pairs that the telemetry producer collects per-disk stats for.
 //
-// Index convention: 0-based into the VM's ExtraDisks, matching the
-// /dev/vd{b+index} attachment order used by handleDiskGrow and GrowRequest.
-// vdb=0, vdc=1, vdd=2, etc.  This is the SAME index space as the host
-// DiskAxis and Config.ResizableDiskIndices, so a DiskSample.Index==i is read
-// by the host DiskAxis for ExtraDisks[i].
+// Index convention: resize.RootDiskIndex (-1) for the root disk (/dev/vda),
+// or 0-based into ExtraDisks for extra disks (/dev/vdb=0, /dev/vdc=1, etc.).
+// Matches the host DiskAxis and Config.ResizableDiskIndices index space.
 
 import (
 	"fmt"
@@ -17,10 +15,8 @@ import (
 	"github.com/IniZio/nexus/internal/core/resize"
 )
 
-// resizableDisk pairs a 0-based ExtraDisks index with the guest mount path
-// whose statfs() gives the disk's used/total bytes. Index follows the
-// /dev/vd{b+index} convention so the host DiskAxis can correlate telemetry
-// samples back to the right ExtraDisks entry without any additional mapping.
+// resizableDisk pairs a disk index with its guest mount path for statfs().
+// Index is resize.RootDiskIndex (-1) for root, or 0-based into ExtraDisks.
 type resizableDisk struct {
 	Index     int
 	MountPath string
@@ -103,7 +99,7 @@ func sandboxResizableDisks(mounts []agent.GuestMount) ([]resizableDisk, string, 
 	case len(disks) == 0 && hasWS:
 		fmt.Fprintf(&b, "nexus-agent: auto-resize: workspace mount %q: cannot derive disk index from device %q; disk telemetry disabled\n", wsMount.Target, wsMount.Device)
 	case len(disks) == 0:
-		fmt.Fprintf(&b, "nexus-agent: auto-resize: no workspace or resizable block mount in %d mount(s); disk telemetry disabled\n", len(mounts))
+		fmt.Fprintf(&b, "nexus-agent: auto-resize: no workspace or resizable block mount in %d mount(s); extra-disk telemetry skipped\n", len(mounts))
 	default:
 		fmt.Fprintf(&b, "nexus-agent: auto-resize: disk telemetry: %d disk(s) (workspace mount: %t) at index(es):", len(disks), hasWS)
 		for _, d := range disks {

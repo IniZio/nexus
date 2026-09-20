@@ -327,8 +327,133 @@ func TestGrowDisk_sparseAccountsForActual(t *testing.T) {
 	t.Logf("sparse file: apparent=%d B, actual=%d B (actual is %.1f%% of apparent)",
 		fi.Size(), actual, 100*float64(actual)/float64(fi.Size()))
 
-	if err := checkFreeSpace(diskPath, apparentSize); err != nil {
+	if err := checkFreeSpace(diskPath, apparentSize, false); err != nil {
 		t.Errorf("checkFreeSpace(target=apparentSize) returned unexpected error: %v", err)
+	}
+}
+
+func TestGrowDisk_rootDiskRefusedForMargin(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	const targetSize = 10 * 1024 * 1024
+	rootPath := filepath.Join(dir, "root.raw")
+	if err := createSizedFile(rootPath, origSize); err != nil {
+		t.Fatalf("create root disk: %v", err)
+	}
+	d.cfg.DiskImagePath = rootPath
+
+	origActual := diskActualBytes
+	diskActualBytes = func(string) (int64, error) { return 0, nil }
+	t.Cleanup(func() { diskActualBytes = origActual })
+
+	origStatfs := diskStatfs
+	diskStatfs = func(string) (int64, error) { return int64(targetSize) + rootDiskFreeMarginBytes - 1, nil }
+	t.Cleanup(func() { diskStatfs = origStatfs })
+
+	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	err := resizer.GrowDisk(context.Background(), resize.RootDiskIndex, targetSize)
+	if err == nil {
+		t.Fatal("GrowDisk root returned nil when free space is below root margin; want error")
+	}
+	if !strings.Contains(err.Error(), "root") {
+		t.Errorf("error %q does not mention root disk; must be distinguishable from generic out-of-space", err)
+	}
+	fi, _ := os.Stat(rootPath)
+	if fi.Size() != origSize {
+		t.Errorf("backing file size = %d after root-margin refusal; want %d (no truncate must occur)", fi.Size(), origSize)
+	}
+}
+
+func TestGrowDisk_rootDiskProceedsWithHeadroom(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	const targetSize = 10 * 1024 * 1024
+	rootPath := filepath.Join(dir, "root.raw")
+	if err := createSizedFile(rootPath, origSize); err != nil {
+		t.Fatalf("create root disk: %v", err)
+	}
+	d.cfg.DiskImagePath = rootPath
+
+	origActual := diskActualBytes
+	diskActualBytes = func(string) (int64, error) { return 0, nil }
+	t.Cleanup(func() { diskActualBytes = origActual })
+
+	origStatfs := diskStatfs
+	diskStatfs = func(string) (int64, error) { return int64(targetSize) + rootDiskFreeMarginBytes, nil }
+	t.Cleanup(func() { diskStatfs = origStatfs })
+
+	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	resizer.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		hostConn, guestConn := net.Pipe()
+		go func() {
+			defer guestConn.Close()
+			if _, err := resize.DecodeGrowRequest(guestConn); err != nil {
+				return
+			}
+			_ = resize.EncodeGrowResponse(guestConn, resize.GrowResponse{ResultBytes: targetSize})
+		}()
+		return hostConn, nil
+	}
+
+	if err := resizer.GrowDisk(context.Background(), resize.RootDiskIndex, targetSize); err != nil {
+		t.Errorf("GrowDisk root with sufficient headroom returned error: %v", err)
+	}
+}
+
+func TestGrowDisk_nonRootUnchangedAtOldThreshold(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	const targetSize = 10 * 1024 * 1024
+	diskPath := filepath.Join(dir, "extra0.raw")
+	if err := createSizedFile(diskPath, origSize); err != nil {
+		t.Fatalf("create extra disk: %v", err)
+	}
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: diskPath}}
+
+	origActual := diskActualBytes
+	diskActualBytes = func(string) (int64, error) { return 0, nil }
+	t.Cleanup(func() { diskActualBytes = origActual })
+
+	origStatfs := diskStatfs
+	diskStatfs = func(string) (int64, error) { return int64(targetSize) + rootDiskFreeMarginBytes - 1, nil }
+	t.Cleanup(func() { diskStatfs = origStatfs })
+
+	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	resizer.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		hostConn, guestConn := net.Pipe()
+		go func() {
+			defer guestConn.Close()
+			if _, err := resize.DecodeGrowRequest(guestConn); err != nil {
+				return
+			}
+			_ = resize.EncodeGrowResponse(guestConn, resize.GrowResponse{ResultBytes: targetSize})
+		}()
+		return hostConn, nil
+	}
+
+	if err := resizer.GrowDisk(context.Background(), 0, targetSize); err != nil {
+		t.Errorf("GrowDisk non-root with free space above old threshold returned error: %v; non-root behavior must be unchanged", err)
 	}
 }
 

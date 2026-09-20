@@ -46,6 +46,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -766,6 +767,9 @@ func RunDetached(cfg Config) error {
 	diskIndices := cfg.ResizableDiskIndices
 	if len(diskIndices) == 0 && cfg.HasWorkspaceDisk {
 		diskIndices = []int{cfg.WorkspaceDiskIndex}
+	}
+	if !cfg.Ephemeral && !slices.Contains(diskIndices, resize.RootDiskIndex) {
+		diskIndices = append([]int{resize.RootDiskIndex}, diskIndices...)
 	}
 	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, diskIndices)
 	go gov.Run(ctx)

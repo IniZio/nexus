@@ -183,7 +183,15 @@ func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetByte
 	}
 
 	if hostGrown {
-		if err := checkFreeSpace(diskPath, targetBytes); err != nil {
+		isRoot := diskIndex == resize.RootDiskIndex
+		if err := checkFreeSpace(diskPath, targetBytes, isRoot); err != nil {
+			if isRoot {
+				slog.Warn("cloudhypervisor.disk.grow_root_headroom_insufficient",
+					"sandbox", r.id,
+					"targetBytes", targetBytes,
+					"err", err,
+				)
+			}
 			return fmt.Errorf("cloudhypervisor: GrowDisk %s: %w", r.id, err)
 		}
 
@@ -241,7 +249,7 @@ func (r *SandboxResizer) sendGrowToGuest(conn net.Conn, diskIndex int, targetByt
 	return nil
 }
 
-func diskActualBytes(path string) (int64, error) {
+var diskActualBytes = func(path string) (int64, error) {
 	var st syscall.Stat_t
 	if err := syscall.Stat(path, &st); err != nil {
 		return 0, err
@@ -249,7 +257,17 @@ func diskActualBytes(path string) (int64, error) {
 	return int64(st.Blocks) * 512, nil
 }
 
-func checkFreeSpace(diskPath string, targetBytes int64) error {
+var diskStatfs = func(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
+const rootDiskFreeMarginBytes int64 = 5 * 1024 * 1024 * 1024
+
+func checkFreeSpace(diskPath string, targetBytes int64, isRoot bool) error {
 	dir := diskPath
 	for i := len(dir) - 1; i >= 0; i-- {
 		if dir[i] == '/' {
@@ -267,16 +285,24 @@ func checkFreeSpace(diskPath string, targetBytes int64) error {
 		return fmt.Errorf("stat %s: %w", diskPath, err)
 	}
 
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
+	free, err := diskStatfs(dir)
+	if err != nil {
 		return fmt.Errorf("statfs %s: %w", dir, err)
 	}
-	free := int64(st.Bavail) * int64(st.Bsize)
 	needed := targetBytes - actualBytes
 	if needed < 0 {
 		needed = 0
 	}
-	if free < needed {
+	floor := needed
+	if isRoot {
+		floor = needed + rootDiskFreeMarginBytes
+	}
+	if free < floor {
+		if isRoot && free >= needed {
+			return fmt.Errorf("root disk: insufficient host headroom for safety margin: "+
+				"need %d B + %d B root margin, have %d B free on %s",
+				needed, rootDiskFreeMarginBytes, free, dir)
+		}
 		return fmt.Errorf("host pool free space insufficient: actual alloc %d B, target %d B, need %d B more, have %d B free on %s",
 			actualBytes, targetBytes, needed, free, dir)
 	}

@@ -64,6 +64,8 @@ const (
 	// Source: OLD disk_resize.go:35 (diskGrowIncrement = 16 GiB).
 	diskGrowStep = 16 * diskGiB
 
+	diskRootGrowStep = 2 * diskGiB // root disk only; 16 GiB overshoots a ~5 GiB root
+
 	// diskDefaultMax: hard ceiling when Bounds.DiskMaxBytes is zero.
 	// Source: OLD disk_resize.go:40 (diskMaxBytes = 100 GiB).
 	// This ceiling applies PER AXIS: each named-volume disk and the workspace
@@ -153,6 +155,9 @@ func (a *DiskAxis) Evaluate(ctx context.Context) {
 	// (B) DiskStats empty (old guest agent): fall back to the legacy single-disk
 	//     fields. Only the workspace disk is reported this way; named-volume axes
 	//     at other indices are silently idle (safe: no spurious grow).
+	if len(s.DiskStats) == 0 && a.diskIndex == resize.RootDiskIndex {
+		return
+	}
 	used := s.DiskUsedBytes
 	total := s.DiskTotalBytes
 	supported := s.DiskSupported
@@ -227,7 +232,11 @@ func (a *DiskAxis) Evaluate(ctx context.Context) {
 		return
 	}
 
-	target := current + diskGrowStep
+	step := diskGrowStep
+	if a.diskIndex == resize.RootDiskIndex {
+		step = diskRootGrowStep
+	}
+	target := current + step
 	if target > ceiling {
 		target = ceiling
 	}

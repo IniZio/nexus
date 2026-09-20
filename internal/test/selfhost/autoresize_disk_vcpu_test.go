@@ -1065,3 +1065,227 @@ func TestAutoResizeVCPU(t *testing.T) {
 			baseSample.VCPUOnline, finalVCPUOnline, cpuOnlineMask)
 	}
 }
+
+// ── Test 4: Root disk telemetry backfill ─────────────────────────────────────
+
+// TestAutoResizeRootDiskTelemetry proves that the supervisor backfills
+// resize.RootDiskIndex into diskIndices at startup even when it is absent from
+// ResizableDiskIndices in the spawn config (simulating an old spawn.json).
+//
+// The guest agent must report DiskStats with an entry at Index=-1 (root disk /),
+// proving the root axis is wired and telemetry is flowing.
+func TestAutoResizeRootDiskTelemetry(t *testing.T) {
+	skipUnlessKVMSH(t)
+	chBin := skipUnlessCHBinSH(t)
+	skipUnlessMke2fsSH(t)
+
+	hostMiB := hostMemAvailableMiB()
+	if hostMiB >= 0 && hostMiB < 2048 {
+		t.Skipf("skipping: host MemAvailable=%d MiB < 2048 MiB required", hostMiB)
+	}
+
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("findRepoRoot: %v", err)
+	}
+	kernelPath := kernelPathSH(t, repoRoot)
+
+	socketDir, err := os.MkdirTemp("/tmp", "ar-root-sock-")
+	if err != nil {
+		t.Fatalf("MkdirTemp socketDir: %v", err)
+	}
+	if len(socketDir)+selfhostSockNameLen > selfhostSunPathMax {
+		os.RemoveAll(socketDir)
+		t.Skipf("socket dir path too long for AF_UNIX: %s", socketDir)
+	}
+	stateDir, err := os.MkdirTemp("/tmp", "ar-root-state-")
+	if err != nil {
+		os.RemoveAll(socketDir)
+		t.Fatalf("MkdirTemp stateDir: %v", err)
+	}
+	diskDir := t.TempDir()
+	storeRoot := t.TempDir()
+	cacheRoot := filepath.Join(storeRoot, "images")
+
+	st, err := store.NewFileStore(storeRoot)
+	if err != nil {
+		t.Fatalf("store.NewFileStore: %v", err)
+	}
+	svcDrv, err := cloudhypervisor.New(cloudhypervisor.Config{BinaryPath: chBin, SocketDir: socketDir})
+	if err != nil {
+		t.Fatalf("cloudhypervisor.New (svcDrv): %v", err)
+	}
+	svc := service.New(st, svcDrv, lifecycle.New())
+
+	var supervisorPID int
+	var sandboxID domain.SandboxID
+
+	wsDiskPath := filepath.Join(diskDir, "workspace.raw")
+	arMakeExt4Disk(t, wsDiskPath, 200)
+
+	t.Cleanup(func() {
+		if supervisorPID > 0 {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := supervisor.StopSupervisor(stopCtx, supervisor.SockPath(stateDir)); err != nil {
+				t.Logf("cleanup StopSupervisor: %v", err)
+			}
+		}
+		if sandboxID != (domain.SandboxID{}) {
+			rmCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := svc.Remove(rmCtx, sandboxID.String()); err != nil {
+				t.Logf("cleanup svc.Remove: %v", err)
+			}
+		}
+		if svLog, err := os.ReadFile(filepath.Join(stateDir, "supervisor.log")); err == nil && t.Failed() {
+			t.Logf("=== supervisor log (tail 100) ===\n%s", lastNLines(string(svLog), 100))
+		}
+		os.RemoveAll(socketDir)
+		os.RemoveAll(stateDir)
+	})
+
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("image.NewCache: %v", err)
+	}
+	imgCtx, imgCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer imgCancel()
+	img, buildErr := BuildAgentBaseImage(imgCtx, cache)
+	if buildErr != nil {
+		switch {
+		case errors.Is(buildErr, ErrDockerUnavailable):
+			t.Skip("docker unavailable:", buildErr)
+		case errors.Is(buildErr, builder.ErrMke2fsUnavailable):
+			t.Skip("mke2fs unavailable:", buildErr)
+		}
+		t.Fatalf("BuildAgentBaseImage: %v", buildErr)
+	}
+	nexusBin := buildNexusBin(t)
+
+	const memCeiling int64 = 1024 * 1024 * 1024
+
+	wsMount := agent.GuestMount{Device: arGuestDev(0), Target: "/workspace", FSType: "ext4", IsWorkspace: true}
+	svCmdline := arWsMountCmdline([]agent.GuestMount{wsMount}) +
+		" --mem-ceiling=" + strconv.FormatInt(memCeiling, 10)
+
+	var rootfsDiskPath string
+	var bootDrv *cloudhypervisor.CHDriver
+
+	factory := service.DriverFactory(func(resolvedExt4 string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
+		rootfsDiskPath = resolvedExt4
+		chExtra := make([]cloudhypervisor.ExtraDisk, len(extraDisks))
+		for i, ed := range extraDisks {
+			chExtra[i] = cloudhypervisor.ExtraDisk{Path: ed.Path}
+		}
+		var newErr error
+		bootDrv, newErr = cloudhypervisor.New(cloudhypervisor.Config{
+			BinaryPath:    chBin,
+			SocketDir:     socketDir,
+			KernelPath:    kernelPath,
+			DiskImagePath: resolvedExt4,
+			ExtraDisks:    chExtra,
+			StartTimeout:  30 * time.Second,
+			MemoryMaxMiB:  1024,
+		})
+		return bootDrv, newErr
+	})
+	probe := service.ProbeFunc(func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
+		return realProbeSH(bootDrv)(ctx, drv, id)
+	})
+
+	bootCtx, bootCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer bootCancel()
+	sb, err := service.CreateAndBoot(bootCtx, svc, cache, factory, probe,
+		"ar-root", "telemetry",
+		service.CreateAndBootOptions{
+			Image:               service.ImageSpec{Digest: string(img.Digest)},
+			CacheRoot:           cacheRoot,
+			ReachabilityTimeout: 60 * time.Second,
+			ExtraDisks:          []service.ExtraDisk{{Path: wsDiskPath}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+	sandboxID = sb.ID
+
+	waitForAgentSH(t, bootDrv, sb.ID, 30*time.Second)
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer stopCancel()
+	if _, err := svc.Stop(stopCtx, sb.ID.String()); err != nil {
+		t.Fatalf("svc.Stop: %v", err)
+	}
+
+	// SpawnDetached with ResizableDiskIndices that does NOT include RootDiskIndex,
+	// simulating a pre-feature spawn.json. The supervisor backfill must add it.
+	pid, _, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
+		Config: supervisor.Config{
+			SandboxRef:           sb.ID.String(),
+			StoreRoot:            storeRoot,
+			StateDir:             stateDir,
+			CHBin:                chBin,
+			SocketDir:            socketDir,
+			KernelPath:           kernelPath,
+			DiskPath:             rootfsDiskPath,
+			ExtraDisks:           []string{wsDiskPath},
+			MemoryMiB:            512,
+			GovBounds:            resize.Bounds{MemMinBytes: 600 << 20, MemMaxBytes: 1024 << 20},
+			ResizableDiskIndices: []int{0}, // old-style: no RootDiskIndex
+			Cmdline:              svCmdline,
+		},
+		Exe:          nexusBin,
+		LogPath:      filepath.Join(stateDir, "supervisor.log"),
+		ReadyTimeout: 3 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("supervisor.SpawnDetached: %v", err)
+	}
+	supervisorPID = pid
+
+	shadowDrv, err := cloudhypervisor.New(cloudhypervisor.Config{
+		BinaryPath: chBin, SocketDir: socketDir, KernelPath: kernelPath, DiskImagePath: rootfsDiskPath,
+	})
+	if err != nil {
+		t.Fatalf("shadowDrv: %v", err)
+	}
+	waitForAgentSH(t, shadowDrv, sb.ID, 60*time.Second)
+
+	const pollTimeout = 30 * time.Second
+	pollStart := time.Now()
+	var rootEntry resize.DiskSample
+	var rootFound bool
+	for time.Since(pollStart) < pollTimeout {
+		s, sErr := dialTelemetrySample(shadowDrv, sb.ID)
+		if sErr != nil {
+			t.Logf("telemetry poll: %v (will retry)", sErr)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		for _, ds := range s.DiskStats {
+			if ds.Index == resize.RootDiskIndex {
+				rootEntry = ds
+				rootFound = true
+				break
+			}
+		}
+		if rootFound {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+
+	t.Logf("EVIDENCE root disk: found=%v supported=%v total=%d MiB used=%d MiB",
+		rootFound, rootEntry.Supported, rootEntry.TotalBytes>>20, rootEntry.UsedBytes>>20)
+
+	if !rootFound {
+		t.Errorf("FAIL: DiskStats has no entry at Index=%d (RootDiskIndex) — backfill did not wire root axis",
+			resize.RootDiskIndex)
+	} else {
+		t.Logf("PASS: root disk telemetry present at Index=%d, supported=%v", resize.RootDiskIndex, rootEntry.Supported)
+	}
+	if rootFound && !rootEntry.Supported {
+		t.Errorf("FAIL: root disk entry Supported=false — statfs on / failed or root mount not detected")
+	}
+}

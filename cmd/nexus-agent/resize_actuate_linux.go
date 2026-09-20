@@ -46,9 +46,8 @@ var (
 // look healthy and suppress a grow decision. Supported=false lets the governor
 // fall back to the MemAvailable ratio alone (motive.md §Axis-1, item 4).
 //
-// disks is the list of resizable (index, mountPath) pairs for this VM: one
-// workspace disk for a normal sandbox, or one-or-more cache disks for a builder
-// VM. Each entry is stat'd and reported as a [resize.DiskSample] in DiskStats.
+// disks is the list of resizable (index, mountPath) pairs for this VM: root
+// plus any extra disks for a normal sandbox, or cache disks for a builder VM. Each entry is stat'd and reported as a [resize.DiskSample] in DiskStats.
 // The legacy DiskUsedBytes/DiskTotalBytes/DiskSupported fields mirror the first
 // entry (the primary disk) for callers that have not migrated to DiskStats.
 func collectSample(disks []resizableDisk) (resize.Sample, error) {

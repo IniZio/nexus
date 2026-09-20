@@ -565,3 +565,112 @@ func TestDiskAxis_LegacyFallback_WhenDiskStatsEmpty(t *testing.T) {
 		t.Errorf("legacy fallback: GrowDisk diskIndex = %d, want 0", dr.calls[0].diskIndex)
 	}
 }
+
+func newTestRootDiskAxis(t *testing.T, diskMaxBytes int64, dr *fakeDiskResizer) (*DiskAxis, *fakeClock) {
+	t.Helper()
+	resizer := newFakeResizer(2 * 1024 * 1024 * 1024)
+	g, clk := newTestGovernorMinMax(t, 2*1024*1024*1024, 8*1024*1024*1024, resizer, nil)
+	if diskMaxBytes > 0 {
+		g.bounds.DiskMaxBytes = diskMaxBytes
+	}
+	axis := NewDiskAxis(g, dr, resize.RootDiskIndex)
+	return axis, clk
+}
+
+func rootDiskSampleWithStats(total uint64, ratio float64) resize.Sample {
+	used := uint64(float64(total) * ratio)
+	return resize.Sample{
+		Timestamp: time.Now(),
+		DiskStats: []resize.DiskSample{
+			{Index: resize.RootDiskIndex, UsedBytes: used, TotalBytes: total, Supported: true},
+		},
+	}
+}
+
+func TestDiskAxis_Root_UsesSmallStep(t *testing.T) {
+	dr := &fakeDiskResizer{}
+	axis, clk := newTestRootDiskAxis(t, 0, dr)
+	pastBootDelay(clk)
+
+	totalBytes := uint64(5 * diskGiB)
+	injectSample(axis.g, clk, rootDiskSampleWithStats(totalBytes, 0.85))
+	axis.Evaluate(context.Background())
+
+	if len(dr.calls) != 1 {
+		t.Fatalf("GrowDisk called %d time(s), want 1", len(dr.calls))
+	}
+	wantTarget := int64(totalBytes) + diskRootGrowStep
+	if dr.calls[0].target != wantTarget {
+		t.Errorf("root grow target = %d, want %d (small step); got delta %d GiB, want %d GiB",
+			dr.calls[0].target, wantTarget,
+			(dr.calls[0].target-int64(totalBytes))/diskGiB,
+			diskRootGrowStep/diskGiB)
+	}
+}
+
+func TestDiskAxis_Root_SmallStep_NotCeilingJump(t *testing.T) {
+	dr := &fakeDiskResizer{}
+	ceiling := int64(20 * diskGiB)
+	axis, clk := newTestRootDiskAxis(t, ceiling, dr)
+	pastBootDelay(clk)
+
+	totalBytes := uint64(5 * diskGiB)
+	injectSample(axis.g, clk, rootDiskSampleWithStats(totalBytes, 0.85))
+	axis.Evaluate(context.Background())
+
+	if len(dr.calls) != 1 {
+		t.Fatalf("GrowDisk called %d time(s), want 1", len(dr.calls))
+	}
+	wantTarget := int64(totalBytes) + diskRootGrowStep
+	if dr.calls[0].target != wantTarget {
+		t.Errorf("root grow jumped to %d instead of step target %d (ceiling=%d)",
+			dr.calls[0].target, wantTarget, ceiling)
+	}
+	if dr.calls[0].target == ceiling {
+		t.Errorf("root grew straight to ceiling %d on first trigger — overshoot bug", ceiling)
+	}
+}
+
+func TestDiskAxis_NonRoot_StillUses16GiBStep(t *testing.T) {
+	dr := &fakeDiskResizer{}
+	axis, clk := newTestDiskAxis(t, 0, dr)
+	pastBootDelay(clk)
+
+	totalBytes := uint64(30 * diskGiB)
+	injectSample(axis.g, clk, diskSampleAtRatio(totalBytes, 0.85))
+	axis.Evaluate(context.Background())
+
+	if len(dr.calls) != 1 {
+		t.Fatalf("GrowDisk called %d time(s), want 1", len(dr.calls))
+	}
+	wantTarget := int64(totalBytes) + diskGrowStep
+	if dr.calls[0].target != wantTarget {
+		t.Errorf("non-root grow target = %d, want %d (16 GiB step)", dr.calls[0].target, wantTarget)
+	}
+}
+
+func TestDiskAxis_Root_ClampsAtCeiling(t *testing.T) {
+	dr := &fakeDiskResizer{}
+	ceiling := int64(20 * diskGiB)
+	axis, clk := newTestRootDiskAxis(t, ceiling, dr)
+	pastBootDelay(clk)
+
+	totalBytes := uint64(19 * diskGiB)
+	injectSample(axis.g, clk, rootDiskSampleWithStats(totalBytes, 0.85))
+	axis.Evaluate(context.Background())
+
+	if len(dr.calls) != 1 {
+		t.Fatalf("GrowDisk called %d time(s), want 1", len(dr.calls))
+	}
+	if dr.calls[0].target != ceiling {
+		t.Errorf("root near-ceiling grow target = %d, want clamped to %d", dr.calls[0].target, ceiling)
+	}
+
+	clk.Advance(diskGrowCooldown + time.Second)
+	injectSample(axis.g, clk, rootDiskSampleWithStats(uint64(ceiling), 0.90))
+	axis.Evaluate(context.Background())
+
+	if len(dr.calls) != 1 {
+		t.Errorf("root at ceiling: expected no additional GrowDisk, got %d total calls", len(dr.calls))
+	}
+}

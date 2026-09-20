@@ -111,7 +111,7 @@ func TestSandboxResizableDisks_VirtiofsWorkspaceKeepsResizableVolumes(t *testing
 func TestSandboxResizableDisks_NoBlockMounts(t *testing.T) {
 	mounts := []agent.GuestMount{{Device: "nxfs0", Target: "/workspace", FSType: "virtiofs"}}
 	got, msg, err := sandboxResizableDisks(mounts)
-	if err != nil || len(got) != 0 || !strings.Contains(msg, "disk telemetry disabled") {
+	if err != nil || len(got) != 0 || !strings.Contains(msg, "extra-disk telemetry skipped") {
 		t.Fatalf("got %+v msg=%q err=%v", got, msg, err)
 	}
 }
