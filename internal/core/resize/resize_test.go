@@ -628,3 +628,45 @@ func assertSampleResponseEqual(t *testing.T, want, got resize.SampleResponse) {
 		t.Errorf("VCPUOnline: got %d, want %d", gs.VCPUOnline, ws.VCPUOnline)
 	}
 }
+
+func TestRootDiskIndexRoundTrip(t *testing.T) {
+	if resize.RootDiskIndex != -1 {
+		t.Fatalf("RootDiskIndex = %d, want -1", resize.RootDiskIndex)
+	}
+
+	var growBuf bytes.Buffer
+	req := resize.GrowRequest{DiskIndex: resize.RootDiskIndex, TargetBytes: 10 * 1024 * 1024 * 1024}
+	if err := resize.EncodeGrowRequest(&growBuf, req); err != nil {
+		t.Fatalf("EncodeGrowRequest: %v", err)
+	}
+	got, err := resize.DecodeGrowRequest(&growBuf)
+	if err != nil {
+		t.Fatalf("DecodeGrowRequest: %v", err)
+	}
+	if got.DiskIndex != resize.RootDiskIndex {
+		t.Errorf("GrowRequest.DiskIndex = %d, want %d (RootDiskIndex)", got.DiskIndex, resize.RootDiskIndex)
+	}
+
+	sample := resize.DiskSample{Index: resize.RootDiskIndex, UsedBytes: 1024, TotalBytes: 2048, Supported: true}
+	if sample.Index != resize.RootDiskIndex {
+		t.Errorf("DiskSample.Index = %d, want %d (RootDiskIndex)", sample.Index, resize.RootDiskIndex)
+	}
+
+	resp := resize.SampleResponse{Sample: resize.Sample{
+		DiskStats: []resize.DiskSample{sample},
+	}}
+	var sampleBuf bytes.Buffer
+	if err := resize.EncodeSampleResponse(&sampleBuf, resp); err != nil {
+		t.Fatalf("EncodeSampleResponse: %v", err)
+	}
+	gotResp, err := resize.DecodeSampleResponse(&sampleBuf)
+	if err != nil {
+		t.Fatalf("DecodeSampleResponse: %v", err)
+	}
+	if len(gotResp.Sample.DiskStats) != 1 {
+		t.Fatalf("DiskStats len = %d, want 1", len(gotResp.Sample.DiskStats))
+	}
+	if gotResp.Sample.DiskStats[0].Index != resize.RootDiskIndex {
+		t.Errorf("DiskStats[0].Index = %d, want %d (RootDiskIndex)", gotResp.Sample.DiskStats[0].Index, resize.RootDiskIndex)
+	}
+}

@@ -52,6 +52,10 @@ const TelemetryVsockPort uint32 = 3002
 // memory_resize.go:36, cpu_resize.go:28).
 const SampleMaxAge = 60 * time.Second
 
+// RootDiskIndex addresses the root disk (/dev/vda, Config.DiskPath), which is
+// outside the 0-based ExtraDisks space; -1 is never a valid ExtraDisks slot.
+const RootDiskIndex = -1
+
 // DiskSample is per-disk usage telemetry for one resizable disk, keyed by its
 // 0-based index into the VM's ExtraDisks (same index space as GrowRequest.DiskIndex
 // and Config.ResizableDiskIndices).
