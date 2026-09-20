@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -18,7 +17,6 @@ import (
 	"github.com/IniZio/nexus/internal/core/govern"
 	"github.com/IniZio/nexus/internal/core/perimeter"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
-	"github.com/IniZio/nexus/internal/core/resize"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/statedir"
 	"github.com/IniZio/nexus/internal/core/store"
@@ -36,15 +34,10 @@ type serveAdoptedInput struct {
 	svc *service.Service
 	drv *cloudhypervisor.CHDriver
 	sb  domain.Sandbox
-	// seedCA: MITM CA for StartPerimeterOnly (D-HSH-18), nil on CA loss.
-	seedCA *service.CASeed
-	// refreshers: credential refreshers to keep warm.
-	refreshers []*cred.Refresher
-	// waitForPID: previous supervisor to await before binding IPC socket; zero on crash path.
-	waitForPID int
-	// logPrefix: distinguishes "supervisor.adopt" vs "supervisor.reacquire" log events.
-	logPrefix string
-	// startPerimeterFn: injected in tests to bypass perimeter setup.
+	seedCA           *service.CASeed
+	refreshers       []*cred.Refresher
+	waitForPID       int
+	logPrefix        string
 	startPerimeterFn func(ctx context.Context, sb domain.Sandbox, seed *service.CASeed) error
 }
 
@@ -110,7 +103,6 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 		if bootVCPUs == 0 {
 			bootVCPUs = 1
 		}
-		// ticket 14: runtime-derived, not record-derived
 		return handoffFromLiveSupervisor(hctx, peerSock, sup, cfg.SandboxRef, bootVCPUs, cfg.MemoryMiB)
 	})
 
@@ -142,9 +134,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	if len(diskIndices) == 0 && cfg.HasWorkspaceDisk {
 		diskIndices = []int{cfg.WorkspaceDiskIndex}
 	}
-	if !cfg.Ephemeral && !slices.Contains(diskIndices, resize.RootDiskIndex) {
-		diskIndices = append([]int{resize.RootDiskIndex}, diskIndices...)
-	}
+	diskIndices = backfillRootDiskIndex(diskIndices, cfg.Ephemeral)
 	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, diskIndices)
 	go gov.Run(ctx)
 

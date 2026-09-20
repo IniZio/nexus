@@ -1068,13 +1068,13 @@ func TestAutoResizeVCPU(t *testing.T) {
 
 // ── Test 4: Root disk telemetry backfill ─────────────────────────────────────
 
-// TestAutoResizeRootDiskTelemetry proves that the supervisor backfills
-// resize.RootDiskIndex into diskIndices at startup even when it is absent from
-// ResizableDiskIndices in the spawn config (simulating an old spawn.json).
+// TestAutoResizeRootDiskGuestTelemetry proves that the guest agent unconditionally
+// emits a DiskStats entry at Index=-1 (RootDiskIndex) for the root filesystem.
 //
-// The guest agent must report DiskStats with an entry at Index=-1 (root disk /),
-// proving the root axis is wired and telemetry is flowing.
-func TestAutoResizeRootDiskTelemetry(t *testing.T) {
+// This is a guest-agent telemetry assertion, not a host backfill assertion.
+// The host backfill (supervisor.go / serve_adopted.go) is covered by unit tests
+// in internal/supervisor/disk_indices_test.go.
+func TestAutoResizeRootDiskGuestTelemetry(t *testing.T) {
 	skipUnlessKVMSH(t)
 	chBin := skipUnlessCHBinSH(t)
 	skipUnlessMke2fsSH(t)
@@ -1280,7 +1280,7 @@ func TestAutoResizeRootDiskTelemetry(t *testing.T) {
 		rootFound, rootEntry.Supported, rootEntry.TotalBytes>>20, rootEntry.UsedBytes>>20)
 
 	if !rootFound {
-		t.Errorf("FAIL: DiskStats has no entry at Index=%d (RootDiskIndex) — backfill did not wire root axis",
+		t.Errorf("FAIL: guest agent did not emit DiskStats entry at Index=%d (RootDiskIndex) — root telemetry absent from guest",
 			resize.RootDiskIndex)
 	} else {
 		t.Logf("PASS: root disk telemetry present at Index=%d, supported=%v", resize.RootDiskIndex, rootEntry.Supported)

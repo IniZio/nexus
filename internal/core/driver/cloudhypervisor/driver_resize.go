@@ -185,13 +185,6 @@ func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetByte
 	if hostGrown {
 		isRoot := diskIndex == resize.RootDiskIndex
 		if err := checkFreeSpace(diskPath, targetBytes, isRoot); err != nil {
-			if isRoot {
-				slog.Warn("cloudhypervisor.disk.grow_root_headroom_insufficient",
-					"sandbox", r.id,
-					"targetBytes", targetBytes,
-					"err", err,
-				)
-			}
 			return fmt.Errorf("cloudhypervisor: GrowDisk %s: %w", r.id, err)
 		}
 

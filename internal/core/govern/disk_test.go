@@ -674,3 +674,22 @@ func TestDiskAxis_Root_ClampsAtCeiling(t *testing.T) {
 		t.Errorf("root at ceiling: expected no additional GrowDisk, got %d total calls", len(dr.calls))
 	}
 }
+
+func TestDiskAxis_RootGuard_EmptyDiskStats(t *testing.T) {
+	dr := &fakeDiskResizer{}
+	axis, clk := newTestRootDiskAxis(t, 0, dr)
+	pastBootDelay(clk)
+
+	s := resize.Sample{
+		Timestamp:      clk.Now(),
+		DiskUsedBytes:  uint64(0.90 * float64(50*diskGiB)),
+		DiskTotalBytes: uint64(50 * diskGiB),
+		DiskSupported:  true,
+	}
+	injectSample(axis.g, clk, s)
+	axis.Evaluate(context.Background())
+
+	if len(dr.calls) != 0 {
+		t.Errorf("GrowDisk called %d time(s) with empty DiskStats on root axis, want 0", len(dr.calls))
+	}
+}
