@@ -3984,8 +3984,11 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	 * Claude agentcfg overlay disk. The overlayfs upper and work dirs for
 	 * /root/.claude live at /var/lib/nexus/agentcfg/{upper,work} — both on
 	 * this volume. Moving them off root makes the governor-visible: the root
-	 * disk (/dev/vda) is never enrolled in ResizableDiskIndices, so it could
-	 * never be grown no matter how full /root/.claude grew. This volume can.
+	 * disk (/dev/vda) is enrolled in ResizableDiskIndices as RootDiskIndex so
+	 * the governor can grow it, but /root/.claude growth still benefits from a
+	 * dedicated volume: root ext4 and agentcfg overlayfs upper share the same
+	 * filesystem, so a runaway transcript cannot crowd out the root partition
+	 * while the governor is reacting. This volume can absorb that pressure.
 	 * Both upper and work share one filesystem (the kernel requirement for
 	 * overlayfs), satisfying the constraint without touching root ext4.
 	 * 2 GiB: the upper layer stores only deltas from the RO lower — transcripts,

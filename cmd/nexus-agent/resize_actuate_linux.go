@@ -312,12 +312,17 @@ func readVCPUs(sysPath string) (count, online int32) {
 // resize2fs against the wrong filesystem: data loss, not a failed build
 // (motive.md §HB — Gap 2, D-DC-15).
 func handleDiskGrow(req resize.GrowRequest) resize.GrowResponse {
-	if req.DiskIndex < 0 || req.DiskIndex > 25 {
-		return resize.GrowResponse{
-			Error: fmt.Sprintf("disk_index %d out of range [0,25]", req.DiskIndex),
+	var device string
+	if req.DiskIndex == resize.RootDiskIndex {
+		device = "/dev/vda"
+	} else {
+		if req.DiskIndex < 0 || req.DiskIndex > 25 {
+			return resize.GrowResponse{
+				Error: fmt.Sprintf("disk_index %d out of range [0,25]", req.DiskIndex),
+			}
 		}
+		device = fmt.Sprintf("/dev/vd%c", rune('b'+req.DiskIndex))
 	}
-	device := fmt.Sprintf("/dev/vd%c", rune('b'+req.DiskIndex))
 
 	// Assert ext4 before resize2fs. blkid returns the filesystem type without
 	// mounting; a mismatch means the index is wrong. Fail loud — data loss is

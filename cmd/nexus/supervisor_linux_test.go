@@ -396,3 +396,30 @@ func TestParseSupervisorFlags_NestedDefaultsOffWhenFlagAbsent(t *testing.T) {
 			"mean nested-OFF, never nested-ON (D-N3N-02 security contract)")
 	}
 }
+
+func TestRootDiskIndex_SpawnSpecRoundTrip(t *testing.T) {
+	stateDir := t.TempDir()
+
+	want := supervisor.Config{
+		SandboxRef:           "sb-rootdisk-test",
+		StoreRoot:            "/store",
+		StateDir:             stateDir,
+		CHBin:                "/usr/bin/cloud-hypervisor",
+		SocketDir:            "/run/nexus",
+		KernelPath:           "/boot/vmlinux",
+		DiskPath:             "/data/sb.raw",
+		ResizableDiskIndices: []int{resize.RootDiskIndex, 0},
+	}
+
+	if err := supervisor.WriteSpawnSpec(stateDir, want); err != nil {
+		t.Fatalf("WriteSpawnSpec: %v", err)
+	}
+
+	got, err := supervisor.ReadSpawnSpec(stateDir)
+	if err != nil {
+		t.Fatalf("ReadSpawnSpec: %v", err)
+	}
+	if !reflect.DeepEqual(got.ResizableDiskIndices, want.ResizableDiskIndices) {
+		t.Errorf("ResizableDiskIndices did not survive spawn.json round-trip: got %v, want %v", got.ResizableDiskIndices, want.ResizableDiskIndices)
+	}
+}

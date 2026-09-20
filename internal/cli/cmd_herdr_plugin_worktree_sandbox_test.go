@@ -769,7 +769,7 @@ func TestHerdrWorktreeSandboxCreateArgs_buildCacheDisksReachResizableDiskIndices
 		cred.AgentProfile{}, // agentProfile — zero value treated as claude-code
 	)
 
-	wantIndices := map[int]bool{0: true, 1: true, 2: true, numNamedDisks: true} // agentcfg, gocache, gopath, workspace
+	wantIndices := map[int]bool{resize.RootDiskIndex: true, 0: true, 1: true, 2: true, numNamedDisks: true}
 	got := map[int]bool{}
 	for _, idx := range cfg.ResizableDiskIndices {
 		got[idx] = true

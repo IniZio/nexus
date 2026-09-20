@@ -1823,7 +1823,7 @@ func buildHumanSupervisorConfig(
 	mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig,
 	agentProfile cred.AgentProfile,
 ) supervisor.Config {
-	var resizableDiskIndices []int
+	resizableDiskIndices := []int{resize.RootDiskIndex}
 	for i := range numNamedDisks {
 		resizableDiskIndices = append(resizableDiskIndices, i)
 	}

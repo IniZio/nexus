@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // ── diskIndexFromDevice ───────────────────────────────────────────────────────
@@ -25,8 +26,7 @@ func TestDiskIndexFromDevice(t *testing.T) {
 		{"/dev/vdz", 24, true},
 		// Invalid: virtiofs tag, not a /dev/vd* path.
 		{"workspace-tag", 0, false},
-		// Invalid: letter before 'b'.
-		{"/dev/vda", 0, false},
+		{"/dev/vda", resize.RootDiskIndex, true},
 		// Invalid: too short / too long.
 		{"/dev/vd", 0, false},
 		{"/dev/vdbb", 0, false},
@@ -227,14 +227,21 @@ func TestSelectResizableDisks_NormalMode(t *testing.T) {
 	wsDisks := []resizableDisk{{Index: 1, MountPath: "/workspace/repo"}}
 
 	got := selectResizableDisks(false, cacheDisks, wsDisks)
-	if len(got) != 1 {
-		t.Fatalf("normal mode: len = %d, want 1", len(got))
+	if len(got) != 2 {
+		t.Fatalf("normal mode: len = %d, want 2 (root + workspace)", len(got))
 	}
-	if got[0].Index != 1 {
-		t.Errorf("normal mode: Index = %d, want 1", got[0].Index)
+	if got[0].Index != resize.RootDiskIndex || got[0].MountPath != "/" {
+		t.Errorf("normal mode: got[0] = %+v, want root disk", got[0])
 	}
-	if got[0].MountPath != "/workspace/repo" {
-		t.Errorf("normal mode: MountPath = %q, want /workspace/repo", got[0].MountPath)
+	if got[1].Index != 1 || got[1].MountPath != "/workspace/repo" {
+		t.Errorf("normal mode: got[1] = %+v, want workspace", got[1])
+	}
+}
+
+func TestSelectResizableDisks_NormalModeNoWsDisks(t *testing.T) {
+	got := selectResizableDisks(false, nil, nil)
+	if len(got) != 1 || got[0].Index != resize.RootDiskIndex || got[0].MountPath != "/" {
+		t.Errorf("no-ws normal mode: got %+v, want root-only", got)
 	}
 }
 

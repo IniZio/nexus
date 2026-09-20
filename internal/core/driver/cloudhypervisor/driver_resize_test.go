@@ -917,6 +917,169 @@ func hookKeys(hooks map[int]func(context.Context, int64)) []int {
 	return keys
 }
 
+func TestGrowDisk_rootDiskHappyPath(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	const targetSize = 10 * 1024 * 1024
+	rootPath := filepath.Join(dir, "root.raw")
+	if err := createSizedFile(rootPath, origSize); err != nil {
+		t.Fatalf("create root disk: %v", err)
+	}
+	d.cfg.DiskImagePath = rootPath
+
+	var mu sync.Mutex
+	var gotID string
+	var gotSize uint64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize-disk", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ID          string `json:"id"`
+			DesiredSize uint64 `json:"desired_size"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		gotID = body.ID
+		gotSize = body.DesiredSize
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	fakeSockListenerMux(t, d.socketPath(id), mux)
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	resizer.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		hostConn, guestConn := net.Pipe()
+		go func() {
+			defer guestConn.Close()
+			if _, err := resize.DecodeGrowRequest(guestConn); err != nil {
+				return
+			}
+			_ = resize.EncodeGrowResponse(guestConn, resize.GrowResponse{ResultBytes: targetSize})
+		}()
+		return hostConn, nil
+	}
+
+	if err := resizer.GrowDisk(context.Background(), resize.RootDiskIndex, targetSize); err != nil {
+		t.Fatalf("GrowDisk root: %v", err)
+	}
+
+	fi, _ := os.Stat(rootPath)
+	if fi.Size() != targetSize {
+		t.Errorf("root backing file size = %d, want %d", fi.Size(), targetSize)
+	}
+
+	mu.Lock()
+	receivedID, receivedSize := gotID, gotSize
+	mu.Unlock()
+
+	if receivedID != "_disk0" {
+		t.Errorf("vm.resize-disk id = %q, want %q", receivedID, "_disk0")
+	}
+	if receivedSize != targetSize {
+		t.Errorf("vm.resize-disk size = %d, want %d", receivedSize, uint64(targetSize))
+	}
+}
+
+func TestGrowDisk_rootDiskRollback(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	rootPath := filepath.Join(dir, "root.raw")
+	if err := createSizedFile(rootPath, origSize); err != nil {
+		t.Fatalf("create root disk: %v", err)
+	}
+	d.cfg.DiskImagePath = rootPath
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/vm.resize-disk", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	fakeSockListenerMux(t, d.socketPath(id), mux)
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	if err := resizer.GrowDisk(context.Background(), resize.RootDiskIndex, origSize*2); err == nil {
+		t.Error("GrowDisk root with failing CH returned nil; want error")
+	}
+
+	fi, _ := os.Stat(rootPath)
+	if fi.Size() != origSize {
+		t.Errorf("root backing file size after rollback = %d, want %d", fi.Size(), origSize)
+	}
+}
+
+func TestGrowDisk_rootDiskNoHookNoPanic(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+
+	const origSize = 5 * 1024 * 1024
+	const targetSize = 10 * 1024 * 1024
+	rootPath := filepath.Join(dir, "root.raw")
+	if err := createSizedFile(rootPath, origSize); err != nil {
+		t.Fatalf("create root disk: %v", err)
+	}
+	d.cfg.DiskImagePath = rootPath
+
+	fakeSockListener(t, d.socketPath(id), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+	resizer.dialGuest = func(ctx context.Context, _ domain.SandboxID, _ uint32) (net.Conn, error) {
+		hostConn, guestConn := net.Pipe()
+		go func() {
+			defer guestConn.Close()
+			if _, err := resize.DecodeGrowRequest(guestConn); err != nil {
+				return
+			}
+			_ = resize.EncodeGrowResponse(guestConn, resize.GrowResponse{ResultBytes: targetSize})
+		}()
+		return hostConn, nil
+	}
+
+	if _, ok := resizer.postGrowHooks[resize.RootDiskIndex]; ok {
+		t.Fatal("postGrowHooks must not contain an entry for RootDiskIndex")
+	}
+
+	if err := resizer.GrowDisk(context.Background(), resize.RootDiskIndex, targetSize); err != nil {
+		t.Errorf("GrowDisk root with no hook panicked or errored: %v", err)
+	}
+}
+
+func TestGrowDisk_invalidIndicesRejected(t *testing.T) {
+	dir := t.TempDir()
+	d := newTestDriver(t, dir)
+	id := domain.NewSandboxID()
+	d.cfg.ExtraDisks = []ExtraDisk{{Path: filepath.Join(dir, "extra0.raw")}}
+
+	resizer := NewSandboxResizer(d, id, resize.Bounds{}, 512*1024*1024, 1)
+
+	cases := []struct {
+		name  string
+		index int
+	}{
+		{"negative-two", -2},
+		{"out-of-range", len(d.cfg.ExtraDisks)},
+		{"over-25-cap", 26},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := resizer.GrowDisk(context.Background(), tc.index, 10*1024*1024)
+			if err == nil {
+				t.Errorf("GrowDisk(%d) returned nil; want error", tc.index)
+			}
+		})
+	}
+}
+
 func fakeSockListener(t *testing.T, path string, handler http.Handler) {
 	t.Helper()
 	ln, err := net.Listen("unix", path)

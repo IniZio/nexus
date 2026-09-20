@@ -428,6 +428,47 @@ func TestHandleDiskGrow_InvalidIndex(t *testing.T) {
 	}
 }
 
+func TestHandleDiskGrow_RootDiskMapsToVda(t *testing.T) {
+	var gotDevice string
+	setResizeExec(t, func(name string, args ...string) ([]byte, error) {
+		switch name {
+		case "blkid":
+			for _, a := range args {
+				if strings.HasPrefix(a, "/dev/") {
+					gotDevice = a
+				}
+			}
+			return []byte("ext4\n"), nil
+		case "resize2fs":
+			return []byte("The filesystem on /dev/vda is now 655360 (4k) blocks long.\n"), nil
+		}
+		return nil, nil
+	})
+	resp := handleDiskGrow(resize.GrowRequest{DiskIndex: resize.RootDiskIndex, TargetBytes: 10 << 20})
+	if resp.Error != "" {
+		t.Fatalf("root disk grow: %s", resp.Error)
+	}
+	if gotDevice != "/dev/vda" {
+		t.Errorf("root disk: device = %q, want /dev/vda", gotDevice)
+	}
+}
+
+func TestHandleDiskGrow_RootDiskRefusesNonExt4(t *testing.T) {
+	setResizeExec(t, func(name string, _ ...string) ([]byte, error) {
+		if name == "blkid" {
+			return []byte("xfs\n"), nil
+		}
+		return nil, nil
+	})
+	resp := handleDiskGrow(resize.GrowRequest{DiskIndex: resize.RootDiskIndex, TargetBytes: 10 << 30})
+	if resp.Error == "" {
+		t.Fatal("expected ext4 guard error for root disk, got none")
+	}
+	if !strings.Contains(resp.Error, "ext4") {
+		t.Errorf("error %q does not mention ext4", resp.Error)
+	}
+}
+
 // ── ZRAM swap ─────────────────────────────────────────────────────────────────
 
 // zramFixture wires injectable vars for ZRAM tests and returns a cleanup func.

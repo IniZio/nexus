@@ -172,26 +172,22 @@ func TestBuildHumanSupervisorConfig_NamedDiskResizableIndices(t *testing.T) {
 		{
 			name:          "one docker disk no shadow no workspace",
 			numNamedDisks: 1, numShadowDisks: 0, hasWorkspace: false,
-			wantResizable: []int{0},
+			wantResizable: []int{resize.RootDiskIndex, 0},
 		},
 		{
 			name:          "one docker disk one shadow with workspace",
 			numNamedDisks: 1, numShadowDisks: 1, hasWorkspace: true,
-			// ExtraDisks: [docker(0), shadow(1), workspace(2)]
-			// named: [0], workspace: 1+1=2
-			wantResizable: []int{0, 2},
+			wantResizable: []int{resize.RootDiskIndex, 0, 2},
 		},
 		{
 			name:          "no named disks with workspace",
 			numNamedDisks: 0, numShadowDisks: 0, hasWorkspace: true,
-			wantResizable: []int{0},
+			wantResizable: []int{resize.RootDiskIndex, 0},
 		},
 		{
 			name:          "two named disks no shadow with workspace",
 			numNamedDisks: 2, numShadowDisks: 0, hasWorkspace: true,
-			// ExtraDisks: [named0(0), named1(1), workspace(2)]
-			// named: [0, 1], workspace: 2+0=2
-			wantResizable: []int{0, 1, 2},
+			wantResizable: []int{resize.RootDiskIndex, 0, 1, 2},
 		},
 	}
 

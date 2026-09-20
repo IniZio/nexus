@@ -120,30 +120,50 @@ func (r *SandboxResizer) CurrentVCPUs() int32 {
 	return r.vcpus.Load()
 }
 
-// GrowDisk expands the host backing file for ExtraDisks[diskIndex] to targetBytes,
-// notifies CH via vm.resize-disk, then instructs the guest to run resize2fs over vsock.
-// Grow-only; the host leg rolls back only when vm.resize-disk fails. A guest-leg
-// failure leaves host file and CH at target and returns an error so the governor
-// retries: the next call with the same target skips the host leg and re-sends
-// resize2fs, which is idempotent.
-func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetBytes int64) error {
+func (r *SandboxResizer) rootDiskPath() string {
+	if r.d.cfg.DiskImagePath != "" {
+		return r.d.cfg.DiskImagePath
+	}
+	if r.d.cfg.DiskDir != "" {
+		return filepath.Join(r.d.cfg.DiskDir, r.id.String()+".raw")
+	}
+	return ""
+}
+
+func (r *SandboxResizer) diskIndexToPathAndCHID(diskIndex int) (diskPath, chDiskID string, err error) {
+	if diskIndex == resize.RootDiskIndex {
+		p := r.rootDiskPath()
+		if p == "" {
+			return "", "", fmt.Errorf("root disk path unknown (neither DiskImagePath nor DiskDir is set)")
+		}
+		return p, "_disk0", nil
+	}
 	if diskIndex < 0 {
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: diskIndex %d must be >= 0", r.id, diskIndex)
+		return "", "", fmt.Errorf("invalid diskIndex %d", diskIndex)
 	}
 	if diskIndex >= len(r.d.cfg.ExtraDisks) {
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: diskIndex %d out of range (ExtraDisks len %d)",
-			r.id, diskIndex, len(r.d.cfg.ExtraDisks))
+		return "", "", fmt.Errorf("diskIndex %d out of range (ExtraDisks len %d)", diskIndex, len(r.d.cfg.ExtraDisks))
 	}
 	if diskIndex > 25 {
-		return fmt.Errorf("cloudhypervisor: GrowDisk %s: diskIndex %d exceeds virtio-blk device namespace (max 25)",
-			r.id, diskIndex)
+		return "", "", fmt.Errorf("diskIndex %d exceeds virtio-blk device namespace (max 25)", diskIndex)
+	}
+	return r.d.cfg.ExtraDisks[diskIndex].Path, diskIndexToCHID(diskIndex), nil
+}
+
+// GrowDisk expands the host backing file for the disk at diskIndex to targetBytes,
+// notifies CH via vm.resize-disk, then instructs the guest to run resize2fs over vsock.
+// Pass resize.RootDiskIndex to grow the root disk (/dev/vda). Grow-only; the host
+// leg rolls back only when vm.resize-disk fails. A guest-leg failure leaves host
+// file and CH at target and returns an error so the governor retries: the next call
+// with the same target skips the host leg and re-sends resize2fs, which is idempotent.
+func (r *SandboxResizer) GrowDisk(ctx context.Context, diskIndex int, targetBytes int64) error {
+	diskPath, chDiskID, resolveErr := r.diskIndexToPathAndCHID(diskIndex)
+	if resolveErr != nil {
+		return fmt.Errorf("cloudhypervisor: GrowDisk %s: %w", r.id, resolveErr)
 	}
 
-	chDiskID := diskIndexToCHID(diskIndex)
 	guestDev := diskIndexToGuestDev(diskIndex)
 	_ = guestDev
-
-	diskPath := r.d.cfg.ExtraDisks[diskIndex].Path
 
 	if _, err := os.Stat(r.d.socketPath(r.id)); err != nil {
 		if os.IsNotExist(err) {

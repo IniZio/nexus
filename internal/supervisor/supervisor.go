@@ -1240,10 +1240,9 @@ func reconcileVMDeath(ctx context.Context, r vmDeathReconciler, id domain.Sandbo
 // also guards on the bounds, but skipping registration avoids polling overhead.
 //
 // Disk axis: registered for each index in diskIndices when DiskMaxBytes > 0.
-// diskIndices must contain only indices present in the supervisor's CHDriver
-// ExtraDisks list. A wrong diskIndex causes GrowDisk to truncate the wrong
-// backing file — data loss, not a build failure. Default-off (diskIndices nil or empty)
-// is the safe configuration when no workspace disks are attached.
+// resize.RootDiskIndex (-1) addresses the root disk (cfg.DiskPath); any other
+// index must be present in the CHDriver ExtraDisks slice. Default-off
+// (diskIndices nil or empty) is the safe configuration when no disks are attached.
 func wireGovernorAxes(
 	gov *govern.Governor,
 	cpuR resize.CPUResizer,

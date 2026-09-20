@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/resize"
 )
 
 // resizableDisk pairs a 0-based ExtraDisks index with the guest mount path
@@ -31,11 +32,13 @@ type resizableDisk struct {
 // Returns (0, false) for virtiofs tags, paths shorter or longer than "/dev/vdX",
 // or letters outside the valid range.
 func diskIndexFromDevice(device string) (int, bool) {
-	// "/dev/vdX" is exactly 8 bytes: /dev/vd = 7, plus one letter.
 	if len(device) != 8 || !strings.HasPrefix(device, "/dev/vd") {
 		return 0, false
 	}
 	letter := device[7]
+	if letter == 'a' {
+		return resize.RootDiskIndex, true
+	}
 	if letter < 'b' || letter > 'z' {
 		return 0, false
 	}
@@ -130,12 +133,13 @@ func selectResizableDisks(isBuilderRole bool, cacheDisks []agent.CacheDiskMount,
 	if isBuilderRole {
 		return resizableDisksFromCacheDisks(cacheDisks)
 	}
-	// Case 3: PID-1 in a builder VM — no workspace disks, but cache disks were
-	// passed on the kernel cmdline so PID-1 can report them via telemetry.
 	if len(wsDisks) == 0 && len(cacheDisks) > 0 {
 		return resizableDisksFromCacheDisks(cacheDisks)
 	}
-	return wsDisks
+	result := make([]resizableDisk, 0, len(wsDisks)+1)
+	result = append(result, resizableDisk{Index: resize.RootDiskIndex, MountPath: "/"})
+	result = append(result, wsDisks...)
+	return result
 }
 
 // resizableDisksFromCacheDisks builds the telemetry disk list for the builder
