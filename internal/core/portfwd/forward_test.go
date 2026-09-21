@@ -158,7 +158,7 @@ func TestF18AC1_ApplyBindsAndSpawnsProxyArgv(t *testing.T) {
 	}
 
 	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, RunConn: runConn}
-	lf, err := f.Apply(context.Background(), port)
+	lf, err := f.Apply(context.Background(), port, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestF18AC2_CloseEOFWithin100ms(t *testing.T) {
 		return &funcCloser{func() error { return nil }}, done, nil
 	}
 	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, RunConn: runConn}
-	lf, err := f.Apply(context.Background(), port)
+	lf, err := f.Apply(context.Background(), port, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,5 +611,67 @@ func TestForwarderEnsureMasterUsesCanonicalArgv(t *testing.T) {
 	want := MasterArgv("user@host", sock)
 	if !argvEq(capturedArgv, want) {
 		t.Fatalf("EnsureMaster argv\n got  %v\n want %v", capturedArgv, want)
+	}
+}
+
+func TestF18AC1_RemotePortUsedInWArgv(t *testing.T) {
+	localPort := ephemeralPort(t)
+	const remotePort = uint16(41234)
+
+	var mu sync.Mutex
+	var capturedArgv [][]string
+	runConn := func(argv []string, conn net.Conn) (io.Closer, <-chan struct{}, error) {
+		mu.Lock()
+		capturedArgv = append(capturedArgv, append([]string(nil), argv...))
+		mu.Unlock()
+		done := make(chan struct{})
+		go func() { defer close(done); io.Copy(io.Discard, conn) }()
+		return &funcCloser{func() error { conn.Close(); return nil }}, done, nil
+	}
+
+	f := &Forwarder{ControlPath: testSock, SSHHost: testHost, RunConn: runConn}
+	lf, err := f.Apply(context.Background(), localPort, remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf.Close()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(capturedArgv)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	argv := capturedArgv
+	mu.Unlock()
+	if len(argv) == 0 {
+		t.Fatal("RemotePort: no proxy spawned")
+	}
+	wantW := fmt.Sprintf("127.0.0.1:%d", remotePort)
+	found := false
+	for i, a := range argv[0] {
+		if a == "-W" && i+1 < len(argv[0]) {
+			if argv[0][i+1] == wantW {
+				found = true
+			} else {
+				t.Fatalf("RemotePort: -W target got %q want %q", argv[0][i+1], wantW)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("RemotePort: -W flag not found in argv %v", argv[0])
 	}
 }

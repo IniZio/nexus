@@ -131,25 +131,12 @@ func (fakeDialer) DialGuestPortForward(_ context.Context, _ string, _ uint32) (n
 }
 
 func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
-	// Find a free port in the forwardable range [GuestPortBase=1024, GuestPortTop=11023].
-	// OS ephemeral ports are typically >32768 which FilterListeners marks OutOfRange.
-	var freePort uint16
-	for p := uint16(8000); p <= 11000; p++ {
-		probe, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
-		if err == nil {
-			freePort = p
-			probe.Close()
-			break
-		}
-	}
-	if freePort == 0 {
-		t.Skip("no free port in forwardable range 8000-11000")
-	}
+	const guestPort = uint16(8080)
 
 	tmpDir := t.TempDir()
 	backend := &fakeBackend{
 		refs:  []portfwd.SandboxRef{{ID: "sb1", Status: portfwd.SandboxStatusRunning}},
-		binds: []portfwd.PortBind{{Port: freePort, BindAddr: "0.0.0.0"}},
+		binds: []portfwd.PortBind{{Port: guestPort, BindAddr: "0.0.0.0"}},
 	}
 	sup := &portForwardSupervisor{
 		sandboxRef: "test/sb1",
@@ -167,23 +154,30 @@ func TestReconcile_BindsAndUnbindsHostPort(t *testing.T) {
 	if err := sup.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile(add): %v", err)
 	}
-	if _, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", freePort), time.Second); err != nil {
-		t.Fatalf("port %d not bound after reconcile: %v", freePort, err)
+	hostPort := sup.hostPorts[guestPort]
+	if hostPort == 0 {
+		t.Fatalf("hostPorts[%d] = 0 after reconcile", guestPort)
+	}
+	if _, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort), time.Second); err != nil {
+		t.Fatalf("host port %d not bound after reconcile: %v", hostPort, err)
+	}
+
+	e := mergedEntry(t, tmpDir, guestPort)
+	if e.HostPort != hostPort {
+		t.Fatalf("state host_port = %d, want %d", e.HostPort, hostPort)
 	}
 
 	backend.binds = nil
 	if err := sup.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile(remove): %v", err)
 	}
-	// Give the Accept goroutine a moment to exit after Close.
 	time.Sleep(50 * time.Millisecond)
-	_, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", freePort), 100*time.Millisecond)
+	_, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort), 100*time.Millisecond)
 	if dialErr == nil {
-		t.Fatalf("port %d still bound after removal reconcile", freePort)
+		t.Fatalf("host port %d still bound after removal reconcile", hostPort)
 	}
 
-	stateFile := filepath.Join(tmpDir, "forwards.state")
-	if _, err := os.Stat(stateFile); err != nil {
+	if _, err := os.Stat(filepath.Join(tmpDir, "forwards.state")); err != nil {
 		t.Errorf("forwards.state not written: %v", err)
 	}
 }
@@ -217,20 +211,15 @@ func mergedEntry(t *testing.T, dir string, port uint16) portfwd.Entry {
 	return portfwd.Entry{}
 }
 
-// AC-6: a forwardable port whose host bind fails must never read as live.
 func TestReconcile_BindFailureWritesErrorThenRetries(t *testing.T) {
-	port := freeForwardablePort(t)
-	squatter, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		t.Fatalf("pre-bind %d: %v", port, err)
-	}
-	defer squatter.Close()
+	const port = uint16(3001)
 
 	tmpDir := t.TempDir()
 	backend := &fakeBackend{
 		refs:  []portfwd.SandboxRef{{ID: "sb1", Status: portfwd.SandboxStatusRunning}},
 		binds: []portfwd.PortBind{{Port: port, BindAddr: "0.0.0.0"}},
 	}
+	fail := true
 	sup := &portForwardSupervisor{
 		sandboxRef: "test/sb1",
 		backend:    backend,
@@ -239,6 +228,12 @@ func TestReconcile_BindFailureWritesErrorThenRetries(t *testing.T) {
 		stateDir:   tmpDir,
 		interval:   time.Second,
 		listeners:  make(map[uint16]net.Listener),
+		listenFunc: func(network, addr string) (net.Listener, error) {
+			if fail {
+				return nil, fmt.Errorf("listen tcp 127.0.0.1:0: bind: address already in use")
+			}
+			return net.Listen(network, addr)
+		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -259,7 +254,7 @@ func TestReconcile_BindFailureWritesErrorThenRetries(t *testing.T) {
 		t.Fatalf("bindErrs[%d] = %v, want address already in use", port, bindErr)
 	}
 
-	squatter.Close()
+	fail = false
 	if err := sup.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile(retry): %v", err)
 	}
@@ -271,8 +266,117 @@ func TestReconcile_BindFailureWritesErrorThenRetries(t *testing.T) {
 	if _, ok := sup.bindErrs[port]; ok {
 		t.Fatalf("bindErrs still holds port %d after successful retry", port)
 	}
-	if _, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second); err != nil {
-		t.Fatalf("port %d not bound after retry: %v", port, err)
+	hostPort := sup.hostPorts[port]
+	if hostPort == 0 {
+		t.Fatalf("hostPorts[%d] = 0 after successful retry", port)
+	}
+	if _, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort), time.Second); err != nil {
+		t.Fatalf("host port %d not bound after retry: %v", hostPort, err)
+	}
+}
+
+func TestReconcile_TwoSupervisors_EphemeralDistinctHostPorts(t *testing.T) {
+	const guestPort = uint16(3000)
+	makeBackend := func(id string) *fakeBackend {
+		return &fakeBackend{
+			refs:  []portfwd.SandboxRef{{ID: id, Status: portfwd.SandboxStatusRunning}},
+			binds: []portfwd.PortBind{{Port: guestPort, BindAddr: "0.0.0.0"}},
+		}
+	}
+	makeSup := func(ref string, b *fakeBackend) *portForwardSupervisor {
+		return &portForwardSupervisor{
+			sandboxRef: ref,
+			backend:    b,
+			disc:       &portfwd.Discoverer{Backend: b},
+			dialer:     fakeDialer{},
+			stateDir:   t.TempDir(),
+			interval:   time.Second,
+			listeners:  make(map[uint16]net.Listener),
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	b1 := makeBackend("sbA")
+	sup1 := makeSup("test/sbA", b1)
+	if err := sup1.reconcile(ctx); err != nil {
+		t.Fatalf("sup1 reconcile: %v", err)
+	}
+	defer func() {
+		for _, l := range sup1.listeners {
+			l.Close()
+		}
+	}()
+
+	b2 := makeBackend("sbB")
+	sup2 := makeSup("test/sbB", b2)
+	if err := sup2.reconcile(ctx); err != nil {
+		t.Fatalf("sup2 reconcile: %v", err)
+	}
+	defer func() {
+		for _, l := range sup2.listeners {
+			l.Close()
+		}
+	}()
+
+	hp1 := sup1.hostPorts[guestPort]
+	hp2 := sup2.hostPorts[guestPort]
+	if hp1 == 0 {
+		t.Fatalf("sup1 hostPorts[%d] = 0", guestPort)
+	}
+	if hp2 == 0 {
+		t.Fatalf("sup2 hostPorts[%d] = 0", guestPort)
+	}
+	if hp1 == hp2 {
+		t.Fatalf("both supervisors got host_port=%d; want distinct ephemeral ports", hp1)
+	}
+}
+
+func TestReconcile_HostPortStableAcrossTicks(t *testing.T) {
+	const guestPort = uint16(3000)
+
+	tmpDir := t.TempDir()
+	backend := &fakeBackend{
+		refs:  []portfwd.SandboxRef{{ID: "sb1", Status: portfwd.SandboxStatusRunning}},
+		binds: []portfwd.PortBind{{Port: guestPort, BindAddr: "0.0.0.0"}},
+	}
+	sup := &portForwardSupervisor{
+		sandboxRef: "test/sb1",
+		backend:    backend,
+		disc:       &portfwd.Discoverer{Backend: backend},
+		dialer:     fakeDialer{},
+		stateDir:   tmpDir,
+		interval:   time.Second,
+		listeners:  make(map[uint16]net.Listener),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() {
+		for _, l := range sup.listeners {
+			l.Close()
+		}
+	}()
+
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("tick 1 reconcile: %v", err)
+	}
+	hostPort1 := sup.hostPorts[guestPort]
+	if hostPort1 == 0 {
+		t.Fatalf("hostPorts[%d] = 0 after tick 1", guestPort)
+	}
+
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("tick 2 reconcile: %v", err)
+	}
+	hostPort2 := sup.hostPorts[guestPort]
+	if hostPort1 != hostPort2 {
+		t.Fatalf("host_port changed across ticks: %d → %d", hostPort1, hostPort2)
+	}
+
+	e := mergedEntry(t, tmpDir, guestPort)
+	if e.HostPort != hostPort1 {
+		t.Fatalf("state host_port = %d, want %d", e.HostPort, hostPort1)
 	}
 }
 

@@ -63,8 +63,8 @@ func TestReportForwardStatus_PortsPresent_SendsSortedList(t *testing.T) {
 	seedMetadataBinding(t, storeRoot, "wTest", "test/sb1", "sb1")
 
 	entries := []portfwd.Entry{
-		{Port: 5173, Sandbox: "test/sb1", Status: "live", ConfirmedAt: time.Now()},
-		{Port: 3000, Sandbox: "test/sb1", Status: "live", ConfirmedAt: time.Now()},
+		{Port: 5173, HostPort: 41235, Sandbox: "test/sb1", Status: "live", ConfirmedAt: time.Now()},
+		{Port: 3000, HostPort: 41234, Sandbox: "test/sb1", Status: "live", ConfirmedAt: time.Now()},
 	}
 	if err := portfwd.WriteSandboxState(stateDir, "sb1", entries, time.Now()); err != nil {
 		t.Fatalf("write state: %v", err)
@@ -88,8 +88,8 @@ func TestReportForwardStatus_PortsPresent_SendsSortedList(t *testing.T) {
 			t.Errorf("source = %v, want plugin:nexus", params["source"])
 		}
 		tokens, _ := params["tokens"].(map[string]interface{})
-		if tokens["port_forward_status"] != "3000,5173" {
-			t.Errorf("port_forward_status = %v, want 3000,5173", tokens["port_forward_status"])
+		if tokens["port_forward_status"] != "3000→41234,5173→41235" {
+			t.Errorf("port_forward_status = %v, want 3000→41234,5173→41235", tokens["port_forward_status"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no message received from fake socket within 2s")

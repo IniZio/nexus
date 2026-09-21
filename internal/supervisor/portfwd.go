@@ -75,7 +75,9 @@ type portForwardSupervisor struct {
 	interval        time.Duration
 	discoverTimeout time.Duration // bounds each DiscoverOne call; zero means portFwdDiscoverTimeout
 	listeners       map[uint16]net.Listener
-	bindErrs        map[uint16]error // last host-bind failure per port; retried every tick
+	hostPorts       map[uint16]uint16                          // ephemeral host port per bound guest port
+	listenFunc      func(string, string) (net.Listener, error) // nil uses net.Listen; overrideable in tests
+	bindErrs        map[uint16]error                           // last host-bind failure per port; retried every tick
 	reporter        func(ctx context.Context, ports []uint16)
 	lastReportedSet map[uint16]struct{}
 }
@@ -166,14 +168,19 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 
 	for port, lis := range p.listeners {
 		if _, ok := desired[port]; !ok {
+			hostPort := p.hostPorts[port]
 			lis.Close()
 			delete(p.listeners, port)
-			slog.Info("supervisor.portfwd.stopped", "sandboxRef", p.sandboxRef, "port", port)
+			delete(p.hostPorts, port)
+			slog.Info("supervisor.portfwd.stopped", "sandboxRef", p.sandboxRef, "guestPort", port, "hostPort", hostPort)
 		}
 	}
 
 	if p.bindErrs == nil {
 		p.bindErrs = make(map[uint16]error)
+	}
+	if p.hostPorts == nil {
+		p.hostPorts = make(map[uint16]uint16)
 	}
 	for port := range p.bindErrs {
 		if _, ok := desired[port]; !ok {
@@ -181,25 +188,32 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 		}
 	}
 
+	listenFn := p.listenFunc
+	if listenFn == nil {
+		listenFn = net.Listen
+	}
 	for _, l := range result.Forwardable {
 		if _, ok := p.listeners[l.Port]; ok {
 			continue
 		}
-		lis, lisErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", l.Port))
+		lis, lisErr := listenFn("tcp", "127.0.0.1:0")
 		if lisErr != nil {
 			p.bindErrs[l.Port] = lisErr
 			slog.Warn("supervisor.portfwd.listen_err",
 				"sandboxRef", p.sandboxRef,
-				"port", l.Port,
+				"guestPort", l.Port,
 				"err", lisErr,
 			)
 			continue
 		}
+		hostPort := uint16(lis.Addr().(*net.TCPAddr).Port)
 		delete(p.bindErrs, l.Port)
 		p.listeners[l.Port] = lis
+		p.hostPorts[l.Port] = hostPort
 		slog.Info("supervisor.portfwd.listening",
 			"sandboxRef", p.sandboxRef,
-			"port", l.Port,
+			"guestPort", l.Port,
+			"hostPort", hostPort,
 		)
 		go p.acceptLoop(ctx, lis, l.Port)
 	}
@@ -298,6 +312,7 @@ func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error
 		e := portfwd.Entry{Port: l.Port, Sandbox: p.sandboxRef}
 		if _, bound := p.listeners[l.Port]; bound {
 			e.Status = portFwdStatusLive
+			e.HostPort = p.hostPorts[l.Port]
 			e.ConfirmedAt = now
 		} else {
 			e.Status = portFwdStatusError
@@ -439,6 +454,7 @@ func (p *portForwardSupervisor) teardownAll() {
 	for port, lis := range p.listeners {
 		lis.Close()
 		delete(p.listeners, port)
+		delete(p.hostPorts, port)
 	}
-	_ = portfwd.RemoveSandboxState(p.stateDir, p.sandboxRef, time.Now()) // best-effort: drop our ports from the merge
+	_ = portfwd.RemoveSandboxState(p.stateDir, p.sandboxRef, time.Now())
 }

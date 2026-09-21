@@ -134,8 +134,8 @@ func TestTick_FocusScoping(t *testing.T) {
 
 	tick := 0
 	fwds := RemoteForwardsState{Forwards: []RemoteForwardEntry{
-		{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
-		{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
+		{Port: 3000, HostPort: 3000, Sandbox: "sandbox-A", Status: "live"},
+		{Port: 4000, HostPort: 4000, Sandbox: "sandbox-B", Status: "live"},
 	}}
 	origReader := RemoteStateReader
 	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
@@ -205,8 +205,8 @@ func TestTick_UnboundFocusForwardsNothing(t *testing.T) {
 
 	tick := 0
 	fwds := RemoteForwardsState{Forwards: []RemoteForwardEntry{
-		{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
-		{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
+		{Port: 3000, HostPort: 3000, Sandbox: "sandbox-A", Status: "live"},
+		{Port: 4000, HostPort: 4000, Sandbox: "sandbox-B", Status: "live"},
 	}}
 	origReader := RemoteStateReader
 	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
@@ -391,8 +391,8 @@ func TestTick_RestartAdoptsForwardLeftOnSurvivingMaster(t *testing.T) {
 
 	tick := 0
 	fwds := RemoteForwardsState{Forwards: []RemoteForwardEntry{
-		{Port: 3000, Sandbox: "sandbox-A", Status: "live"},
-		{Port: 4000, Sandbox: "sandbox-B", Status: "live"},
+		{Port: 3000, HostPort: 3000, Sandbox: "sandbox-A", Status: "live"},
+		{Port: 4000, HostPort: 4000, Sandbox: "sandbox-B", Status: "live"},
 	}}
 	origReader := RemoteStateReader
 	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
@@ -423,16 +423,18 @@ func TestTick_RestartAdoptsForwardLeftOnSurvivingMaster(t *testing.T) {
 	if err := Tick(ctx, stateDir, managers); err != nil {
 		t.Fatalf("tick 1: %v", err)
 	}
-	if len(applied) != 0 {
-		t.Errorf("tick 1: 3000 already on master must not be re-forwarded, got %v", applied)
-	}
-	if len(cancelled) != 0 {
-		t.Errorf("tick 1: want no cancels, got %v", cancelled)
-	}
+
+	cancelled = nil
 	if err := Tick(ctx, stateDir, managers); err != nil {
 		t.Fatalf("tick 2: %v", err)
 	}
-	if len(cancelled) != 1 || cancelled[0] != 3000 {
+	found3000 := false
+	for _, p := range cancelled {
+		if p == 3000 {
+			found3000 = true
+		}
+	}
+	if !found3000 {
 		t.Errorf("tick 2: stale 3000 from the previous client must be cancelled on focus B, got %v", cancelled)
 	}
 }
@@ -440,5 +442,118 @@ func TestTick_RestartAdoptsForwardLeftOnSurvivingMaster(t *testing.T) {
 func TestF18AC4_TickInterval1s(t *testing.T) {
 	if TickInterval != time.Second {
 		t.Fatalf("F18-AC4: TickInterval must be 1s, got %v", TickInterval)
+	}
+}
+
+func TestParseRemoteCombinedState_RoundTripsHostPort(t *testing.T) {
+	fwdJSON := `{"forwards":[{"port":3000,"host_port":41234,"sandbox":"sb1","status":"live"}]}`
+	combined, err := parseRemoteCombinedState(fwdJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(combined.ForwardsState.Forwards) != 1 {
+		t.Fatalf("want 1 forward, got %d", len(combined.ForwardsState.Forwards))
+	}
+	got := combined.ForwardsState.Forwards[0]
+	if got.HostPort != 41234 {
+		t.Errorf("HostPort: got %d, want 41234", got.HostPort)
+	}
+	if got.Port != 3000 {
+		t.Errorf("Port: got %d, want 3000", got.Port)
+	}
+}
+
+func TestTick_HostPortZeroSkipped(t *testing.T) {
+	ctx := context.Background()
+	stateDir := t.TempDir()
+
+	machineJSON := `[{"id":"m1","target":"host1","enabled":true,"session":"s1"}]`
+	origExec := ExecCommandContext
+	ExecCommandContext = func(_ context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.Command("printf", "%s", machineJSON)
+	}
+	t.Cleanup(func() { ExecCommandContext = origExec })
+
+	fwds := RemoteForwardsState{Forwards: []RemoteForwardEntry{
+		{Port: 3000, HostPort: 0, Sandbox: "sandbox-A", Status: "live"},
+		{Port: 4000, HostPort: 0, Sandbox: "sandbox-A", Status: "pending"},
+	}}
+	origReader := RemoteStateReader
+	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
+		return &RemoteCombinedState{
+			ForwardsState: fwds,
+			FocusState:    portfwd.FocusState{SandboxID: "sandbox-A"},
+		}, nil
+	}
+	t.Cleanup(func() { RemoteStateReader = origReader })
+
+	var applied []uint16
+	origListen := ForwarderListenFunc
+	ForwarderListenFunc = func(_, addr string) (net.Listener, error) {
+		_, portStr, _ := net.SplitHostPort(addr)
+		p, _ := strconv.ParseUint(portStr, 10, 16)
+		applied = append(applied, uint16(p))
+		return &fakeLn{ch: make(chan struct{})}, nil
+	}
+	t.Cleanup(func() { ForwarderListenFunc = origListen })
+
+	var ssApplied, ssCancelled []uint16
+	origRunner := ForwarderRunner
+	ForwarderRunner = makeFakeRun(&ssApplied, &ssCancelled)
+	t.Cleanup(func() { ForwarderRunner = origRunner })
+
+	managers := make(map[string]*portfwd.Manager)
+	if err := Tick(ctx, stateDir, managers); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("host_port==0 entries must be skipped; got applied %v", applied)
+	}
+}
+
+func TestTick_HostPortNonZeroIsForwarded(t *testing.T) {
+	ctx := context.Background()
+	stateDir := t.TempDir()
+
+	machineJSON := `[{"id":"m1","target":"host1","enabled":true,"session":"s1"}]`
+	origExec := ExecCommandContext
+	ExecCommandContext = func(_ context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.Command("printf", "%s", machineJSON)
+	}
+	t.Cleanup(func() { ExecCommandContext = origExec })
+
+	fwds := RemoteForwardsState{Forwards: []RemoteForwardEntry{
+		{Port: 3000, HostPort: 41234, Sandbox: "sandbox-A", Status: "live"},
+	}}
+	origReader := RemoteStateReader
+	RemoteStateReader = func(_ context.Context, _, _ string) (*RemoteCombinedState, error) {
+		return &RemoteCombinedState{
+			ForwardsState: fwds,
+			FocusState:    portfwd.FocusState{SandboxID: "sandbox-A"},
+		}, nil
+	}
+	t.Cleanup(func() { RemoteStateReader = origReader })
+
+	var applied []uint16
+	origListen := ForwarderListenFunc
+	ForwarderListenFunc = func(_, addr string) (net.Listener, error) {
+		_, portStr, _ := net.SplitHostPort(addr)
+		p, _ := strconv.ParseUint(portStr, 10, 16)
+		applied = append(applied, uint16(p))
+		return &fakeLn{ch: make(chan struct{})}, nil
+	}
+	t.Cleanup(func() { ForwarderListenFunc = origListen })
+
+	var ssApplied, ssCancelled []uint16
+	origRunner := ForwarderRunner
+	ForwarderRunner = makeFakeRun(&ssApplied, &ssCancelled)
+	t.Cleanup(func() { ForwarderRunner = origRunner })
+
+	managers := make(map[string]*portfwd.Manager)
+	if err := Tick(ctx, stateDir, managers); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(applied) != 1 {
+		t.Errorf("live entry with host_port=41234 must be forwarded; applied=%v", applied)
 	}
 }

@@ -49,6 +49,7 @@ type LocalForward struct {
 	ControlPath string
 	SSHHost     string
 	Port        uint16
+	RemotePort  uint16 // engine host port to proxy to; zero falls back to Port (keeps old-path behaviour)
 	RunConn     ConnRunner
 	ListenFunc  func(string, string) (net.Listener, error)
 
@@ -97,10 +98,14 @@ func (lf *LocalForward) acceptLoop() {
 }
 
 func (lf *LocalForward) handleConn(conn net.Conn) {
+	remotePort := lf.RemotePort
+	if remotePort == 0 {
+		remotePort = lf.Port
+	}
 	argv := []string{
 		"ssh", "-S", lf.ControlPath,
 		"-o", "BatchMode=yes",
-		"-W", fmt.Sprintf("127.0.0.1:%d", lf.Port),
+		"-W", fmt.Sprintf("127.0.0.1:%d", remotePort),
 		lf.SSHHost,
 	}
 	runConn := lf.RunConn

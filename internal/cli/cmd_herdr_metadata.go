@@ -27,13 +27,18 @@ func herdrSocketPath(session string) string {
 }
 
 // reportForwardStatusToSocket sends one workspace.report_metadata JSON-RPC call.
-// ports must be sorted and deduplicated; empty slice sets port_forward_status to null.
-func reportForwardStatusToSocket(socketPath, workspaceID string, ports []uint16) error {
+// entries must be sorted by Port and deduplicated; empty slice sets port_forward_status to null.
+// Token format: "3000→41234,3001→41235" (guest→host); entries with HostPort 0 render as "3000" (unbound).
+func reportForwardStatusToSocket(socketPath, workspaceID string, entries []portfwd.Entry) error {
 	var portVal any
-	if len(ports) > 0 {
-		strs := make([]string, len(ports))
-		for i, p := range ports {
-			strs[i] = strconv.Itoa(int(p))
+	if len(entries) > 0 {
+		strs := make([]string, len(entries))
+		for i, e := range entries {
+			if e.HostPort != 0 {
+				strs[i] = fmt.Sprintf("%d→%d", e.Port, e.HostPort)
+			} else {
+				strs[i] = strconv.Itoa(int(e.Port))
+			}
 		}
 		portVal = strings.Join(strs, ",")
 	}
@@ -67,23 +72,31 @@ func reportForwardStatusToSocket(socketPath, workspaceID string, ports []uint16)
 	return nil
 }
 
-func loadPortsForSandbox(stateDir, sandboxHandle, sandboxID string) ([]uint16, error) {
+func loadPortsForSandbox(stateDir, sandboxHandle, sandboxID string) ([]portfwd.Entry, error) {
 	merged, err := portfwd.Merge(stateDir, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("load ports: merge: %w", err)
 	}
-	seen := map[uint16]struct{}{}
+	seen := map[uint16]portfwd.Entry{}
 	for _, e := range merged.Forwards {
 		if e.Sandbox == sandboxHandle || (sandboxID != "" && e.Sandbox == sandboxID) {
-			seen[e.Port] = struct{}{}
+			seen[e.Port] = e
 		}
 	}
-	ports := make([]uint16, 0, len(seen))
-	for p := range seen {
-		ports = append(ports, p)
+	entries := make([]portfwd.Entry, 0, len(seen))
+	for _, e := range seen {
+		entries = append(entries, e)
 	}
-	slices.Sort(ports)
-	return ports, nil
+	slices.SortFunc(entries, func(a, b portfwd.Entry) int {
+		if a.Port < b.Port {
+			return -1
+		}
+		if a.Port > b.Port {
+			return 1
+		}
+		return 0
+	})
+	return entries, nil
 }
 
 // herdrReportForwardStatus resolves the sandbox binding for workspaceID, reads its
@@ -99,7 +112,7 @@ func herdrReportForwardStatus(
 		return fmt.Errorf("report-forward-status: resolve workspace %s: %w", workspaceID, err)
 	}
 
-	ports, err := loadPortsForSandbox(stateDir, b.SandboxHandle, b.SandboxID)
+	entries, err := loadPortsForSandbox(stateDir, b.SandboxHandle, b.SandboxID)
 	if err != nil {
 		return fmt.Errorf("report-forward-status: %w", err)
 	}
@@ -108,14 +121,18 @@ func herdrReportForwardStatus(
 		socketPath = herdrSocketPath(session)
 	}
 
-	if err := reportForwardStatusToSocket(socketPath, workspaceID, ports); err != nil {
+	if err := reportForwardStatusToSocket(socketPath, workspaceID, entries); err != nil {
 		return err
 	}
 
-	if len(ports) > 0 {
-		strs := make([]string, len(ports))
-		for i, p := range ports {
-			strs[i] = strconv.Itoa(int(p))
+	if len(entries) > 0 {
+		strs := make([]string, len(entries))
+		for i, e := range entries {
+			if e.HostPort != 0 {
+				strs[i] = fmt.Sprintf("%d→%d", e.Port, e.HostPort)
+			} else {
+				strs[i] = strconv.Itoa(int(e.Port))
+			}
 		}
 		fmt.Fprintf(w, "reported: workspace=%s ports=%s\n", workspaceID, strings.Join(strs, ",")) //nolint:errcheck
 	} else {

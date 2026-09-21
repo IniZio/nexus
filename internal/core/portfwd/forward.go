@@ -103,11 +103,12 @@ func (f *Forwarder) EnsureMaster(ctx context.Context) error {
 	return nil
 }
 
-func (f *Forwarder) Apply(ctx context.Context, port uint16) (*LocalForward, error) {
+func (f *Forwarder) Apply(ctx context.Context, port, remotePort uint16) (*LocalForward, error) {
 	lf := &LocalForward{
 		ControlPath: f.ControlPath,
 		SSHHost:     f.SSHHost,
 		Port:        port,
+		RemotePort:  remotePort,
 		RunConn:     f.RunConn,
 		ListenFunc:  f.ListenFunc,
 	}

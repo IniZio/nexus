@@ -163,9 +163,15 @@ func Tick(ctx context.Context, stateDir string, managers map[string]*portfwd.Man
 		var desired []portfwd.Listener
 		for _, fwd := range focused {
 			if fwd.Status == "live" || fwd.Status == "pending" {
+				if fwd.HostPort == 0 {
+					slog.Warn("local-agent-startup: forward entry has no host_port; skipping (engine supervisor too old?)",
+						"sandbox", fwd.Sandbox, "port", fwd.Port, "status", fwd.Status)
+					continue
+				}
 				desired = append(desired, portfwd.Listener{
-					Port:    fwd.Port,
-					Sandbox: portfwd.SandboxRef{ID: fwd.Sandbox, Status: portfwd.SandboxStatusRunning},
+					Port:     fwd.Port,
+					HostPort: fwd.HostPort,
+					Sandbox:  portfwd.SandboxRef{ID: fwd.Sandbox, Status: portfwd.SandboxStatusRunning},
 				})
 			}
 		}
@@ -200,9 +206,10 @@ func DiscoverHerdrMachines(ctx context.Context) ([]HerdrMachine, error) {
 }
 
 type RemoteForwardEntry struct {
-	Port    uint16 `json:"port"`
-	Sandbox string `json:"sandbox"`
-	Status  string `json:"status"`
+	Port     uint16 `json:"port"`
+	HostPort uint16 `json:"host_port"`
+	Sandbox  string `json:"sandbox"`
+	Status   string `json:"status"`
 }
 
 type RemoteForwardsState struct {

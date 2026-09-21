@@ -81,6 +81,25 @@ func TestNaiveWriteProducesTornRead(t *testing.T) {
 	}
 }
 
+func TestRenderRow_LiveWithHostPort(t *testing.T) {
+	fwd := PortForward{Port: 3000, HostPort: 41234, Status: PFStatusLive, ConfirmedAt: time.Now()}
+	row := renderRow(fwd)
+	if !strings.Contains(row, "3000 → 127.0.0.1:41234") {
+		t.Errorf("expected guest→host mapping in LIVE row, got: %q", row)
+	}
+	if strings.Contains(row, "127.0.0.1:3000") {
+		t.Errorf("LIVE row with HostPort must not show guest port as URL target, got: %q", row)
+	}
+}
+
+func TestRenderRow_LiveWithoutHostPort(t *testing.T) {
+	fwd := PortForward{Port: 3000, Status: PFStatusLive, ConfirmedAt: time.Now()}
+	row := renderRow(fwd)
+	if !strings.Contains(row, "127.0.0.1:3000") {
+		t.Errorf("LIVE row without HostPort must show guest port, got: %q", row)
+	}
+}
+
 func TestStaleStateDetected(t *testing.T) {
 	dir := t.TempDir()
 	s := &ForwardsState{

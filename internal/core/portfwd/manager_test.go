@@ -111,6 +111,27 @@ func TestReconcileCancelOnPortGone(t *testing.T) {
 	}
 }
 
+func TestReconcileReappliesOnHostPortChange(t *testing.T) {
+	mgr, calls := makeMgr([]runResp{
+		{code: 0},
+		{code: 0},
+	})
+	ref := SandboxRef{ID: "abc", Status: SandboxStatusRunning}
+	if err := mgr.Reconcile(context.Background(), []Listener{{Port: 3000, HostPort: 41234, Sandbox: ref}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Reconcile(context.Background(), []Listener{{Port: 3000, HostPort: 41235, Sandbox: ref}}); err != nil {
+		t.Fatal(err)
+	}
+	entries := mgr.Applied()
+	if len(entries) != 1 || entries[0].Port != 3000 {
+		t.Fatalf("want port 3000 still applied after host port change; got %v", entries)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("want 2 Present calls (one per apply); got %d: %v", len(*calls), *calls)
+	}
+}
+
 func TestTeardownSandbox(t *testing.T) {
 	mgr, calls := makeMgr([]runResp{{code: 0}})
 	ref := SandboxRef{ID: "abc", Status: SandboxStatusRunning}

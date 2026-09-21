@@ -35,6 +35,7 @@ type ForwardsState struct {
 
 type PortForward struct {
 	Port        uint16    `json:"port"`
+	HostPort    uint16    `json:"host_port,omitempty"`
 	Sandbox     string    `json:"sandbox"`
 	Status      string    `json:"status"`
 	ConfirmedAt time.Time `json:"confirmed_at,omitempty"`
@@ -124,6 +125,9 @@ func renderRow(fwd PortForward) string {
 	switch fwd.Status {
 	case PFStatusLive:
 		ts := fwd.ConfirmedAt.Format("15:04:05")
+		if fwd.HostPort != 0 {
+			return fmt.Sprintf("%s → 127.0.0.1:%-5d   LIVE    since %s   ctrl+click → http://127.0.0.1:%d", p, fwd.HostPort, ts, fwd.HostPort)
+		}
 		return fmt.Sprintf("%s   LIVE    since %s   ctrl+click → http://127.0.0.1:%d", p, ts, fwd.Port)
 	case PFStatusPending:
 		return fmt.Sprintf("%s   PENDING request enqueued, waiting for laptop agent...", p)
