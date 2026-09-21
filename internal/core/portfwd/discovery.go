@@ -41,6 +41,7 @@ type PortBind struct {
 
 type Listener struct {
 	Port     uint16
+	HostPort uint16 // host-side port on the engine; set by the supervisor after binding, consumed by the remote client as the ssh -W target
 	BindAddr string
 	Sandbox  SandboxRef
 }

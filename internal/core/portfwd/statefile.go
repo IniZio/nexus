@@ -30,6 +30,7 @@ const (
 // Entry is one forwarded port as recorded in the state files.
 type Entry struct {
 	Port        uint16    `json:"port"`
+	HostPort    uint16    `json:"host_port,omitempty"`
 	Sandbox     string    `json:"sandbox"`
 	Status      string    `json:"status"`
 	ConfirmedAt time.Time `json:"confirmed_at,omitzero"`

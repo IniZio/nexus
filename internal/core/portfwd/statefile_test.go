@@ -205,3 +205,18 @@ func TestWriteSandboxState_EmptyIDRefused(t *testing.T) {
 		t.Fatal("empty sandbox id must be refused, not written as a shared file")
 	}
 }
+
+func TestMerge_HostPortSurvivesMerge(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	if err := WriteSandboxState(dir, "sb-A", []Entry{{Port: 3000, HostPort: 41234, Sandbox: "sb-A", Status: "live", ConfirmedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
+	got := readMerged(t, dir)
+	if len(got.Forwards) != 1 {
+		t.Fatalf("want 1 forward, got %d", len(got.Forwards))
+	}
+	if got.Forwards[0].HostPort != 41234 {
+		t.Fatalf("host_port must survive Merge: want 41234, got %d", got.Forwards[0].HostPort)
+	}
+}
