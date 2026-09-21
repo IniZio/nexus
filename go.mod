@@ -28,6 +28,8 @@ require (
 
 require (
 	github.com/containerd/containerd/v2 v2.2.5
+	github.com/spf13/cobra v1.10.2
+	go.etcd.io/bbolt v1.5.0
 	golang.org/x/mod v0.38.0
 )
 
@@ -69,6 +71,7 @@ require (
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/in-toto/attestation v1.2.0 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
