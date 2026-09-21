@@ -1,0 +1,261 @@
+// Source: github.com/NVIDIA/openshell, commit 484f076, vendored 2026-09-21
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package openshell.compute.v1;
+
+option go_package = "github.com/IniZio/nexus/internal/openshell/computedriverpb";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "options.proto";
+import "sandbox.proto";
+
+service ComputeDriver {
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+  rpc AuthenticateSandbox(AuthenticateSandboxRequest) returns (AuthenticateSandboxResponse);
+  rpc ValidateSandboxCreate(ValidateSandboxCreateRequest) returns (ValidateSandboxCreateResponse);
+  rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc StopSandbox(StopSandboxRequest) returns (StopSandboxResponse);
+  rpc StartSandbox(StartSandboxRequest) returns (StartSandboxResponse);
+  rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+  rpc WatchSandboxes(WatchSandboxesRequest) returns (stream WatchSandboxesEvent);
+  rpc EnsureWorkspace(EnsureWorkspaceRequest) returns (EnsureWorkspaceResponse);
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+}
+
+message GetCapabilitiesRequest {}
+
+message GetCapabilitiesResponse {
+  reserved 4, 5;
+  reserved "supports_gpu", "gpu_count";
+  string driver_name = 1;
+  string driver_version = 2;
+  string default_image = 3;
+  bool gateway_manages_lifecycle = 6;
+  bool supports_sandbox_authentication = 7;
+  bool driver_reports_runtime_readiness = 8;
+  ResourceCapabilities resource_capabilities = 9;
+  string rootfs_tar_staging_dir = 10;
+  uint64 rootfs_tar_max_bytes = 11;
+}
+
+message AuthenticateSandboxRequest {
+  string credential = 1 [(openshell.options.v1.secret) = true];
+}
+
+message AuthenticateSandboxResponse {
+  string sandbox_id = 1;
+}
+
+message ResourceCapabilities {
+  CpuResourceCapabilities cpu = 1;
+  MemoryResourceCapabilities memory = 2;
+  GpuResourceCapabilities gpu = 3;
+}
+
+message CpuResourceCapabilities {
+  bool limit_supported = 1;
+}
+
+message MemoryResourceCapabilities {
+  bool limit_supported = 1;
+}
+
+message GpuResourceCapabilities {
+  bool default_selection_supported = 1;
+  bool count_selection_supported = 2;
+}
+
+message DriverSandbox {
+  string id = 1;
+  string name = 2;
+  string namespace = 3;
+  DriverSandboxSpec spec = 4;
+  DriverSandboxStatus status = 5;
+  string workspace = 6;
+}
+
+message DriverSandboxSpec {
+  string log_level = 1;
+  map<string, string> environment = 5;
+  DriverSandboxTemplate template = 6;
+  openshell.sandbox.v1.SandboxPolicy policy = 7;
+  ResourceRequirements resource_requirements = 9;
+  reserved 10;
+  reserved "gpu_device";
+  string sandbox_token = 11 [(openshell.options.v1.secret) = true];
+  repeated string command = 12;
+  bool tty = 13;
+  bool await_main_process_attachment = 14;
+  WorkloadIdentityRequest workload_identity = 15;
+  bytes launch_authentication = 16 [(openshell.options.v1.secret) = true];
+}
+
+message WorkloadIdentityRequest {
+  string user = 1;
+  string group = 2;
+}
+
+message ResolvedWorkloadIdentity {
+  uint32 uid = 1;
+  uint32 gid = 2;
+  repeated uint32 supplementary_gids = 3;
+  string source = 4;
+  string resource_digest = 5;
+}
+
+message DriverFenceEvidence {
+  string generation = 1;
+  string evidence_digest = 2;
+  map<string, string> resource_claims = 3;
+}
+
+message ResourceRequirements {
+  GpuResourceRequirements gpu = 1;
+}
+
+message GpuResourceRequirements {
+  optional uint32 count = 1;
+}
+
+message DriverSandboxTemplate {
+  string image = 1;
+  string agent_socket_path = 3;
+  map<string, string> labels = 4;
+  map<string, string> environment = 6;
+  DriverResourceRequirements resources = 10;
+  google.protobuf.Struct platform_config = 11;
+  google.protobuf.Struct driver_config = 12;
+  optional bool user_namespaces = 13;
+}
+
+message DriverResourceRequirements {
+  string cpu_request = 1;
+  string cpu_limit = 2;
+  string memory_request = 3;
+  string memory_limit = 4;
+}
+
+message DriverSandboxStatus {
+  string name = 1;
+  string instance_id = 2;
+  string agent_fd = 3;
+  string sandbox_fd = 4;
+  repeated DriverCondition conditions = 5;
+  bool deleting = 6;
+  ResolvedWorkloadIdentity resolved_identity = 7;
+  DriverFenceEvidence fence_evidence = 8;
+}
+
+message DriverCondition {
+  reserved 5;
+  reserved "last_transition_time";
+  string type = 1;
+  string status = 2;
+  string reason = 3;
+  string message = 4;
+  google.protobuf.Timestamp transition_time = 105;
+}
+
+message DriverPlatformEvent {
+  reserved 1;
+  reserved "timestamp_ms";
+  google.protobuf.Timestamp event_time = 101;
+  string source = 2;
+  string type = 3;
+  string reason = 4;
+  string message = 5;
+  map<string, string> metadata = 6;
+}
+
+message ValidateSandboxCreateRequest {
+  DriverSandbox sandbox = 1;
+}
+
+message ValidateSandboxCreateResponse {}
+
+message GetSandboxRequest {
+  string sandbox_id = 1;
+  string name = 2;
+}
+
+message GetSandboxResponse {
+  DriverSandbox sandbox = 1;
+}
+
+message ListSandboxesRequest {}
+
+message ListSandboxesResponse {
+  repeated DriverSandbox sandboxes = 1;
+}
+
+message CreateSandboxRequest {
+  DriverSandbox sandbox = 1;
+}
+
+message CreateSandboxResponse {}
+
+message StopSandboxRequest {
+  string sandbox_id = 1;
+  string name = 2;
+}
+
+message StopSandboxResponse {}
+
+message StartSandboxRequest {
+  string sandbox_id = 1;
+  string name = 2;
+  bytes launch_authentication = 3 [(openshell.options.v1.secret) = true];
+  string generation_id = 4;
+}
+
+message StartSandboxResponse {}
+
+message DeleteSandboxRequest {
+  string sandbox_id = 1;
+  string name = 2;
+}
+
+message DeleteSandboxResponse {
+  bool deleted = 1;
+}
+
+message WatchSandboxesRequest {}
+
+message WatchSandboxesSandboxEvent {
+  DriverSandbox sandbox = 1;
+}
+
+message WatchSandboxesDeletedEvent {
+  string sandbox_id = 1;
+}
+
+message WatchSandboxesPlatformEvent {
+  string sandbox_id = 1;
+  DriverPlatformEvent event = 2;
+}
+
+message WatchSandboxesEvent {
+  oneof payload {
+    WatchSandboxesSandboxEvent sandbox = 1;
+    WatchSandboxesDeletedEvent deleted = 2;
+    WatchSandboxesPlatformEvent platform_event = 3;
+  }
+}
+
+message EnsureWorkspaceRequest {
+  string workspace = 1;
+}
+
+message EnsureWorkspaceResponse {}
+
+message DeleteWorkspaceRequest {
+  string workspace = 1;
+}
+
+message DeleteWorkspaceResponse {}
