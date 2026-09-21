@@ -42,7 +42,8 @@ func NewSandboxResizer(d *CHDriver, id domain.SandboxID, bounds resize.Bounds, b
 	// Debug log on failure leaves state nil so getOrLoadMemState retries later.
 	loadCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := d.getOrLoadMemState(loadCtx, id); err != nil {
+	bootHintMiB := uint32(bounds.MemMinBytes / (1024 * 1024)) //nolint:gosec
+	if _, err := d.getOrLoadMemState(loadCtx, id, bootHintMiB); err != nil {
 		slog.Debug("cloudhypervisor: NewSandboxResizer: pre-load mem state (will retry)",
 			"sandbox", id, "err", err)
 	}
@@ -356,7 +357,7 @@ func (d *CHDriver) clearMemState(id domain.SandboxID) {
 func (d *CHDriver) loadMemStateBestEffort(id domain.SandboxID) *vmMemState {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	st, err := d.getOrLoadMemState(ctx, id)
+	st, err := d.getOrLoadMemState(ctx, id, 0)
 	if err != nil {
 		slog.Debug("cloudhypervisor: lazy load mem state", "sandbox", id, "err", err)
 		return nil
@@ -364,7 +365,7 @@ func (d *CHDriver) loadMemStateBestEffort(id domain.SandboxID) *vmMemState {
 	return st
 }
 
-func (d *CHDriver) getOrLoadMemState(ctx context.Context, id domain.SandboxID) (*vmMemState, error) {
+func (d *CHDriver) getOrLoadMemState(ctx context.Context, id domain.SandboxID, bootHintMiB uint32) (*vmMemState, error) {
 	d.memMu.Lock()
 	st := d.memState[id]
 	d.memMu.Unlock()
@@ -379,7 +380,7 @@ func (d *CHDriver) getOrLoadMemState(ctx context.Context, id domain.SandboxID) (
 	if info == nil {
 		return nil, fmt.Errorf("cloudhypervisor: load mem state for %s: VM absent", id)
 	}
-	st = adoptMemState(info)
+	st = adoptMemState(info, bootHintMiB)
 	d.memMu.Lock()
 	if existing := d.memState[id]; existing != nil {
 		d.memMu.Unlock()
@@ -390,7 +391,7 @@ func (d *CHDriver) getOrLoadMemState(ctx context.Context, id domain.SandboxID) (
 	return st, nil
 }
 
-func adoptMemState(info *vmInfoResponse) *vmMemState {
+func adoptMemState(info *vmInfoResponse, bootHintMiB uint32) *vmMemState {
 	st := &vmMemState{}
 	if info.Config == nil || info.Config.Memory == nil {
 		st.mode = driver.MemoryModeFlat
@@ -399,12 +400,19 @@ func adoptMemState(info *vmInfoResponse) *vmMemState {
 	mem := info.Config.Memory
 	sizeMiB := uint32(mem.SizeBytes / (1024 * 1024)) //nolint:gosec
 
-	if info.Config.Balloon != nil && info.Config.Balloon.SizeBytes > 0 {
-		// Balloon: memory.size is the ceiling; balloon inflates within it.
+	if info.Config.Balloon != nil {
 		balloonMiB := uint32(info.Config.Balloon.SizeBytes / (1024 * 1024)) //nolint:gosec
 		st.mode = driver.MemoryModeBalloon
 		st.totalMiB = sizeMiB
-		st.bootMiB = sizeMiB - balloonMiB
+		if balloonMiB > 0 {
+			st.bootMiB = sizeMiB - balloonMiB
+		} else {
+			if bootHintMiB > 0 {
+				st.bootMiB = bootHintMiB
+			} else {
+				st.bootMiB = 512
+			}
+		}
 		st.balloon.Store(balloonMiB)
 	} else if mem.HotplugSize > 0 {
 		// VirtioMem: memory.size = boot RAM; hotplug_size = extra capacity.
@@ -494,7 +502,7 @@ func (s *vmMemState) observeSample(memTotal, memAvail uint64) (driver.DriftStatu
 }
 
 func (d *CHDriver) ResizeMemory(ctx context.Context, id domain.SandboxID, targetBytes int64) (int64, error) {
-	st, err := d.getOrLoadMemState(ctx, id)
+	st, err := d.getOrLoadMemState(ctx, id, 0)
 	if err != nil {
 		return 0, err
 	}

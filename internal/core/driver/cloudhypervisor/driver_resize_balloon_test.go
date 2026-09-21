@@ -355,6 +355,14 @@ func TestAdoptMemState_Detection(t *testing.T) {
 			wantTotalMiB: 8192,
 		},
 		{
+			name:         "balloon fully deflated uses hint",
+			infoJSON:     `{"state":"Running","config":{"memory":{"size":` + itoa(4096*1024*1024) + `},"balloon":{"size":0}}}`,
+			wantMode:     driver.MemoryModeBalloon,
+			wantBalloon:  0,
+			wantBootMiB:  512,
+			wantTotalMiB: 4096,
+		},
+		{
 			name:         "virtiomem legacy",
 			infoJSON:     `{"state":"Running","config":{"memory":{"size":` + itoa(2048*1024*1024) + `,"hotplug_size":` + itoa(6144*1024*1024) + `}}}`,
 			wantMode:     driver.MemoryModeVirtioMem,
@@ -393,7 +401,7 @@ func TestAdoptMemState_Detection(t *testing.T) {
 			srv.Start()
 			t.Cleanup(srv.Close)
 
-			st, err := d.getOrLoadMemState(context.Background(), id)
+			st, err := d.getOrLoadMemState(context.Background(), id, 512)
 			if err != nil {
 				t.Fatalf("getOrLoadMemState: %v", err)
 			}
