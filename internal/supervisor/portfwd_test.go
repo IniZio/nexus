@@ -478,7 +478,7 @@ func TestReporter_CalledOnlyWhenPortSetChanges(t *testing.T) {
 		binds: []portfwd.PortBind{{Port: port, BindAddr: "0.0.0.0"}},
 	}
 
-	called := make(chan []uint16, 8)
+	called := make(chan []guestHostPair, 8)
 	sup := &portForwardSupervisor{
 		sandboxRef: "test/sb1",
 		backend:    backend,
@@ -487,9 +487,9 @@ func TestReporter_CalledOnlyWhenPortSetChanges(t *testing.T) {
 		stateDir:   tmpDir,
 		interval:   time.Second,
 		listeners:  make(map[uint16]net.Listener),
-		reporter: func(_ context.Context, ports []uint16) {
-			cp := make([]uint16, len(ports))
-			copy(cp, ports)
+		reporter: func(_ context.Context, pairs []guestHostPair) {
+			cp := make([]guestHostPair, len(pairs))
+			copy(cp, pairs)
 			called <- cp
 		},
 	}
@@ -501,9 +501,16 @@ func TestReporter_CalledOnlyWhenPortSetChanges(t *testing.T) {
 		t.Fatalf("reconcile 1: %v", err)
 	}
 	select {
-	case ports := <-called:
-		if len(ports) != 1 || ports[0] != port {
-			t.Errorf("reconcile 1: reporter got %v, want [%d]", ports, port)
+	case pairs := <-called:
+		if len(pairs) != 1 || pairs[0].Guest != port {
+			t.Errorf("reconcile 1: reporter got %v, want guest=%d", pairs, port)
+		}
+		if pairs[0].Host == 0 {
+			t.Errorf("reconcile 1: host port is 0, want non-zero ephemeral port")
+		}
+		wantToken := fmt.Sprintf("%d→%d", pairs[0].Guest, pairs[0].Host)
+		if got := formatPairs(pairs); got != wantToken {
+			t.Errorf("formatPairs = %q, want %q", got, wantToken)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("reconcile 1: reporter not called within 2s")
@@ -518,6 +525,29 @@ func TestReporter_CalledOnlyWhenPortSetChanges(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
+	savedHostPort := sup.hostPorts[port]
+	sup.hostPorts[port] = savedHostPort + 1
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile 2b (host port change): %v", err)
+	}
+	select {
+	case pairs := <-called:
+		if len(pairs) != 1 || pairs[0].Host != savedHostPort+1 {
+			t.Errorf("reconcile 2b: reporter got %v, want host=%d", pairs, savedHostPort+1)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile 2b: reporter not called after host-port-only change")
+	}
+
+	if err := sup.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile 2c (same set): %v", err)
+	}
+	select {
+	case unexpected := <-called:
+		t.Errorf("reconcile 2c: reporter called unexpectedly with %v", unexpected)
+	case <-time.After(50 * time.Millisecond):
+	}
+
 	backend.binds = nil
 	for _, l := range sup.listeners {
 		l.Close()
@@ -527,9 +557,9 @@ func TestReporter_CalledOnlyWhenPortSetChanges(t *testing.T) {
 		t.Fatalf("reconcile 3 (empty): %v", err)
 	}
 	select {
-	case ports := <-called:
-		if len(ports) != 0 {
-			t.Errorf("reconcile 3: reporter got %v, want []", ports)
+	case pairs := <-called:
+		if len(pairs) != 0 {
+			t.Errorf("reconcile 3: reporter got %v, want []", pairs)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("reconcile 3: reporter not called within 2s after port removal")
@@ -581,7 +611,7 @@ func TestMakePortForwardReporter_DialsSessionSocket(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	reporter(ctx, []uint16{8080})
+	reporter(ctx, []guestHostPair{{Guest: 8080, Host: 41234}})
 
 	select {
 	case <-connCh:

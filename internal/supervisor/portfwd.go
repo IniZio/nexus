@@ -66,6 +66,13 @@ func (w *captureWriter) Write(p []byte) (int, error) {
 
 func (w *captureWriter) Bytes() []byte { return w.buf }
 
+// guestHostPair carries a guest port and its bound ephemeral host port.
+// Host is 0 for ports that are forwardable but whose listener failed to bind.
+type guestHostPair struct {
+	Guest uint16
+	Host  uint16
+}
+
 type portForwardSupervisor struct {
 	sandboxRef      string
 	backend         portfwd.Backend
@@ -78,8 +85,8 @@ type portForwardSupervisor struct {
 	hostPorts       map[uint16]uint16                          // ephemeral host port per bound guest port
 	listenFunc      func(string, string) (net.Listener, error) // nil uses net.Listen; overrideable in tests
 	bindErrs        map[uint16]error                           // last host-bind failure per port; retried every tick
-	reporter        func(ctx context.Context, ports []uint16)
-	lastReportedSet map[uint16]struct{}
+	reporter        func(ctx context.Context, pairs []guestHostPair)
+	lastReportedMap map[uint16]uint16 // guest→host snapshot of last report; nil = never reported
 }
 
 // core/portfwd defines no entry-status constants; internal/cli/portfwd_state.go matches these strings.
@@ -302,13 +309,13 @@ func (p *portForwardSupervisor) forwardConn(ctx context.Context, hostConn net.Co
 
 func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error {
 	now := time.Now().UTC()
-	seen := make(map[uint16]struct{}, len(forwardable))
+	seen := make(map[uint16]uint16, len(forwardable)) // guest→host (0 if unbound)
 	entries := make([]portfwd.Entry, 0, len(forwardable))
 	for _, l := range forwardable {
 		if _, dup := seen[l.Port]; dup {
 			continue
 		}
-		seen[l.Port] = struct{}{}
+		seen[l.Port] = p.hostPorts[l.Port]
 		e := portfwd.Entry{Port: l.Port, Sandbox: p.sandboxRef}
 		if _, bound := p.listeners[l.Port]; bound {
 			e.Status = portFwdStatusLive
@@ -323,47 +330,64 @@ func (p *portForwardSupervisor) writeState(forwardable []portfwd.Listener) error
 		entries = append(entries, e)
 	}
 	writeErr := portfwd.WriteSandboxState(p.stateDir, p.sandboxRef, entries, now)
-	if writeErr == nil && p.reporter != nil && !portSetsEqual(seen, p.lastReportedSet) {
-		p.lastReportedSet = seen
-		ports := sortedPortSet(seen)
+	if writeErr == nil && p.reporter != nil && !portMapsEqual(seen, p.lastReportedMap) {
+		p.lastReportedMap = seen
+		pairs := sortedPairs(seen)
 		rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Second)
 		go func() {
 			defer rcancel()
-			p.reporter(rctx, ports)
+			p.reporter(rctx, pairs)
 		}()
 	}
 	return writeErr
 }
 
-func portSetsEqual(a, b map[uint16]struct{}) bool {
+func portMapsEqual(a, b map[uint16]uint16) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for k := range a {
-		if _, ok := b[k]; !ok {
+	for k, va := range a {
+		if vb, ok := b[k]; !ok || va != vb {
 			return false
 		}
 	}
 	return true
 }
 
-func sortedPortSet(m map[uint16]struct{}) []uint16 {
-	out := make([]uint16, 0, len(m))
-	for p := range m {
-		out = append(out, p)
+func sortedPairs(m map[uint16]uint16) []guestHostPair {
+	pairs := make([]guestHostPair, 0, len(m))
+	for g, h := range m {
+		pairs = append(pairs, guestHostPair{Guest: g, Host: h})
 	}
-	slices.Sort(out)
-	return out
+	slices.SortFunc(pairs, func(a, b guestHostPair) int {
+		if a.Guest < b.Guest {
+			return -1
+		}
+		if a.Guest > b.Guest {
+			return 1
+		}
+		return 0
+	})
+	return pairs
 }
 
-func supervisorSendReportMetadata(ctx context.Context, socketPath, workspaceID string, ports []uint16) error {
-	var portVal any
-	if len(ports) > 0 {
-		strs := make([]string, len(ports))
-		for i, p := range ports {
-			strs[i] = strconv.Itoa(int(p))
+// Counterpart: internal/cli/cmd_herdr_metadata.go:reportForwardStatusToSocket.
+func formatPairs(pairs []guestHostPair) string {
+	strs := make([]string, len(pairs))
+	for i, p := range pairs {
+		if p.Host != 0 {
+			strs[i] = fmt.Sprintf("%d→%d", p.Guest, p.Host)
+		} else {
+			strs[i] = strconv.Itoa(int(p.Guest))
 		}
-		portVal = strings.Join(strs, ",")
+	}
+	return strings.Join(strs, ",")
+}
+
+func supervisorSendReportMetadata(ctx context.Context, socketPath, workspaceID string, pairs []guestHostPair) error {
+	var portVal any
+	if len(pairs) > 0 {
+		portVal = formatPairs(pairs)
 	}
 	req := map[string]any{
 		"id":     "1",
@@ -409,7 +433,7 @@ func herdrSocketPath(home, session string) string {
 	return filepath.Join(home, ".config", "herdr", "herdr.sock")
 }
 
-func makePortForwardReporter(sandboxRef string) func(context.Context, []uint16) {
+func makePortForwardReporter(sandboxRef string) func(context.Context, []guestHostPair) {
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
 		return nil
@@ -418,7 +442,7 @@ func makePortForwardReporter(sandboxRef string) func(context.Context, []uint16) 
 		SandboxHandle    string `json:"sandbox_handle"`
 		HerdrWorkspaceID string `json:"herdr_workspace_id"`
 	}
-	return func(ctx context.Context, ports []uint16) {
+	return func(ctx context.Context, pairs []guestHostPair) {
 		bindingsPath := filepath.Join(storeRoot, "herdr-space-bindings.json")
 		data, err := os.ReadFile(bindingsPath)
 		if err != nil {
@@ -444,7 +468,7 @@ func makePortForwardReporter(sandboxRef string) func(context.Context, []uint16) 
 		if _, err := os.Stat(socketPath); err != nil {
 			return
 		}
-		if err := supervisorSendReportMetadata(ctx, socketPath, workspaceID, ports); err != nil {
+		if err := supervisorSendReportMetadata(ctx, socketPath, workspaceID, pairs); err != nil {
 			slog.Debug("supervisor.portfwd.metadata_report_failed", "sandboxRef", sandboxRef, "err", err)
 		}
 	}
