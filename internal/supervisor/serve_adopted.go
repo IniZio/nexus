@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/builder"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
@@ -29,11 +30,11 @@ import (
 var governClock govern.Clock
 
 type serveAdoptedInput struct {
-	cfg Config
-	st  store.Store
-	svc *service.Service
-	drv *cloudhypervisor.CHDriver
-	sb  domain.Sandbox
+	cfg              Config
+	st               store.Store
+	svc              *service.Service
+	drv              *cloudhypervisor.CHDriver
+	sb               domain.Sandbox
 	seedCA           *service.CASeed
 	refreshers       []*cred.Refresher
 	waitForPID       int
@@ -175,6 +176,9 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 
 	// ── git SSH relay ────────────────────────────────────────────────────────
 	startGitSSHRelay(ctx, cfg.SocketDir, sb, nil)
+
+	// ── port-forward supervisor ──────────────────────────────────────────────
+	startPortForwardSupervisor(ctx, cfg.SandboxRef, sb, agent.NewClient(drv, sb.ID), svc)
 
 	pid := os.Getpid()
 	pidfile := PidfilePath(cfg.StateDir)
