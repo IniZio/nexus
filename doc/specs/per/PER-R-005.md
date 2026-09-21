@@ -6,7 +6,12 @@ criticality: must
 verification: manual
 status: active
 trace: AC-5, D-PP-01, D-PP-03, D-PP-04
+scope: orca sandboxes using dedicated cred store (non-claude-code profiles; DefaultDedicatedCredStorePath present)
 ---
+
+**Scope: non-claude-code profiles using the dedicated cred store.** `TestSupervisorS4LiveEgress` skips when `service.DefaultDedicatedCredStorePath()` is absent — that path is the dedicated OAuth store, not the claude-code live-mount path. For `ClaudeCodeProfile`, CRED-R-001 governs; the live mount exposes real credentials to the guest by design and this zero-cred-on-disk assertion does not apply to that profile. Scope narrowed by A2-spec-conflict (2026-09-21).
+
+**A5 dependency:** If A5 retires CRED-R-001, the scope of this requirement relative to claude-code must be re-evaluated.
 
 **When** `nexus orca create` completes and the launching CLI has exited, the supervisor **shall** keep egress alive such that (a) in-VM `claude` receives a real HTTP 200 from `api.anthropic.com`, (b) `git clone` over HTTPS succeeds, (c) no real credential token appears on the guest disk, and (d) `nexus orca destroy` terminates the supervisor, perimeter, and VM cleanly.
 
