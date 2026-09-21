@@ -620,6 +620,60 @@ func TestMakePortForwardReporter_DialsSessionSocket(t *testing.T) {
 	}
 }
 
+func TestMakePortForwardReporter_MatchesBySandboxID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("HERDR_SESSION", "agents")
+	t.Setenv("HERDR_SOCKET_PATH", "")
+
+	stateBase := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateBase)
+
+	storeRoot := filepath.Join(stateBase, "nexus")
+	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bindJSON := `[{"sandbox_handle":"agentic-artifacts/executable","sandbox_id":"sb-06GBAX","herdr_workspace_id":"wABC"}]`
+	if err := os.WriteFile(filepath.Join(storeRoot, "herdr-space-bindings.json"), []byte(bindJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sockDir := filepath.Join(tmpHome, ".config", "herdr", "sessions", "agents")
+	if err := os.MkdirAll(sockDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sockPath := filepath.Join(sockDir, "herdr.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen on expected socket: %v", err)
+	}
+	defer ln.Close()
+
+	connCh := make(chan struct{}, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+		connCh <- struct{}{}
+	}()
+
+	reporter := makePortForwardReporter("sb-06GBAX")
+	if reporter == nil {
+		t.Fatal("makePortForwardReporter returned nil")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	reporter(ctx, []guestHostPair{{Guest: 8080, Host: 41234}})
+
+	select {
+	case <-connCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("reporter did not dial %s — sandbox_id match not working", sockPath)
+	}
+}
+
 func TestWriteState_DedupesTCPAndTCP6Rows(t *testing.T) {
 	port := freeForwardablePort(t)
 	portHex := fmt.Sprintf("%04X", port)

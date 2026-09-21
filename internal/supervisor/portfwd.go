@@ -440,6 +440,7 @@ func makePortForwardReporter(sandboxRef string) func(context.Context, []guestHos
 	}
 	type minBinding struct {
 		SandboxHandle    string `json:"sandbox_handle"`
+		SandboxID        string `json:"sandbox_id"`
 		HerdrWorkspaceID string `json:"herdr_workspace_id"`
 	}
 	return func(ctx context.Context, pairs []guestHostPair) {
@@ -454,12 +455,13 @@ func makePortForwardReporter(sandboxRef string) func(context.Context, []guestHos
 		}
 		var workspaceID string
 		for _, b := range bindings {
-			if b.SandboxHandle == sandboxRef {
+			if b.SandboxHandle == sandboxRef || (b.SandboxID != "" && b.SandboxID == sandboxRef) {
 				workspaceID = b.HerdrWorkspaceID
 				break
 			}
 		}
 		if workspaceID == "" {
+			slog.Debug("supervisor.portfwd.metadata_no_binding", "sandboxRef", sandboxRef)
 			return
 		}
 		home, _ := os.UserHomeDir()
