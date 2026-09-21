@@ -4767,6 +4767,7 @@ func herdrWorktreeSandbox(
 	var extraMounts []string
 	if gitMount := herdrWorktreeGitDirMount(info.Path); gitMount != "" {
 		extraMounts = append(extraMounts, gitMount)
+		extraMounts = append(extraMounts, info.Path+":"+info.Path+":ro")
 	}
 	/**
 	 * Mount the main repo's .groundwork dir (gitignored, never tracked) so
