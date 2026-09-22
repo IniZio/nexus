@@ -280,6 +280,23 @@ func readNexusHostUIDEnv() map[string]string {
 	return m
 }
 
+var nexusCredEnvPath = "/run/nexus/cred.env"
+
+func readGuestCredEnv() map[string]string {
+	data, err := os.ReadFile(nexusCredEnvPath)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]string, 8)
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if ok && k != "" {
+			m[k] = v
+		}
+	}
+	return m
+}
+
 // bootSpecEnv returns the KEY=VALUE entries of the boot manifest at
 // bootspecPath (/etc/nexus/boot.json): the image-wide Spec.Env first, then
 // every task's Env in task order, with exact duplicate pairs dropped. That is
@@ -348,6 +365,9 @@ func guestBaselineEnv(scratchDiskPresent bool) []string {
 	result := mergeEnv(base, envToMap(etcEnv))
 	if hostUID := readNexusHostUIDEnv(); len(hostUID) > 0 {
 		result = mergeEnv(result, hostUID)
+	}
+	if cred := readGuestCredEnv(); len(cred) > 0 {
+		result = mergeEnv(result, cred)
 	}
 	return result
 }
