@@ -9,9 +9,7 @@ disk
 doctor
 egress
 exec
-fork
 forward
-harvest
 herdr
 image
 kernel install
@@ -19,18 +17,14 @@ log
 ls
 mcp
 orca
-pause
 ps
 reap
 recover
-restore
-resume
 rm
 run
 sandbox
 sandbox agent-upgrade
 shell
-snapshot
 ssh
 start
 stop

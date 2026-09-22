@@ -341,61 +341,6 @@ func TestSandboxStop_JSON_Schema(t *testing.T) {
 	}
 }
 
-// ── sandbox pause ─────────────────────────────────────────────────────────────
-
-func TestSandboxPause_JSON_Schema(t *testing.T) {
-	svc := newTestService(t)
-	sb, _ := svc.Create(context.Background(), "proj", "box", service.CreateOptions{})
-	if _, err := svc.Start(context.Background(), sb.ID.String()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	out, stdout, _ := capture(true)
-	if err := runSandboxPause(context.Background(), []string{sb.ID.String()}, out, svc); err != nil {
-		t.Fatalf("runSandboxPause: %v", err)
-	}
-
-	var env map[string]any
-	decodeOne(t, stdout, &env)
-
-	if env["kind"] != "sandbox.paused" {
-		t.Errorf("kind: got %v, want sandbox.paused", env["kind"])
-	}
-	data := env["data"].(map[string]any)
-	if data["state"] != "paused" {
-		t.Errorf("data.state: got %v, want paused", data["state"])
-	}
-}
-
-// ── sandbox resume ────────────────────────────────────────────────────────────
-
-func TestSandboxResume_JSON_Schema(t *testing.T) {
-	svc := newTestService(t)
-	sb, _ := svc.Create(context.Background(), "proj", "box", service.CreateOptions{})
-	if _, err := svc.Start(context.Background(), sb.ID.String()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if _, err := svc.Pause(context.Background(), sb.ID.String()); err != nil {
-		t.Fatalf("Pause: %v", err)
-	}
-
-	out, stdout, _ := capture(true)
-	if err := runSandboxResume(context.Background(), []string{sb.ID.String()}, out, svc); err != nil {
-		t.Fatalf("runSandboxResume: %v", err)
-	}
-
-	var env map[string]any
-	decodeOne(t, stdout, &env)
-
-	if env["kind"] != "sandbox.resumed" {
-		t.Errorf("kind: got %v, want sandbox.resumed", env["kind"])
-	}
-	data := env["data"].(map[string]any)
-	if data["state"] != "running" {
-		t.Errorf("data.state: got %v, want running", data["state"])
-	}
-}
-
 // ── exit codes ────────────────────────────────────────────────────────────────
 
 func TestSandbox_UsageError_MissingSubcommand(t *testing.T) {
@@ -586,44 +531,6 @@ func TestSandboxCreate_AlreadyExists_Code(t *testing.T) {
 	env := decodeErrEnv(t, stdout2)
 	if env.Error.Code != sandboxErrCodeAlreadyExists {
 		t.Errorf("envelope error.code = %q, want %q", env.Error.Code, sandboxErrCodeAlreadyExists)
-	}
-}
-
-// TestSandboxResume_IllegalTransition_Code verifies that resuming a Stopped
-// sandbox (no resume edge from Stopped in the state machine) yields code
-// illegal_transition. The fake driver is used so the machine check fires
-// before any PauseResumer assertion.
-func TestSandboxResume_IllegalTransition_Code(t *testing.T) {
-	svc := newTestService(t)
-	sb, _ := svc.Create(context.Background(), "proj", "box", service.CreateOptions{})
-
-	// Start → Stop so the sandbox is in the Stopped state.
-	if _, err := svc.Start(context.Background(), sb.ID.String()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if _, err := svc.Stop(context.Background(), sb.ID.String()); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	// Resume on a Stopped sandbox: no such edge in the lifecycle table.
-	out, stdout, _ := capture(true)
-	err := runSandboxResume(context.Background(), []string{sb.ID.String()}, out, svc)
-	if err == nil {
-		t.Fatal("expected illegal-transition error, got nil")
-	}
-
-	var coded *CodedError
-	if !errors.As(err, &coded) {
-		t.Fatalf("expected *CodedError, got %T: %v", err, err)
-	}
-	if coded.Code != sandboxErrCodeIllegalTransition {
-		t.Errorf("code = %q, want %q", coded.Code, sandboxErrCodeIllegalTransition)
-	}
-
-	out.EmitError(coded.Code, coded.Msg)
-	env := decodeErrEnv(t, stdout)
-	if env.Error.Code != sandboxErrCodeIllegalTransition {
-		t.Errorf("envelope error.code = %q, want %q", env.Error.Code, sandboxErrCodeIllegalTransition)
 	}
 }
 

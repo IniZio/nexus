@@ -8,15 +8,8 @@ import (
 	"github.com/IniZio/nexus/internal/core/service"
 )
 
-// The manual has documented the flat spelling since D-PD-57, and 53 fenced
-// invocations across docs/site use it. None of them worked: the binary only
-// had `nexus sandbox create`, so an operator following the quickstart hit
-// "unknown command: create" on its first line.
-//
-// This asserts every documented flat verb is registered. It is the cheapest
-// possible guard against the manual going out of sync with the binary again.
 func TestFlatVerbs_AllRegistered(t *testing.T) {
-	want := []string{"create", "ps", "ls", "rm", "start", "stop", "pause", "resume"}
+	want := []string{"create", "ps", "ls", "rm", "start", "stop"}
 	for _, name := range want {
 		if _, ok := Lookup(name); !ok {
 			t.Errorf("flat verb %q is not registered; docs that use it will fail with 'unknown command'", name)
@@ -24,18 +17,12 @@ func TestFlatVerbs_AllRegistered(t *testing.T) {
 	}
 }
 
-// The grouped spelling must keep working. It is what the MCP tools, the herdr
-// plugin and existing scripts call; removing it would break working callers
-// for no benefit.
 func TestFlatVerbs_GroupedSpellingStillRegistered(t *testing.T) {
 	if _, ok := Lookup("sandbox"); !ok {
 		t.Fatal("the `sandbox` command group was removed; MCP and the herdr plugin call it")
 	}
 }
 
-// A flat verb must delegate, not reimplement. If it ever grew its own arg
-// parsing the two spellings would drift in flags, error codes and JSON
-// envelopes — which is exactly the failure this guards.
 func TestFlatVerbs_DelegateToSandboxGroup(t *testing.T) {
 	cmd, ok := Lookup("rm")
 	if !ok {
@@ -46,14 +33,12 @@ func TestFlatVerbs_DelegateToSandboxGroup(t *testing.T) {
 	if err == nil {
 		t.Fatal("`nexus rm` with no args should be a usage error")
 	}
-	// The usage text must come from runSandboxRm, proving delegation.
 	msg := err.Error() + errBuf.String()
 	if !strings.Contains(msg, "sandbox rm") {
 		t.Errorf("error %q does not come from the sandbox group; flat verb may be reimplementing", msg)
 	}
 }
 
-// ls and ps must be the same command, not two implementations.
 func TestFlatVerbs_LsAndPsShareATarget(t *testing.T) {
 	var lsTarget, psTarget string
 	for _, fv := range flatVerbs {
@@ -72,12 +57,10 @@ func TestFlatVerbs_LsAndPsShareATarget(t *testing.T) {
 	}
 }
 
-// Every flat verb must name a real `sandbox` subcommand. A typo here would
-// register a command that always fails with "unknown subcommand".
 func TestFlatVerbs_TargetsAreRealSubcommands(t *testing.T) {
 	valid := map[string]bool{
 		"create": true, "list": true, "rm": true,
-		"start": true, "stop": true, "pause": true, "resume": true,
+		"start": true, "stop": true,
 	}
 	for _, fv := range flatVerbs {
 		if !valid[fv.target] {
@@ -86,13 +69,6 @@ func TestFlatVerbs_TargetsAreRealSubcommands(t *testing.T) {
 	}
 }
 
-// `nexus ps` used to print only "N sandbox(es)". The rows existed — they went
-// into the JSON envelope — but human mode never rendered them, so the primary
-// listing command told the operator how many sandboxes there were and nothing
-// about any of them.
-//
-// This drives runSandboxList in human mode, not the renderer in isolation:
-// a test of renderTable alone stays green if `ps` stops calling it.
 func TestSandboxList_HumanModeRendersRows(t *testing.T) {
 	svc := newTestHerdrService(t)
 	ctx := t.Context()
@@ -113,8 +89,6 @@ func TestSandboxList_HumanModeRendersRows(t *testing.T) {
 	}
 }
 
-// JSON mode must NOT gain the table: the envelope is a machine contract and a
-// stray table on stdout would corrupt it for any caller parsing the stream.
 func TestSandboxList_JSONModeHasNoTable(t *testing.T) {
 	svc := newTestHerdrService(t)
 	ctx := t.Context()

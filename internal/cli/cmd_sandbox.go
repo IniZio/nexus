@@ -39,7 +39,7 @@ import (
 func init() {
 	Register(Command{
 		Name:    "sandbox",
-		Summary: "Manage sandboxes (create|list|rm|start|stop|pause|resume)",
+		Summary: "Manage sandboxes (create|list|rm|start|stop)",
 		Run:     runSandbox,
 	})
 }
@@ -222,14 +222,14 @@ type sandboxRemovedDataJSON struct {
 
 func runSandbox(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "sandbox: missing subcommand; usage: sandbox <create|list|rm|start|stop|pause|resume>"}
+		return &UsageError{Msg: "sandbox: missing subcommand; usage: sandbox <create|list|rm|start|stop>"}
 	}
 
 	verb := args[0]
 	verbArgs := args[1:]
 
 	switch verb {
-	case "start", "stop", "pause", "resume":
+	case "start", "stop":
 		if _, serr := SelectSubstrate(); serr != nil {
 			return &CodedError{
 				Code: sandboxErrCodeNoSubstrate,
@@ -255,12 +255,8 @@ func runSandbox(ctx context.Context, args []string, out *Output) error {
 		return runSandboxStart(ctx, verbArgs, out, svc)
 	case "stop":
 		return runSandboxStop(ctx, verbArgs, out, svc)
-	case "pause":
-		return runSandboxPause(ctx, verbArgs, out, svc)
-	case "resume":
-		return runSandboxResume(ctx, verbArgs, out, svc)
 	default:
-		return &UsageError{Msg: fmt.Sprintf("sandbox: unknown subcommand %q; valid: create list rm start stop pause resume", verb)}
+		return &UsageError{Msg: fmt.Sprintf("sandbox: unknown subcommand %q; valid: create list rm start stop", verb)}
 	}
 }
 
@@ -2241,35 +2237,6 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 	return nil
 }
 
-func runSandboxPause(ctx context.Context, args []string, out *Output, svc *service.Service) error {
-	if len(args) != 1 {
-		return &UsageError{Msg: "sandbox pause: usage: sandbox pause <id|prefix|project/name>"}
-	}
-
-	sb, err := svc.Pause(ctx, args[0])
-	if err != nil {
-		return errSandbox("sandbox pause", err)
-	}
-
-	out.EmitSuccess("sandbox.paused", toSandboxInfoJSON(sb),
-		fmt.Sprintf("paused sandbox %s (%s)", sb.Handle(), sb.ID))
-	return nil
-}
-
-func runSandboxResume(ctx context.Context, args []string, out *Output, svc *service.Service) error {
-	if len(args) != 1 {
-		return &UsageError{Msg: "sandbox resume: usage: sandbox resume <id|prefix|project/name>"}
-	}
-
-	sb, err := svc.Resume(ctx, args[0])
-	if err != nil {
-		return errSandbox("sandbox resume", err)
-	}
-
-	out.EmitSuccess("sandbox.resumed", toSandboxInfoJSON(sb),
-		fmt.Sprintf("resumed sandbox %s (%s)", sb.Handle(), sb.ID))
-	return nil
-}
 
 func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount {
 	var out []agent.GuestMount
