@@ -68,7 +68,7 @@ Guest Claude inherits the host's permission mode (`auto` by default; see [AI age
 
 ### Recreate rule (R-7)
 
-Credential configuration is create-time state. Running sandboxes continue with whatever credential model was in effect at their creation. **Existing sandboxes must be recreated to receive the broker/placeholder credential model.** `supervisor-upgrade --force` reloads the host supervisor binary but cannot retrofit the credential environment of an already-running VM. After recreation, `nexus auth login` is required again for `claude-code`.
+Credential configuration is create-time state. Running sandboxes continue with whatever credential model was in effect at their creation. **Existing sandboxes must be recreated to receive the broker/placeholder credential model.** `supervisor-upgrade --force` reloads the host supervisor binary but cannot retrofit the credential environment of an already-running VM. After recreation, new sandboxes pick up the existing credential store automatically — no re-import is needed unless you want to rotate (`nexus auth login --force`).
 
 ## Other credential kinds (placeholder model)
 

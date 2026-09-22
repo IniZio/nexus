@@ -46,7 +46,7 @@ Subcommands: `login`, `logout`, `status`
 `auth login` flags:
 - `--from string` — source credential file path (default: agent-specific)
 - `--force` — allow overwriting an existing complete credential store
-- `--agent string` — agent to authenticate; omitting it for claude-code prints a "no longer needed" notice (claude-code sandboxes use a live virtiofs mount of `~/.claude`); partial — only claude-code is registered today
+- `--agent string` — agent to authenticate; omitting it selects claude-code and performs the import; partial — only claude-code is registered today
 
 ---
 

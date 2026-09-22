@@ -13,23 +13,31 @@ Manage credentials for the coding agent running inside sandboxes.
 
 ### Claude Code (default)
 
-`nexus auth login` is **no longer needed for Claude Code**. claude-code sandboxes receive the host's `~/.claude` directory as a live read-write virtiofs mount. The guest uses the host's real `.credentials.json` and refreshes its own token without any host-side brokering.
+`nexus auth login` (with no `--agent`) selects the `claude-code` profile and imports a dedicated OAuth grant into the host credential store (`~/.config/nexus/creds.json`). That store persists across sandboxes — login is a **once-per-host** operation; pass `--force` to rotate.
 
-To authenticate for use in sandboxes, authenticate on the **host**:
+#### Two-step setup
+
+**Step 1.** Create a dedicated Claude session whose refresh token nexus owns exclusively:
 
 ```sh
-claude login
+CLAUDE_CONFIG_DIR=~/.config/nexus/claude-dedicated claude auth login
 ```
 
-The next sandbox you create picks up the credentials automatically.
+This writes a credentials file at `~/.config/nexus/claude-dedicated/.credentials.json`. A dedicated session is required because nexus rotates the refresh token on every credential refresh; sharing a refresh token between two processes races and causes `invalid_grant` errors.
 
-Running sandboxes are not updated — credential configuration is create-time state. Recreate a sandbox to receive the broker/placeholder credential model; `nexus auth login` is required again for claude-code after recreation (see [Egress and perimeter: recreate rule](/security/egress-and-perimeter#recreate-rule-r-7)).
+**Step 2.** Import that session into the nexus credential store:
 
-```
+```sh
 nexus auth login
 ```
 
-Prints a notice explaining that auth login is not needed for claude-code, then exits zero.
+This reads from `~/.config/nexus/claude-dedicated/.credentials.json` by default and writes the imported grant to `~/.config/nexus/creds.json`. To import from a different path, pass `--from <path>`. If a live credential chain already exists, the command refuses with an error unless `--force` is passed.
+
+#### After import
+
+Sandboxes created **after** the import pick up the credentials automatically. Sandboxes created **before** must be recreated; `nexus auth login` is not needed again — the existing store is reused (see [Egress and perimeter: recreate rule](/security/egress-and-perimeter#recreate-rule-r-7)).
+
+The guest never holds a real credential. The host MITM proxy substitutes the real bearer token on every outbound request; the host-side refresher keeps the grant current.
 
 ### Other agent profiles <Badge type="warning" text="partial" />
 
@@ -45,7 +53,7 @@ nexus auth login --agent <name> [--from <path>] [--force]
 | `--from <path>` | string | agent-specific | Source credential file path |
 | `--force` | bool | false | Allow overwriting an existing complete credential store |
 
-`--agent` selects which provider profile to authenticate. Without `--agent`, the command prints the "no longer needed" notice for claude-code. <Badge type="warning" text="partial" /> — only one additional profile (`claude-code`) is registered today; the multi-profile path (`--agent codex`, `--agent opencode`) is not yet wired for other agents.
+`--agent` selects which provider profile to authenticate. Without `--agent`, the command defaults to `claude-code` and performs the import described above. <Badge type="warning" text="partial" /> — only `claude-code` is registered today; the multi-profile path (`--agent codex`, `--agent opencode`) is not yet wired for other agents.
 
 The imported credential is **never injected into a sandbox as a real value**. It stays host-side, held by the perimeter supervisor's credential broker. A sandbox that requests agent egress receives a *placeholder* string in its guest environment; the host-side MITM proxy swaps that placeholder for the real bearer token on the wire, per request.
 
