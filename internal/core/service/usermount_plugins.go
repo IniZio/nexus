@@ -123,6 +123,56 @@ func ResolvePluginSymlinkMounts(hostHome string) (specs []string, warnings []str
 	return specs, warnings
 }
 
+// ResolveClaudeCodeBindMounts returns plugin-symlink-target mounts plus an optional .groundwork bind for a linked worktree; hostHome="" uses os.UserHomeDir.
+func ResolveClaudeCodeBindMounts(hostHome, worktreePath string) (specs []string, warnings []string) {
+	if hostHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("ResolveClaudeCodeBindMounts: os.UserHomeDir: %v; plugin mounts skipped", err))
+			return specs, warnings
+		}
+		hostHome = home
+	}
+	pluginSpecs, pluginWarns := ResolvePluginSymlinkMounts(hostHome)
+	specs = append(specs, pluginSpecs...)
+	warnings = append(warnings, pluginWarns...)
+	if worktreePath != "" {
+		if gwMount := resolveGroundworkMount(worktreePath); gwMount != "" {
+			specs = append(specs, gwMount)
+		}
+	}
+	return specs, warnings
+}
+
+// resolveGroundworkMount returns "<mainRepo>/.groundwork:<mainRepo>/.groundwork" for a linked worktree, or "".
+func resolveGroundworkMount(worktreePath string) string {
+	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(data))
+	const prefix = "gitdir: "
+	if !strings.HasPrefix(line, prefix) {
+		return ""
+	}
+	target := strings.TrimPrefix(line, prefix)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(worktreePath, target)
+	}
+	target = filepath.Clean(target)
+	worktreesDir := filepath.Dir(target)
+	gitDir := filepath.Dir(worktreesDir)
+	if filepath.Base(worktreesDir) != "worktrees" {
+		return ""
+	}
+	mainRepo := filepath.Dir(gitDir)
+	groundwork := filepath.Join(mainRepo, ".groundwork")
+	if _, statErr := os.Stat(groundwork); statErr != nil {
+		return ""
+	}
+	return groundwork + ":" + groundwork
+}
+
 // ResolveHookRuntimeMounts returns read-only LiveMount entries for ~/.local/bin and ~/.local/share/mise/installs at host-path identity; nil on non-linux or absent dirs.
 func ResolveHookRuntimeMounts(hostHome, goos string, statFn func(string) (os.FileInfo, error)) []domain.LiveMount {
 	if goos != "linux" {

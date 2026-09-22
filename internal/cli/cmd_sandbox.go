@@ -1488,6 +1488,26 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 								"err", writeErr)
 						}
 					}
+					for _, pat := range agentProfile.MountAllowlist {
+						if pat == "plugins/**" {
+							ccSpecs, ccWarns := service.ResolveClaudeCodeBindMounts(hostHome, "")
+							for _, msg := range ccWarns {
+								slog.Warn("sandbox create: " + msg)
+							}
+							for _, spec := range ccSpecs {
+								parts := strings.SplitN(spec, ":", 3)
+								if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+									continue
+								}
+								bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
+									HostPath:  parts[0],
+									GuestPath: parts[1],
+									ReadOnly:  len(parts) == 3 && parts[2] == "ro",
+								})
+							}
+							break
+						}
+					}
 				} else {
 					slog.Warn("sandbox create: os.UserHomeDir failed; skipping user-mount table", "err", homeErr)
 				}
@@ -2125,7 +2145,6 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 		fmt.Sprintf("stopped sandbox %s (%s)", sb.Handle(), sb.ID))
 	return nil
 }
-
 
 func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount {
 	var out []agent.GuestMount

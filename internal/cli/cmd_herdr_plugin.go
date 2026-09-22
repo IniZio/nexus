@@ -4776,17 +4776,11 @@ func herdrWorktreeSandbox(
 	 * in-guest agents can read motive charters, tickets, and open items.
 	 * Read-write so agents can record evidence into their own ticket files.
 	 */
-	if gwMount := herdrWorktreeGroundworkMount(info.Path); gwMount != "" {
-		extraMounts = append(extraMounts, gwMount)
-	}
-	/**
-	 * plugins/** is projected into the guest via MountAllowlist staging; out-of-
-	 * tree dir symlinks survive as symlinks. Bind-mount their targets at the same
-	 * host path so the projected links resolve in the guest.
-	 */
-	extraMounts = append(extraMounts, herdrWorktreePluginMounts("", func(msg string) {
+	ccSpecs, ccWarns := service.ResolveClaudeCodeBindMounts("", info.Path)
+	for _, msg := range ccWarns {
 		fmt.Fprintf(w, "worktree-sandbox: warning: %s\n", msg)
-	})...)
+	}
+	extraMounts = append(extraMounts, ccSpecs...)
 
 	/**
 	 * Two concurrent callers for the same worktree workspace both pass the
