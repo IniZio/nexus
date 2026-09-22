@@ -3,7 +3,6 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/service"
@@ -45,9 +44,12 @@ func TestSandboxCreatePluginMounts(t *testing.T) {
 		t.Fatalf("specs %q do not contain %q", specs, wantSpec)
 	}
 
-	parts := strings.SplitN(wantSpec, ":", 3)
-	if len(parts) != 3 || parts[0] != resolvedExt || parts[1] != resolvedExt || parts[2] != "ro" {
-		t.Fatalf("spec %q parse unexpected", wantSpec)
+	lm, err := parseMountLive(wantSpec)
+	if err != nil {
+		t.Fatalf("parseMountLive(%q): %v", wantSpec, err)
+	}
+	if lm.HostPath != resolvedExt || lm.GuestPath != resolvedExt || !lm.ReadOnly {
+		t.Fatalf("LiveMount = %+v, want HostPath=%s GuestPath=%s ReadOnly=true", lm, resolvedExt, resolvedExt)
 	}
 }
 

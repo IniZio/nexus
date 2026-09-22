@@ -1495,15 +1495,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 								slog.Warn("sandbox create: " + msg)
 							}
 							for _, spec := range ccSpecs {
-								parts := strings.SplitN(spec, ":", 3)
-								if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+								lm, mountErr := parseMountLive(spec)
+								if mountErr != nil {
+									slog.Warn("sandbox create: plugin mount skipped", "spec", spec, "err", mountErr)
 									continue
 								}
-								bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
-									HostPath:  parts[0],
-									GuestPath: parts[1],
-									ReadOnly:  len(parts) == 3 && parts[2] == "ro",
-								})
+								bootLiveMounts = append(bootLiveMounts, lm)
 							}
 							break
 						}

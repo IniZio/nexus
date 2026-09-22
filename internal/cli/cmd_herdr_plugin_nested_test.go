@@ -14,6 +14,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/config"
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 // ── herdrWorktreeSandboxCreateArgs — --nested flag ────────────────────────────
@@ -184,9 +185,16 @@ func TestHerdrWorktreeGroundworkMount_linkedWorktreeWithGroundwork_returnsSpec(t
 	checkoutDir, mainRepo := buildLinkedWorktreeWithGroundwork(t)
 
 	want := filepath.Join(mainRepo, ".groundwork") + ":" + filepath.Join(mainRepo, ".groundwork")
-	got := herdrWorktreeGroundworkMount(checkoutDir)
-	if got != want {
-		t.Errorf("herdrWorktreeGroundworkMount = %q; want %q", got, want)
+	specs, _ := service.ResolveClaudeCodeBindMounts(t.TempDir(), checkoutDir)
+	found := false
+	for _, s := range specs {
+		if s == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ResolveClaudeCodeBindMounts specs = %q; want to contain %q", specs, want)
 	}
 }
 
@@ -207,9 +215,9 @@ func TestHerdrWorktreeGroundworkMount_missingGroundwork_returnsEmpty(t *testing.
 		t.Fatal(err)
 	}
 	// No .groundwork directory is created.
-	got := herdrWorktreeGroundworkMount(checkoutDir)
-	if got != "" {
-		t.Errorf("herdrWorktreeGroundworkMount with no .groundwork = %q; want empty", got)
+	specs, _ := service.ResolveClaudeCodeBindMounts(t.TempDir(), checkoutDir)
+	if len(specs) != 0 {
+		t.Errorf("ResolveClaudeCodeBindMounts with no .groundwork = %q; want empty", specs)
 	}
 }
 
@@ -223,17 +231,17 @@ func TestHerdrWorktreeGroundworkMount_mainCheckout_returnsEmpty(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got := herdrWorktreeGroundworkMount(dir)
-	if got != "" {
-		t.Errorf("herdrWorktreeGroundworkMount for main checkout = %q; want empty", got)
+	specs, _ := service.ResolveClaudeCodeBindMounts(t.TempDir(), dir)
+	if len(specs) != 0 {
+		t.Errorf("ResolveClaudeCodeBindMounts for main checkout = %q; want empty", specs)
 	}
 }
 
 func TestHerdrWorktreeGroundworkMount_noGitFile_returnsEmpty(t *testing.T) {
 	// No .git at all → empty.
-	got := herdrWorktreeGroundworkMount(t.TempDir())
-	if got != "" {
-		t.Errorf("herdrWorktreeGroundworkMount with no .git = %q; want empty", got)
+	specs, _ := service.ResolveClaudeCodeBindMounts(t.TempDir(), t.TempDir())
+	if len(specs) != 0 {
+		t.Errorf("ResolveClaudeCodeBindMounts with no .git = %q; want empty", specs)
 	}
 }
 
@@ -246,9 +254,9 @@ func TestHerdrWorktreeGroundworkMount_noWorktreesParent_returnsEmpty(t *testing.
 		[]byte("gitdir: "+bogus+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := herdrWorktreeGroundworkMount(checkoutDir)
-	if got != "" {
-		t.Errorf("herdrWorktreeGroundworkMount with non-worktrees parent = %q; want empty", got)
+	specs, _ := service.ResolveClaudeCodeBindMounts(t.TempDir(), checkoutDir)
+	if len(specs) != 0 {
+		t.Errorf("ResolveClaudeCodeBindMounts with non-worktrees parent = %q; want empty", specs)
 	}
 }
 

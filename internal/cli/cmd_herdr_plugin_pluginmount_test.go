@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/IniZio/nexus/internal/core/service"
 )
 
 func TestHerdrWorktreePluginMounts(t *testing.T) {
@@ -28,8 +30,7 @@ func TestHerdrWorktreePluginMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var warnings []string
-	got := herdrWorktreePluginMounts(home, func(msg string) { warnings = append(warnings, msg) })
+	got, warnings := service.ResolvePluginSymlinkMounts(home)
 
 	wantSpec := resolvedExt + ":" + resolvedExt + ":ro"
 	if len(got) != 1 || got[0] != wantSpec {
