@@ -295,7 +295,7 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 		t.Fatalf("GuestNetworkFD: %v", err)
 	}
 
-	al, err := netfilter.NewAllowList(nil, nil, service.AgentEgressHosts(cred.ClaudeCodeProfile))
+	al, err := netfilter.NewAllowList(nil, nil, service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)))
 	if err != nil {
 		t.Fatalf("netfilter.NewAllowList: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 
 	mitmProxy, err := mitm.New(mitm.Config{
 		SandboxID:    sb.ID,
-		AllowedHosts: service.AgentEgressHosts(cred.ClaudeCodeProfile),
+		AllowedHosts: service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)),
 		Broker:       broker,
 		Logger:       swapLogger,
 	})
@@ -359,7 +359,7 @@ func TestOrcaCredBrokerWiring(t *testing.T) {
 		"PATH":                                   "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME":                                   "/root",
 		"TERM":                                   "dumb",
-		cred.ClaudeCodeProfile.PlaceholderEnvVar: claudePlaceholder,
+		cred.MustProfileByName(cred.ClaudeCodeProfileName).PlaceholderEnvVar: claudePlaceholder,
 		"NODE_EXTRA_CA_CERTS":                    service.GuestCACertPath,
 		"ANTHROPIC_MODEL":                        dogfoodHaikuModel,
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",

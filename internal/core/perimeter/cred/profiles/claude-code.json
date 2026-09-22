@@ -1,0 +1,57 @@
+{
+  "Name": "claude-code",
+  "PlaceholderEnvVar": "CLAUDE_CODE_OAUTH_TOKEN",
+  "CredentialedHostSuffix": "",
+  "PlaceholderIsJWT": false,
+  "CredentialedHost": "api.anthropic.com",
+  "EgressHosts": ["api.anthropic.com", "platform.claude.com"],
+  "APIKeyEnvVar": "ANTHROPIC_AUTH_TOKEN",
+  "CACertEnvVars": ["NODE_EXTRA_CA_CERTS"],
+  "GuestEnv": {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+  "Capabilities": {"GuestNoSelfRefresh": false},
+  "SettingsPath": "~/.claude/settings.json",
+  "CredDirEnvVar": "CLAUDE_CONFIG_DIR",
+  "ConfigDirEnvVar": "CLAUDE_CONFIG_DIR",
+  "CredentialFile": "",
+  "CredentialFileKey": "",
+  "CredentialFileExtraKeys": null,
+  "CredentialFormat": "",
+  "SkillsPath": "~/.claude/skills",
+  "MCPConfigFormat": "claude-json",
+  "MountAllowlist": ["CLAUDE.md", "skills/**", "settings.json"],
+  "SettingsAllowlist": {
+    "model": true,
+    "advisorModel": true,
+    "availableModels": true,
+    "theme": true,
+    "tui": true,
+    "defaultShell": true,
+    "attribution": true,
+    "enabledPlugins": true,
+    "extraKnownMarketplaces": true,
+    "autoMode": true,
+    "effortLevel": true,
+    "autoUpdatesChannel": true,
+    "enableWorkflows": true,
+    "skipDangerousModePermissionPrompt": true
+  },
+  "BypassConsentKey": "",
+  "ToolRecipe": {
+    "BinPath": "/usr/local/bin/claude",
+    "Packages": [
+      {
+        "Kind": "oci",
+        "Name": "claude-code",
+        "Version": "latest",
+        "URLTemplate": "",
+        "SHA256ByArch": null,
+        "InstallDir": "/usr/local/share/claude/versions",
+        "Symlinks": [{"LinkPath": "/usr/local/bin/claude", "TargetPath": ""}],
+        "VersionCmd": "",
+        "Image": "docker/sandbox-templates:claude-code-minimal-nightly",
+        "SrcPath": "/home/agent/.local/share/claude/versions/",
+        "BinRel": ""
+      }
+    ]
+  }
+}

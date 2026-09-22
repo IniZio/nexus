@@ -27,7 +27,7 @@ func TestBuildCredFileSeedPayload_NilForEnvVarAgent(t *testing.T) {
 	records := []cred.PlaceholderRecord{
 		credFileTestRecord(AnthropicAPIHost, "deadbeef1234567890abcdef"),
 	}
-	got, err := buildCredFileSeedPayload(records, cred.ClaudeCodeProfile)
+	got, err := buildCredFileSeedPayload(records, cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("unexpected error for env-var agent: %v", err)
 	}
@@ -45,10 +45,10 @@ func TestBuildCredFileSeedPayload_PlaceholderInFile(t *testing.T) {
 	const realToken = "real-secret-cursor-jwt-MUST-NOT-APPEAR-IN-GUEST-FILE"
 
 	records := []cred.PlaceholderRecord{
-		credFileTestRecord(cred.CursorAgentProfile.CredentialedHost, placeholder),
+		credFileTestRecord(cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost, placeholder),
 	}
 
-	got, err := buildCredFileSeedPayload(records, cred.CursorAgentProfile)
+	got, err := buildCredFileSeedPayload(records, cred.MustProfileByName(cred.CursorAgentProfileName))
 	if err != nil {
 		t.Fatalf("buildCredFileSeedPayload: %v", err)
 	}
@@ -66,14 +66,14 @@ func TestBuildCredFileSeedPayload_PlaceholderInFile(t *testing.T) {
 	if err := json.Unmarshal(got, &m); err != nil {
 		t.Fatalf("credential file is not valid JSON: %v; content: %q", err, got)
 	}
-	key := cred.CursorAgentProfile.CredentialFileKey
+	key := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialFileKey
 	if v, ok := m[key]; !ok {
 		t.Errorf("JSON missing key %q; keys present: %v", key, keysOf(m))
 	} else if v != placeholder {
 		t.Errorf("JSON[%q] = %q, want placeholder %q", key, v, placeholder)
 	}
 
-	for _, extra := range cred.CursorAgentProfile.CredentialFileExtraKeys {
+	for _, extra := range cred.MustProfileByName(cred.CursorAgentProfileName).CredentialFileExtraKeys {
 		if v, ok := m[extra]; !ok {
 			t.Errorf("JSON missing extra key %q (S11); keys present: %v", extra, keysOf(m))
 		} else if v != placeholder {
@@ -87,11 +87,11 @@ func TestSeedGuestCredFile_WritesFileForCursor(t *testing.T) {
 	t.Parallel()
 	const placeholder = "cafebabe111122223333cafebabe111122223333cafebabe111122223333cafe"
 	records := []cred.PlaceholderRecord{
-		credFileTestRecord(cred.CursorAgentProfile.CredentialedHost, placeholder),
+		credFileTestRecord(cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost, placeholder),
 	}
 	cs := &captureSeeder{}
 
-	err := SeedGuestCredFile(context.Background(), seedTestID(21), records, cred.CursorAgentProfile, cs.fn())
+	err := SeedGuestCredFile(context.Background(), seedTestID(21), records, cred.MustProfileByName(cred.CursorAgentProfileName), cs.fn())
 	if err != nil {
 		t.Fatalf("SeedGuestCredFile: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestSeedGuestCredFile_NoopForEnvVarAgent(t *testing.T) {
 		credFileTestRecord(AnthropicAPIHost, "deadbeef"),
 	}
 	cs := &captureSeeder{}
-	err := SeedGuestCredFile(context.Background(), seedTestID(22), records, cred.ClaudeCodeProfile, cs.fn())
+	err := SeedGuestCredFile(context.Background(), seedTestID(22), records, cred.MustProfileByName(cred.ClaudeCodeProfileName), cs.fn())
 	if err != nil {
 		t.Fatalf("SeedGuestCredFile: %v", err)
 	}
@@ -122,11 +122,11 @@ func TestSeedGuestCredFile_NoopForEnvVarAgent(t *testing.T) {
 // TestGuestCredFilePath_CursorPath proves GuestCredFilePath produces expected paths.
 func TestGuestCredFilePath_CursorPath(t *testing.T) {
 	t.Parallel()
-	want := GuestCredDirPath + "/" + cred.CursorAgentProfile.CredentialFile
-	if got := GuestCredFilePath(cred.CursorAgentProfile); got != want {
+	want := GuestCredDirPath + "/" + cred.MustProfileByName(cred.CursorAgentProfileName).CredentialFile
+	if got := GuestCredFilePath(cred.MustProfileByName(cred.CursorAgentProfileName)); got != want {
 		t.Errorf("GuestCredFilePath(cursor) = %q, want %q", got, want)
 	}
-	if got := GuestCredFilePath(cred.ClaudeCodeProfile); got != "" {
+	if got := GuestCredFilePath(cred.MustProfileByName(cred.ClaudeCodeProfileName)); got != "" {
 		t.Errorf("GuestCredFilePath(claude-code) = %q, want empty", got)
 	}
 }
@@ -143,9 +143,9 @@ func keysOf(m map[string]string) []string {
 func TestBuildAgentSeedPayload_FileBasedAgentNoError(t *testing.T) {
 	t.Parallel()
 	records := []cred.PlaceholderRecord{
-		credFileTestRecord(cred.CursorAgentProfile.CredentialedHost, "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"),
+		credFileTestRecord(cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost, "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"),
 	}
-	got, err := buildAgentSeedPayload(records, kindOAuth, cred.CursorAgentProfile)
+	got, err := buildAgentSeedPayload(records, kindOAuth, cred.MustProfileByName(cred.CursorAgentProfileName))
 	if err != nil {
 		t.Fatalf("buildAgentSeedPayload(cursor, kindOAuth): unexpected error: %v", err)
 	}
@@ -158,14 +158,14 @@ func TestBuildAgentSeedPayload_FileBasedAgentNoError(t *testing.T) {
 func TestBuildAgentSeedPayload_CredDirRedirectEmitted(t *testing.T) {
 	t.Parallel()
 	records := []cred.PlaceholderRecord{
-		credFileTestRecord(cred.CursorAgentProfile.CredentialedHost, "bbccdd1122334455bbccdd1122334455bbccdd1122334455bbccdd1122334455"),
+		credFileTestRecord(cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost, "bbccdd1122334455bbccdd1122334455bbccdd1122334455bbccdd1122334455"),
 	}
-	got, err := buildAgentSeedPayload(records, kindOAuth, cred.CursorAgentProfile)
+	got, err := buildAgentSeedPayload(records, kindOAuth, cred.MustProfileByName(cred.CursorAgentProfileName))
 	if err != nil {
 		t.Fatalf("buildAgentSeedPayload(cursor): %v", err)
 	}
 	payload := string(got)
-	wantLine := cred.CursorAgentProfile.CredDirEnvVar + "=" + GuestCredDirPath
+	wantLine := cred.MustProfileByName(cred.CursorAgentProfileName).CredDirEnvVar + "=" + GuestCredDirPath
 	if !strings.Contains(payload, wantLine) {
 		t.Errorf("env payload missing redirect line %q; got:\n%s", wantLine, payload)
 	}
@@ -178,7 +178,7 @@ func TestBuildAgentSeedPayload_CredDirRedirectAbsentForEnvVarAgent(t *testing.T)
 	records := []cred.PlaceholderRecord{
 		{Host: AnthropicAPIHost, Placeholder: "deadbeefdeadbeefdeadbeef", ExpiresAt: expires, SandboxID: seedTestID(24)},
 	}
-	got, err := buildAgentSeedPayload(records, kindOAuth, cred.ClaudeCodeProfile)
+	got, err := buildAgentSeedPayload(records, kindOAuth, cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("buildAgentSeedPayload(claude-code): %v", err)
 	}
@@ -238,7 +238,7 @@ func TestClaudeCodeEnvVarSeedingUnchanged(t *testing.T) {
 		{Host: AnthropicAPIHost, Placeholder: placeholder, ExpiresAt: expires, SandboxID: seedTestID(23)},
 	}
 
-	got, err := buildAgentSeedPayload(records, kindOAuth, cred.ClaudeCodeProfile)
+	got, err := buildAgentSeedPayload(records, kindOAuth, cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("buildAgentSeedPayload(claude-code, kindOAuth): %v", err)
 	}

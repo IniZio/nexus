@@ -44,7 +44,7 @@ func TestCreateAndBoot_NamedAgent_DoesNotSeedFromTheCLI(t *testing.T) {
 		DiskDir:   t.TempDir(),
 		// The --agent shape: a named profile, a broker and seeder available,
 		// but no request for the CLI-side seed.
-		AgentProfile: cred.ClaudeCodeProfile,
+		AgentProfile: cred.MustProfileByName(cred.ClaudeCodeProfileName),
 		Broker:       cred.NewBroker(),
 		Seeder:       seeder,
 	}
@@ -78,7 +78,7 @@ func TestCreateAndBoot_NamedAgent_GitHubSecretWithRepo_Allowed(t *testing.T) {
 		Image:        ImageSpec{Digest: string(img.Digest)},
 		CacheRoot:    cacheRoot,
 		DiskDir:      t.TempDir(),
-		AgentProfile: cred.ClaudeCodeProfile,
+		AgentProfile: cred.MustProfileByName(cred.ClaudeCodeProfileName),
 		Secrets:      []SecretBind{{Env: "GH_TOKEN", Hosts: []string{"api.github.com"}, Token: "ghp_test"}},
 		AllowedRepo:  "owner/name", // D-PD-36 satisfied; D-SHL-05 permits this combination
 	}

@@ -94,7 +94,7 @@ func TestS22_AC2_SyntheticWithCustomSourceFn(t *testing.T) {
 	}
 }
 
-// TestS12_AC3_CursorViaSelector proves that CursorAgentProfile resolves to a
+// TestS12_AC3_CursorViaSelector proves that MustProfileByName(CursorAgentProfileName) resolves to a
 // working StaticCredentialSource through NewCredentialSourceForProfile (the
 // selector), not by calling NewCursorCredentialSource directly. The existing
 // cursor tests (cursor_test.go) exercise the import/JWT logic; this test
@@ -103,7 +103,7 @@ func TestS12_AC3_CursorViaSelector(t *testing.T) {
 	xdgBase, _ := makeCursorDir(t, `{"accessToken":"cursor-tok-ac3","refreshToken":"r"}`)
 	t.Setenv("XDG_CONFIG_HOME", xdgBase)
 
-	src, err := NewCredentialSourceForProfile(CursorAgentProfile)
+	src, err := NewCredentialSourceForProfile(MustProfileByName(CursorAgentProfileName))
 	if err != nil {
 		t.Fatalf("NewCredentialSourceForProfile: %v", err)
 	}
@@ -120,15 +120,15 @@ func TestS12_AC3_CursorViaSelector(t *testing.T) {
 	}
 }
 
-// TestS12_AC4_ClaudeYieldsNilSource proves that ClaudeCodeProfile (no
+// TestS12_AC4_ClaudeYieldsNilSource proves that MustProfileByName(ClaudeCodeProfileName) (no
 // CredentialFormat, no CredentialFile) returns (nil, nil) from the selector —
 // Claude pushes credentials via a Refresher, not a file-based source.
 func TestS12_AC4_ClaudeYieldsNilSource(t *testing.T) {
-	src, err := NewCredentialSourceForProfile(ClaudeCodeProfile)
+	src, err := NewCredentialSourceForProfile(MustProfileByName(ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("NewCredentialSourceForProfile: unexpected error: %v", err)
 	}
 	if src != nil {
-		t.Errorf("got non-nil source %T for ClaudeCodeProfile, want nil", src)
+		t.Errorf("got non-nil source %T for MustProfileByName(ClaudeCodeProfileName), want nil", src)
 	}
 }

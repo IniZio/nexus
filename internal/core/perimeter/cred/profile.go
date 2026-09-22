@@ -101,295 +101,41 @@ func (p AgentProfile) Recipe() ToolRecipe {
 	return out
 }
 
-var ClaudeCodeProfile = AgentProfile{
-	Name:              ClaudeCodeProfileName,
-	PlaceholderEnvVar: "CLAUDE_CODE_OAUTH_TOKEN",
-	CredentialedHost:  "api.anthropic.com",
-	EgressHosts:      []string{"api.anthropic.com", "platform.claude.com"},
-	APIKeyEnvVar:     "ANTHROPIC_AUTH_TOKEN",
-	CACertEnvVars:    []string{"NODE_EXTRA_CA_CERTS"},
-	GuestEnv: map[string]string{
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-	},
-	Capabilities: AgentCapabilities{
-		GuestNoSelfRefresh: false,
-	},
-	SettingsPath:    "~/.claude/settings.json",
-	CredDirEnvVar:   "CLAUDE_CONFIG_DIR",
-	ConfigDirEnvVar: "CLAUDE_CONFIG_DIR",
-	SkillsPath:      "~/.claude/skills",
-	MCPConfigFormat: MCPConfigFormatClaudeJSON,
-	MountAllowlist: []string{
-		"CLAUDE.md",
-		"skills/**",
-		"settings.json",
-	},
-	SettingsAllowlist: map[string]bool{
-		"model":                             true,
-		"advisorModel":                      true,
-		"availableModels":                   true,
-		"theme":                             true,
-		"tui":                               true,
-		"defaultShell":                      true,
-		"attribution":                       true,
-		"enabledPlugins":                    true,
-		"extraKnownMarketplaces":            true,
-		"autoMode":                          true,
-		"effortLevel":                       true,
-		"autoUpdatesChannel":                true,
-		"enableWorkflows":                   true,
-		"skipDangerousModePermissionPrompt": true,
-	},
-	ToolRecipe: ToolRecipe{
-		BinPath: "/usr/local/bin/claude",
-		Packages: []RecipePackage{
-			{
-				Kind:       RecipeKindOCI,
-				Name:       "claude-code",
-				Version:    FloatingVersion,
-				Image:      "docker/sandbox-templates:claude-code-minimal-nightly",
-				SrcPath:    "/home/agent/.local/share/claude/versions/",
-				InstallDir: "/usr/local/share/claude/versions",
-				BinRel:     "",
-				Symlinks: []RecipeSymlink{
-					{LinkPath: "/usr/local/bin/claude"},
-				},
-			},
-		},
-	},
-}
-
 const ClaudeCodeProfileName = "claude-code"
 
 const DefaultProfileName = ClaudeCodeProfileName
 
 const CursorAgentProfileName = "cursor"
 
-var CursorAgentProfile = AgentProfile{
-	Name:                    CursorAgentProfileName,
-	CredentialedHost:        "api2.cursor.sh",
-	CredentialedHostSuffix:  ".cursor.sh",
-	EgressHosts:             []string{"api2.cursor.sh"},
-	PlaceholderEnvVar:       "CURSOR_AUTH_TOKEN",
-	PlaceholderIsJWT:        true,
-	APIKeyEnvVar:            "CURSOR_API_KEY",
-	CACertEnvVars:           []string{"NODE_EXTRA_CA_CERTS"},
-	SettingsPath:            "~/.cursor/cli-config.json",
-	CredDirEnvVar:           "XDG_CONFIG_HOME",
-	ConfigDirEnvVar:         "CURSOR_CONFIG_DIR",
-	CredentialFile:          "cursor/auth.json",
-	CredentialFileKey:       "accessToken",
-	CredentialFileExtraKeys: []string{"refreshToken"},
-	CredentialFormat:        CredentialFormatCursorJWT,
-	MountAllowlist: []string{
-		"cli-config.json",
-	},
-	SettingsAllowlist: map[string]bool{
-		"version":                           true,
-		"editor":                            true,
-		"display":                           true,
-		"notifications":                     true,
-		"hints":                             true,
-		"modelSlashCommands":                true,
-		"rewind":                            true,
-		"hasChangedDefaultModel":            true,
-		"exploreSubagentModel":              true,
-		"permissions":                       true,
-		"approvalMode":                      true,
-		"autoAcceptWebSearch":               true,
-		"attribution":                       true,
-		"model":                             true,
-		"maxMode":                           true,
-		"selectedModel":                     true,
-		"modelParameters":                   true,
-		"runEverythingSettingsPromptStreak": true,
-	},
-	MCPConfigFormat: MCPConfigFormatCursorJSON,
-	ToolRecipe: ToolRecipe{
-		BinPath: "/usr/local/bin/cursor-agent",
-		Packages: []RecipePackage{
-			{
-				Kind:       RecipeKindOCI,
-				Name:       "cursor-agent",
-				Version:    FloatingVersion,
-				Image:      "docker/sandbox-templates:cursor-agent-nightly",
-				SrcPath:    "/home/agent/.local/share/cursor-agent/versions/",
-				InstallDir: "/usr/local/share/cursor-agent/versions",
-				BinRel:     "cursor-agent",
-				Symlinks: []RecipeSymlink{
-					{LinkPath: "/usr/local/bin/cursor-agent"},
-				},
-			},
-		},
-	},
-}
-
 const OpencodeProfileName = "opencode"
-
-var OpencodeProfile = AgentProfile{
-	Name:              OpencodeProfileName,
-	CredentialedHost:  "opencode.ai",
-	EgressHosts:       []string{"opencode.ai"},
-	PlaceholderEnvVar: "OPENCODE_API_KEY",
-	PlaceholderIsJWT:  false,
-	APIKeyEnvVar:      "OPENCODE_API_KEY",
-	CACertEnvVars:     []string{"NODE_EXTRA_CA_CERTS"},
-	GuestEnv: map[string]string{
-		"OPENCODE_DISABLE_AUTOUPDATE":   "1",
-		"OPENCODE_DISABLE_MODELS_FETCH": "1",
-	},
-	SettingsPath:      "~/.config/opencode/opencode.json",
-	CredDirEnvVar:     "XDG_DATA_HOME",
-	ConfigDirEnvVar:   "OPENCODE_CONFIG_DIR",
-	CredentialFile:    "opencode/auth.json",
-	CredentialFileKey: "key",
-	CredentialFormat:  CredentialFormatOpencodeAPIKey,
-	MCPConfigFormat:   MCPConfigFormatOpencodeJSON,
-	ToolRecipe: ToolRecipe{
-		BinPath: "/usr/local/bin/opencode",
-		Packages: []RecipePackage{
-			{
-				Kind:        RecipeKindTarball,
-				Name:        "node",
-				Version:     "22.23.2",
-				URLTemplate: "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz",
-				SHA256ByArch: map[string]string{
-					"x64":   "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
-					"arm64": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
-				},
-				InstallDir: "/usr/local",
-				VersionCmd: "node --version",
-			},
-			{
-				Kind:    RecipeKindNPM,
-				Name:    "opencode-ai",
-				Version: "1.18.31",
-			},
-		},
-	},
-}
 
 const OhMyPiProfileName = "oh-my-pi"
 
-// OhMyPiProfile uses a SQLite vault (no single bearer); CheckCred must not block sandbox create. See ohmypi.go.
-var OhMyPiProfile = AgentProfile{
-	Name:              OhMyPiProfileName,
-	CredentialFormat:  CredentialFormatOhMyPiVault,
-	CredentialedHost:  "api.anthropic.com",
-	EgressHosts:       []string{"api.anthropic.com", "api.openai.com", "auth.openai.com"},
-	PlaceholderEnvVar: "ANTHROPIC_OAUTH_TOKEN",
-	APIKeyEnvVar:      "ANTHROPIC_API_KEY",
-	CACertEnvVars:     []string{"NODE_EXTRA_CA_CERTS"},
-	SettingsPath:      "~/.omp/agent/config.yml",
-	CredDirEnvVar:     "PI_CODING_AGENT_DIR",
-	ConfigDirEnvVar:   "PI_CODING_AGENT_DIR",
-	ToolRecipe: ToolRecipe{
-		BinPath: "/usr/local/bin/omp",
-		Packages: []RecipePackage{
-			{
-				Kind:        RecipeKindTarball,
-				Name:        "node",
-				Version:     "22.23.2",
-				URLTemplate: "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz",
-				SHA256ByArch: map[string]string{
-					"x64":   "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
-					"arm64": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
-				},
-				InstallDir: "/usr/local",
-				VersionCmd: "node --version",
-			},
-			{
-				Kind:    RecipeKindNPM,
-				Name:    "bun",
-				Version: "1.4.2",
-			},
-			{
-				Kind:    RecipeKindNPM,
-				Name:    "@oh-my-pi/pi-coding-agent",
-				Version: "18.2.6",
-			},
-		},
-	},
-}
-
 const KiroProfileName = "kiro"
-
-var KiroProfile = AgentProfile{
-	Name:             KiroProfileName,
-	CredentialedHost: "management.us-east-1.kiro.dev",
-	EgressHosts:      []string{"management.us-east-1.kiro.dev"},
-	CredentialFormat: CredentialFormatNone,
-	ToolRecipe: ToolRecipe{
-		BinPath: "/usr/local/bin/kiro-cli",
-		Packages: []RecipePackage{
-			{
-				Kind:        RecipeKindTarball,
-				Name:        "kiro-cli",
-				Version:     KiroCLIVersion,
-				URLTemplate: "https://prod.download.cli.kiro.dev/stable/{VERSION}/kirocli-x86_64-linux.tar.gz",
-				SHA256ByArch: map[string]string{
-					"x64": KiroTarballSHA256X64,
-				},
-				InstallDir: "/usr/local/share/kiro-cli/{VERSION}",
-				Symlinks: []RecipeSymlink{
-					{LinkPath: "/usr/local/bin/kiro-cli", TargetPath: "/usr/local/share/kiro-cli/{VERSION}/bin/kiro-cli"},
-					{LinkPath: "/usr/local/bin/kiro-cli-chat", TargetPath: "/usr/local/share/kiro-cli/{VERSION}/bin/kiro-cli-chat"},
-				},
-			},
-		},
-	},
-}
 
 const CodexProfileName = "codex"
 
-// CodexProfile installs the Codex CLI and does not broker a credential.
-// Live (codex-cli 0.155.1): a ChatGPT auth.json refresh hits auth.openai.com
-// and the same session also connects to chatgpt.com; a hex CODEX_ACCESS_TOKEN
-// connects to both chatgpt.com and api.openai.com. The one-host placeholder
-// cannot cover that. See ImportCodexCredentials.
-var CodexProfile = AgentProfile{
-	Name:             CodexProfileName,
-	CredentialedHost: "chatgpt.com",
-	EgressHosts:      []string{"chatgpt.com"},
-	CredentialFormat: CredentialFormatNone,
-	ToolRecipe: ToolRecipe{
-		BinPath: "/usr/local/bin/codex",
-		Packages: []RecipePackage{
-			{
-				// Version floats: resolved to the image digest at create time.
-				// The nightly image's standalone layout (measured 2026-09-19,
-				// Codex 0.155.1) is
-				// /home/agent/.codex/packages/standalone/releases/<ver>/bin/codex.
-				Kind:       RecipeKindOCI,
-				Name:       "codex",
-				Version:    FloatingVersion,
-				Image:      "docker/sandbox-templates:codex-nightly",
-				SrcPath:    "/home/agent/.codex/packages/standalone/releases/",
-				InstallDir: "/usr/local/share/codex/versions",
-				BinRel:     "bin/codex",
-				Symlinks: []RecipeSymlink{
-					{LinkPath: "/usr/local/bin/codex"},
-				},
-			},
-		},
-	},
-}
-
-var profiles = map[string]AgentProfile{
-	ClaudeCodeProfileName:  ClaudeCodeProfile,
-	CursorAgentProfileName: CursorAgentProfile,
-	OpencodeProfileName:    OpencodeProfile,
-	OhMyPiProfileName:      OhMyPiProfile,
-	KiroProfileName:        KiroProfile,
-	CodexProfileName:       CodexProfile,
-}
+var profiles = map[string]AgentProfile{}
 
 func ProfileByName(name string) (AgentProfile, bool) {
+	ensureProfiles()
 	p, ok := profiles[name]
 	return p, ok
 }
 
+// MustProfileByName returns the named profile or panics. Use only for
+// built-in profiles that are guaranteed to be registered at init time.
+func MustProfileByName(name string) AgentProfile {
+	ensureProfiles()
+	p, ok := profiles[name]
+	if !ok {
+		panic("cred: profile not registered: " + name)
+	}
+	return p
+}
+
 func ProfileNames() []string {
+	ensureProfiles()
 	names := make([]string, 0, len(profiles))
 	for name := range profiles {
 		names = append(names, name)

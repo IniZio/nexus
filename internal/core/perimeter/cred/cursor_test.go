@@ -41,8 +41,8 @@ func makeSyntheticJWT(t *testing.T, claims map[string]any) string {
 	return hdr + "." + body + ".fakesig"
 }
 
-// cursorTestProfile returns a copy of CursorAgentProfile for use in tests.
-func cursorTestProfile() AgentProfile { return CursorAgentProfile }
+// cursorTestProfile returns a copy of MustProfileByName(CursorAgentProfileName) for use in tests.
+func cursorTestProfile() AgentProfile { return MustProfileByName(CursorAgentProfileName) }
 
 // ── empty-accessToken rejection ───────────────────────────────────────────────
 

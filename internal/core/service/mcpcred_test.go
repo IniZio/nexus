@@ -49,7 +49,7 @@ func TestResolveMCPStdioPayload_InjectsSetVar(t *testing.T) {
 		}
 	}`)
 
-	payload := resolveMCPStdioPayload(cred.ClaudeCodeProfile)
+	payload := resolveMCPStdioPayload(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 
 	want := "MY_API_KEY=secret-value-abc"
 	if !bytes.Contains(payload, []byte(want)) {
@@ -74,7 +74,7 @@ func TestResolveMCPStdioPayload_UnsetVarOmitted(t *testing.T) {
 		}
 	}`)
 
-	payload := resolveMCPStdioPayload(cred.ClaudeCodeProfile)
+	payload := resolveMCPStdioPayload(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if bytes.Contains(payload, []byte("MY_API_KEY")) {
 		t.Errorf("payload must not contain MY_API_KEY when unset on host\npayload:\n%s", payload)
 	}
@@ -86,7 +86,7 @@ func TestResolveMCPStdioPayload_AbsentConfigIsNoOp(t *testing.T) {
 	dir := t.TempDir() // no .mcp.json written
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
 
-	payload := resolveMCPStdioPayload(cred.ClaudeCodeProfile)
+	payload := resolveMCPStdioPayload(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if len(payload) != 0 {
 		t.Errorf("expected empty payload for absent config, got:\n%s", payload)
 	}
@@ -126,7 +126,7 @@ func TestResolveMCPStdioPayload_HTTPServersExcluded(t *testing.T) {
 		}
 	}`)
 
-	payload := resolveMCPStdioPayload(cred.ClaudeCodeProfile)
+	payload := resolveMCPStdioPayload(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if bytes.Contains(payload, []byte("HTTP_KEY")) {
 		t.Errorf("http server vars must not appear in stdio payload\npayload:\n%s", payload)
 	}
@@ -223,7 +223,7 @@ func TestResolveMCPHTTPBinds_HTTPServerCreatesBindAndHost(t *testing.T) {
 		}
 	}`)
 
-	binds, err := ResolveMCPHTTPBinds(cred.ClaudeCodeProfile)
+	binds, err := ResolveMCPHTTPBinds(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("ResolveMCPHTTPBinds: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestResolveMCPHTTPBinds_AbsentConfigIsNoOp(t *testing.T) {
 	dir := t.TempDir() // no .mcp.json
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
 
-	binds, err := ResolveMCPHTTPBinds(cred.ClaudeCodeProfile)
+	binds, err := ResolveMCPHTTPBinds(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("expected nil error for absent config, got: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestResolveMCPHTTPBinds_StdioServersExcluded(t *testing.T) {
 		}
 	}`)
 
-	binds, err := ResolveMCPHTTPBinds(cred.ClaudeCodeProfile)
+	binds, err := ResolveMCPHTTPBinds(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("ResolveMCPHTTPBinds: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestResolveMCPHTTPBinds_MissingHostSkipped(t *testing.T) {
 		}
 	}`)
 
-	binds, err := ResolveMCPHTTPBinds(cred.ClaudeCodeProfile)
+	binds, err := ResolveMCPHTTPBinds(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("ResolveMCPHTTPBinds: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestResolveMCPHTTPBinds_BindHostMatchesServerHost(t *testing.T) {
 		}
 	}`)
 
-	binds, err := ResolveMCPHTTPBinds(cred.ClaudeCodeProfile)
+	binds, err := ResolveMCPHTTPBinds(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if err != nil {
 		t.Fatalf("ResolveMCPHTTPBinds: %v", err)
 	}

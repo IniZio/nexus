@@ -54,7 +54,7 @@ func TestSeedGuest_CursorRealTokenAbsentFromEnvPayload(t *testing.T) {
 
 	broker := cred.NewBroker()
 	id := seedTestID(40)
-	host := cred.CursorAgentProfile.CredentialedHost
+	host := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost
 
 	envSeeder := &captureSeeder{}
 	records, err := SeedGuest(context.Background(), broker, id, []string{host}, envSeeder.fn())
@@ -119,7 +119,7 @@ func TestSeedGuestCredFile_CursorRealTokenAbsentFromFilePayload(t *testing.T) {
 
 	broker := cred.NewBroker()
 	id := seedTestID(41)
-	host := cred.CursorAgentProfile.CredentialedHost
+	host := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost
 
 	envSeeder := &captureSeeder{}
 	records, err := SeedGuest(context.Background(), broker, id, []string{host}, envSeeder.fn())
@@ -143,7 +143,7 @@ func TestSeedGuestCredFile_CursorRealTokenAbsentFromFilePayload(t *testing.T) {
 	}
 
 	fileSeeder := &captureSeeder{}
-	if err := SeedGuestCredFile(context.Background(), id, records, cred.CursorAgentProfile, fileSeeder.fn()); err != nil {
+	if err := SeedGuestCredFile(context.Background(), id, records, cred.MustProfileByName(cred.CursorAgentProfileName), fileSeeder.fn()); err != nil {
 		t.Fatalf("SeedGuestCredFile: %v", err)
 	}
 	if fileSeeder.calls != 1 {
@@ -177,7 +177,7 @@ func TestSeedGuest_CursorEnvPayloadContainsNoRealTokenAfterPush(t *testing.T) {
 
 	broker := cred.NewBroker()
 	id := seedTestID(42)
-	host := cred.CursorAgentProfile.CredentialedHost
+	host := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost
 
 	envSeeder := &captureSeeder{}
 	records, err := SeedGuest(context.Background(), broker, id, []string{host}, envSeeder.fn())
@@ -217,7 +217,7 @@ func TestSeedGuestCredFile_PlaceholderBrokerRegistered(t *testing.T) {
 
 	broker := cred.NewBroker()
 	id := seedTestID(43)
-	host := cred.CursorAgentProfile.CredentialedHost
+	host := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost
 
 	envSeeder := &captureSeeder{}
 	records, err := SeedGuest(context.Background(), broker, id, []string{host}, envSeeder.fn())
@@ -229,7 +229,7 @@ func TestSeedGuestCredFile_PlaceholderBrokerRegistered(t *testing.T) {
 	}
 
 	fileSeeder := &captureSeeder{}
-	if err := SeedGuestCredFile(context.Background(), id, records, cred.CursorAgentProfile, fileSeeder.fn()); err != nil {
+	if err := SeedGuestCredFile(context.Background(), id, records, cred.MustProfileByName(cred.CursorAgentProfileName), fileSeeder.fn()); err != nil {
 		t.Fatalf("SeedGuestCredFile: %v", err)
 	}
 

@@ -21,7 +21,7 @@ func TestCodexProfile_Registered(t *testing.T) {
 }
 
 func TestCodexProfile_NoCredentialSwap(t *testing.T) {
-	p := CodexProfile
+	p := MustProfileByName(CodexProfileName)
 
 	if p.CredentialFormat != CredentialFormatNone {
 		t.Errorf("CredentialFormat = %q, want CredentialFormatNone — the seeder cannot write Codex's nested auth.json", p.CredentialFormat)
@@ -64,7 +64,7 @@ func TestCodexProfile_NoCredentialSwap(t *testing.T) {
 }
 
 func TestImportCodexCredentials_Refuses(t *testing.T) {
-	store, err := ImportCodexCredentials(CodexProfile)
+	store, err := ImportCodexCredentials(MustProfileByName(CodexProfileName))
 	if err == nil {
 		t.Fatal("ImportCodexCredentials returned nil error; want ErrCodexNoBroker")
 	}
@@ -89,7 +89,7 @@ func TestCodexOAuthConstants_MatchUpstream(t *testing.T) {
 }
 
 func TestCodexProfile_ToolRecipeShape(t *testing.T) {
-	r := CodexProfile.ToolRecipe
+	r := MustProfileByName(CodexProfileName).ToolRecipe
 	if err := r.Validate(); err != nil {
 		t.Fatalf("ToolRecipe.Validate: %v", err)
 	}

@@ -566,7 +566,7 @@ func TestOrcaCreate_AllowedHostsInEnvelope(t *testing.T) {
 	// Mirror what orcaCreate does: AgentEgressHosts only. GitHub hosts from
 	// the recipe URL are NOT appended (D-PD-23).
 	const repoURL = "https://github.com/anthropics/anthropic-sdk-go"
-	allowedHosts := append(service.AgentEgressHosts(cred.ClaudeCodeProfile), gitHostsFromURL(repoURL)...)
+	allowedHosts := append(service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)), gitHostsFromURL(repoURL)...)
 
 	f, err := os.CreateTemp(t.TempDir(), "rootfs")
 	if err != nil {

@@ -1,0 +1,61 @@
+{
+  "Name": "cursor",
+  "PlaceholderEnvVar": "CURSOR_AUTH_TOKEN",
+  "CredentialedHostSuffix": ".cursor.sh",
+  "PlaceholderIsJWT": true,
+  "CredentialedHost": "api2.cursor.sh",
+  "EgressHosts": ["api2.cursor.sh"],
+  "APIKeyEnvVar": "CURSOR_API_KEY",
+  "CACertEnvVars": ["NODE_EXTRA_CA_CERTS"],
+  "GuestEnv": null,
+  "Capabilities": {"GuestNoSelfRefresh": false},
+  "SettingsPath": "~/.cursor/cli-config.json",
+  "CredDirEnvVar": "XDG_CONFIG_HOME",
+  "ConfigDirEnvVar": "CURSOR_CONFIG_DIR",
+  "CredentialFile": "cursor/auth.json",
+  "CredentialFileKey": "accessToken",
+  "CredentialFileExtraKeys": ["refreshToken"],
+  "CredentialFormat": "cursor-jwt",
+  "SkillsPath": "",
+  "MCPConfigFormat": "cursor-json",
+  "MountAllowlist": ["cli-config.json"],
+  "SettingsAllowlist": {
+    "version": true,
+    "editor": true,
+    "display": true,
+    "notifications": true,
+    "hints": true,
+    "modelSlashCommands": true,
+    "rewind": true,
+    "hasChangedDefaultModel": true,
+    "exploreSubagentModel": true,
+    "permissions": true,
+    "approvalMode": true,
+    "autoAcceptWebSearch": true,
+    "attribution": true,
+    "model": true,
+    "maxMode": true,
+    "selectedModel": true,
+    "modelParameters": true,
+    "runEverythingSettingsPromptStreak": true
+  },
+  "BypassConsentKey": "",
+  "ToolRecipe": {
+    "BinPath": "/usr/local/bin/cursor-agent",
+    "Packages": [
+      {
+        "Kind": "oci",
+        "Name": "cursor-agent",
+        "Version": "latest",
+        "URLTemplate": "",
+        "SHA256ByArch": null,
+        "InstallDir": "/usr/local/share/cursor-agent/versions",
+        "Symlinks": [{"LinkPath": "/usr/local/bin/cursor-agent", "TargetPath": ""}],
+        "VersionCmd": "",
+        "Image": "docker/sandbox-templates:cursor-agent-nightly",
+        "SrcPath": "/home/agent/.local/share/cursor-agent/versions/",
+        "BinRel": "cursor-agent"
+      }
+    ]
+  }
+}

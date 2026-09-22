@@ -32,7 +32,7 @@ func opencodeAuthJSON(t *testing.T, providers map[string]any) string {
 	return string(b)
 }
 
-func opencodeTestProfile() AgentProfile { return OpencodeProfile }
+func opencodeTestProfile() AgentProfile { return MustProfileByName(OpencodeProfileName) }
 
 func TestImportOpencodeCredentials_EmptyKey(t *testing.T) {
 	dataHome, _ := makeOpencodeDir(t, opencodeAuthJSON(t, map[string]any{
@@ -286,7 +286,7 @@ func TestOpencodeProfile_Registered(t *testing.T) {
 }
 
 func TestOpencodeProfile_ToolRecipePinsNPM(t *testing.T) {
-	r := OpencodeProfile.ToolRecipe
+	r := MustProfileByName(OpencodeProfileName).ToolRecipe
 	if r.BinPath != "/usr/local/bin/opencode" {
 		t.Errorf("BinPath = %q, want /usr/local/bin/opencode", r.BinPath)
 	}

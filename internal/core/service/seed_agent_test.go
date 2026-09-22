@@ -77,7 +77,7 @@ func TestSeedGuestAgent_BothAnthropicHostsSeeded(t *testing.T) {
 		t.Fatalf("SeedGuestAgent: %v", err)
 	}
 
-	hosts := AgentEgressHosts(cred.ClaudeCodeProfile)
+	hosts := AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if len(recs) != len(hosts) {
 		t.Fatalf("expected %d records (one per AgentEgressHost), got %d", len(hosts), len(recs))
 	}

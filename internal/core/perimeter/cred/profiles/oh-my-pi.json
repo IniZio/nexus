@@ -1,0 +1,71 @@
+{
+  "Name": "oh-my-pi",
+  "PlaceholderEnvVar": "ANTHROPIC_OAUTH_TOKEN",
+  "CredentialedHostSuffix": "",
+  "PlaceholderIsJWT": false,
+  "CredentialedHost": "api.anthropic.com",
+  "EgressHosts": ["api.anthropic.com", "api.openai.com", "auth.openai.com"],
+  "APIKeyEnvVar": "ANTHROPIC_API_KEY",
+  "CACertEnvVars": ["NODE_EXTRA_CA_CERTS"],
+  "GuestEnv": null,
+  "Capabilities": {"GuestNoSelfRefresh": false},
+  "SettingsPath": "~/.omp/agent/config.yml",
+  "CredDirEnvVar": "PI_CODING_AGENT_DIR",
+  "ConfigDirEnvVar": "PI_CODING_AGENT_DIR",
+  "CredentialFile": "",
+  "CredentialFileKey": "",
+  "CredentialFileExtraKeys": null,
+  "CredentialFormat": "ohmypi-vault",
+  "SkillsPath": "",
+  "MCPConfigFormat": "",
+  "MountAllowlist": null,
+  "SettingsAllowlist": null,
+  "BypassConsentKey": "",
+  "ToolRecipe": {
+    "BinPath": "/usr/local/bin/omp",
+    "Packages": [
+      {
+        "Kind": "tarball",
+        "Name": "node",
+        "Version": "22.23.2",
+        "URLTemplate": "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz",
+        "SHA256ByArch": {
+          "x64": "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
+          "arm64": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30"
+        },
+        "InstallDir": "/usr/local",
+        "Symlinks": null,
+        "VersionCmd": "node --version",
+        "Image": "",
+        "SrcPath": "",
+        "BinRel": ""
+      },
+      {
+        "Kind": "npm",
+        "Name": "bun",
+        "Version": "1.4.2",
+        "URLTemplate": "",
+        "SHA256ByArch": null,
+        "InstallDir": "",
+        "Symlinks": null,
+        "VersionCmd": "",
+        "Image": "",
+        "SrcPath": "",
+        "BinRel": ""
+      },
+      {
+        "Kind": "npm",
+        "Name": "@oh-my-pi/pi-coding-agent",
+        "Version": "18.2.6",
+        "URLTemplate": "",
+        "SHA256ByArch": null,
+        "InstallDir": "",
+        "Symlinks": null,
+        "VersionCmd": "",
+        "Image": "",
+        "SrcPath": "",
+        "BinRel": ""
+      }
+    ]
+  }
+}

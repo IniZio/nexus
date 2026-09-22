@@ -30,7 +30,7 @@ package supervisor
 // no-op that returns nil without calling seeder. The credFileSeeder spy would
 // therefore not fire, but the test only checks it for a file-based profile.
 // Existing tests (TestSeedLoop_ForcePushWritesRealToken etc.) use
-// cred.ClaudeCodeProfile with credFileSeeder=nil and must still pass.
+// cred.MustProfileByName(cred.ClaudeCodeProfileName) with credFileSeeder=nil and must still pass.
 import (
 	"context"
 	"crypto/x509"
@@ -69,7 +69,7 @@ func TestSeedLoop_CredFileSeederCalledForFileBased(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, agentSeeder,
 		broker, nil,
-		1, 0, nil, true, cred.CursorAgentProfile, nil, credFileSeeder,
+		1, 0, nil, true, cred.MustProfileByName(cred.CursorAgentProfileName), nil, credFileSeeder,
 	)
 	if !ok {
 		t.Fatal("SeedLoop returned ok=false; all seeders succeeded — unexpected failure")
@@ -107,7 +107,7 @@ func TestSeedLoop_CredFileSeederNotCalledForClaudeCode(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, agentSeeder,
 		broker, nil,
-		1, 0, nil, true, cred.ClaudeCodeProfile, nil, credFileSeeder,
+		1, 0, nil, true, cred.MustProfileByName(cred.ClaudeCodeProfileName), nil, credFileSeeder,
 	)
 	if !ok {
 		t.Fatal("SeedLoop with ClaudeCodeProfile returned ok=false")

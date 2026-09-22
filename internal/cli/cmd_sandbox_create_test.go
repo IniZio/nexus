@@ -981,7 +981,7 @@ func TestDevEgress_ResolveAgentPosture_ExplicitClosedStaysClosed(t *testing.T) {
 //
 // Mutation guard: change the function to return nil → this test fails RED.
 func TestDevEgress_AgentDevEgressSecretHosts_OpenEgress(t *testing.T) {
-	profile := cred.ClaudeCodeProfile
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 	hosts := agentDevEgressSecretHosts(profile, true)
 	if len(hosts) == 0 {
 		t.Fatal("agentDevEgressSecretHosts: got empty slice for open-egress agent; want CredentialedHost")
@@ -997,7 +997,7 @@ func TestDevEgress_AgentDevEgressSecretHosts_OpenEgress(t *testing.T) {
 //
 // Mutation guard: remove the `!openEgress` guard → this test fails RED.
 func TestDevEgress_AgentDevEgressSecretHosts_ClosedEgress(t *testing.T) {
-	profile := cred.ClaudeCodeProfile
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 	hosts := agentDevEgressSecretHosts(profile, false)
 	if len(hosts) != 0 {
 		t.Errorf("agentDevEgressSecretHosts: got %v for closed-egress; want nil", hosts)
@@ -1189,7 +1189,7 @@ func TestGuard_WildcardKeyGitHubSecret_Accepted(t *testing.T) {
 // after the test.
 func cursorCredDir(t *testing.T, dir string) cred.AgentProfile {
 	t.Helper()
-	p := cred.CursorAgentProfile
+	p := cred.MustProfileByName(cred.CursorAgentProfileName)
 	t.Setenv(p.CredDirEnvVar, dir)
 	return p
 }
@@ -1278,7 +1278,7 @@ func TestSandboxCreate_CredPreflight_Expired(t *testing.T) {
 func TestSandboxCreate_CredPreflight_ClaudeCodeUnaffected(t *testing.T) {
 	// Use an empty dir so no claude credential file is present.
 	dir := t.TempDir()
-	t.Setenv(cred.ClaudeCodeProfile.CredDirEnvVar, dir)
+	t.Setenv(cred.MustProfileByName(cred.ClaudeCodeProfileName).CredDirEnvVar, dir)
 	svc := newTestService(t)
 	out, _, _ := capture(false)
 
@@ -1443,7 +1443,7 @@ func TestSandboxCreate_BootPath_CredPreflight_Expired(t *testing.T) {
 //
 // Mutation guard: remove the suffix from CursorAgentProfile → this test fails RED.
 func TestDevEgress_AgentDevEgressSecretHostSuffixes_CursorOpenEgress(t *testing.T) {
-	suffixes := agentDevEgressSecretHostSuffixes(cred.CursorAgentProfile, true)
+	suffixes := agentDevEgressSecretHostSuffixes(cred.MustProfileByName(cred.CursorAgentProfileName), true)
 	if len(suffixes) == 0 {
 		t.Fatal("agentDevEgressSecretHostSuffixes: got empty for cursor open-egress; want '.cursor.sh'")
 	}
@@ -1455,7 +1455,7 @@ func TestDevEgress_AgentDevEgressSecretHostSuffixes_CursorOpenEgress(t *testing.
 // TestDevEgress_AgentDevEgressSecretHostSuffixes_ClosedEgress asserts nil is
 // returned when egress is closed — no suffix injection on the closed path.
 func TestDevEgress_AgentDevEgressSecretHostSuffixes_ClosedEgress(t *testing.T) {
-	suffixes := agentDevEgressSecretHostSuffixes(cred.CursorAgentProfile, false)
+	suffixes := agentDevEgressSecretHostSuffixes(cred.MustProfileByName(cred.CursorAgentProfileName), false)
 	if len(suffixes) != 0 {
 		t.Errorf("agentDevEgressSecretHostSuffixes: got %v for closed-egress; want nil", suffixes)
 	}
@@ -1473,7 +1473,7 @@ func TestDevEgress_AgentDevEgressSecretHostSuffixes_NoAgent(t *testing.T) {
 // TestDevEgress_AgentDevEgressSecretHostSuffixes_ClaudeNoSuffix asserts nil for
 // Claude Code: it has no CredentialedHostSuffix, so no suffixes are returned.
 func TestDevEgress_AgentDevEgressSecretHostSuffixes_ClaudeNoSuffix(t *testing.T) {
-	suffixes := agentDevEgressSecretHostSuffixes(cred.ClaudeCodeProfile, true)
+	suffixes := agentDevEgressSecretHostSuffixes(cred.MustProfileByName(cred.ClaudeCodeProfileName), true)
 	if len(suffixes) != 0 {
 		t.Errorf("agentDevEgressSecretHostSuffixes: got %v for claude-code; want nil (no suffix)", suffixes)
 	}

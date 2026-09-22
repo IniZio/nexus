@@ -1,0 +1,47 @@
+{
+  "Name": "kiro",
+  "PlaceholderEnvVar": "",
+  "CredentialedHostSuffix": "",
+  "PlaceholderIsJWT": false,
+  "CredentialedHost": "management.us-east-1.kiro.dev",
+  "EgressHosts": ["management.us-east-1.kiro.dev"],
+  "APIKeyEnvVar": "",
+  "CACertEnvVars": null,
+  "GuestEnv": null,
+  "Capabilities": {"GuestNoSelfRefresh": false},
+  "SettingsPath": "",
+  "CredDirEnvVar": "",
+  "ConfigDirEnvVar": "",
+  "CredentialFile": "",
+  "CredentialFileKey": "",
+  "CredentialFileExtraKeys": null,
+  "CredentialFormat": "",
+  "SkillsPath": "",
+  "MCPConfigFormat": "",
+  "MountAllowlist": null,
+  "SettingsAllowlist": null,
+  "BypassConsentKey": "",
+  "ToolRecipe": {
+    "BinPath": "/usr/local/bin/kiro-cli",
+    "Packages": [
+      {
+        "Kind": "tarball",
+        "Name": "kiro-cli",
+        "Version": "2.22.1",
+        "URLTemplate": "https://prod.download.cli.kiro.dev/stable/{VERSION}/kirocli-x86_64-linux.tar.gz",
+        "SHA256ByArch": {
+          "x64": "02b060b989d011519c8eaacf460e28e918efd106df8c75ceb7f9c0aaed80f2fe"
+        },
+        "InstallDir": "/usr/local/share/kiro-cli/{VERSION}",
+        "Symlinks": [
+          {"LinkPath": "/usr/local/bin/kiro-cli", "TargetPath": "/usr/local/share/kiro-cli/{VERSION}/bin/kiro-cli"},
+          {"LinkPath": "/usr/local/bin/kiro-cli-chat", "TargetPath": "/usr/local/share/kiro-cli/{VERSION}/bin/kiro-cli-chat"}
+        ],
+        "VersionCmd": "",
+        "Image": "",
+        "SrcPath": "",
+        "BinRel": ""
+      }
+    ]
+  }
+}

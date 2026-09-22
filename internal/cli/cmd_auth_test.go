@@ -123,6 +123,9 @@ func TestAuth_UnknownAction_UsageError(t *testing.T) {
 
 // TestAuthLogin_ClaudeCodeDefault verifies bare auth login defaults to claude-code import path.
 func TestAuthLogin_ClaudeCodeDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", filepath.Join(home, ".config", "nexus", "creds.json"))
 	out, _, _ := capture(false)
 	err := runAuthLogin(context.Background(), []string{}, out)
 	if err == nil {
@@ -138,6 +141,9 @@ func TestAuthLogin_ClaudeCodeDefault(t *testing.T) {
 
 // TestAuthLogin_ClaudeCodeExplicit verifies --agent claude-code also hits the import path.
 func TestAuthLogin_ClaudeCodeExplicit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("NEXUS_DEDICATED_CRED_STORE", filepath.Join(home, ".config", "nexus", "creds.json"))
 	out, _, _ := capture(false)
 	err := runAuthLogin(context.Background(), []string{"--agent", "claude-code"}, out)
 	if err == nil {

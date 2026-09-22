@@ -27,7 +27,7 @@ func TestDedicatedCredStorePathForProfile_ClaudeCodeLegacyPath(t *testing.T) {
 	}
 	want := filepath.Join(home, ".config", "nexus", "creds.json")
 
-	got := service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
+	got := service.DedicatedCredStorePathForProfile(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if got != want {
 		t.Errorf("claude-code store path = %q; want exactly %q\n"+
 			"REGRESSION: changing this path silently logs operators out of every existing sandbox.",
@@ -41,8 +41,8 @@ func TestDedicatedCredStorePathForProfile_ClaudeCodeLegacyPath(t *testing.T) {
 func TestDedicatedCredStorePathForProfile_DistinctPaths(t *testing.T) {
 	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "")
 
-	claudePath := service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
-	cursorPath := service.DedicatedCredStorePathForProfile(cred.CursorAgentProfile)
+	claudePath := service.DedicatedCredStorePathForProfile(cred.MustProfileByName(cred.ClaudeCodeProfileName))
+	cursorPath := service.DedicatedCredStorePathForProfile(cred.MustProfileByName(cred.CursorAgentProfileName))
 
 	if claudePath == cursorPath {
 		t.Errorf("claude-code and cursor-agent resolved to the same store path %q; "+
@@ -56,8 +56,8 @@ func TestDedicatedCredStorePathForProfile_DistinctPaths(t *testing.T) {
 func TestDedicatedLockFilePathForProfile_DistinctPaths(t *testing.T) {
 	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "")
 
-	claudeLock := service.DedicatedLockFilePathForProfile(cred.ClaudeCodeProfile)
-	cursorLock := service.DedicatedLockFilePathForProfile(cred.CursorAgentProfile)
+	claudeLock := service.DedicatedLockFilePathForProfile(cred.MustProfileByName(cred.ClaudeCodeProfileName))
+	cursorLock := service.DedicatedLockFilePathForProfile(cred.MustProfileByName(cred.CursorAgentProfileName))
 
 	if claudeLock == cursorLock {
 		t.Errorf("claude-code and cursor-agent resolved to the same lockfile path %q; "+
@@ -71,7 +71,7 @@ func TestDedicatedLockFilePathForProfile_DistinctPaths(t *testing.T) {
 func TestDedicatedCredStorePathForProfile_ClaudeCodeEnvOverride(t *testing.T) {
 	t.Setenv("NEXUS_DEDICATED_CRED_STORE", "/custom/creds.json")
 
-	got := service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
+	got := service.DedicatedCredStorePathForProfile(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if got != "/custom/creds.json" {
 		t.Errorf("NEXUS_DEDICATED_CRED_STORE override ignored: got %q, want /custom/creds.json", got)
 	}
@@ -88,7 +88,7 @@ func TestDedicatedCredStorePathForProfile_CursorLayout(t *testing.T) {
 	}
 	want := filepath.Join(home, ".config", "nexus", "agent-creds", "cursor.json")
 
-	got := service.DedicatedCredStorePathForProfile(cred.CursorAgentProfile)
+	got := service.DedicatedCredStorePathForProfile(cred.MustProfileByName(cred.CursorAgentProfileName))
 	if got != want {
 		t.Errorf("cursor store path = %q; want %q", got, want)
 	}

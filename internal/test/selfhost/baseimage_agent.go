@@ -27,7 +27,7 @@ const (
 )
 
 // ClaudeCodeVersion is sourced from the profile recipe (FloatingVersion = "latest").
-var ClaudeCodeVersion = cred.ClaudeCodeProfile.ToolRecipe.Packages[0].Version
+var ClaudeCodeVersion = cred.MustProfileByName(cred.ClaudeCodeProfileName).ToolRecipe.Packages[0].Version
 
 const (
 	GHVersion = "2.98.0"

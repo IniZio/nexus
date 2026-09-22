@@ -51,7 +51,7 @@ func TestSupervisorS4BoundedRetryReady(t *testing.T) {
 
 	// nil svc is safe: cert != nil so GetPerimeterCACert is never called.
 	done, guestEverResponded := supervisor.SeedLoop(context.Background(), id, &cert,
-		failSeeder, failSeeder, broker, nil, maxAttempts, 0, nil, true, cred.ClaudeCodeProfile, nil, nil)
+		failSeeder, failSeeder, broker, nil, maxAttempts, 0, nil, true, cred.MustProfileByName(cred.ClaudeCodeProfileName), nil, nil)
 	elapsed := time.Since(start)
 
 	if done {
@@ -797,7 +797,7 @@ func TestSupervisorS4LiveEgress(t *testing.T) {
 	defer bootCancel()
 
 	// AllowedHosts set before CreateAndBoot for supervisor perimeter allowlist
-	liveHosts := append(service.AgentEgressHosts(cred.ClaudeCodeProfile), "github.com")
+	liveHosts := append(service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)), "github.com")
 	liveOpts := service.CreateAndBootOptions{
 		Image:               service.ImageSpec{Digest: string(img.Digest)},
 		CacheRoot:           cacheRoot,

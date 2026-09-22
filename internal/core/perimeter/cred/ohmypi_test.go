@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func ohMyPiTestProfile() AgentProfile { return OhMyPiProfile }
+func ohMyPiTestProfile() AgentProfile { return MustProfileByName(OhMyPiProfileName) }
 
 func clearOhMyPiPathEnv(t *testing.T) {
 	t.Helper()
@@ -284,7 +284,7 @@ func TestOhMyPiProfile_Registered(t *testing.T) {
 }
 
 func TestOhMyPiProfile_ToolRecipePinnedNPM(t *testing.T) {
-	r := OhMyPiProfile.ToolRecipe
+	r := MustProfileByName(OhMyPiProfileName).ToolRecipe
 	if r.BinPath != "/usr/local/bin/omp" {
 		t.Errorf("BinPath = %q; want /usr/local/bin/omp", r.BinPath)
 	}
@@ -336,7 +336,7 @@ func TestOhMyPiProfile_ToolRecipePinnedNPM(t *testing.T) {
 }
 
 func TestOhMyPiProfile_CredentialFields(t *testing.T) {
-	p := OhMyPiProfile
+	p := MustProfileByName(OhMyPiProfileName)
 	if p.CredentialFormat != CredentialFormatOhMyPiVault {
 		t.Errorf("CredentialFormat = %q; want %q", p.CredentialFormat, CredentialFormatOhMyPiVault)
 	}
@@ -363,14 +363,14 @@ func TestOhMyPiProfile_CredentialFields(t *testing.T) {
 func TestOhMyPiProfile_CheckCredOKWithoutVault(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_DIR", dir)
-	got := CheckCred(OhMyPiProfile)
+	got := CheckCred(MustProfileByName(OhMyPiProfileName))
 	if !got.OK() {
 		t.Fatalf("CheckCred = %v (%q); want OK so sandbox create is not blocked by a missing vault", got.Reason, got.Sentence())
 	}
 }
 
 func TestOhMyPiProfile_SourceYieldsNoToken(t *testing.T) {
-	src, err := NewCredentialSourceForProfile(OhMyPiProfile)
+	src, err := NewCredentialSourceForProfile(MustProfileByName(OhMyPiProfileName))
 	if err != nil {
 		t.Fatalf("NewCredentialSourceForProfile: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestOhMyPiProfile_SourceYieldsNoToken(t *testing.T) {
 }
 
 func TestOhMyPiProfile_ImportIsNotClaude(t *testing.T) {
-	_, fn, ok := OAuthImportReg(OhMyPiProfile)
+	_, fn, ok := OAuthImportReg(MustProfileByName(OhMyPiProfileName))
 	if !ok || fn == nil {
 		t.Fatal("OAuthImportReg returned no importer; CredentialFormatNone would share Claude's importer")
 	}

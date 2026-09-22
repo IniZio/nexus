@@ -1,0 +1,58 @@
+{
+  "Name": "opencode",
+  "PlaceholderEnvVar": "OPENCODE_API_KEY",
+  "CredentialedHostSuffix": "",
+  "PlaceholderIsJWT": false,
+  "CredentialedHost": "opencode.ai",
+  "EgressHosts": ["opencode.ai"],
+  "APIKeyEnvVar": "OPENCODE_API_KEY",
+  "CACertEnvVars": ["NODE_EXTRA_CA_CERTS"],
+  "GuestEnv": {"OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1"},
+  "Capabilities": {"GuestNoSelfRefresh": false},
+  "SettingsPath": "~/.config/opencode/opencode.json",
+  "CredDirEnvVar": "XDG_DATA_HOME",
+  "ConfigDirEnvVar": "OPENCODE_CONFIG_DIR",
+  "CredentialFile": "opencode/auth.json",
+  "CredentialFileKey": "key",
+  "CredentialFileExtraKeys": null,
+  "CredentialFormat": "opencode-api-key",
+  "SkillsPath": "",
+  "MCPConfigFormat": "opencode-json",
+  "MountAllowlist": null,
+  "SettingsAllowlist": null,
+  "BypassConsentKey": "",
+  "ToolRecipe": {
+    "BinPath": "/usr/local/bin/opencode",
+    "Packages": [
+      {
+        "Kind": "tarball",
+        "Name": "node",
+        "Version": "22.23.2",
+        "URLTemplate": "https://nodejs.org/dist/v{VERSION}/node-v{VERSION}-linux-{ARCH}.tar.gz",
+        "SHA256ByArch": {
+          "x64": "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
+          "arm64": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30"
+        },
+        "InstallDir": "/usr/local",
+        "Symlinks": null,
+        "VersionCmd": "node --version",
+        "Image": "",
+        "SrcPath": "",
+        "BinRel": ""
+      },
+      {
+        "Kind": "npm",
+        "Name": "opencode-ai",
+        "Version": "1.18.31",
+        "URLTemplate": "",
+        "SHA256ByArch": null,
+        "InstallDir": "",
+        "Symlinks": null,
+        "VersionCmd": "",
+        "Image": "",
+        "SrcPath": "",
+        "BinRel": ""
+      }
+    ]
+  }
+}

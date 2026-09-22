@@ -125,7 +125,7 @@ func TestAssembleCuratedConfig(t *testing.T) {
 
 	buildFakeHome(t, srcDir)
 
-	profile := cred.ClaudeCodeProfile
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 
 	if err := service.AssembleCuratedConfig(profile, srcDir, destDir); err != nil {
 		t.Fatalf("AssembleCuratedConfig: %v", err)
@@ -172,7 +172,7 @@ func TestAssembleCuratedConfig_AllowlistDropsUnknownAndSecret(t *testing.T) {
 	destDir := t.TempDir()
 	buildFakeHome(t, srcDir)
 
-	if err := service.AssembleCuratedConfig(cred.ClaudeCodeProfile, srcDir, destDir); err != nil {
+	if err := service.AssembleCuratedConfig(cred.MustProfileByName(cred.ClaudeCodeProfileName), srcDir, destDir); err != nil {
 		t.Fatalf("AssembleCuratedConfig: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(destDir, "settings.json"))
@@ -223,7 +223,7 @@ func TestAssembleCuratedConfig_SymlinkPolicy(t *testing.T) {
 	must(os.Symlink(filepath.Join(srcDir, ".credentials.json"), filepath.Join(srcDir, "skills", "notes.md")))
 	must(os.Symlink(externalSecret, filepath.Join(srcDir, "skills", "harmless.md")))
 
-	if err := service.AssembleCuratedConfig(cred.ClaudeCodeProfile, srcDir, destDir); err != nil {
+	if err := service.AssembleCuratedConfig(cred.MustProfileByName(cred.ClaudeCodeProfileName), srcDir, destDir); err != nil {
 		t.Fatalf("AssembleCuratedConfig: %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestAssembleCuratedConfig_SymlinkPolicy(t *testing.T) {
 // TestAssembleCuratedConfig_MissingSourceSkipped verifies missing source handling.
 func TestAssembleCuratedConfig_MissingSourceSkipped(t *testing.T) {
 	destDir := t.TempDir()
-	profile := cred.ClaudeCodeProfile
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 
 	err := service.AssembleCuratedConfig(profile, "/nonexistent/path/that/does/not/exist", destDir)
 	if err != nil {
@@ -288,7 +288,7 @@ func TestAssembleCuratedConfig_BypassConsentPreservesLowerLayerKeys(t *testing.T
 		t.Fatal(err)
 	}
 
-	if err := service.AssembleCuratedConfig(cred.ClaudeCodeProfile, srcDir, destDir); err != nil {
+	if err := service.AssembleCuratedConfig(cred.MustProfileByName(cred.ClaudeCodeProfileName), srcDir, destDir); err != nil {
 		t.Fatalf("AssembleCuratedConfig: %v", err)
 	}
 
@@ -316,7 +316,7 @@ func TestAssembleCuratedConfig_BypassConsentPresentWhenNoHostSettings(t *testing
 	srcDir := t.TempDir()
 	destDir := t.TempDir()
 
-	if err := service.AssembleCuratedConfig(cred.ClaudeCodeProfile, srcDir, destDir); err != nil {
+	if err := service.AssembleCuratedConfig(cred.MustProfileByName(cred.ClaudeCodeProfileName), srcDir, destDir); err != nil {
 		t.Fatalf("AssembleCuratedConfig: %v", err)
 	}
 
@@ -363,7 +363,7 @@ func TestAssembleCuratedConfig_CursorAuthInfoStripped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := service.AssembleCuratedConfig(cred.CursorAgentProfile, srcDir, destDir); err != nil {
+	if err := service.AssembleCuratedConfig(cred.MustProfileByName(cred.CursorAgentProfileName), srcDir, destDir); err != nil {
 		t.Fatalf("AssembleCuratedConfig: %v", err)
 	}
 
@@ -419,7 +419,7 @@ func TestAssembleCuratedConfig_GitDirExcluded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	profile := cred.ClaudeCodeProfile
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 	if err := service.AssembleCuratedConfig(profile, srcDir, destDir); err != nil {
 		t.Fatalf("AssembleCuratedConfig: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestAgentSettingsDir(t *testing.T) {
 		t.Setenv("CURSOR_CONFIG_DIR", customSettingsDir)
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-		got, err := service.AgentSettingsDir(cred.CursorAgentProfile)
+		got, err := service.AgentSettingsDir(cred.MustProfileByName(cred.CursorAgentProfileName))
 		if err != nil {
 			t.Fatalf("AgentSettingsDir: %v", err)
 		}
@@ -455,7 +455,7 @@ func TestAgentSettingsDir(t *testing.T) {
 		t.Setenv("CURSOR_CONFIG_DIR", "")
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-		got, err := service.AgentSettingsDir(cred.CursorAgentProfile)
+		got, err := service.AgentSettingsDir(cred.MustProfileByName(cred.CursorAgentProfileName))
 		if err != nil {
 			t.Fatalf("AgentSettingsDir: %v", err)
 		}

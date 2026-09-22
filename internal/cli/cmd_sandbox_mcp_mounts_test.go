@@ -39,7 +39,7 @@ func TestBuildGuestMCPServers_MountMappedCommandRewritten(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := buildGuestMCPServers(sandboxCreateFlags{}, cred.ClaudeCodeProfile, "")
+	got, err := buildGuestMCPServers(sandboxCreateFlags{}, cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("buildGuestMCPServers: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestBuildGuestMCPServers_MountMappedCommandRewritten(t *testing.T) {
 		t.Error("PATH-relative command must be kept")
 	}
 
-	off, err := buildGuestMCPServers(sandboxCreateFlags{noUserMounts: true}, cred.ClaudeCodeProfile, "")
+	off, err := buildGuestMCPServers(sandboxCreateFlags{noUserMounts: true}, cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("buildGuestMCPServers --no-user-mounts: %v", err)
 	}

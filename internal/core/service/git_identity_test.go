@@ -301,12 +301,12 @@ func TestSeedGitIdentity_MissingHostConfig_FailsCreate(t *testing.T) {
 // rather than deleting the test.
 func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 	t.Run("(a) AgentEgressHosts contains no GitHub hostname", func(t *testing.T) {
-		hosts := AgentEgressHosts(cred.ClaudeCodeProfile)
+		hosts := AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 		for _, h := range hosts {
 			if isGitHubHost(h) {
 				t.Errorf(
 					"SECURITY VIOLATION — N-AC1 / D-PD-22\n"+
-						"AgentEgressHosts(cred.ClaudeCodeProfile) returned %q.\n\n"+
+						"AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) returned %q.\n\n"+
 						"github.com must NEVER appear in an AGENT sandbox AllowedHosts. "+
 						"Adding it causes the MITM placeholder-swap mechanism to mint a GitHub "+
 						"credential for every agent sandbox, giving any in-guest process a valid "+
@@ -333,7 +333,7 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 						"AllowedHosts to Anthropic API hosts ONLY (api.anthropic.com, "+
 						"platform.claude.com). Adding github.com here widens the egress perimeter "+
 						"for every agent sandbox created through the standard wiring path.\n\n"+
-						"To fix: remove the GitHub host from WireClaudeEgress / AgentEgressHosts(cred.ClaudeCodeProfile). "+
+						"To fix: remove the GitHub host from WireClaudeEgress / AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)). "+
 						"See D-PD-22.",
 					h,
 				)
@@ -381,11 +381,11 @@ func TestN_AC1_NoGitHubEgressPermitted(t *testing.T) {
 		// seed payload carries no GitHub credential var. X0-AC3 provides the live proof.
 
 		// Part 1: profile invariant — no GitHub host in AgentEgressHosts.
-		for _, h := range AgentEgressHosts(cred.ClaudeCodeProfile) {
+		for _, h := range AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) {
 			if isGitHubHost(h) {
 				t.Errorf(
 					"SECURITY VIOLATION — N-AC1 / D-PD-22\n"+
-						"AgentEgressHosts(cred.ClaudeCodeProfile) contains GitHub host %q.\n"+
+						"AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) contains GitHub host %q.\n"+
 						"A GitHub host in the profile causes prepareAgentCredPayload to mint "+
 						"a GitHub placeholder var in every agent sandbox payload. The push must "+
 						"FAIL CLOSED. See D-PD-22.",

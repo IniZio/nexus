@@ -28,7 +28,7 @@ func TestKiroProfile_Registered(t *testing.T) {
 }
 
 func TestKiroProfile_NoCredentialSwap(t *testing.T) {
-	p := KiroProfile
+	p := MustProfileByName(KiroProfileName)
 
 	if p.CredentialFormat != CredentialFormatNone {
 		t.Errorf("CredentialFormat = %q, want CredentialFormatNone — kiro has no file the JSON seeder can swap", p.CredentialFormat)
@@ -64,7 +64,7 @@ func TestKiroProfile_NoCredentialSwap(t *testing.T) {
 }
 
 func TestImportKiroCredentials_Refuses(t *testing.T) {
-	store, err := ImportKiroCredentials(KiroProfile)
+	store, err := ImportKiroCredentials(MustProfileByName(KiroProfileName))
 	if err == nil {
 		t.Fatal("ImportKiroCredentials returned nil error; want ErrKiroNoBroker")
 	}
@@ -77,7 +77,7 @@ func TestImportKiroCredentials_Refuses(t *testing.T) {
 }
 
 func TestKiroProfile_ToolRecipeShape(t *testing.T) {
-	r := KiroProfile.ToolRecipe
+	r := MustProfileByName(KiroProfileName).ToolRecipe
 	if err := r.Validate(); err != nil {
 		t.Fatalf("ToolRecipe.Validate: %v", err)
 	}

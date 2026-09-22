@@ -12,7 +12,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
-// claudeCodeRecipe mirrors [cred.ClaudeCodeProfile].ToolRecipe as a local copy to avoid dependency on the live profile value.
+// claudeCodeRecipe mirrors [cred.MustProfileByName(cred.ClaudeCodeProfileName)].ToolRecipe as a local copy to avoid dependency on the live profile value.
 var claudeCodeRecipe = cred.ToolRecipe{
 	BinPath: "/usr/local/bin/claude",
 	Packages: []cred.RecipePackage{

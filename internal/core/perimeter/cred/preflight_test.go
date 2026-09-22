@@ -23,12 +23,12 @@ const (
 	sentinelToken = "tok_SENTINEL_DO_NOT_LEAK"
 )
 
-// cursorProfileInDir returns a CursorAgentProfile whose credential directory
+// cursorProfileInDir returns a MustProfileByName(CursorAgentProfileName) whose credential directory
 // is redirected to dir via the profile's CredDirEnvVar.  The env var is
 // restored by t.Cleanup via t.Setenv.
 func cursorProfileInDir(t *testing.T, dir string) AgentProfile {
 	t.Helper()
-	p := CursorAgentProfile
+	p := MustProfileByName(CursorAgentProfileName)
 	t.Setenv(p.CredDirEnvVar, dir)
 	return p
 }
@@ -210,14 +210,14 @@ func TestPreflight_ParseCursorJWTExpiry_RoundTrip(t *testing.T) {
 func TestPreflight_ClaudeCode_AlwaysOK(t *testing.T) {
 	// Use an empty dir so no claude credential file is present.
 	dir := t.TempDir()
-	t.Setenv(ClaudeCodeProfile.CredDirEnvVar, dir)
-	p := ClaudeCodeProfile
+	t.Setenv(MustProfileByName(ClaudeCodeProfileName).CredDirEnvVar, dir)
+	p := MustProfileByName(ClaudeCodeProfileName)
 
 	got := CheckCred(p)
 
 	if got.Reason != PreflightOK {
 		t.Fatalf(
-			"ClaudeCodeProfile (CredentialFormatNone) must yield PreflightOK, got %v (sentence: %q)",
+			"MustProfileByName(ClaudeCodeProfileName) (CredentialFormatNone) must yield PreflightOK, got %v (sentence: %q)",
 			got.Reason, got.Sentence(),
 		)
 	}

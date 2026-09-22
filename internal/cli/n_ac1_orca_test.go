@@ -64,11 +64,11 @@ func TestN_AC1_OrcaPathGitHubInAllowedHosts(t *testing.T) {
 	})
 
 	t.Run("(2) safety invariant: AgentEgressHosts excludes github.com", func(t *testing.T) {
-		for _, h := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
+		for _, h := range service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) {
 			if isN_AC1GitHubHost(h) {
 				t.Errorf(
 					"SAFETY INVARIANT BROKEN — N-AC1 (D-PD-23)\n"+
-						"AgentEgressHosts(cred.ClaudeCodeProfile) now includes %q.\n"+
+						"AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) now includes %q.\n"+
 						"Companion: service.TestN_AC1_NoGitHubEgressPermitted",
 					h,
 				)

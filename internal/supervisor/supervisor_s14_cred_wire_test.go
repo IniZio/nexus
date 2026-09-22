@@ -19,7 +19,7 @@ import (
 //	service.WireAgentEgress(&opts, sbProfile, broker, nil, src) → opts.AgentCredSource
 //
 // Two mutations must be RED:
-//  1. resolveSeedProfile's result replaced with cred.ClaudeCodeProfile (wrong
+//  1. resolveSeedProfile's result replaced with cred.MustProfileByName(cred.ClaudeCodeProfileName) (wrong
 //     profile): NewCredentialSourceForProfile(ClaudeCodeProfile) returns nil →
 //     AgentCredSource = nil → first assertion fails → RED.
 //  2. WireAgentEgress call dropped (AgentCredSource not assigned): opts stays
@@ -59,7 +59,7 @@ func TestBuildSeedEgressOpts_ConstructionSite(t *testing.T) {
 
 	sb := domain.Sandbox{
 		ID:        id,
-		AgentName: cred.CursorAgentProfile.Name,
+		AgentName: cred.MustProfileByName(cred.CursorAgentProfileName).Name,
 	}
 
 	egressWire, err := buildSeedEgressOpts(sb, broker)
@@ -74,7 +74,7 @@ func TestBuildSeedEgressOpts_ConstructionSite(t *testing.T) {
 	}
 
 	// ── Assignment site: feed into seedRouteInputs and verify end-to-end ──────
-	if _, err := broker.RegisterPlaceholder(id, cred.CursorAgentProfile.CredentialedHost, ""); err != nil {
+	if _, err := broker.RegisterPlaceholder(id, cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost, ""); err != nil {
 		t.Fatalf("RegisterPlaceholder: %v", err)
 	}
 
@@ -98,10 +98,10 @@ func TestBuildSeedEgressOpts_ConstructionSite(t *testing.T) {
 	}
 
 	// Real token must be resolved via the credential source wired at construction.
-	ph, hasPh := broker.Placeholder(id, cred.CursorAgentProfile.CredentialedHost)
+	ph, hasPh := broker.Placeholder(id, cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost)
 	if !hasPh {
 		t.Fatalf("broker has no placeholder for %s after runSeedRoute",
-			cred.CursorAgentProfile.CredentialedHost)
+			cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost)
 	}
 	got, ok2 := broker.Resolve(ph)
 	if !ok2 {
@@ -147,7 +147,7 @@ func TestBuildSeedRouteInputs_WiresStaticCredSrc(t *testing.T) {
 	id[0] = 0xA5
 	sb := domain.Sandbox{
 		ID:        id,
-		AgentName: cred.CursorAgentProfile.Name,
+		AgentName: cred.MustProfileByName(cred.CursorAgentProfileName).Name,
 	}
 
 	egressWire, err := buildSeedEgressOpts(sb, broker)

@@ -251,7 +251,7 @@ func SeedGuestAgent(
 	id domain.SandboxID,
 	seeder GuestSeeder,
 ) ([]cred.PlaceholderRecord, error) {
-	return seedGuestAgent(ctx, broker, id, seeder, cred.ClaudeCodeProfile, kindUnset)
+	return seedGuestAgent(ctx, broker, id, seeder, cred.MustProfileByName(cred.ClaudeCodeProfileName), kindUnset)
 }
 
 func SeedGuestAgentForProfile(
@@ -360,7 +360,7 @@ func SeedGuestAgentAndSecrets(
 	specs []string,
 	seeder GuestSeeder,
 ) ([]cred.PlaceholderRecord, error) {
-	return seedGuestAgentAndSecrets(ctx, broker, id, specs, seeder, cred.ClaudeCodeProfile, kindUnset)
+	return seedGuestAgentAndSecrets(ctx, broker, id, specs, seeder, cred.MustProfileByName(cred.ClaudeCodeProfileName), kindUnset)
 }
 
 func SeedGuestAgentAndSecretsForProfile(

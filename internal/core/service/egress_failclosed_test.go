@@ -370,7 +370,7 @@ func TestD_PD33_Restore_MissingOriginFailsLoudly(t *testing.T) {
 
 // ── Test 6: GitHub hosts absent from AgentEgressHosts (seed.go) ──────────────
 
-// TestD_PD33_GitHubNotInAgentEgressHosts calls AgentEgressHosts(cred.ClaudeCodeProfile) and
+// TestD_PD33_GitHubNotInAgentEgressHosts calls AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) and
 // GitHubSecretHosts directly — both are package-level calls into production
 // code. It also verifies all three GitHub hostnames are present in
 // GitHubSecretHosts (the uploads host is new in D-PD-33).
@@ -385,11 +385,11 @@ func TestD_PD33_Restore_MissingOriginFailsLoudly(t *testing.T) {
 //	Add "github.com" to the returned slice
 //	Result: "AgentEgressHosts contains github.com" assertion FAILS
 func TestD_PD33_GitHubNotInAgentEgressHosts(t *testing.T) {
-	for _, h := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
+	for _, h := range service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) {
 		if isGitHubHostForTest(h) {
 			t.Errorf(
 				"SECURITY VIOLATION — D-PD-33\n"+
-					"AgentEgressHosts(cred.ClaudeCodeProfile) contains GitHub host %q.\n"+
+					"AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) contains GitHub host %q.\n"+
 					"GitHub hosts must never appear in agent AllowedHosts.", h,
 			)
 		}

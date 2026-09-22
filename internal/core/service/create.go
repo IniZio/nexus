@@ -292,8 +292,8 @@ type CreateAndBootOptions struct {
 
 	// AgentProfile is the per-sandbox agent profile used to resolve the
 	// placeholder env-var name (e.g. CLAUDE_CODE_OAUTH_TOKEN) in the guest
-	// seed payload. Set by WireClaudeEgress to cred.ClaudeCodeProfile.
-	// Zero value is treated as cred.ClaudeCodeProfile in CreateAndBoot.
+	// seed payload. Set by WireClaudeEgress to cred.MustProfileByName(cred.ClaudeCodeProfileName).
+	// Zero value is treated as cred.MustProfileByName(cred.ClaudeCodeProfileName) in CreateAndBoot.
 	AgentProfile cred.AgentProfile
 
 	// ExtraAgentProfiles holds the resolved profiles for extra agents listed in
@@ -400,7 +400,7 @@ type NamedVolumeMount struct {
 
 // WireAgentEgress configures opts for an agent sandbox running the given
 // profile. It is the profile-generic form of [WireClaudeEgress] and sets all
-// per-profile fields from profile rather than hardcoding [cred.ClaudeCodeProfile].
+// per-profile fields from profile rather than hardcoding [cred.MustProfileByName(cred.ClaudeCodeProfileName)].
 //
 // Adding a third agent requires no new function: pass its profile and a matching
 // CredentialSource (from [cred.NewCredentialSourceForProfile] or a [cred.Refresher]).
@@ -423,7 +423,7 @@ func WireAgentEgress(opts *CreateAndBootOptions, profile cred.AgentProfile, brok
 //   - AllowedHosts to [AgentEgressHosts] (api.anthropic.com + platform.claude.com)
 //   - Broker, Seeder, and AgentCredSource to the provided values
 //   - UseAgentSeed = true so step 9 of CreateAndBoot calls seedGuestAgent
-//   - AgentProfile = cred.ClaudeCodeProfile (CLAUDE_CODE_OAUTH_TOKEN placeholder)
+//   - AgentProfile = cred.MustProfileByName(cred.ClaudeCodeProfileName) (CLAUDE_CODE_OAUTH_TOKEN placeholder)
 //
 // src is the credential source for the real bearer token. Pass
 //
@@ -437,7 +437,7 @@ func WireAgentEgress(opts *CreateAndBootOptions, profile cred.AgentProfile, brok
 // The caller owns broker, seeder, and src; WireClaudeEgress delegates to
 // [WireAgentEgress] and is kept for compatibility.
 func WireClaudeEgress(opts *CreateAndBootOptions, broker *cred.Broker, seeder GuestSeeder, src cred.CredentialSource) {
-	WireAgentEgress(opts, cred.ClaudeCodeProfile, broker, seeder, src)
+	WireAgentEgress(opts, cred.MustProfileByName(cred.ClaudeCodeProfileName), broker, seeder, src)
 }
 
 // DedicatedCredStorePathForProfile returns the host-side OAuth credential store
@@ -479,7 +479,7 @@ func DedicatedLockFilePathForProfile(profile cred.AgentProfile) string {
 // delegates to DedicatedCredStorePathForProfile for the claude-code alias and
 // has no production callers — kept only as a named compatibility shim.
 func DefaultDedicatedCredStorePath() string {
-	return DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile)
+	return DedicatedCredStorePathForProfile(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 }
 
 // CreateAndBoot creates a sandbox record, boots a VM for it, verifies the
@@ -876,7 +876,7 @@ func CreateAndBoot(
 	// placeholder path (e.g. an API-key-only agent like cursor) must not be
 	// silently swapped for Claude here just because that field is empty.
 	if opts.UseAgentSeed && agentProfile.Name == "" {
-		agentProfile = cred.ClaudeCodeProfile
+		agentProfile = cred.MustProfileByName(cred.ClaudeCodeProfileName)
 	}
 
 	sb := domain.Sandbox{

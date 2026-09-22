@@ -8,24 +8,24 @@ import (
 )
 
 func TestClaudeCodeProfile_Fields(t *testing.T) {
-	p := cred.ClaudeCodeProfile
+	p := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 
 	if p.CredentialedHost == "" {
-		t.Fatal("ClaudeCodeProfile.CredentialedHost must not be empty")
+		t.Fatal("MustProfileByName(ClaudeCodeProfileName).CredentialedHost must not be empty")
 	}
 	if p.Capabilities.GuestNoSelfRefresh {
-		t.Fatal("ClaudeCodeProfile.Capabilities.GuestNoSelfRefresh must be false (guest self-refreshes from live-mounted ~/.claude)")
+		t.Fatal("MustProfileByName(ClaudeCodeProfileName).Capabilities.GuestNoSelfRefresh must be false (guest self-refreshes from live-mounted ~/.claude)")
 	}
 	if p.BypassConsentKey != "" {
-		t.Fatalf("ClaudeCodeProfile.BypassConsentKey must be empty for live-mount design; got %q", p.BypassConsentKey)
+		t.Fatalf("MustProfileByName(ClaudeCodeProfileName).BypassConsentKey must be empty for live-mount design; got %q", p.BypassConsentKey)
 	}
 	if p.PlaceholderEnvVar != "CLAUDE_CODE_OAUTH_TOKEN" {
-		t.Fatalf("ClaudeCodeProfile.PlaceholderEnvVar = %q, want CLAUDE_CODE_OAUTH_TOKEN (broker placeholder path replaces live mount)", p.PlaceholderEnvVar)
+		t.Fatalf("MustProfileByName(ClaudeCodeProfileName).PlaceholderEnvVar = %q, want CLAUDE_CODE_OAUTH_TOKEN (broker placeholder path replaces live mount)", p.PlaceholderEnvVar)
 	}
 }
 
 func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
-	p := cred.ClaudeCodeProfile
+	p := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 
 	if p.SettingsPath != "~/.claude/settings.json" {
 		t.Errorf("SettingsPath = %q, want ~/.claude/settings.json", p.SettingsPath)
@@ -56,7 +56,7 @@ func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 
 // ── TestCursorAgentProfile_CredentialPaths ──
 func TestCursorAgentProfile_CredentialPaths(t *testing.T) {
-	p := cred.CursorAgentProfile
+	p := cred.MustProfileByName(cred.CursorAgentProfileName)
 
 	if p.APIKeyEnvVar != "CURSOR_API_KEY" {
 		t.Errorf("APIKeyEnvVar = %q, want CURSOR_API_KEY", p.APIKeyEnvVar)
@@ -80,7 +80,7 @@ func TestCursorAgentProfile_CredentialPaths(t *testing.T) {
 
 // ── TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath ──
 func TestCursorAgentProfile_SettingsFilterRequiredRegardlessOfAuthPath(t *testing.T) {
-	p := cred.CursorAgentProfile
+	p := cred.MustProfileByName(cred.CursorAgentProfileName)
 
 	if p.SettingsPath != "~/.cursor/cli-config.json" {
 		t.Errorf("SettingsPath = %q, want ~/.cursor/cli-config.json", p.SettingsPath)
@@ -116,7 +116,7 @@ func TestCursorAgentProfile_Registered(t *testing.T) {
 // XDG_CONFIG_HOME controls credential file lookup while CURSOR_CONFIG_DIR
 // controls cli-config.json (settings). They cannot be collapsed into one.
 func TestCursorAgentProfile_CredAndSettingsDirAreDistinct(t *testing.T) {
-	p := cred.CursorAgentProfile
+	p := cred.MustProfileByName(cred.CursorAgentProfileName)
 
 	if p.CredDirEnvVar == "" {
 		t.Fatal("CredDirEnvVar must not be empty — cursor credential dir is redirected via XDG_CONFIG_HOME")
@@ -137,7 +137,7 @@ func TestCursorAgentProfile_CredAndSettingsDirAreDistinct(t *testing.T) {
 }
 
 func TestCursorAgentProfile_CredentialFileDescriptor(t *testing.T) {
-	p := cred.CursorAgentProfile
+	p := cred.MustProfileByName(cred.CursorAgentProfileName)
 
 	if p.CredentialFile != "cursor/auth.json" {
 		t.Errorf("CredentialFile = %q, want cursor/auth.json", p.CredentialFile)
@@ -187,7 +187,7 @@ func TestAgentProfile_DeclarativeExtension(t *testing.T) {
 // Must begin with "." (dot-boundary safety).
 // MUTATION-PIN: change CredentialedHostSuffix → "" → RED.
 func TestCursorAgentProfile_CredentialedHostSuffix(t *testing.T) {
-	p := cred.CursorAgentProfile
+	p := cred.MustProfileByName(cred.CursorAgentProfileName)
 
 	if p.CredentialedHostSuffix == "" {
 		t.Fatal("CredentialedHostSuffix must not be empty — inference hosts like agentn.global.api5.cursor.sh must be covered (S11)")

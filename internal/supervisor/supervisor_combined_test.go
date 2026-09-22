@@ -71,7 +71,7 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 	credCap := &captureGuestSeeder{}
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil, nil)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.MustProfileByName(cred.ClaudeCodeProfileName), nil, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false; combined seeding failed")
 	}
@@ -100,7 +100,7 @@ func TestSeedAgentAndHumanSecrets_ContainsSecretVars(t *testing.T) {
 	credCap := &captureGuestSeeder{}
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil, nil)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.MustProfileByName(cred.ClaudeCodeProfileName), nil, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false")
 	}
@@ -125,7 +125,7 @@ func TestSeedAgentAndHumanSecrets_OneWrite(t *testing.T) {
 	credCap := &captureGuestSeeder{}
 	caSeeder := func(_ context.Context, _ domain.SandboxID, _ []byte) error { return nil }
 
-	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.ClaudeCodeProfile, nil, nil)
+	ok, _ := seedAgentAndHumanSecrets(ctx, sb, fakeCert(), caSeeder, credCap.fn(), broker, nil, nil, cred.MustProfileByName(cred.ClaudeCodeProfileName), nil, nil)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false")
 	}
@@ -435,7 +435,7 @@ func TestSeedLoop_ForcePushWritesRealToken(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, agentSeeder,
 		broker, []*cred.Refresher{r},
-		1, 0, nil, true, cred.ClaudeCodeProfile, nil, nil,
+		1, 0, nil, true, cred.MustProfileByName(cred.ClaudeCodeProfileName), nil, nil,
 	)
 	if !ok {
 		t.Fatal("SeedLoop returned ok=false; seed failed")
@@ -493,7 +493,7 @@ func TestSeedAgentAndHumanSecrets_ForcePushWritesRealToken(t *testing.T) {
 	ok, _ := seedAgentAndHumanSecrets(
 		context.Background(), sb, fakeCert(),
 		caSeeder, credCap.fn(),
-		broker, []*cred.Refresher{r}, nil, cred.ClaudeCodeProfile, nil, nil,
+		broker, []*cred.Refresher{r}, nil, cred.MustProfileByName(cred.ClaudeCodeProfileName), nil, nil,
 	)
 	if !ok {
 		t.Fatal("seedAgentAndHumanSecrets returned ok=false; combined seeding failed")

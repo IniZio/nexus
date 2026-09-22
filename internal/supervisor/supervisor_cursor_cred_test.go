@@ -49,7 +49,7 @@ func TestRunSeedRoute_CursorRealTokenPushed(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	// ── 2. Build StaticCredentialSource ──────────────────────────────────────
-	staticSrc, err := cred.NewCredentialSourceForProfile(cred.CursorAgentProfile)
+	staticSrc, err := cred.NewCredentialSourceForProfile(cred.MustProfileByName(cred.CursorAgentProfileName))
 	if err != nil {
 		t.Fatalf("NewCredentialSourceForProfile: %v", err)
 	}
@@ -64,12 +64,12 @@ func TestRunSeedRoute_CursorRealTokenPushed(t *testing.T) {
 
 	sb := domain.Sandbox{
 		ID:        id,
-		AgentName: cred.CursorAgentProfile.Name,
+		AgentName: cred.MustProfileByName(cred.CursorAgentProfileName).Name,
 	}
 
 	// Pre-register placeholder so RegisterPlaceholder inside SeedLoop can
 	// re-mint the scope. The real token starts empty — the push must fill it.
-	if _, err := broker.RegisterPlaceholder(id, cred.CursorAgentProfile.CredentialedHost, ""); err != nil {
+	if _, err := broker.RegisterPlaceholder(id, cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost, ""); err != nil {
 		t.Fatalf("RegisterPlaceholder (pre-seed): %v", err)
 	}
 
@@ -92,9 +92,9 @@ func TestRunSeedRoute_CursorRealTokenPushed(t *testing.T) {
 	}
 
 	// ── 5. Assert real token was pushed ──────────────────────────────────────
-	ph, hasPh := broker.Placeholder(id, cred.CursorAgentProfile.CredentialedHost)
+	ph, hasPh := broker.Placeholder(id, cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost)
 	if !hasPh {
-		t.Fatalf("broker has no placeholder for %s after runSeedRoute", cred.CursorAgentProfile.CredentialedHost)
+		t.Fatalf("broker has no placeholder for %s after runSeedRoute", cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost)
 	}
 	got, ok2 := broker.Resolve(ph)
 	if !ok2 {

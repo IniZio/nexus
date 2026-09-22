@@ -699,7 +699,7 @@ func TestCreateAndBoot_DShl05_AgentGitHubGuards(t *testing.T) {
 				AllowedRepo:  c.allowedRepo,
 			}
 			if c.agentName {
-				opts.AgentProfile = cred.ClaudeCodeProfile
+				opts.AgentProfile = cred.MustProfileByName(cred.ClaudeCodeProfileName)
 			}
 
 			_, gotErr := CreateAndBoot(ctx, svc, cache, fakeDriverFactory(fd), noopProbe,
@@ -723,9 +723,9 @@ func TestCreateAndBoot_DShl05_AgentGitHubGuards(t *testing.T) {
 // CreateAndBoot resolved "no profile was explicitly given" by checking
 // agentProfile.PlaceholderEnvVar == "", but that field is legitimately empty
 // for ANY agent whose only credential path is a direct API key (cursor: no
-// OAuth-subscription placeholder to broker — see cred.CursorAgentProfile's
+// OAuth-subscription placeholder to broker — see cred.MustProfileByName(cred.CursorAgentProfileName)'s
 // doc comment). That check silently swapped such a profile back to
-// cred.ClaudeCodeProfile whenever UseAgentSeed was true, so a caller passing
+// cred.MustProfileByName(cred.ClaudeCodeProfileName) whenever UseAgentSeed was true, so a caller passing
 // an explicit API-key-only profile would have it discarded without error.
 //
 // The fix checks agentProfile.Name == "" instead — Name is the documented
@@ -750,7 +750,7 @@ func TestCreateAndBoot_UseAgentSeed_APIKeyOnlyProfileNotOverridden(t *testing.T)
 			Image:        ImageSpec{Digest: string(img.Digest)},
 			CacheRoot:    cacheRoot,
 			UseAgentSeed: true,
-			AgentProfile: cred.CursorAgentProfile, // PlaceholderEnvVar == "" by design
+			AgentProfile: cred.MustProfileByName(cred.CursorAgentProfileName), // PlaceholderEnvVar == "" by design
 		},
 	)
 	if err != nil {

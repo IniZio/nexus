@@ -49,7 +49,7 @@ func TestBuildSharedMCPServers_HTTPLiteralRedacted(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestBuildSharedMCPServers_HTTPVarRefPreserved(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestBuildSharedMCPServers_StdioLiteralKeptAndEnvResolved(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestBuildSharedMCPServers_UnionSource(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestBuildSharedMCPServers_NonClaudeFormatNoop(t *testing.T) {
 		"myserver": map[string]any{"command": "/bin/server"},
 	})
 
-	noopProfile := cred.ClaudeCodeProfile
+	noopProfile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 	noopProfile.MCPConfigFormat = cred.MCPConfigFormatNone
 
 	got, err := BuildSharedMCPServers(noopProfile, "")
@@ -272,7 +272,7 @@ func TestBuildSharedMCPServers_NonCredentialHeaderUntouched(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestBuildSharedMCPServers_OAuthInjectsPlaceholderAndBind(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestBuildSharedMCPServers_OAuthSynthesizesAbsentServer(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestBuildSharedMCPServers_OAuthSynthesizedPreservesURLPath(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestBuildSharedMCPServers_OAuthProfileGateOff(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	noopProfile := cred.ClaudeCodeProfile
+	noopProfile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 	noopProfile.MCPConfigFormat = cred.MCPConfigFormatNone
 
 	got, err := BuildSharedMCPServers(noopProfile, "")
@@ -518,7 +518,7 @@ func TestBuildSharedMCPServers_OAuthDeduplicatesBind(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestBuildSharedMCPServers_ProjectScopedLiteralHTTP(t *testing.T) {
 	)
 
 	t.Run("matching sourceDir includes project-scoped server", func(t *testing.T) {
-		got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, sourceDir)
+		got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), sourceDir)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -654,7 +654,7 @@ func TestBuildSharedMCPServers_ProjectScopedLiteralHTTP(t *testing.T) {
 	})
 
 	t.Run("non-matching sourceDir omits project-scoped server", func(t *testing.T) {
-		got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "/no/such/project")
+		got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "/no/such/project")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -700,7 +700,7 @@ func TestBuildSharedMCPServers_ProjectScopedOAuthInjected(t *testing.T) {
 		return []MCPOAuthBind{linearOAuthBind()}, nil, nil
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, sourceDir)
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), sourceDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -759,7 +759,7 @@ func TestBuildSharedMCPServers_StdioHostOnlyAbsoluteDropped(t *testing.T) {
 		},
 	})
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -801,7 +801,7 @@ func TestBuildSharedMCPServers_StdioMountMappedAbsoluteRewritten(t *testing.T) {
 		{HostPath: filepath.Join(dir, ".local/bin"), GuestPath: "/root/.local/bin"},
 	}
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "", mounts...)
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "", mounts...)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -846,7 +846,7 @@ func TestBuildSharedMCPServers_StdioRelativeAndHTTPUntouched(t *testing.T) {
 	})
 	wantStdio, _ := json.Marshal(stdio)
 
-	got, err := BuildSharedMCPServers(cred.ClaudeCodeProfile, "")
+	got, err := BuildSharedMCPServers(cred.MustProfileByName(cred.ClaudeCodeProfileName), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

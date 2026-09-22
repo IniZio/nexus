@@ -25,7 +25,7 @@ func TestImportCodexCredentials_DoesNotTouchAuthFile(t *testing.T) {
 	}
 	t.Setenv("CODEX_HOME", dir)
 
-	store, err := ImportCodexCredentials(CodexProfile)
+	store, err := ImportCodexCredentials(MustProfileByName(CodexProfileName))
 	if err == nil || store != nil {
 		t.Fatalf("ImportCodexCredentials = (%v, %v), want error and nil store", store, err)
 	}

@@ -400,7 +400,7 @@ func runSeedRoute(ctx context.Context, route seedRoute, in seedRouteInputs) (ok,
 
 // resolveSeedProfile resolves the [cred.AgentProfile] the re-seed loop must
 // use for sb, from the agent name persisted on the sandbox at creation
-// (domain.Sandbox.AgentName). Falling back to [cred.ClaudeCodeProfile] for an
+// (domain.Sandbox.AgentName). Falling back to [cred.MustProfileByName(cred.ClaudeCodeProfileName)] for an
 // empty or unregistered name matches the pre-existing behaviour for agent
 // sandboxes created before per-agent profiles existed; the profile is only
 // actually read by the caller when the route seeds agent credentials at all
@@ -410,7 +410,7 @@ func resolveSeedProfile(sb domain.Sandbox) cred.AgentProfile {
 	if profile, ok := cred.ProfileByName(sb.AgentName); ok {
 		return profile
 	}
-	return cred.ClaudeCodeProfile
+	return cred.MustProfileByName(cred.ClaudeCodeProfileName)
 }
 
 // buildSeedEgressOpts resolves the agent profile for sb, constructs the static
@@ -418,7 +418,7 @@ func resolveSeedProfile(sb domain.Sandbox) cred.AgentProfile {
 // [cred.NewCredentialSourceForProfile], and wires both into the returned
 // [service.CreateAndBootOptions] via [service.WireAgentEgress].
 //
-// For OAuth-backed profiles ([cred.ClaudeCodeProfile]) the returned
+// For OAuth-backed profiles ([cred.MustProfileByName(cred.ClaudeCodeProfileName)]) the returned
 // AgentCredSource is nil; those agents push credentials via
 // [cred.Refresher].ForcePush instead.
 //
@@ -540,7 +540,7 @@ func RunDetached(cfg Config) error {
 
 	var refreshers []*cred.Refresher
 	if cfg.CredsFile != "" {
-		for _, host := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
+		for _, host := range service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) {
 			r, rErr := cred.NewRefresher(cfg.CredsFile, host, broker)
 			if errors.Is(rErr, cred.ErrStoreAbsent) {
 				slog.Info("supervisor.creds_absent", "path", cfg.CredsFile)

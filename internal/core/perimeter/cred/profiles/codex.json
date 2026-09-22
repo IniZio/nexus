@@ -1,0 +1,42 @@
+{
+  "Name": "codex",
+  "PlaceholderEnvVar": "",
+  "CredentialedHostSuffix": "",
+  "PlaceholderIsJWT": false,
+  "CredentialedHost": "chatgpt.com",
+  "EgressHosts": ["chatgpt.com"],
+  "APIKeyEnvVar": "",
+  "CACertEnvVars": null,
+  "GuestEnv": null,
+  "Capabilities": {"GuestNoSelfRefresh": false},
+  "SettingsPath": "",
+  "CredDirEnvVar": "",
+  "ConfigDirEnvVar": "",
+  "CredentialFile": "",
+  "CredentialFileKey": "",
+  "CredentialFileExtraKeys": null,
+  "CredentialFormat": "",
+  "SkillsPath": "",
+  "MCPConfigFormat": "",
+  "MountAllowlist": null,
+  "SettingsAllowlist": null,
+  "BypassConsentKey": "",
+  "ToolRecipe": {
+    "BinPath": "/usr/local/bin/codex",
+    "Packages": [
+      {
+        "Kind": "oci",
+        "Name": "codex",
+        "Version": "latest",
+        "URLTemplate": "",
+        "SHA256ByArch": null,
+        "InstallDir": "/usr/local/share/codex/versions",
+        "Symlinks": [{"LinkPath": "/usr/local/bin/codex", "TargetPath": ""}],
+        "VersionCmd": "",
+        "Image": "docker/sandbox-templates:codex-nightly",
+        "SrcPath": "/home/agent/.codex/packages/standalone/releases/",
+        "BinRel": "bin/codex"
+      }
+    ]
+  }
+}

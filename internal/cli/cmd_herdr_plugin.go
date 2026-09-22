@@ -1073,7 +1073,8 @@ func buildLaunchBootOpts(imageRef, cacheRoot string, agentEgress bool) service.C
 		ReachabilityTimeout: 60 * time.Second,
 	}
 	if agentEgress {
-		opts.AgentProfile = cred.ClaudeCodeProfile
+		claudeProfile, _ := cred.ProfileByName(cred.ClaudeCodeProfileName)
+		opts.AgentProfile = claudeProfile
 		opts.AllowedHosts = service.AgentEgressHosts(opts.AgentProfile)
 	}
 	return opts
@@ -1111,6 +1112,7 @@ func handoffLaunchSupervisor(
 		return nil, "", fmt.Errorf("stop before supervisor handoff: %w", err)
 	}
 
+	claudeProfile, _ := cred.ProfileByName(cred.ClaudeCodeProfileName)
 	pid, watchdogW, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
 		Config: supervisor.Config{
 			SandboxRef: sb.ID.String(),
@@ -1125,7 +1127,7 @@ func handoffLaunchSupervisor(
 			 * Real bearer tokens are read here, inside the supervisor, and never
 			 * leave it: the broker hands the MITM proxy the token at swap time.
 			 */
-			CredsFile: service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile),
+			CredsFile: service.DedicatedCredStorePathForProfile(claudeProfile),
 			Ephemeral: true,
 		},
 		ReadyTimeout: 5 * time.Minute,

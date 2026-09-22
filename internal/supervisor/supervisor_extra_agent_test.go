@@ -26,15 +26,15 @@ func TestSeedLoop_ExtraAgentPlaceholderRegistered(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, cap.fn(),
 		broker, nil,
-		1, 0, nil, true, cred.ClaudeCodeProfile,
-		[]cred.AgentProfile{cred.CursorAgentProfile},
+		1, 0, nil, true, cred.MustProfileByName(cred.ClaudeCodeProfileName),
+		[]cred.AgentProfile{cred.MustProfileByName(cred.CursorAgentProfileName)},
 		nil,
 	)
 	if !ok {
 		t.Fatal("SeedLoop returned ok=false")
 	}
 
-	cursorHost := cred.CursorAgentProfile.CredentialedHost
+	cursorHost := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost
 	if _, hasPh := broker.Placeholder(id, cursorHost); !hasPh {
 		t.Errorf("cursor placeholder not registered (MUTATION S1: extraProfiles not threaded to SeedGuestAgentForProfiles)")
 	}
@@ -60,15 +60,15 @@ func TestSeedLoop_ExtraAgentPlaceholderIsNotRealToken(t *testing.T) {
 		context.Background(), id, &cert,
 		caSeeder, cap.fn(),
 		broker, nil,
-		1, 0, nil, true, cred.ClaudeCodeProfile,
-		[]cred.AgentProfile{cred.CursorAgentProfile},
+		1, 0, nil, true, cred.MustProfileByName(cred.ClaudeCodeProfileName),
+		[]cred.AgentProfile{cred.MustProfileByName(cred.CursorAgentProfileName)},
 		nil,
 	)
 	if !ok {
 		t.Fatal("SeedLoop returned ok=false")
 	}
 
-	cursorHost := cred.CursorAgentProfile.CredentialedHost
+	cursorHost := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost
 	ph, hasPh := broker.Placeholder(id, cursorHost)
 	if !hasPh {
 		t.Fatalf("no placeholder for %s", cursorHost)
@@ -92,18 +92,18 @@ func TestResolveExtraSeedProfiles(t *testing.T) {
 	t.Parallel()
 
 	sb := domain.Sandbox{
-		AgentName:       cred.ClaudeCodeProfile.Name,
-		ExtraAgentNames: []string{cred.CursorAgentProfile.Name},
+		AgentName:       cred.MustProfileByName(cred.ClaudeCodeProfileName).Name,
+		ExtraAgentNames: []string{cred.MustProfileByName(cred.CursorAgentProfileName).Name},
 	}
 	profiles := resolveExtraSeedProfiles(sb)
 	if len(profiles) != 1 {
 		t.Fatalf("got %d profiles, want 1 (MUTATION S2: ExtraAgentNames not read)", len(profiles))
 	}
-	if profiles[0].Name != cred.CursorAgentProfile.Name {
-		t.Errorf("profile[0].Name = %q, want %q", profiles[0].Name, cred.CursorAgentProfile.Name)
+	if profiles[0].Name != cred.MustProfileByName(cred.CursorAgentProfileName).Name {
+		t.Errorf("profile[0].Name = %q, want %q", profiles[0].Name, cred.MustProfileByName(cred.CursorAgentProfileName).Name)
 	}
 
-	sbNone := domain.Sandbox{AgentName: cred.ClaudeCodeProfile.Name}
+	sbNone := domain.Sandbox{AgentName: cred.MustProfileByName(cred.ClaudeCodeProfileName).Name}
 	if got := resolveExtraSeedProfiles(sbNone); len(got) != 0 {
 		t.Errorf("no extra names: got %d profiles, want 0", len(got))
 	}
@@ -117,7 +117,7 @@ func TestSeedAgentAndHumanSecrets_ExtraAgentPresent(t *testing.T) {
 	id[0] = 0xF4
 	sb := domain.Sandbox{
 		ID:        id,
-		AgentName: cred.ClaudeCodeProfile.Name,
+		AgentName: cred.MustProfileByName(cred.ClaudeCodeProfileName).Name,
 	}
 
 	broker := cred.NewBroker()
@@ -129,8 +129,8 @@ func TestSeedAgentAndHumanSecrets_ExtraAgentPresent(t *testing.T) {
 		ctx, sb, cert,
 		caSeeder, cap.fn(),
 		broker, nil, nil,
-		cred.ClaudeCodeProfile,
-		[]cred.AgentProfile{cred.CursorAgentProfile},
+		cred.MustProfileByName(cred.ClaudeCodeProfileName),
+		[]cred.AgentProfile{cred.MustProfileByName(cred.CursorAgentProfileName)},
 		nil,
 	)
 	if !ok {
@@ -158,8 +158,8 @@ func TestBuildSeedRouteInputs_ExtraProfilesFromSandbox(t *testing.T) {
 	t.Parallel()
 
 	sb := domain.Sandbox{
-		AgentName:       cred.ClaudeCodeProfile.Name,
-		ExtraAgentNames: []string{cred.CursorAgentProfile.Name},
+		AgentName:       cred.MustProfileByName(cred.ClaudeCodeProfileName).Name,
+		ExtraAgentNames: []string{cred.MustProfileByName(cred.CursorAgentProfileName).Name},
 	}
 
 	in := buildSeedRouteInputs(
@@ -176,8 +176,8 @@ func TestBuildSeedRouteInputs_ExtraProfilesFromSandbox(t *testing.T) {
 	if len(in.ExtraProfiles) != 1 {
 		t.Fatalf("ExtraProfiles len=%d, want 1", len(in.ExtraProfiles))
 	}
-	if in.ExtraProfiles[0].Name != cred.CursorAgentProfile.Name {
-		t.Errorf("ExtraProfiles[0].Name=%q, want %q", in.ExtraProfiles[0].Name, cred.CursorAgentProfile.Name)
+	if in.ExtraProfiles[0].Name != cred.MustProfileByName(cred.CursorAgentProfileName).Name {
+		t.Errorf("ExtraProfiles[0].Name=%q, want %q", in.ExtraProfiles[0].Name, cred.MustProfileByName(cred.CursorAgentProfileName).Name)
 	}
 }
 

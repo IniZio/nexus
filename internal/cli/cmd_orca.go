@@ -601,10 +601,11 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// creation time and is read back by the detached supervisor when it calls
 	// svc.Start. Without this, Envelope.AllowedHosts is empty and the perimeter
 	// netfilter is default-deny for all outbound traffic (including api.anthropic.com).
-	// Base set: AgentEgressHosts(cred.ClaudeCodeProfile) (api.anthropic.com + platform.claude.com).
+	claudeProfile, _ := cred.ProfileByName(cred.ClaudeCodeProfileName)
+	// Base set: AgentEgressHosts(claudeProfile) (api.anthropic.com + platform.claude.com).
 	// Non-GitHub forges from the recipe URL may be appended. GitHub hosts are
 	// never added here (D-PD-23): orca is an agent path.
-	allowedHosts := append(service.AgentEgressHosts(cred.ClaudeCodeProfile), gitHostsFromURL(env.RepoURL)...)
+	allowedHosts := append(service.AgentEgressHosts(claudeProfile), gitHostsFromURL(env.RepoURL)...)
 
 	// Initial boot opts: AllowedHosts is frozen here so the detached supervisor
 	// inherits the correct perimeter allowlist when it re-boots the VM.
@@ -628,7 +629,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		// the detached supervisor's job (UseAgentSeed stays false), but without
 		// the profile here the record carries no agent and the perimeter cannot
 		// tell an agent sandbox apart from a plain one.
-		AgentProfile: cred.ClaudeCodeProfile,
+		AgentProfile: claudeProfile,
 	}
 
 	name := orcaSandboxName(env.InstanceID)
@@ -701,7 +702,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		1, // bootVCPUs: orca create passes 0 to buildCHConfig → driver default = 1
 		opts.Workspace != nil,
 		orcaNumShadowDisks,
-		service.DedicatedCredStorePathForProfile(cred.ClaudeCodeProfile),
+		service.DedicatedCredStorePathForProfile(claudeProfile),
 		guestWorkspacePath,
 		// hasScratchDisk mirrors service/create.go step 4.9: scratch is attached
 		// iff workspace was requested and NoScratchDisk was not set (orca never

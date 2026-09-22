@@ -261,12 +261,12 @@ func TestRecipePackage_IsFloating(t *testing.T) {
 }
 
 func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
-	r := ClaudeCodeProfile.ToolRecipe
+	r := MustProfileByName(ClaudeCodeProfileName).ToolRecipe
 	if r.BinPath != "/usr/local/bin/claude" {
-		t.Errorf("ClaudeCodeProfile.ToolRecipe.BinPath = %q; want /usr/local/bin/claude", r.BinPath)
+		t.Errorf("MustProfileByName(ClaudeCodeProfileName).ToolRecipe.BinPath = %q; want /usr/local/bin/claude", r.BinPath)
 	}
 	if len(r.Packages) != 1 {
-		t.Fatalf("ClaudeCodeProfile.ToolRecipe.Packages has %d entries; want 1 (OCI package)", len(r.Packages))
+		t.Fatalf("MustProfileByName(ClaudeCodeProfileName).ToolRecipe.Packages has %d entries; want 1 (OCI package)", len(r.Packages))
 	}
 	pkg := r.Packages[0]
 	if pkg.Kind != RecipeKindOCI {
@@ -299,12 +299,12 @@ func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 }
 
 func TestCursorAgentProfile_ToolRecipeShape(t *testing.T) {
-	r := CursorAgentProfile.ToolRecipe
+	r := MustProfileByName(CursorAgentProfileName).ToolRecipe
 	if r.BinPath != "/usr/local/bin/cursor-agent" {
-		t.Errorf("CursorAgentProfile.ToolRecipe.BinPath = %q; want /usr/local/bin/cursor-agent", r.BinPath)
+		t.Errorf("MustProfileByName(CursorAgentProfileName).ToolRecipe.BinPath = %q; want /usr/local/bin/cursor-agent", r.BinPath)
 	}
 	if len(r.Packages) != 1 {
-		t.Fatalf("CursorAgentProfile.ToolRecipe.Packages has %d entries; want 1 (OCI package)", len(r.Packages))
+		t.Fatalf("MustProfileByName(CursorAgentProfileName).ToolRecipe.Packages has %d entries; want 1 (OCI package)", len(r.Packages))
 	}
 	pkg := r.Packages[0]
 	if pkg.Kind != RecipeKindOCI {

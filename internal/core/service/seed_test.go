@@ -45,7 +45,7 @@ func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 			SandboxID:   seedTestID(99),
 		},
 	}
-	profile := cred.ClaudeCodeProfile
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 
 	oauthBytes, err := buildAgentSeedPayload(records, kindOAuth, profile)
 	if err != nil {
@@ -85,7 +85,7 @@ func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 
 func TestResolveAgentCredKindDefaultIsOAuth(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	got := resolveAgentCredKind(cred.ClaudeCodeProfile)
+	got := resolveAgentCredKind(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if got != kindOAuth {
 		t.Errorf("expected kindOAuth (%d) with empty ANTHROPIC_AUTH_TOKEN, got %d", kindOAuth, got)
 	}
@@ -93,7 +93,7 @@ func TestResolveAgentCredKindDefaultIsOAuth(t *testing.T) {
 
 func TestResolveAgentCredKindAuthTokenEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-test")
-	got := resolveAgentCredKind(cred.ClaudeCodeProfile)
+	got := resolveAgentCredKind(cred.MustProfileByName(cred.ClaudeCodeProfileName))
 	if got != kindAuthToken {
 		t.Errorf("expected kindAuthToken (%d) with ANTHROPIC_AUTH_TOKEN set, got %d", kindAuthToken, got)
 	}

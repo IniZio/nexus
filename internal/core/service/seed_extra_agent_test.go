@@ -17,8 +17,8 @@ func TestSeedGuestAgentForProfiles_ExtraPlaceholderRegistered(t *testing.T) {
 
 	_, err := SeedGuestAgentForProfiles(
 		context.Background(), broker, id, cap.fn(),
-		cred.ClaudeCodeProfile,
-		[]cred.AgentProfile{cred.CursorAgentProfile},
+		cred.MustProfileByName(cred.ClaudeCodeProfileName),
+		[]cred.AgentProfile{cred.MustProfileByName(cred.CursorAgentProfileName)},
 	)
 	if err != nil {
 		t.Fatalf("SeedGuestAgentForProfiles: %v", err)
@@ -27,7 +27,7 @@ func TestSeedGuestAgentForProfiles_ExtraPlaceholderRegistered(t *testing.T) {
 	if _, ok := broker.Placeholder(id, AnthropicAPIHost); !ok {
 		t.Errorf("primary placeholder not registered for %s", AnthropicAPIHost)
 	}
-	cursorHost := cred.CursorAgentProfile.CredentialedHost
+	cursorHost := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost
 	if _, ok := broker.Placeholder(id, cursorHost); !ok {
 		t.Errorf("extra agent placeholder not registered for %s (MUTATION B1: extras loop removed)", cursorHost)
 	}
@@ -42,8 +42,8 @@ func TestSeedGuestAgentForProfiles_OneWrite_BothVarsPresent(t *testing.T) {
 
 	_, err := SeedGuestAgentForProfiles(
 		context.Background(), broker, id, cap.fn(),
-		cred.ClaudeCodeProfile,
-		[]cred.AgentProfile{cred.CursorAgentProfile},
+		cred.MustProfileByName(cred.ClaudeCodeProfileName),
+		[]cred.AgentProfile{cred.MustProfileByName(cred.CursorAgentProfileName)},
 	)
 	if err != nil {
 		t.Fatalf("SeedGuestAgentForProfiles: %v", err)
@@ -75,14 +75,14 @@ func TestSeedGuestAgentForProfiles_PlaceholderInvariant(t *testing.T) {
 
 	_, err := SeedGuestAgentForProfiles(
 		context.Background(), broker, id, cap.fn(),
-		cred.ClaudeCodeProfile,
-		[]cred.AgentProfile{cred.CursorAgentProfile},
+		cred.MustProfileByName(cred.ClaudeCodeProfileName),
+		[]cred.AgentProfile{cred.MustProfileByName(cred.CursorAgentProfileName)},
 	)
 	if err != nil {
 		t.Fatalf("SeedGuestAgentForProfiles: %v", err)
 	}
 
-	cursorHost := cred.CursorAgentProfile.CredentialedHost
+	cursorHost := cred.MustProfileByName(cred.CursorAgentProfileName).CredentialedHost
 	ph, hasPh := broker.Placeholder(id, cursorHost)
 	if !hasPh {
 		t.Fatalf("no placeholder for %s after seeding", cursorHost)
@@ -111,13 +111,13 @@ func TestSeedGuestAgentForProfiles_NilExtrasIdenticalToSingleProfile(t *testing.
 
 	brokerA := cred.NewBroker()
 	capA := &captureSeeder{}
-	if _, err := SeedGuestAgentForProfile(context.Background(), brokerA, id, capA.fn(), cred.ClaudeCodeProfile); err != nil {
+	if _, err := SeedGuestAgentForProfile(context.Background(), brokerA, id, capA.fn(), cred.MustProfileByName(cred.ClaudeCodeProfileName)); err != nil {
 		t.Fatalf("SeedGuestAgentForProfile: %v", err)
 	}
 
 	brokerB := cred.NewBroker()
 	capB := &captureSeeder{}
-	if _, err := SeedGuestAgentForProfiles(context.Background(), brokerB, id, capB.fn(), cred.ClaudeCodeProfile, nil); err != nil {
+	if _, err := SeedGuestAgentForProfiles(context.Background(), brokerB, id, capB.fn(), cred.MustProfileByName(cred.ClaudeCodeProfileName), nil); err != nil {
 		t.Fatalf("SeedGuestAgentForProfiles(nil extras): %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestSeedGuestAgentForProfiles_NilExtrasIdenticalToSingleProfile(t *testing.
 func TestExtraAgentNamesFromProfilesRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	profiles := []cred.AgentProfile{cred.ClaudeCodeProfile, cred.CursorAgentProfile}
+	profiles := []cred.AgentProfile{cred.MustProfileByName(cred.ClaudeCodeProfileName), cred.MustProfileByName(cred.CursorAgentProfileName)}
 	names := extraAgentNamesFromProfiles(profiles)
 
 	if len(names) != len(profiles) {

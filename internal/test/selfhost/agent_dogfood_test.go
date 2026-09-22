@@ -154,7 +154,7 @@ func TestAgentDogfood(t *testing.T) {
 		service.CreateAndBootOptions{
 			Image:               service.ImageSpec{Digest: string(img.Digest)},
 			CacheRoot:           cacheRoot,
-			AllowedHosts:        service.AgentEgressHosts(cred.ClaudeCodeProfile),
+			AllowedHosts:        service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)),
 			ReachabilityTimeout: 60 * time.Second,
 		},
 	)
@@ -194,7 +194,7 @@ func TestAgentDogfood(t *testing.T) {
 		t.Fatalf("GuestNetworkFD: %v", err)
 	}
 
-	al, err := netfilter.NewAllowList(nil, nil, service.AgentEgressHosts(cred.ClaudeCodeProfile))
+	al, err := netfilter.NewAllowList(nil, nil, service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)))
 	if err != nil {
 		t.Fatalf("netfilter.NewAllowList: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestAgentDogfood(t *testing.T) {
 
 	mitmProxy, err := mitm.New(mitm.Config{
 		SandboxID:    sb.ID,
-		AllowedHosts: service.AgentEgressHosts(cred.ClaudeCodeProfile),
+		AllowedHosts: service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)),
 		Broker:       broker,
 		Logger:       swapLogger,
 	})

@@ -47,21 +47,26 @@ func TestProfileNames_ListsEveryRegisteredAgentSorted(t *testing.T) {
 }
 
 func TestEgress_ReturnsIsolatedCopy(t *testing.T) {
-	first := ClaudeCodeProfile.Egress()
+	p, ok := ProfileByName(ClaudeCodeProfileName)
+	if !ok {
+		t.Fatalf("MustProfileByName(ClaudeCodeProfileName) not loaded")
+	}
+	first := p.Egress()
 	if len(first) == 0 {
-		t.Fatal("Egress() returned no hosts for ClaudeCodeProfile")
+		t.Fatal("Egress() returned no hosts for MustProfileByName(ClaudeCodeProfileName)")
 	}
 	first[0] = "evil.example.com"
 	first = append(first, "also-evil.example.com")
 
-	second := ClaudeCodeProfile.Egress()
+	second := p.Egress()
 	if slices.Contains(second, "evil.example.com") || slices.Contains(second, "also-evil.example.com") {
 		t.Errorf("mutating one Egress() result leaked into the next: %v", second)
 	}
 }
 
 func TestRegisteredProfiles_CredentialedHostIsReachable(t *testing.T) {
-	for name, p := range profiles {
+	for _, name := range ProfileNames() {
+		p, _ := ProfileByName(name)
 		if p.Name != name {
 			t.Errorf("profile registered under %q has Name %q; the key and the Name must agree", name, p.Name)
 		}

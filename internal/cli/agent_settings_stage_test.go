@@ -62,7 +62,7 @@ func TestStageAgentCuratedConfig_UsesConfigDirEnvVar(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	destDir := t.TempDir()
-	if err := stageAgentCuratedConfig(cred.CursorAgentProfile, destDir); err != nil {
+	if err := stageAgentCuratedConfig(cred.MustProfileByName(cred.CursorAgentProfileName), destDir); err != nil {
 		t.Fatalf("stageAgentCuratedConfig: %v", err)
 	}
 
