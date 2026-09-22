@@ -493,18 +493,8 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: mkdir state dir %s: %w", cfg.StateDir, err)
 	}
 
-	// Detect a live rw /root/.claude virtiofs mount — present on claude-code
-	// sandboxes that use the live-mount cred design. Used to skip the overlayfs
-	// setup and to arm the cred guardian instead of the Refresher loop.
 	hasClaudeRWMount := false
 	claudeHostHome := ""
-	for _, lm := range cfg.LiveMounts {
-		if lm.GuestPath == "/root/.claude" && !lm.ReadOnly {
-			hasClaudeRWMount = true
-			claudeHostHome = filepath.Dir(lm.HostPath)
-			break
-		}
-	}
 
 	// ── 1. Open sandbox store ─────────────────────────────────────────────────
 	st, err := store.NewFileStore(cfg.StoreRoot)
@@ -549,18 +539,19 @@ func RunDetached(cfg Config) error {
 	svc = svc.WithBroker(broker)
 
 	var refreshers []*cred.Refresher
-	// Arm the cred guardian for any sandbox with a live rw /root/.claude mount.
-	// The guardian proactively refreshes ~/.claude/.credentials.json before expiry
-	// and serialises concurrent refreshes via flock(2) on a sidecar lock file.
-	if hasClaudeRWMount {
-		home, homeErr := os.UserHomeDir()
-		if homeErr == nil {
-			credsPath := filepath.Join(home, ".claude", ".credentials.json")
-			g := cred.NewCredGuardian(credsPath)
-			go g.Guard(ctx)
-			slog.Info("supervisor.cred_guardian_armed", "path", credsPath)
-		} else {
-			slog.Warn("supervisor.cred_guardian_arm_failed", "err", homeErr)
+	if cfg.CredsFile != "" {
+		for _, host := range service.AgentEgressHosts(cred.ClaudeCodeProfile) {
+			r, rErr := cred.NewRefresher(cfg.CredsFile, host, broker)
+			if errors.Is(rErr, cred.ErrStoreAbsent) {
+				slog.Info("supervisor.creds_absent", "path", cfg.CredsFile)
+				break // same file for all hosts; no point trying others
+			}
+			if rErr != nil {
+				slog.Warn("supervisor.refresher_init_failed", "host", host, "err", rErr)
+				continue
+			}
+			refreshers = append(refreshers, r)
+			slog.Info("supervisor.refresher_ready", "host", host, "path", cfg.CredsFile)
 		}
 	}
 
