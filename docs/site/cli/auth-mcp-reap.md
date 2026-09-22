@@ -23,7 +23,7 @@ claude login
 
 The next sandbox you create picks up the credentials automatically.
 
-Running sandboxes are not updated — virtiofs mounts are create-time state. Recreate a sandbox to switch it to the live-mount credential model (see [Egress and perimeter: recreate rule](/security/egress-and-perimeter#recreate-rule-r-7)).
+Running sandboxes are not updated — credential configuration is create-time state. Recreate a sandbox to receive the broker/placeholder credential model; `nexus auth login` is required again for claude-code after recreation (see [Egress and perimeter: recreate rule](/security/egress-and-perimeter#recreate-rule-r-7)).
 
 ```
 nexus auth login

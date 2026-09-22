@@ -51,27 +51,24 @@ The only custom code is a transparent SNI→CONNECT shim (an adversarial guest w
 
 ## Claude Code credential delivery
 
-The `claude-code` agent profile uses a **live read-write virtiofs mount** of the host's `~/.claude` directory at `/root/.claude` inside the guest. There is no placeholder, no broker swap, and no synthetic expiry — the guest holds the real `~/.claude/.credentials.json` and refreshes its own token exactly as the host does.
+The `claude-code` agent profile uses the **broker/placeholder/MITM** model — the same path as all other agent profiles. No host `~/.claude` directory is mounted into the guest.
 
 ### What the guest can see
 
-The entire host `~/.claude` is mounted read-write. This includes:
+A curated, read-only overlay-projected subset of the host's `~/.claude` is delivered at sandbox start via the `MountAllowlist`:
 
-- `.credentials.json` — the real OAuth credential, refreshed in place
-- `settings.json` — the host's Claude Code settings, including hooks, plugins, and permission mode
-- `history.jsonl`, `projects/`, `todos`, `debug/` — full session history and transcripts
+- `CLAUDE.md` — host-level instructions
+- `skills/**` — installed skills
+- `settings.json` — host Claude Code settings (permission mode, plugins)
+- `plugins/**` — installed plugins
 
-Guest Claude inherits the host's permission mode (`auto` by default; see [AI agents](/ai-agents)) and runs with the host's tool configuration. Hook binaries that are also live-mounted (`~/.local/bin`, mise tools) resolve normally; hooks that reference host-only paths produce tool errors, not agent failures.
+No `.credentials.json`, no session history, no transcripts reach the guest filesystem. `CLAUDE_CODE_OAUTH_TOKEN` is set to a broker placeholder in the guest environment; the MITM proxy substitutes the real bearer token on every request to `api.anthropic.com` and `platform.claude.com`. Token freshness is maintained by the host-side refresher against `~/.config/nexus/creds.json`. Use `nexus auth login` to import a dedicated Claude session into that store.
 
-### Host CredGuardian
-
-The supervisor arms a `CredGuardian` (`internal/core/perimeter/cred/guardian.go`) against the host `~/.claude/.credentials.json`. It polls once per minute and proactively refreshes the token 30 minutes before expiry — the same threshold Claude Code itself uses. Concurrent guardians (one per running sandbox) serialise refreshes via an advisory `flock(2)` on a sidecar lock file; the loser re-reads the file after acquiring the lock and skips a redundant refresh.
-
-> **Risk (R-2 — Host state exposure):** the mount hands every guest the host's full `~/.claude` read-write. A compromised guest can read all session history and transcripts, and can mutate host settings and hooks (which execute on the host's next session). This risk is accepted by design. See [Accepted risks](/security/accepted-risks).
+Guest Claude inherits the host's permission mode (`auto` by default; see [AI agents](/ai-agents)) and runs with the host's tool configuration. Hooks that reference host-only paths produce tool errors, not agent failures.
 
 ### Recreate rule (R-7)
 
-Virtiofs mounts and the live-mount manifest are create-time state. Running sandboxes continue with whatever credential model was in effect at their creation. **Existing sandboxes must be recreated to receive the live-mount credential model.** `supervisor-upgrade --force` reloads the host supervisor binary but cannot add a vhost-user-fs device to an already-running VM.
+Credential configuration is create-time state. Running sandboxes continue with whatever credential model was in effect at their creation. **Existing sandboxes must be recreated to receive the broker/placeholder credential model.** `supervisor-upgrade --force` reloads the host supervisor binary but cannot retrofit the credential environment of an already-running VM. After recreation, `nexus auth login` is required again for `claude-code`.
 
 ## Other credential kinds (placeholder model)
 

@@ -105,7 +105,7 @@ The chosen name is persisted on the record and shown in the `AGENT` column of `n
 
 | Name | Credential delivery | Reachable hosts |
 |---|---|---|
-| `claude-code` (default) | host `~/.claude` live-mounted read-write at `/root/.claude` | `api.anthropic.com`, `platform.claude.com` |
+| `claude-code` (default) | overlay-projected host config (`CLAUDE.md`, `skills/**`, `settings.json`, `plugins/**`) as a read-only lower dir; `CLAUDE_CODE_OAUTH_TOKEN` placeholder in guest env, real bearer substituted by MITM proxy; host refresher keeps `~/.config/nexus/creds.json` fresh | `api.anthropic.com`, `platform.claude.com` |
 
 ::: warning One profile is registered today
 `claude-code` is the only entry in the registry, and it is the default when `--agent` is omitted. The mechanism is deliberately declarative — adding an agent means adding one `AgentProfile` value, and no call site branches on the name — but until a second profile exists, `--agent` selects from a set of one.
@@ -145,7 +145,7 @@ nexus herdr launch --agent-egress \
 ```
 
 - `<command>` must be an absolute path (e.g. `/usr/local/bin/claude`).
-- `--agent-egress` hands the booted VM to a detached perimeter supervisor (`nexus __supervisor`, ephemeral mode) which owns the egress allowlist (`api.anthropic.com`, `platform.claude.com`), the MITM proxy, the CA seed, and the credential guardian. For claude-code, the credential guardian monitors `~/.claude/.credentials.json` and proactively refreshes it; the guest reads the file directly from the live mount.
+- `--agent-egress` hands the booted VM to a detached perimeter supervisor (`nexus __supervisor`, ephemeral mode) which owns the egress allowlist (`api.anthropic.com`, `platform.claude.com`), the MITM proxy, and the CA seed. For claude-code, the guest holds a `CLAUDE_CODE_OAUTH_TOKEN` placeholder; the MITM proxy substitutes the real bearer on every request to the registered egress hosts. Token freshness is maintained by the host-side refresher against `~/.config/nexus/creds.json`; no credential is written to the guest disk and no host `~/.claude` directory is mounted.
 - Without the flag no supervisor is started, and therefore no perimeter process pumps the guest's network device — the sandbox has **no egress at all**, not open egress.
 - Teardown stops the supervisor and waits for it to exit; a parent-watchdog pipe tears the VM down even if the caller is `SIGKILL`ed.
 
@@ -180,7 +180,7 @@ Port-forward state is persisted under `~/.config/herdr/portfwd/` on the herdr ho
 | `--agent-egress` perimeter handoff (MITM + credential guardian) | Yes | Yes |
 | `nexus herdr space-create` / `herdr create-from-file` | Yes | Yes |
 | `nexus recipe` CLI (Orca) | Yes | Yes |
-| `~/.claude` live-mount credential delivery for claude-code | Yes | Yes |
+| broker/placeholder credential delivery for claude-code (`CLAUDE_CODE_OAUTH_TOKEN` + MITM proxy substitution) | Yes | Yes |
 | auto permission mode (no `--dangerously-skip-permissions`) | Yes | Yes |
 | git SSH relay to GitHub via host ssh-agent | Yes | Yes |
 | Port auto-forward (herdr ≥ 0.9, ABI 3) | Yes | Yes |
