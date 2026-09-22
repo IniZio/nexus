@@ -18,7 +18,8 @@
   "CredentialFormat": "",
   "SkillsPath": "~/.claude/skills",
   "MCPConfigFormat": "claude-json",
-  "MountAllowlist": ["CLAUDE.md", "skills/**", "settings.json"],
+  "MountAllowlist": ["CLAUDE.md", "skills/**", "settings.json", "plugins/**"],
+  "SymlinkPreservePrefixes": ["plugins"],
   "SettingsAllowlist": {
     "model": true,
     "advisorModel": true,

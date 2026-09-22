@@ -42,7 +42,7 @@ func TestClaudeCodeProfile_ConfigFields(t *testing.T) {
 	if p.MCPConfigFormat != cred.MCPConfigFormatClaudeJSON {
 		t.Errorf("MCPConfigFormat = %q, want %q", p.MCPConfigFormat, cred.MCPConfigFormatClaudeJSON)
 	}
-	for _, want := range []string{"CLAUDE.md", "skills/**", "settings.json"} {
+	for _, want := range []string{"CLAUDE.md", "skills/**", "settings.json", "plugins/**"} {
 		if !slices.Contains(p.MountAllowlist, want) {
 			t.Errorf("MountAllowlist missing %q; got %v", want, p.MountAllowlist)
 		}

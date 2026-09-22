@@ -152,7 +152,33 @@ func copyGlob(srcDir, pattern, destDir string, profile cred.AgentProfile) error 
 			return nil
 		}
 
-		return walkFollowDirs(srcDir, walkRoot, destDir, map[string]bool{}, profile)
+		var skipLinks map[string]bool
+		if hasPrefix(profile.SymlinkPreservePrefixes, prefix) {
+			skipLinks = make(map[string]bool)
+			if es, rdErr := os.ReadDir(walkRoot); rdErr == nil {
+				for _, e := range es {
+					if e.Type()&os.ModeSymlink == 0 {
+						continue
+					}
+					full := filepath.Join(walkRoot, e.Name())
+					ti, statErr := os.Stat(full)
+					if statErr != nil || !ti.IsDir() {
+						continue
+					}
+					target, rdErr2 := os.Readlink(full)
+					if rdErr2 != nil {
+						continue
+					}
+					rel := filepath.Join(prefix, e.Name())
+					dstLink := filepath.Join(destDir, rel)
+					_ = os.MkdirAll(filepath.Dir(dstLink), 0o755)
+					_ = os.Remove(dstLink)
+					_ = os.Symlink(target, dstLink)
+					skipLinks[full] = true
+				}
+			}
+		}
+		return walkFollowDirs(srcDir, walkRoot, destDir, map[string]bool{}, profile, skipLinks)
 	}
 
 	// Non-recursive: single-level match. Lstat (does NOT follow) so a symlinked
@@ -176,7 +202,7 @@ func copyGlob(srcDir, pattern, destDir string, profile cred.AgentProfile) error 
 // files. File symlinks and non-regular entries are skipped. srcRoot anchors the
 // relative layout so the guest sees paths under the symlink NAME, not its
 // target. See copyGlob's symlink policy.
-func walkFollowDirs(srcRoot, dir, destDir string, visited map[string]bool, profile cred.AgentProfile) error {
+func walkFollowDirs(srcRoot, dir, destDir string, visited map[string]bool, profile cred.AgentProfile, skipLinks map[string]bool) error {
 	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil // broken/unreadable — skip this subtree, do not abort the share
@@ -196,6 +222,9 @@ func walkFollowDirs(srcRoot, dir, destDir string, visited map[string]bool, profi
 			continue
 		}
 		full := filepath.Join(dir, name)
+		if skipLinks[full] {
+			continue
+		}
 		fi, err := os.Lstat(full)
 		if err != nil {
 			continue
@@ -210,13 +239,13 @@ func walkFollowDirs(srcRoot, dir, destDir string, visited map[string]bool, profi
 				continue // broken symlink
 			}
 			if ti.IsDir() {
-				if err := walkFollowDirs(srcRoot, full, destDir, visited, profile); err != nil {
+				if err := walkFollowDirs(srcRoot, full, destDir, visited, profile, nil); err != nil {
 					return err
 				}
 			}
 			// symlink to a file → skip.
 		case mode.IsDir():
-			if err := walkFollowDirs(srcRoot, full, destDir, visited, profile); err != nil {
+			if err := walkFollowDirs(srcRoot, full, destDir, visited, profile, nil); err != nil {
 				return err
 			}
 		case mode.IsRegular():
@@ -231,6 +260,15 @@ func walkFollowDirs(srcRoot, dir, destDir string, visited map[string]bool, profi
 		}
 	}
 	return nil
+}
+
+func hasPrefix(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // copyFile copies one source file to destDir/relPath, subject to hard

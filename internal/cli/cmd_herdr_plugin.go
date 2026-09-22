@@ -4303,13 +4303,13 @@ func herdrWorktreeGroundworkMount(worktreePath string) string {
 }
 
 /**
- * herdrWorktreePluginMounts returns read-only mount specs for ~/.claude/plugins
- * symlinks whose targets live outside ~/.claude (e.g. plugins/nexus -> a repo
- * checkout). ~/.claude itself is live-mounted into the guest (D-1), so those
- * links dangle unless their targets are mounted at the same host path. Warnings
- * (dangling links) are passed to warn; hostHome=="" → os.UserHomeDir().
- *
- * Returns nil when the home dir cannot be resolved or there is nothing to mount.
+ * herdrWorktreePluginMounts returns read-only mount specs for out-of-tree
+ * targets of ~/.claude/plugins symlinks (e.g. plugins/groundwork ->
+ * ~/.local/share/groundwork). plugins/** is projected into the guest via
+ * MountAllowlist staging; out-of-tree dir symlinks survive as symlinks and
+ * resolve only when their targets are bind-mounted at the same host path —
+ * which is what these specs provide. Warnings passed to warn; hostHome==""
+ * → os.UserHomeDir(). Returns nil on resolver failure or nothing to mount.
  */
 func herdrWorktreePluginMounts(hostHome string, warn func(string)) []string {
 	if hostHome == "" {
@@ -4780,9 +4780,9 @@ func herdrWorktreeSandbox(
 		extraMounts = append(extraMounts, gwMount)
 	}
 	/**
-	 * Host ~/.claude is live-mounted at /root/.claude, but ~/.claude/plugins/*
-	 * symlinks pointing outside ~/.claude dangle in the guest. Mount their
-	 * targets read-only at the same host path so the plugin/skills resolve.
+	 * plugins/** is projected into the guest via MountAllowlist staging; out-of-
+	 * tree dir symlinks survive as symlinks. Bind-mount their targets at the same
+	 * host path so the projected links resolve in the guest.
 	 */
 	extraMounts = append(extraMounts, herdrWorktreePluginMounts("", func(msg string) {
 		fmt.Fprintf(w, "worktree-sandbox: warning: %s\n", msg)

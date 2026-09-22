@@ -11,14 +11,14 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 )
 
-// ResolvePluginSymlinkMounts returns "<host>:<guest>:ro" specs for plugin
-// directories outside <hostHome>/.claude. Three sources: (1) symlinks ≤2
-// levels under ~/.claude/plugins — spec is real:real:ro; (2) installLocation
-// and source.path from known_marketplaces.json — spec is real:original:ro so
-// claude finds the path at its recorded installLocation even when that path is
-// a symlink to a different real directory; (3) installPath entries from
-// installed_plugins.json. Deduped by guest path, nesting-collapsed, sorted.
-// Missing JSON → warning, not error. Absent host paths → warning, not spec.
+// ResolvePluginSymlinkMounts returns "<host>:<guest>:ro" bind-mount specs for
+// plugin directories outside <hostHome>/.claude. plugins/** is projected into
+// the guest via MountAllowlist staging; out-of-tree dir symlinks survive as
+// symlinks, so their targets must be bind-mounted at the same host path to
+// resolve. Three sources: (1) symlinks ≤2 levels under ~/.claude/plugins;
+// (2) installLocation / source.path from known_marketplaces.json — spec is
+// real:original:ro; (3) installPath entries from installed_plugins.json.
+// Deduped by guest path, nesting-collapsed, sorted. Missing JSON → warning.
 func ResolvePluginSymlinkMounts(hostHome string) (specs []string, warnings []string) {
 	claudeDir := filepath.Join(hostHome, ".claude")
 	pluginsDir := filepath.Join(claudeDir, "plugins")

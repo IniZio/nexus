@@ -66,6 +66,8 @@ type AgentProfile struct {
 
 	MountAllowlist []string
 
+	SymlinkPreservePrefixes []string
+
 	SettingsAllowlist map[string]bool
 
 	BypassConsentKey string
