@@ -6,12 +6,10 @@ criticality: must
 verification: automated
 status: active
 trace: AC-4, D-PP-03
-scope: non-claude-code profiles only (cursor, opencode, oh-my-pi; profiles where CredDirLiveMount == false)
+scope: all profiles (claude-code, cursor, opencode, oh-my-pi)
 ---
 
-**Scope: non-claude-code profiles only.** For `ClaudeCodeProfile` (`CredDirLiveMount == true`), CRED-R-001 governs credential delivery via live mount; this requirement does not apply to that profile. The broker, placeholder minting, and MITM substitution governed here remain live and correct for cursor, opencode, and oh-my-pi. Scope narrowed by A2-spec-conflict (2026-09-21) to resolve the active contradiction with CRED-R-001.
-
-**A5 dependency:** If slice A5 retires CRED-R-001, this requirement's scope must be revisited to determine whether the broker path also covers claude-code. D-9 tilts A5 toward ratify; do not expand this requirement's scope without an A5 outcome.
+**Scope: all profiles.** From A5 (adopt-openshell-lessons, 2026-09-21), the claude-code live mount is retired; `ClaudeCodeProfile` now uses the broker/placeholder/MITM path on equal footing with cursor, opencode, and oh-my-pi. The A2-spec-conflict scope narrowing to non-claude-code profiles (2026-09-21) is superseded by D-15. See CRED-R-001 for the A5 outcome.
 
 The supervisor **shall** wire a `cred.Refresher` (loaded from `service.DefaultDedicatedCredStorePath()`) into the long-lived `cred.Broker` rather than using `StaticCredentialSource`, so that the in-guest agent receives valid bearer tokens with automatic rotation; and the supervisor **shall** seed the MITM CA certificate into the guest via `service.SeedCA` / `GuestCACertPath` so the guest trusts the intercepting proxy.
 

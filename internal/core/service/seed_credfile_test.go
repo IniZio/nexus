@@ -188,7 +188,6 @@ func TestBuildAgentSeedPayload_CredDirRedirectAbsentForEnvVarAgent(t *testing.T)
 	}
 }
 
-// syntheticFileProfile tests that JSON key comes from profile, not hardcoded.
 var syntheticFileProfile = cred.AgentProfile{
 	Name:              "synthetic-file-agent",
 	CredentialedHost:  "api.example.com",
@@ -230,7 +229,7 @@ func TestBuildCredFileSeedPayload_UsesProfileKey(t *testing.T) {
 	}
 }
 
-// TestClaudeCodeEnvVarSeedingUnchanged: CredDirLiveMount (MUTATION-PIN: NODE_EXTRA_CA_CERTS present, others absent).
+// TestClaudeCodeEnvVarSeedingUnchanged: broker placeholder path (MUTATION-PIN: NODE_EXTRA_CA_CERTS present).
 func TestClaudeCodeEnvVarSeedingUnchanged(t *testing.T) {
 	t.Parallel()
 	const placeholder = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
@@ -244,8 +243,8 @@ func TestClaudeCodeEnvVarSeedingUnchanged(t *testing.T) {
 		t.Fatalf("buildAgentSeedPayload(claude-code, kindOAuth): %v", err)
 	}
 	payload := string(got)
-	if strings.Contains(payload, "CLAUDE_CODE_OAUTH_TOKEN=") {
-		t.Errorf("Claude Code env payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount); got:\n%s", payload)
+	if !strings.Contains(payload, "CLAUDE_CODE_OAUTH_TOKEN=") {
+		t.Errorf("Claude Code env payload must contain CLAUDE_CODE_OAUTH_TOKEN= (broker placeholder path); got:\n%s", payload)
 	}
 	if !strings.Contains(payload, "NODE_EXTRA_CA_CERTS=") {
 		t.Errorf("Claude Code env payload missing NODE_EXTRA_CA_CERTS; got:\n%s", payload)

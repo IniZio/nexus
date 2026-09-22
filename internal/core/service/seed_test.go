@@ -58,9 +58,8 @@ func TestBuildAgentSeedPayloadPerSandboxCredKind(t *testing.T) {
 	oauthPayload := string(oauthBytes)
 	authPayload := string(authBytes)
 
-	// kindOAuth: CredDirLiveMount (CLAUDE_CODE_OAUTH_TOKEN absent, via live ~/.credentials.json).
-	if strings.Contains(oauthPayload, "CLAUDE_CODE_OAUTH_TOKEN=") {
-		t.Errorf("kindOAuth payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount); got:\n%s", oauthPayload)
+	if !strings.Contains(oauthPayload, "CLAUDE_CODE_OAUTH_TOKEN=") {
+		t.Errorf("kindOAuth payload must contain CLAUDE_CODE_OAUTH_TOKEN= (broker placeholder path); got:\n%s", oauthPayload)
 	}
 	if strings.Contains(oauthPayload, "ANTHROPIC_AUTH_TOKEN=") {
 		t.Errorf("kindOAuth payload must NOT contain ANTHROPIC_AUTH_TOKEN; got:\n%s", oauthPayload)

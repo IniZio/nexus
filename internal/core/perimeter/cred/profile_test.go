@@ -10,9 +10,6 @@ import (
 func TestClaudeCodeProfile_Fields(t *testing.T) {
 	p := cred.ClaudeCodeProfile
 
-	if p.PlaceholderEnvVar != "" {
-		t.Fatalf("ClaudeCodeProfile.PlaceholderEnvVar must be empty (live mount replaces credential seeding); got %q", p.PlaceholderEnvVar)
-	}
 	if p.CredentialedHost == "" {
 		t.Fatal("ClaudeCodeProfile.CredentialedHost must not be empty")
 	}
@@ -22,8 +19,8 @@ func TestClaudeCodeProfile_Fields(t *testing.T) {
 	if p.BypassConsentKey != "" {
 		t.Fatalf("ClaudeCodeProfile.BypassConsentKey must be empty for live-mount design; got %q", p.BypassConsentKey)
 	}
-	if !p.Capabilities.CredDirLiveMount {
-		t.Fatal("ClaudeCodeProfile.Capabilities.CredDirLiveMount must be true")
+	if p.PlaceholderEnvVar != "CLAUDE_CODE_OAUTH_TOKEN" {
+		t.Fatalf("ClaudeCodeProfile.PlaceholderEnvVar = %q, want CLAUDE_CODE_OAUTH_TOKEN (broker placeholder path replaces live mount)", p.PlaceholderEnvVar)
 	}
 }
 

@@ -54,9 +54,8 @@ func TestSeedGuestAgentForProfiles_OneWrite_BothVarsPresent(t *testing.T) {
 	}
 	payload := cap.payload
 
-	// CredDirLiveMount: primary (ClaudeCode) CLAUDE_CODE_OAUTH_TOKEN must be ABSENT.
-	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
-		t.Errorf("primary var CLAUDE_CODE_OAUTH_TOKEN must not be in payload (CredDirLiveMount)\n%s", payload)
+	if !bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("primary var CLAUDE_CODE_OAUTH_TOKEN must be in payload (broker placeholder path)\n%s", payload)
 	}
 	// Mutation guard: NODE_EXTRA_CA_CERTS proves primary agent seeding path ran.
 	if !bytes.Contains(payload, []byte("NODE_EXTRA_CA_CERTS=")) {

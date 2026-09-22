@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -157,21 +156,6 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 				}
 			}
 		}(r)
-	}
-
-	for _, lm := range cfg.LiveMounts {
-		if lm.GuestPath == "/root/.claude" && !lm.ReadOnly {
-			home, homeErr := os.UserHomeDir()
-			if homeErr == nil {
-				credsPath := filepath.Join(home, ".claude", ".credentials.json")
-				g := cred.NewCredGuardian(credsPath)
-				go g.Guard(ctx)
-				slog.Info(in.logPrefix+".cred_guardian_armed", "path", credsPath)
-			} else {
-				slog.Warn(in.logPrefix+".cred_guardian_arm_failed", "err", homeErr)
-			}
-			break
-		}
 	}
 
 	// ── git SSH relay ────────────────────────────────────────────────────────

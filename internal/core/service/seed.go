@@ -475,8 +475,8 @@ func buildAgentSeedPayload(records []cred.PlaceholderRecord, kind agentCredKind,
 	if kind == kindAuthToken {
 		credEnvVar = profile.APIKeyEnvVar
 	}
-	// File-based agents use SeedGuestCredFile; CredDirLiveMount use mounted ~/.credentials.json.
-	if credEnvVar == "" && profile.CredentialFile == "" && !profile.Capabilities.CredDirLiveMount {
+	// File-based agents use SeedGuestCredFile; OAuth agents use PlaceholderEnvVar.
+	if credEnvVar == "" && profile.CredentialFile == "" {
 		return nil, fmt.Errorf("agent %q declares no credential env var for the selected path", profile.Name)
 	}
 

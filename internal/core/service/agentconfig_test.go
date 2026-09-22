@@ -307,7 +307,7 @@ func TestAssembleCuratedConfig_BypassConsentPreservesLowerLayerKeys(t *testing.T
 		}
 	}
 	if _, ok := staged["skipDangerousModePermissionPrompt"]; ok {
-		t.Errorf("skipDangerousModePermissionPrompt must NOT be injected for a CredDirLiveMount profile (BypassConsentKey is empty)")
+		t.Errorf("skipDangerousModePermissionPrompt must NOT be injected for claude-code profile (BypassConsentKey is empty)")
 	}
 }
 

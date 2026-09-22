@@ -1,40 +1,5 @@
 //go:build integration
 
-// Package selfhost — Wave-2 S-E2E motive-tagged sandbox integration proof.
-//
-// Proves end-to-end that:
-//  1. A MOTIVE-TAGGED sandbox is retrievable by motive ID (store.GetByMotive).
-//  2. In-guest claude reaches the real Anthropic API via ANTHROPIC_AUTH_TOKEN
-//     (Bearer) through the zero-credential perimeter (placeholder→real swap).
-//  3. The real token is absent from the guest exec environment.
-//  4. A result artifact is harvested back to the host via HarvestMotive.
-//
-// # Prerequisites
-//
-//   - /dev/kvm accessible
-//   - cloud-hypervisor binary (CLOUD_HYPERVISOR_BIN or ~/.local/bin/cloud-hypervisor)
-//   - mke2fs in PATH (e2fsprogs)
-//   - docker (required by BuildAgentBaseImage)
-//   - ANTHROPIC_AUTH_TOKEN set (direct API auth token, Bearer mode)
-//
-// # Running
-//
-//	TMPDIR=/tmp go test -tags integration -run TestMotiveDogfood \
-//	    ./internal/test/selfhost/ -v -timeout 5m
-//
-// # Design notes
-//
-// Unlike TestAgentDogfood (which uses NEXUS_CLAUDE_OAUTH_TOKEN for OAuth),
-// TestMotiveDogfood uses ANTHROPIC_AUTH_TOKEN. t.Setenv ensures
-// resolveAgentCredKind() returns kindAuthToken, so SeedGuestAgent emits
-// ANTHROPIC_AUTH_TOKEN=<placeholder> (not CLAUDE_CODE_OAUTH_TOKEN) in the
-// guest env file. The MITM proxy swaps the placeholder on every outbound
-// Authorization header regardless of the credential kind.
-//
-// Double-seed hazard: CreateAndBootOptions.Broker and .UseAgentSeed are
-// intentionally left zero — the caller seeds manually post-boot (same pattern
-// as TestAgentDogfood). Setting both options-seeding and manual seeding would
-// register two placeholders per host, causing the second registration to fail.
 package selfhost
 
 import (
@@ -68,21 +33,12 @@ import (
 )
 
 const (
-	// motiveE2EMotiveID is the motive tag applied to the test sandbox.
-	motiveE2EMotiveID = "motive-e2e"
-
-	// motiveE2ESentinel is the exact string the in-guest claude must echo back.
-	// Its presence in the response proves the real Anthropic API was reached.
-	motiveE2ESentinel = "MOTIVE_E2E_OK"
-
-	// motiveE2EGuestPath is where the in-guest command writes its result artifact.
-	// HarvestMotive pulls this file back to the host for assertion (f).
+	motiveE2EMotiveID  = "motive-e2e"
+	motiveE2ESentinel  = "MOTIVE_E2E_OK"
 	motiveE2EGuestPath = "/root/result.txt"
 )
 
-// TestMotiveDogfood is the Wave-2 S-E2E acceptance test.
 func TestMotiveDogfood(t *testing.T) {
-	// ── 1. Skip guards ────────────────────────────────────────────────────────
 	skipUnlessKVMSH(t)
 	chBin := skipUnlessCHBinSH(t)
 	skipUnlessMke2fsSH(t)
@@ -92,21 +48,14 @@ func TestMotiveDogfood(t *testing.T) {
 		t.Skip("set ANTHROPIC_AUTH_TOKEN to run the live motive e2e dogfood")
 	}
 
-	// Inject ANTHROPIC_AUTH_TOKEN into the process env BEFORE boot so that
-	// resolveAgentCredKind() returns kindAuthToken and SeedGuestAgent emits
-	// ANTHROPIC_AUTH_TOKEN=<placeholder> in the guest env file.
-	// This is the advisor's required sequencing (Major finding: ambient env
-	// must be explicit before CreateAndBoot calls the factory).
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", realToken)
 
-	// ── 2. Kernel path ────────────────────────────────────────────────────────
 	repoRoot, err := findRepoRoot()
 	if err != nil {
 		t.Fatalf("findRepoRoot: %v", err)
 	}
 	kernelPath := kernelPathSH(t, repoRoot)
 
-	// ── 3. Build / get agent base image ──────────────────────────────────────
 	cacheRoot := t.TempDir()
 	cache, err := image.NewCache(cacheRoot)
 	if err != nil {
@@ -129,8 +78,6 @@ func TestMotiveDogfood(t *testing.T) {
 	}
 	t.Logf("agent image: digest=%s size=%.2f GiB", img.Digest, float64(img.Size)/(1<<30))
 
-	// ── 4. Infrastructure ─────────────────────────────────────────────────────
-	// Socket dir in /tmp: stays within the 107-byte Linux sun_path limit.
 	socketDir, err := os.MkdirTemp("/tmp", "motive-dogfood-")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
@@ -165,9 +112,6 @@ func TestMotiveDogfood(t *testing.T) {
 	svc := service.New(st, svcDrv, lifecycle.New())
 	broker := cred.NewBroker()
 
-	// ── 5. Boot sandbox with MOTIVE-TAG ──────────────────────────────────────
-	// bootDrv owns the guest vsock/network state. Must be the same instance
-	// passed to GuestNetworkFD and agent.NewClient (both index into d.nets[id]).
 	var bootDrv *cloudhypervisor.CHDriver
 	factory := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		var ferr error
@@ -202,8 +146,6 @@ func TestMotiveDogfood(t *testing.T) {
 		}
 	})
 
-	// Labels["motive"] is non-empty; Broker/UseAgentSeed are intentionally UNSET
-	// (double-seed hazard — do NOT set options-seeding AND seed manually).
 	sb, err := service.CreateAndBoot(
 		bootCtx, svc, cache, factory, probe,
 		"motive-dogfood", fmt.Sprintf("motive-dogfood-%d", time.Now().UnixNano()),
@@ -223,11 +165,6 @@ func TestMotiveDogfood(t *testing.T) {
 
 	agentClient := agent.NewClient(bootDrv, sb.ID)
 
-	// ── 6. Wire egress credentials ────────────────────────────────────────────
-	// Seed MANUALLY exactly like TestAgentDogfood — no options-seeding.
-	// resolveAgentCredKind() returns kindAuthToken because t.Setenv above set
-	// ANTHROPIC_AUTH_TOKEN; SeedGuestAgent therefore emits
-	// ANTHROPIC_AUTH_TOKEN=<placeholder> (not CLAUDE_CODE_OAUTH_TOKEN).
 	credSeeder := service.NewAgentCopySeeder(agentClient)
 	records, err := service.SeedGuestAgent(context.Background(), broker, sb.ID, credSeeder)
 	if err != nil {
@@ -237,8 +174,6 @@ func TestMotiveDogfood(t *testing.T) {
 		t.Fatalf("broker.SetRealToken: %v", err)
 	}
 
-	// Extract the placeholder for the ANTHROPIC_AUTH_TOKEN env var that will be
-	// injected into the guest exec environment.
 	var claudePlaceholder string
 	for _, r := range records {
 		if r.Host == service.AnthropicAPIHost {
@@ -263,8 +198,6 @@ func TestMotiveDogfood(t *testing.T) {
 		t.Fatalf("netfilter.NewAllowList: %v", err)
 	}
 
-	// auditEvents accumulates perimeter AuditEvents for post-run assertion (b):
-	// we assert that an Allow decision for api.anthropic.com was observed.
 	var auditMu sync.Mutex
 	var auditEvents []perimeter.AuditEvent
 	stack := netstack.New(al, func(ev perimeter.AuditEvent) {
@@ -274,13 +207,6 @@ func TestMotiveDogfood(t *testing.T) {
 		auditMu.Unlock()
 	})
 
-	// swapCount counts "credential swapped" slog events from the MITM proxy for
-	// post-run assertion (c): we assert the host-side bearer-swap fired ≥ once.
-	//
-	// connectAllowCount counts "mitm: CONNECT allowed" slog events where the
-	// "host" attr equals service.AnthropicAPIHost. This is the hostname-bearing
-	// signal used for assertion (b); the netstack AuditEvent.DestHost carries
-	// the resolved IP:port and cannot be matched by hostname.
 	var swapCount atomic.Int64
 	var connectAllowCount atomic.Int64
 	swapLogger := slog.New(&countingHandler{
@@ -315,32 +241,18 @@ func TestMotiveDogfood(t *testing.T) {
 	defer sup.Close()
 	t.Logf("perimeter MITM listening at %s", sup.MitmAddr())
 
-	// ── 8. SeedCA ─────────────────────────────────────────────────────────────
-	// Deliver the MITM CA cert as raw PEM to GuestCACertPath.
-	// dogfoodCACopySeeder (defined in agent_dogfood_test.go, same package)
-	// sends raw bytes without a tar wrapper so the file on disk is valid PEM.
-	// NODE_EXTRA_CA_CERTS in ExecOptions.Env points Node.js at this file.
 	if err := service.SeedCA(context.Background(), sup.CACert(), sb.ID, dogfoodCACopySeeder(agentClient)); err != nil {
 		t.Fatalf("SeedCA: %v", err)
 	}
 	t.Log("MITM CA cert seeded to guest at", service.GuestCACertPath)
 
-	// ── 9. Run claude in-guest and write result artifact ──────────────────────
-	// guestEnv holds ANTHROPIC_AUTH_TOKEN=<placeholder> (not the real token).
-	// The MITM proxy swaps the placeholder for the real token on each outbound
-	// Authorization header. The real token must NOT appear in guestEnv (assertion e).
 	guestEnv := map[string]string{
-		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME": "/root",
-		"TERM": "dumb",
-		// Bearer-swap: MITM proxy swaps this placeholder for the real token.
-		// kindAuthToken mode: ANTHROPIC_AUTH_TOKEN (not CLAUDE_CODE_OAUTH_TOKEN).
-		"ANTHROPIC_AUTH_TOKEN": claudePlaceholder,
-		// TLS: Node.js (claude's runtime) trusts the per-sandbox MITM CA.
-		"NODE_EXTRA_CA_CERTS": service.GuestCACertPath,
-		// Belt-and-suspenders Haiku pin (also --model flag below).
-		"ANTHROPIC_MODEL": dogfoodHaikuModel,
-		// Suppress telemetry, auto-update, and non-allowlisted egress.
+		"PATH":                                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME":                                    "/root",
+		"TERM":                                    "dumb",
+		"ANTHROPIC_AUTH_TOKEN":                    claudePlaceholder,
+		"NODE_EXTRA_CA_CERTS":                     service.GuestCACertPath,
+		"ANTHROPIC_MODEL":                         dogfoodHaikuModel,
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 	}
 
@@ -349,8 +261,6 @@ func TestMotiveDogfood(t *testing.T) {
 	execCtx, execCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer execCancel()
 
-	// Run claude and tee its output to motiveE2EGuestPath so HarvestMotive
-	// has an artifact to pull (assertion f).
 	claudeCmd := fmt.Sprintf(
 		"/usr/local/bin/claude -p 'reply with exactly: %s' --model %s | tee %s",
 		motiveE2ESentinel, dogfoodHaikuModel, motiveE2EGuestPath,
@@ -441,32 +351,5 @@ func TestMotiveDogfood(t *testing.T) {
 	}
 	t.Log("(e) PASS: real token absent from all guest env values")
 
-	// (f) HarvestMotive pulls the result artifact from motiveE2EGuestPath back
-	// to the host and the file contains the sentinel.
-	{
-		hostDestDir := t.TempDir()
-		harvestCtx, harvestCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer harvestCancel()
-		result, herr := svc.HarvestMotive(harvestCtx, motiveE2EMotiveID, motiveE2EGuestPath, hostDestDir)
-		if herr != nil {
-			t.Errorf("(f) HarvestMotive: %v", herr)
-		} else if len(result.Outcomes) == 0 {
-			t.Errorf("(f) HarvestMotive: no outcomes returned for motive %q", motiveE2EMotiveID)
-		} else {
-			o := result.Outcomes[0]
-			if o.Err != nil {
-				t.Errorf("(f) HarvestMotive outcome[0] error: %v", o.Err)
-			} else {
-				content, rerr := os.ReadFile(o.HostPath)
-				if rerr != nil {
-					t.Errorf("(f) read harvested file %s: %v", o.HostPath, rerr)
-				} else if !strings.Contains(string(content), motiveE2ESentinel) {
-					t.Errorf("(f) harvested file %s does not contain sentinel %q: content=%q",
-						o.HostPath, motiveE2ESentinel, string(content))
-				} else {
-					t.Logf("(f) PASS: harvested %s contains sentinel %q", o.HostPath, motiveE2ESentinel)
-				}
-			}
-		}
-	}
+	t.Log("(f) SKIP: HarvestMotive retired (D-2 surface removal)")
 }

@@ -78,8 +78,8 @@ func TestSeedAgentAndHumanSecrets_ContainsAgentVars(t *testing.T) {
 
 	payload := credCap.combined()
 
-	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
-		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must NOT be seeded for CredDirLiveMount profile\npayload:\n%s", payload)
+	if !bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be seeded for claude-code profile (broker placeholder path)\npayload:\n%s", payload)
 	}
 	if !bytes.Contains(payload, []byte("NODE_EXTRA_CA_CERTS=")) {
 		t.Errorf("combined supervisor payload missing NODE_EXTRA_CA_CERTS (agent half absent — MUTATION GUARD)\npayload:\n%s", payload)

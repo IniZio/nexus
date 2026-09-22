@@ -12,8 +12,8 @@ import (
 
 func TestS0_ProfileStoreToken(t *testing.T) {
 	profile := cred.ClaudeCodeProfile
-	if profile.CredentialedHost == "" || !profile.Capabilities.CredDirLiveMount {
-		t.Fatal("ClaudeCodeProfile is incomplete — must have CredentialedHost and CredDirLiveMount")
+	if profile.CredentialedHost == "" || profile.PlaceholderEnvVar == "" {
+		t.Fatal("ClaudeCodeProfile is incomplete — must have CredentialedHost and PlaceholderEnvVar")
 	}
 
 	expiry := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)

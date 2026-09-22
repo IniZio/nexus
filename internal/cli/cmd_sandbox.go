@@ -1029,7 +1029,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	// resolveAgentPosture is also called at the egress-wiring block below; this
 	// early call is needed only for the agentcfg-volume auto-provision guard.
 	agentProfile, _, _ := resolveAgentPosture(f)
-	if f.agentName != "" && !agentProfile.Capabilities.CredDirLiveMount {
+	if f.agentName != "" {
 		hasAgentCfgDisk := false
 		for _, m := range namedMounts {
 			if m.GuestPath == "/var/lib/nexus/agentcfg" {
@@ -1434,112 +1434,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 	var preMintedID domain.SandboxID // zero unless A-MOUNT staging pre-mints
 	var agentCfgStageDir string      // non-empty when staging succeeded; tracks cleanup
-	if agentProfile.Capabilities.CredDirLiveMount && !f.noShareSettings {
-		// Live ~/.claude mount path: create a metadata-only stageDir for
-		// usermounts.json and mcp-servers.json; add /root/.claude as a live rw mount.
-		id := domain.NewSandboxID()
-		stageDir := filepath.Join(storeRoot, "disks", id.String()+"-agentcfg-lower")
-		if mkErr := os.MkdirAll(stageDir, 0o755); mkErr != nil {
-			slog.Warn("sandbox create: failed to create metadata stage dir; running without user mounts", "err", mkErr)
-		} else {
-			preMintedID = id
-			agentCfgStageDir = stageDir
-			bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
-				HostPath:  stageDir,
-				GuestPath: "/run/nexus/agentcfg-lower",
-				ReadOnly:  true,
-			})
-			// Add the live rw ~/.claude mount.
-			if hostHome, homeErr := os.UserHomeDir(); homeErr == nil {
-				bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
-					HostPath:  filepath.Join(hostHome, ".claude"),
-					GuestPath: "/root/.claude",
-					ReadOnly:  false,
-				})
-				slog.Info("sandbox create: live ~/.claude mount wired", "host", filepath.Join(hostHome, ".claude"))
-				pluginSpecs, pluginWarns := service.ResolvePluginSymlinkMounts(hostHome)
-				for _, w := range pluginWarns {
-					slog.Warn("sandbox create: plugin external mount", "msg", w)
-				}
-				for _, spec := range pluginSpecs {
-					if parts := strings.SplitN(spec, ":", 3); len(parts) >= 2 {
-						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
-							HostPath:  parts[0],
-							GuestPath: parts[1],
-							ReadOnly:  true,
-						})
-					}
-				}
-				for _, lm := range service.ResolveHookRuntimeMounts(hostHome, runtime.GOOS, os.Stat) {
-					bootLiveMounts = append(bootLiveMounts, lm)
-				}
-			} else {
-				slog.Warn("sandbox create: os.UserHomeDir failed; /root/.claude mount not added", "err", homeErr)
-			}
-			// Write mcp-servers.json if MCP servers are configured.
-			if len(sharedMCP.Servers) > 0 {
-				if mcpJSON, marshalErr := json.Marshal(sharedMCP.Servers); marshalErr == nil {
-					mcpPath := filepath.Join(stageDir, "mcp-servers.json")
-					if writeErr := os.WriteFile(mcpPath, mcpJSON, 0o600); writeErr != nil {
-						slog.Warn("sandbox create: failed to write mcp-servers.json; MCP definitions will not be injected", "err", writeErr)
-					}
-				}
-			}
-			// User mounts — filter out /root/.claude rows (covered by the live mount).
-			if !f.noUserMounts {
-				if hostHome, homeErr := os.UserHomeDir(); homeErr == nil {
-					userGlobalCfg, ugErr := config.LoadUserGlobal()
-					if ugErr != nil {
-						slog.Warn("sandbox create: failed to load user global config; user mounts disabled", "err", ugErr)
-					}
-					allMounts := []string(userGlobalCfg.Sandbox.Mounts)
-					// Filter out user mounts whose guest path is /root/.claude or nested under it.
-					var filteredMounts []string
-					for _, spec := range allMounts {
-						gp := service.MountSpecGuestPath(spec)
-						claudeGuestPaths := []string{"/root/.claude", filepath.Join(hostHome, ".claude")}
-						skip := false
-						for _, cp := range claudeGuestPaths {
-							if gp == cp || strings.HasPrefix(gp, cp+"/") {
-								skip = true
-								break
-							}
-						}
-						if skip {
-							slog.Info("sandbox create: skipping user mount nested under live ~/.claude mount", "spec", spec)
-							continue
-						}
-						filteredMounts = append(filteredMounts, spec)
-					}
-					manifest := service.BuildUserMountManifest(hostHome, filteredMounts)
-					manifest.ExtraPathDirs = service.ResolveHookRuntimePathDirs(runtime.GOOS, exec.LookPath, []string{
-						filepath.Join(hostHome, ".local", "bin"),
-						filepath.Join(hostHome, ".local", "share", "mise", "installs"),
-					})
-					if len(agentProfile.ToolRecipe.Packages) > 0 {
-						for _, w := range service.CheckRecipeShadows(filteredMounts, agentProfile.ToolRecipe) {
-							slog.Warn("sandbox create: " + w)
-						}
-					}
-					for _, m := range manifest.Mounts {
-						bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
-							HostPath:  m.HostPath,
-							GuestPath: m.StagingGuestPath,
-							ReadOnly:  true,
-							IsFile:    m.IsFile,
-						})
-					}
-					if len(manifest.Mounts) > 0 || len(manifest.ExtraPathDirs) > 0 {
-						if writeErr := service.WriteUserMountManifest(stageDir, manifest); writeErr != nil {
-							slog.Warn("sandbox create: failed to write usermounts.json; operator tool dirs will not be visible in guest", "err", writeErr)
-						}
-					}
-				} else {
-					slog.Warn("sandbox create: os.UserHomeDir failed; skipping user-mount table", "err", homeErr)
-				}
-			}
-		}
-	} else if !f.noShareSettings && len(agentProfile.MountAllowlist) > 0 {
+	if !f.noShareSettings && len(agentProfile.MountAllowlist) > 0 {
 		id := domain.NewSandboxID()
 		stageDir := filepath.Join(storeRoot, "disks", id.String()+"-agentcfg-lower")
 		if stageErr := stageAgentCuratedConfig(agentProfile, stageDir); stageErr != nil {
@@ -1675,12 +1570,6 @@ func buildGuestMCPServers(f sandboxCreateFlags, agentProfile cred.AgentProfile, 
 	var mounts []service.ResolvedUserMount
 	if !f.noShareSettings {
 		if hostHome, homeErr := os.UserHomeDir(); homeErr == nil {
-			if agentProfile.Capabilities.CredDirLiveMount {
-				mounts = append(mounts, service.ResolvedUserMount{
-					HostPath:  filepath.Join(hostHome, ".claude"),
-					GuestPath: "/root/.claude",
-				})
-			}
 			if !f.noUserMounts {
 				if userGlobalCfg, ugErr := config.LoadUserGlobal(); ugErr == nil {
 					mounts = append(mounts, service.BuildUserMountManifest(hostHome, []string(userGlobalCfg.Sandbox.Mounts)).Mounts...)

@@ -31,8 +31,8 @@ func TestSeedGuestAgentAndSecrets_ContainsBothCredSets(t *testing.T) {
 
 	payload := cap.payload
 
-	if bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
-		t.Errorf("combined payload must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount profile)\npayload:\n%s", payload)
+	if !bytes.Contains(payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("combined payload must contain CLAUDE_CODE_OAUTH_TOKEN= (broker placeholder path)\npayload:\n%s", payload)
 	}
 	// MUTATION-PIN: NODE_EXTRA_CA_CERTS proves agent half ran.
 	if !bytes.Contains(payload, []byte("NODE_EXTRA_CA_CERTS=")) {
@@ -102,9 +102,8 @@ func TestSeedGuestAgentAndSecrets_AgentOnlyPath(t *testing.T) {
 		t.Fatalf("SeedGuestAgentAndSecrets with no specs: %v", err)
 	}
 
-	// CredDirLiveMount: CLAUDE_CODE_OAUTH_TOKEN absent.
-	if bytes.Contains(cap.payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
-		t.Errorf("agent-only combined path must NOT contain CLAUDE_CODE_OAUTH_TOKEN (CredDirLiveMount)\npayload:\n%s", cap.payload)
+	if !bytes.Contains(cap.payload, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("agent-only combined path must contain CLAUDE_CODE_OAUTH_TOKEN= (broker placeholder path)\npayload:\n%s", cap.payload)
 	}
 	// MUTATION-PIN: NODE_EXTRA_CA_CERTS proves agent seeding path ran.
 	if !bytes.Contains(cap.payload, []byte("NODE_EXTRA_CA_CERTS=")) {

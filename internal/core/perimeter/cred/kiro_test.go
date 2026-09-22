@@ -54,10 +54,6 @@ func TestKiroProfile_NoCredentialSwap(t *testing.T) {
 	if len(p.EgressHosts) != 1 {
 		t.Errorf("EgressHosts = %v, want only the one observed management host", p.EgressHosts)
 	}
-	if p.Capabilities.CredDirLiveMount {
-		t.Error("CredDirLiveMount must be false — that flag mounts ~/.claude, not a kiro credential dir")
-	}
-
 	src, err := NewCredentialSourceForProfile(p)
 	if err != nil {
 		t.Fatalf("NewCredentialSourceForProfile: %v", err)

@@ -75,14 +75,8 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		return runAuthLoginImport(importFn, from, *force, dest, out)
 	}
 
-	// claude-code now uses live virtiofs mount (D-MAC-01)
 	if *agentName == "" {
-		fmt.Fprintf(out.Stdout(), "nexus auth login for claude-code is no longer needed.\n\n"+
-			"Credentials are now managed via a live virtiofs mount of the host's\n"+
-			"~/.claude directory into every claude-code sandbox.\n\n"+
-			"To authenticate on the host, run:\n    claude login\n\n"+
-			"The sandbox will pick up the credentials automatically on its next create.\n")
-		return nil
+		*agentName = cred.ClaudeCodeProfileName
 	}
 
 	profile, ok := cred.ProfileByName(*agentName)
@@ -93,20 +87,9 @@ func runAuthLogin(_ context.Context, args []string, out *Output) error {
 		)}
 	}
 
-	// Registry-driven dispatch (OAuthImportReg)
-	if profile.Capabilities.CredDirLiveMount {
-		fmt.Fprintf(out.Stdout(), "nexus auth login for %s is no longer needed.\n\n"+
-			"Credentials are now managed via a live virtiofs mount of the host's\n"+
-			"~/.claude directory into every %s sandbox.\n\n"+
-			"To authenticate on the host, run:\n    claude login\n\n"+
-			"The sandbox will pick up the credentials automatically on its next create.\n",
-			profile.Name, profile.Name)
-		return nil
-	}
 	if _, _, hasImport := cred.OAuthImportReg(profile); hasImport {
 		return oauthImport(profile)
 	}
-	// Verify only — supervisor reads file live (D-MAC-01)
 	return runAuthLoginVerify(profile, out)
 }
 

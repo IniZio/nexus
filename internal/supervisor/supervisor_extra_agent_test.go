@@ -138,10 +138,8 @@ func TestSeedAgentAndHumanSecrets_ExtraAgentPresent(t *testing.T) {
 	}
 
 	combined := cap.combined()
-	// CredDirLiveMount: ClaudeCodeProfile no longer seeds CLAUDE_CODE_OAUTH_TOKEN;
-	// guest reads the real token from the live-mounted ~/.credentials.json.
-	if bytes.Contains(combined, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
-		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must NOT be seeded for CredDirLiveMount profile (live mount replaces credential brokering)\n%s", combined)
+	if !bytes.Contains(combined, []byte("CLAUDE_CODE_OAUTH_TOKEN=")) {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be seeded for claude-code profile (broker placeholder path)\n%s", combined)
 	}
 	// NODE_EXTRA_CA_CERTS must still be present so the MITM proxy CA is trusted.
 	if !bytes.Contains(combined, []byte("NODE_EXTRA_CA_CERTS=")) {

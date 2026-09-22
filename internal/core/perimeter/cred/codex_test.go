@@ -50,9 +50,6 @@ func TestCodexProfile_NoCredentialSwap(t *testing.T) {
 	if len(p.EgressHosts) != 1 {
 		t.Errorf("EgressHosts = %v, want only chatgpt.com — auth.openai.com and api.openai.com also receive bearers and are not swapped", p.EgressHosts)
 	}
-	if p.Capabilities.CredDirLiveMount {
-		t.Error("CredDirLiveMount must be false — that flag mounts ~/.claude, not ~/.codex")
-	}
 	if p.Capabilities.GuestNoSelfRefresh {
 		t.Error("GuestNoSelfRefresh must be false — there is no brokered token for the guest to refrain from refreshing")
 	}
