@@ -121,31 +121,30 @@ func TestAuth_UnknownAction_UsageError(t *testing.T) {
 	}
 }
 
-// TestAuthLogin_ClaudeCodeNoOp verifies auth login for claude-code prints no-op.
-func TestAuthLogin_ClaudeCodeNoOp(t *testing.T) {
-	out, stdout, _ := capture(false)
+// TestAuthLogin_ClaudeCodeDefault verifies bare auth login defaults to claude-code import path.
+func TestAuthLogin_ClaudeCodeDefault(t *testing.T) {
+	out, _, _ := capture(false)
 	err := runAuthLogin(context.Background(), []string{}, out)
-	if err != nil {
-		t.Fatalf("runAuthLogin: unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("runAuthLogin (no args): expected source-not-found error, got nil")
 	}
-	msg := stdout.String()
-	if !strings.Contains(msg, "no longer needed") {
-		t.Errorf("expected no-op message containing 'no longer needed'; got: %q", msg)
+	if !strings.Contains(err.Error(), "source credentials file not found") {
+		t.Errorf("expected source-not-found error; got: %v", err)
 	}
-	if !strings.Contains(msg, "claude login") {
-		t.Errorf("expected no-op message containing 'claude login'; got: %q", msg)
+	if !strings.Contains(err.Error(), "claude-dedicated") {
+		t.Errorf("error should reference claude-dedicated path; got: %v", err)
 	}
 }
 
-// TestAuthLogin_ClaudeCodeExplicit_NoOp verifies no-op with explicit --agent flag.
-func TestAuthLogin_ClaudeCodeExplicit_NoOp(t *testing.T) {
-	out, stdout, _ := capture(false)
+// TestAuthLogin_ClaudeCodeExplicit verifies --agent claude-code also hits the import path.
+func TestAuthLogin_ClaudeCodeExplicit(t *testing.T) {
+	out, _, _ := capture(false)
 	err := runAuthLogin(context.Background(), []string{"--agent", "claude-code"}, out)
-	if err != nil {
-		t.Fatalf("runAuthLogin --agent claude-code: unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("runAuthLogin --agent claude-code: expected source-not-found error, got nil")
 	}
-	if !strings.Contains(stdout.String(), "no longer needed") {
-		t.Errorf("expected no-op message; got: %q", stdout.String())
+	if !strings.Contains(err.Error(), "source credentials file not found") {
+		t.Errorf("expected source-not-found error; got: %v", err)
 	}
 }
 
