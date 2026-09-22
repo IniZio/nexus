@@ -38,6 +38,30 @@ func TestGuestBaselineEnvCredFileMissing(t *testing.T) {
 	}
 }
 
+func TestGuestBaselineEnvCredFileUnquotesValues(t *testing.T) {
+	dir := t.TempDir()
+	credFile := filepath.Join(dir, "cred.env")
+	content := "A='Bearer x'\nB=\"dq val\"\nC=plain\n"
+	if err := os.WriteFile(credFile, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := nexusCredEnvPath
+	nexusCredEnvPath = credFile
+	t.Cleanup(func() { nexusCredEnvPath = orig })
+
+	env := guestBaselineEnv(false)
+	first := envFirstValues(env)
+	cases := map[string]string{"A": "Bearer x", "B": "dq val", "C": "plain"}
+	for k, want := range cases {
+		if got, ok := first[k]; !ok {
+			t.Errorf("%s missing from guestBaselineEnv", k)
+		} else if got != want {
+			t.Errorf("%s = %q; want %q", k, got, want)
+		}
+	}
+}
+
 func TestGuestBaselineEnvCredCallerWins(t *testing.T) {
 	dir := t.TempDir()
 	credFile := filepath.Join(dir, "cred.env")

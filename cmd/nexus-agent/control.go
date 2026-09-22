@@ -45,7 +45,7 @@ func (cs *controlServer) Exec(_ context.Context, req *agentpb.ExecRequest) (*age
 	}
 
 	// Build environment. Precedence, highest first:
-	//   req.Env > OCI image ENV (boot.json) > /etc/environment > baseline.
+	//   req.Env > OCI image ENV (boot.json) > cred.env > hostuid.env > /etc/environment > baseline.
 	env := mergeEnv(guestBaselineEnv(agentScratchDisk), envToMap(bootSpecEnv()))
 	env = mergeEnv(env, req.Env)
 
@@ -291,7 +291,7 @@ func readGuestCredEnv() map[string]string {
 	for _, line := range strings.Split(string(data), "\n") {
 		k, v, ok := strings.Cut(line, "=")
 		if ok && k != "" {
-			m[k] = v
+			m[k] = unquoteEnvValue(v)
 		}
 	}
 	return m
