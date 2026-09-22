@@ -392,6 +392,279 @@ func TestSupervisorS4PlaceholderInGuest(t *testing.T) {
 	}
 }
 
+// Proves A5 retirement: claude-code sandbox gets CLAUDE_CODE_OAUTH_TOKEN via broker/placeholder.
+func TestSupervisorS4ClaudeCodePlaceholderInGuest(t *testing.T) {
+	skipUnlessKVMSH(t)
+	chBin := skipUnlessCHBinSH(t)
+	skipUnlessMke2fsSH(t)
+
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("findRepoRoot: %v", err)
+	}
+	kernelPath := kernelPathSH(t, repoRoot)
+
+	storeRoot := t.TempDir()
+	cacheRoot := filepath.Join(storeRoot, "images")
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("image.NewCache: %v", err)
+	}
+
+	t.Log("building agent base image …")
+	imgCtx, imgCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer imgCancel()
+	img, buildErr := BuildAgentBaseImage(imgCtx, cache)
+	if buildErr != nil {
+		switch {
+		case errors.Is(buildErr, ErrDockerUnavailable):
+			t.Skip("skipping: docker unavailable:", buildErr)
+		case errors.Is(buildErr, builder.ErrMke2fsUnavailable):
+			t.Skip("skipping: mke2fs unavailable:", buildErr)
+		}
+		t.Fatalf("BuildAgentBaseImage: %v", buildErr)
+	}
+	t.Logf("base image ready: digest=%s", img.Digest)
+
+	t.Log("building nexus binary …")
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
+
+	socketDir, err := os.MkdirTemp("/tmp", "sv-s4cc-sock-")
+	if err != nil {
+		t.Fatalf("MkdirTemp socketDir: %v", err)
+	}
+	if len(socketDir)+selfhostSockNameLen > selfhostSunPathMax {
+		os.RemoveAll(socketDir)
+		t.Skipf("socket dir path too long for AF_UNIX: %s", socketDir)
+	}
+	stateDir, err := os.MkdirTemp("/tmp", "sv-s4cc-state-")
+	if err != nil {
+		os.RemoveAll(socketDir)
+		t.Fatalf("MkdirTemp stateDir: %v", err)
+	}
+	serialPath := filepath.Join(socketDir, "sv-s4cc-serial.log")
+
+	st, err := store.NewFileStore(storeRoot)
+	if err != nil {
+		t.Fatalf("store.NewFileStore: %v", err)
+	}
+
+	svcDrv, err := cloudhypervisor.New(cloudhypervisor.Config{
+		BinaryPath: chBin,
+		SocketDir:  socketDir,
+	})
+	if err != nil {
+		t.Fatalf("cloudhypervisor.New (svcDrv): %v", err)
+	}
+	svc := service.New(st, svcDrv, lifecycle.New())
+
+	var supervisorPID int
+	var sandboxRef string
+
+	t.Cleanup(func() {
+		if supervisorPID != 0 {
+			sock := supervisor.SockPath(stateDir)
+			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := supervisor.StopSupervisor(stopCtx, sock); err != nil {
+				t.Logf("cleanup: StopSupervisor: %v", err)
+			}
+		}
+		if content, err := os.ReadFile(serialPath); err == nil && len(content) > 0 && t.Failed() {
+			t.Logf("=== serial ===\n%s", content)
+		}
+		if content, err := os.ReadFile(filepath.Join(stateDir, "supervisor.log")); err == nil && len(content) > 0 && t.Failed() {
+			t.Logf("=== supervisor log ===\n%s", content)
+		}
+		os.RemoveAll(socketDir)
+		os.RemoveAll(stateDir)
+		if sandboxRef != "" {
+			rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = svc.Remove(rmCtx, sandboxRef)
+		}
+	})
+
+	var diskPath string
+	var bootDrv *cloudhypervisor.CHDriver
+
+	factory := service.DriverFactory(func(resolvedExt4 string, _ []service.ExtraDisk) (driver.Driver, error) {
+		diskPath = resolvedExt4
+		var newErr error
+		bootDrv, newErr = cloudhypervisor.New(cloudhypervisor.Config{
+			BinaryPath:       chBin,
+			SocketDir:        socketDir,
+			KernelPath:       kernelPath,
+			DiskImagePath:    resolvedExt4,
+			SerialOutputPath: serialPath,
+			StartTimeout:     30 * time.Second,
+		})
+		return bootDrv, newErr
+	})
+
+	probe := service.ProbeFunc(func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
+		return realProbeSH(bootDrv)(ctx, drv, id)
+	})
+
+	t.Log("CreateAndBoot (claude-code agent sandbox, nil broker/seeder — stores AgentName) …")
+	bootCtx, bootCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer bootCancel()
+
+	ccOpts := service.CreateAndBootOptions{
+		Image:               service.ImageSpec{Digest: string(img.Digest)},
+		CacheRoot:           cacheRoot,
+		ReachabilityTimeout: 60 * time.Second,
+	}
+	service.WireClaudeEgress(&ccOpts, nil, nil, nil)
+
+	sb, err := service.CreateAndBoot(
+		bootCtx, svc, cache, factory, probe,
+		"sv-s4cc-test", fmt.Sprintf("s4cc-%d", time.Now().UnixNano()),
+		ccOpts,
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+	sandboxRef = sb.ID.String()
+	t.Logf("sandbox provisioned: id=%s AgentName=%q disk=%s", sb.ID, sb.AgentName, diskPath)
+	if sb.AgentName != "claude-code" {
+		t.Fatalf("expected AgentName=claude-code, got %q", sb.AgentName)
+	}
+
+	t.Log("waiting for guest agent (initial boot) …")
+	waitForAgentSH(t, bootDrv, sb.ID, 30*time.Second)
+
+	stopCtx5, stopCancel5 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer stopCancel5()
+	if _, err := svc.Stop(stopCtx5, sb.ID.String()); err != nil {
+		t.Fatalf("svc.Stop: %v", err)
+	}
+	if diskPath == "" {
+		t.Fatal("diskPath not captured")
+	}
+
+	t.Log("spawning detached supervisor (claude-code path, no creds) …")
+	spawnCfg := supervisor.SpawnConfig{
+		Config: supervisor.Config{
+			SandboxRef: sb.ID.String(),
+			StoreRoot:  storeRoot,
+			StateDir:   stateDir,
+			CHBin:      chBin,
+			SocketDir:  socketDir,
+			KernelPath: kernelPath,
+			DiskPath:   diskPath,
+		},
+		Exe:          nexusBin,
+		ReadyTimeout: 5 * time.Minute,
+	}
+	pid, _, err := supervisor.SpawnDetached(spawnCfg)
+	if err != nil {
+		t.Fatalf("supervisor.SpawnDetached: %v", err)
+	}
+	supervisorPID = pid
+	t.Logf("supervisor ready: pid=%d", pid)
+
+	shadowDrv, err := cloudhypervisor.New(cloudhypervisor.Config{
+		BinaryPath:    chBin,
+		SocketDir:     socketDir,
+		KernelPath:    kernelPath,
+		DiskImagePath: diskPath,
+	})
+	if err != nil {
+		t.Fatalf("cloudhypervisor.New (shadowDrv): %v", err)
+	}
+
+	t.Log("waiting for guest agent (supervisor-booted VM) …")
+	waitForAgentSH(t, shadowDrv, sb.ID, 60*time.Second)
+
+	agentC := agent.NewClient(shadowDrv, sb.ID)
+
+	execGuest := func(cmd string) (string, int32) {
+		t.Helper()
+		var outBuf bytes.Buffer
+		execCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		code, execErr := agentC.Exec(execCtx, agent.ExecOptions{
+			Argv:   []string{"/bin/sh", "-c", cmd},
+			Env:    map[string]string{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+			Stdout: &outBuf,
+			Stderr: &outBuf,
+		})
+		if execErr != nil {
+			t.Logf("exec %q: err=%v", cmd, execErr)
+		}
+		return outBuf.String(), code
+	}
+
+	caOut, caCode := execGuest("cat " + service.GuestCACertPath)
+	if caCode != 0 || !strings.Contains(caOut, "BEGIN CERTIFICATE") {
+		t.Errorf("FAIL (a): GuestCACertPath missing or not a PEM cert (exit %d): %q",
+			caCode, truncateS4(caOut, 120))
+	} else {
+		t.Logf("PASS (a): GuestCACertPath contains PEM certificate")
+	}
+
+	credOut, credCode := execGuest("cat " + service.GuestCredEnvPath)
+	if credCode != 0 {
+		t.Errorf("A5 FAIL (b): GuestCredEnvPath absent for claude-code sandbox (exit %d)", credCode)
+	} else {
+		t.Logf("PASS (b): GuestCredEnvPath present for claude-code agent sandbox")
+	}
+
+	if !strings.Contains(credOut, "CLAUDE_CODE_OAUTH_TOKEN=") {
+		t.Errorf("A5 FAIL (b2): GuestCredEnvPath does not contain CLAUDE_CODE_OAUTH_TOKEN=\ncontent: %q",
+			truncateS4(credOut, 200))
+	} else {
+		t.Logf("PASS (b2): CLAUDE_CODE_OAUTH_TOKEN present in GuestCredEnvPath (broker/placeholder path)")
+	}
+
+	var claudeTokenValue string
+	for _, line := range strings.Split(credOut, "\n") {
+		if strings.HasPrefix(line, "CLAUDE_CODE_OAUTH_TOKEN=") {
+			claudeTokenValue = strings.TrimPrefix(line, "CLAUDE_CODE_OAUTH_TOKEN=")
+			break
+		}
+	}
+	if claudeTokenValue == "" {
+		t.Errorf("A5 FAIL (b3): CLAUDE_CODE_OAUTH_TOKEN value is empty — placeholder not minted")
+	} else {
+		t.Logf("PASS (b3): CLAUDE_CODE_OAUTH_TOKEN has non-empty placeholder value (len=%d)", len(claudeTokenValue))
+	}
+
+	if strings.Contains(claudeTokenValue, "sk-ant-") {
+		t.Errorf("A5 FAIL (c): CLAUDE_CODE_OAUTH_TOKEN looks like a real sk-ant- key")
+	}
+	zeroOut, _ := execGuest(
+		`grep -rI 'sk-ant-\|refresh_token\|access_token\|anthropic_api_key' /root /home 2>/dev/null || true`)
+	if strings.TrimSpace(zeroOut) != "" {
+		t.Errorf("AC-7 FAIL (c): real cred material found on guest disk:\n%s", zeroOut)
+	} else {
+		t.Logf("PASS (c): AC-7 zero-cred-in-guest: no real token material found")
+	}
+
+	profContent, profCode := execGuest("cat " + service.GuestShellProfilePath)
+	if profCode != 0 {
+		t.Errorf("D-M4 FAIL (d): shell-profile drop-in absent from guest at %s (exit %d)",
+			service.GuestShellProfilePath, profCode)
+	} else {
+		if !strings.Contains(profContent, service.GuestCredEnvPath) {
+			t.Errorf("D-M4 FAIL (d): drop-in at %s does not reference GuestCredEnvPath (%s)\ncontent: %q",
+				service.GuestShellProfilePath, service.GuestCredEnvPath, profContent)
+		} else {
+			t.Logf("PASS (d): shell-profile drop-in present and references GuestCredEnvPath (D-M4 guard)")
+		}
+	}
+
+	stopSvCtx, stopSvCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stopSvCancel()
+	if err := supervisor.StopSupervisor(stopSvCtx, supervisor.SockPath(stateDir)); err != nil {
+		t.Logf("StopSupervisor: %v (may be gone)", err)
+	} else {
+		supervisorPID = 0
+	}
+}
+
 // AC-5 live proof: SpawnDetached with live creds, MITM swaps placeholder → real bearer.
 func TestSupervisorS4LiveEgress(t *testing.T) {
 	storePath := service.DefaultDedicatedCredStorePath()
@@ -692,6 +965,440 @@ req.end();
 		t.Logf("PASS (D): supervisor pid=%d no longer alive after stop", pid)
 	} else {
 		t.Logf("supervisor pid=%d still alive briefly after stop (may still be shutting down)", pid)
+	}
+}
+
+// TestSupervisorS4ClaudeCodeLiveSubstitution closes two evidence gaps from the
+// live-mount credential retirement.
+//
+// GAP 1: placeholder bearer → HTTP 200 (MITM swap confirmed); bogus bearer → 401.
+// GAP 2: forced token expiry; supervisor refreshes before READY; guest → 200.
+//
+// HARD CONSTRAINT: never reads ~/.claude/.credentials.json.
+// Gate: t.Skip when ~/.config/nexus/creds.json absent or has no refresh_token.
+//
+// Run:
+//
+//	TMPDIR=/var/tmp make test-integration GOTEST_PKGS=./internal/test/selfhost/ \
+//	  GOTEST_ARGS='-run TestSupervisorS4ClaudeCodeLiveSubstitution -timeout 30m -v'
+func TestSupervisorS4ClaudeCodeLiveSubstitution(t *testing.T) {
+	storePath := service.DefaultDedicatedCredStorePath()
+	if strings.Contains(storePath, "/.claude/") {
+		t.Fatalf("HARD CONSTRAINT: storePath %q references ~/.claude — must use dedicated cred store only", storePath)
+	}
+	if _, statErr := os.Stat(storePath); errors.Is(statErr, os.ErrNotExist) {
+		t.Skipf(
+			"SKIP TestSupervisorS4ClaudeCodeLiveSubstitution: dedicated cred store absent at %q\n"+
+				"Populate with a dedicated grant (NOT your main claude.ai session):\n"+
+				"  CLAUDE_CONFIG_DIR=~/.config/nexus/claude-dedicated claude auth login\n"+
+				"  nexus auth login --force\n"+
+				"Then rerun; default store=%s or set NEXUS_DEDICATED_CRED_STORE.",
+			storePath, storePath)
+	}
+	cs0, loadErr := cred.LoadStore(storePath)
+	if loadErr != nil {
+		t.Skipf("SKIP: cannot load cred store at %q: %v", storePath, loadErr)
+	}
+	if cs0.RefreshToken == "" {
+		t.Skipf("SKIP: cred store at %q has no refresh_token — run `nexus auth login --force`", storePath)
+	}
+	t.Logf("LIVE RUN: storePath=%s accessTokenLen=%d refreshTokenLen=%d expiresAt=%s",
+		storePath, len(cs0.AccessToken), len(cs0.RefreshToken), cs0.ExpiresAt.Format(time.RFC3339))
+
+	skipUnlessKVMSH(t)
+	chBin := skipUnlessCHBinSH(t)
+	skipUnlessMke2fsSH(t)
+
+	if out, runErr := exec.Command("df", "-h", "/dev/shm", "/var/tmp").Output(); runErr == nil {
+		t.Logf("df -h /dev/shm /var/tmp (before):\n%s", out)
+	}
+	if out, runErr := exec.Command("free", "-g").Output(); runErr == nil {
+		t.Logf("free -g (before):\n%s", out)
+	}
+
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("findRepoRoot: %v", err)
+	}
+	kernelPath := kernelPathSH(t, repoRoot)
+
+	storeRoot := t.TempDir()
+	cacheRoot := filepath.Join(storeRoot, "images")
+	cache, err := image.NewCache(cacheRoot)
+	if err != nil {
+		t.Fatalf("image.NewCache: %v", err)
+	}
+	t.Log("building agent base image …")
+	imgCtx, imgCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer imgCancel()
+	img, buildErr := BuildAgentBaseImage(imgCtx, cache)
+	switch {
+	case buildErr == nil:
+	case errors.Is(buildErr, ErrDockerUnavailable):
+		t.Skip("skipping: docker unavailable:", buildErr)
+	case errors.Is(buildErr, builder.ErrMke2fsUnavailable):
+		t.Skip("skipping: mke2fs unavailable:", buildErr)
+	default:
+		t.Fatalf("BuildAgentBaseImage: %v", buildErr)
+	}
+	t.Logf("base image ready: digest=%s", img.Digest)
+
+	nexusBin := buildNexusBin(t)
+	t.Logf("nexus binary: %s", nexusBin)
+
+	bootSocketDir, err := os.MkdirTemp("/tmp", "sv-s4sub-bsock-")
+	if err != nil {
+		t.Fatalf("MkdirTemp bootSocketDir: %v", err)
+	}
+	serialBootPath := filepath.Join(bootSocketDir, "sv-s4sub-boot.log")
+
+	st, err := store.NewFileStore(storeRoot)
+	if err != nil {
+		t.Fatalf("store.NewFileStore: %v", err)
+	}
+	svcDrv, err := cloudhypervisor.New(cloudhypervisor.Config{
+		BinaryPath: chBin,
+		SocketDir:  bootSocketDir,
+	})
+	if err != nil {
+		t.Fatalf("cloudhypervisor.New (svcDrv): %v", err)
+	}
+	svc := service.New(st, svcDrv, lifecycle.New())
+
+	var diskPath string
+	var bootDrv *cloudhypervisor.CHDriver
+	var sandboxRef string
+
+	factory := service.DriverFactory(func(resolvedExt4 string, _ []service.ExtraDisk) (driver.Driver, error) {
+		diskPath = resolvedExt4
+		var newErr error
+		bootDrv, newErr = cloudhypervisor.New(cloudhypervisor.Config{
+			BinaryPath:       chBin,
+			SocketDir:        bootSocketDir,
+			KernelPath:       kernelPath,
+			DiskImagePath:    resolvedExt4,
+			SerialOutputPath: serialBootPath,
+			StartTimeout:     30 * time.Second,
+		})
+		return bootDrv, newErr
+	})
+	probe := service.ProbeFunc(func(ctx context.Context, drv driver.Driver, id domain.SandboxID) error {
+		return realProbeSH(bootDrv)(ctx, drv, id)
+	})
+
+	t.Cleanup(func() {
+		if content, err := os.ReadFile(serialBootPath); err == nil && len(content) > 0 && t.Failed() {
+			t.Logf("=== boot serial ===\n%s", truncateS4(string(content), 2000))
+		}
+		os.RemoveAll(bootSocketDir)
+		if sandboxRef != "" {
+			rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = svc.Remove(rmCtx, sandboxRef)
+		}
+	})
+
+	t.Log("CreateAndBoot (claude-code, WireClaudeEgress nil creds — stores AgentName) …")
+	bootCtx, bootCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer bootCancel()
+
+	bootOpts := service.CreateAndBootOptions{
+		Image:               service.ImageSpec{Digest: string(img.Digest)},
+		CacheRoot:           cacheRoot,
+		ReachabilityTimeout: 60 * time.Second,
+	}
+	service.WireClaudeEgress(&bootOpts, nil, nil, nil)
+
+	sb, err := service.CreateAndBoot(
+		bootCtx, svc, cache, factory, probe,
+		"sv-s4sub", fmt.Sprintf("s4sub-%d", time.Now().UnixNano()),
+		bootOpts,
+	)
+	if err != nil {
+		t.Fatalf("CreateAndBoot: %v", err)
+	}
+	sandboxRef = sb.ID.String()
+	t.Logf("initial boot: sandbox=%s AgentName=%q disk=%s", sb.ID, sb.AgentName, diskPath)
+	if sb.AgentName != "claude-code" {
+		t.Fatalf("expected AgentName=claude-code, got %q — supervisor will not seed cred.env", sb.AgentName)
+	}
+	waitForAgentSH(t, bootDrv, sb.ID, 60*time.Second)
+
+	stopCtx0, stopCancel0 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer stopCancel0()
+	if _, stopErr := svc.Stop(stopCtx0, sb.ID.String()); stopErr != nil {
+		t.Fatalf("svc.Stop (initial boot): %v", stopErr)
+	}
+	if diskPath == "" {
+		t.Fatal("diskPath not captured from factory")
+	}
+
+	execGuestWith := func(name string, agentC *agent.Client, cmd string, timeoutSec int) (out string, code int32) {
+		t.Helper()
+		var buf bytes.Buffer
+		execCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+		defer cancel()
+		code, execErr := agentC.Exec(execCtx, agent.ExecOptions{
+			Argv: []string{"/bin/sh", "-c", cmd},
+			Env: map[string]string{
+				"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+				"HOME": "/root",
+			},
+			Stdout: &buf,
+			Stderr: &buf,
+		})
+		out = buf.String()
+		if execErr != nil {
+			t.Logf("%s exec err: %v", name, execErr)
+		}
+		t.Logf("%s exit=%d output=%q", name, code, truncateS4(out, 300))
+		return out, code
+	}
+
+	t.Log("── GAP 1: MITM placeholder-to-real-token substitution ──────────────")
+
+	socketDir1, err := os.MkdirTemp("/tmp", "sv-s4sub-g1sock-")
+	if err != nil {
+		t.Fatalf("GAP1 MkdirTemp socketDir1: %v", err)
+	}
+	stateDir1, err := os.MkdirTemp("/tmp", "sv-s4sub-g1state-")
+	if err != nil {
+		os.RemoveAll(socketDir1)
+		t.Fatalf("GAP1 MkdirTemp stateDir1: %v", err)
+	}
+	if len(socketDir1)+selfhostSockNameLen > selfhostSunPathMax {
+		os.RemoveAll(socketDir1)
+		os.RemoveAll(stateDir1)
+		t.Skipf("GAP1 socketDir path too long for AF_UNIX: %s", socketDir1)
+	}
+
+	sv1PID := 0
+	t.Cleanup(func() {
+		if sv1PID != 0 {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_ = supervisor.StopSupervisor(stopCtx, supervisor.SockPath(stateDir1))
+		}
+		if content, err := os.ReadFile(filepath.Join(stateDir1, "supervisor.log")); err == nil && len(content) > 0 {
+			t.Logf("=== GAP 1 supervisor log ===\n%s", truncateS4(string(content), 3000))
+		}
+		os.RemoveAll(socketDir1)
+		os.RemoveAll(stateDir1)
+	})
+
+	t.Logf("GAP 1: spawning supervisor 1 CredsFile=%s", storePath)
+	spawnCfg1 := supervisor.SpawnConfig{
+		Config: supervisor.Config{
+			SandboxRef: sb.ID.String(),
+			StoreRoot:  storeRoot,
+			StateDir:   stateDir1,
+			CHBin:      chBin,
+			SocketDir:  socketDir1,
+			KernelPath: kernelPath,
+			DiskPath:   diskPath,
+			CredsFile:  storePath, // dedicated store; NOT ~/.claude/.credentials.json
+		},
+		Exe:          nexusBin,
+		ReadyTimeout: 5 * time.Minute,
+	}
+	pid1, _, err := supervisor.SpawnDetached(spawnCfg1)
+	if err != nil {
+		t.Fatalf("GAP1 SpawnDetached: %v", err)
+	}
+	sv1PID = pid1
+	t.Logf("GAP 1: supervisor READY pid=%d", pid1)
+
+	shadowDrv1, err := cloudhypervisor.New(cloudhypervisor.Config{
+		BinaryPath:    chBin,
+		SocketDir:     socketDir1,
+		KernelPath:    kernelPath,
+		DiskImagePath: diskPath,
+	})
+	if err != nil {
+		t.Fatalf("GAP1 shadow driver: %v", err)
+	}
+	t.Log("GAP 1: waiting for guest agent …")
+	waitForAgentSH(t, shadowDrv1, sb.ID, 60*time.Second)
+	agentC1 := agent.NewClient(shadowDrv1, sb.ID)
+
+	gap1PosCmd := `set -a; . ` + service.GuestCredEnvPath + `; set +a; ` +
+		`curl -sS -o /dev/null -w '%{http_code}' ` +
+		`--cacert "$NODE_EXTRA_CA_CERTS" ` +
+		`-H "Authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" ` +
+		`-H 'anthropic-version: 2023-06-01' ` +
+		`https://api.anthropic.com/v1/models`
+	posOut1, _ := execGuestWith("gap1-positive", agentC1, gap1PosCmd, 60)
+	httpCode1Pos := strings.TrimSpace(posOut1)
+	if httpCode1Pos == "200" {
+		t.Log("PASS GAP 1 (a): placeholder bearer → HTTP 200 (MITM substitution confirmed)")
+	} else {
+		t.Errorf("FAIL GAP 1 (a): api.anthropic.com/v1/models HTTP %q want 200\n"+
+			"  401 = broker has no real token; supervisor.RunDetached does not build\n"+
+			"  a cred.Refresher from cfg.CredsFile — the Refresher wire-up is missing.\n"+
+			"  Fix: add cred.NewRefresher(cfg.CredsFile, credHost, broker) in RunDetached.",
+			httpCode1Pos)
+	}
+
+	gap1NegCmd := `curl -sS -o /dev/null -w '%{http_code}' ` +
+		`--cacert ` + service.GuestCACertPath + ` ` +
+		`-H "Authorization: Bearer nexus-test-bogus-not-a-placeholder" ` +
+		`-H 'anthropic-version: 2023-06-01' ` +
+		`https://api.anthropic.com/v1/models`
+	negOut1, _ := execGuestWith("gap1-negative", agentC1, gap1NegCmd, 60)
+	httpCode1Neg := strings.TrimSpace(negOut1)
+	if httpCode1Neg == "401" {
+		t.Log("PASS GAP 1 (b): bogus bearer → HTTP 401 (substitution is placeholder-bound)")
+	} else {
+		t.Errorf("FAIL GAP 1 (b): bogus bearer returned HTTP %q want 401", httpCode1Neg)
+	}
+
+	t.Logf("GAP 1 done; stopping supervisor 1 pid=%d …", sv1PID)
+	stopCtx1, stopCancel1 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stopCancel1()
+	if stopErr := supervisor.StopSupervisor(stopCtx1, supervisor.SockPath(stateDir1)); stopErr != nil {
+		t.Logf("GAP1 StopSupervisor: %v", stopErr)
+	} else {
+		sv1PID = 0
+	}
+	time.Sleep(3 * time.Second)
+
+	t.Log("── GAP 2: forced token expiry, supervisor refreshes before READY ────")
+
+	var beforeExpiry time.Time
+	expireErr := cred.WithStoreLock(context.Background(), storePath, func(cs *cred.DedicatedCredStore) (*cred.DedicatedCredStore, error) {
+		beforeExpiry = cs.ExpiresAt
+		cs.ExpiresAt = time.Now().Add(-2 * time.Hour) // force slow-path refresh on next Token()
+		cs.AccessToken = "expired-access-token-gap2-testing"
+		return cs, nil
+	})
+	if expireErr != nil {
+		t.Fatalf("GAP 2: force-expire WithStoreLock: %v", expireErr)
+	}
+	t.Logf("GAP 2: forced expires_at from %s to 2h in past", beforeExpiry.Format(time.RFC3339))
+
+	socketDir2, err := os.MkdirTemp("/tmp", "sv-s4sub-g2sock-")
+	if err != nil {
+		t.Fatalf("GAP2 MkdirTemp socketDir2: %v", err)
+	}
+	stateDir2, err := os.MkdirTemp("/tmp", "sv-s4sub-g2state-")
+	if err != nil {
+		os.RemoveAll(socketDir2)
+		t.Fatalf("GAP2 MkdirTemp stateDir2: %v", err)
+	}
+	if len(socketDir2)+selfhostSockNameLen > selfhostSunPathMax {
+		os.RemoveAll(socketDir2)
+		os.RemoveAll(stateDir2)
+		t.Skipf("GAP2 socketDir path too long for AF_UNIX: %s", socketDir2)
+	}
+
+	sv2PID := 0
+	t.Cleanup(func() {
+		if sv2PID != 0 {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_ = supervisor.StopSupervisor(stopCtx, supervisor.SockPath(stateDir2))
+		}
+		if content, err := os.ReadFile(filepath.Join(stateDir2, "supervisor.log")); err == nil && len(content) > 0 {
+			t.Logf("=== GAP 2 supervisor log ===\n%s", truncateS4(string(content), 3000))
+		}
+		os.RemoveAll(socketDir2)
+		os.RemoveAll(stateDir2)
+	})
+
+	t.Log("GAP 2: spawning supervisor 2 (expired disk token — expecting HTTP refresh before READY) …")
+	spawnCfg2 := supervisor.SpawnConfig{
+		Config: supervisor.Config{
+			SandboxRef: sb.ID.String(),
+			StoreRoot:  storeRoot,
+			StateDir:   stateDir2,
+			CHBin:      chBin,
+			SocketDir:  socketDir2,
+			KernelPath: kernelPath,
+			DiskPath:   diskPath,
+			CredsFile:  storePath, // dedicated cred store; NEVER ~/.claude/.credentials.json
+		},
+		Exe:          nexusBin,
+		ReadyTimeout: 5 * time.Minute,
+	}
+	pid2, _, err := supervisor.SpawnDetached(spawnCfg2)
+	if err != nil {
+		t.Fatalf("GAP2 SpawnDetached: %v", err)
+	}
+	sv2PID = pid2
+	t.Logf("GAP 2: supervisor READY pid=%d", pid2)
+
+	shadowDrv2, err := cloudhypervisor.New(cloudhypervisor.Config{
+		BinaryPath:    chBin,
+		SocketDir:     socketDir2,
+		KernelPath:    kernelPath,
+		DiskImagePath: diskPath,
+	})
+	if err != nil {
+		t.Fatalf("GAP2 shadow driver: %v", err)
+	}
+	t.Log("GAP 2: waiting for guest agent …")
+	waitForAgentSH(t, shadowDrv2, sb.ID, 60*time.Second)
+	agentC2 := agent.NewClient(shadowDrv2, sb.ID)
+
+	gap2Cmd := `set -a; . ` + service.GuestCredEnvPath + `; set +a; ` +
+		`curl -sS -o /dev/null -w '%{http_code}' ` +
+		`--cacert "$NODE_EXTRA_CA_CERTS" ` +
+		`-H "Authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" ` +
+		`-H 'anthropic-version: 2023-06-01' ` +
+		`https://api.anthropic.com/v1/models`
+	gap2Out, _ := execGuestWith("gap2-post-expiry", agentC2, gap2Cmd, 60)
+	httpCode2 := strings.TrimSpace(gap2Out)
+	if httpCode2 == "200" {
+		t.Log("PASS GAP 2 (a): post-expiry request → HTTP 200 (token refreshed before READY)")
+	} else {
+		t.Errorf("FAIL GAP 2 (a): post-expiry request returned HTTP %q want 200\n"+
+			"  401 = Refresher did not fire before READY (ForcePush never called, or\n"+
+			"  the Refresher was never built from cfg.CredsFile).",
+			httpCode2)
+	}
+
+	csAfter, afterLoadErr := cred.LoadStore(storePath)
+	if afterLoadErr != nil {
+		t.Errorf("GAP 2 (b): LoadStore after forced expiry: %v", afterLoadErr)
+	} else {
+		t.Logf("GAP 2 expires_at: before=%s after=%s",
+			beforeExpiry.Format(time.RFC3339), csAfter.ExpiresAt.Format(time.RFC3339))
+		if csAfter.ExpiresAt.After(time.Now()) {
+			t.Logf("PASS GAP 2 (b): expires_at updated to future %s", csAfter.ExpiresAt.Format(time.RFC3339))
+		} else {
+			t.Errorf("FAIL GAP 2 (b): expires_at=%s not in future — HTTP refresh did not occur",
+				csAfter.ExpiresAt.Format(time.RFC3339))
+		}
+	}
+
+	t.Logf("GAP 2 done; stopping supervisor 2 pid=%d …", sv2PID)
+	stopCtx2, stopCancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stopCancel2()
+	if stopErr := supervisor.StopSupervisor(stopCtx2, supervisor.SockPath(stateDir2)); stopErr != nil {
+		t.Logf("GAP2 StopSupervisor: %v", stopErr)
+	} else {
+		sv2PID = 0
+	}
+
+	// ── Record df/free after; clean up build artefacts ────────────────────────
+	if out, runErr := exec.Command("df", "-h", "/dev/shm", "/var/tmp").Output(); runErr == nil {
+		t.Logf("df -h /dev/shm /var/tmp (after):\n%s", out)
+	}
+	if out, runErr := exec.Command("free", "-g").Output(); runErr == nil {
+		t.Logf("free -g (after):\n%s", out)
+	}
+	for _, tmpRoot := range []string{"/dev/shm", "/var/tmp"} {
+		matches, globErr := filepath.Glob(filepath.Join(tmpRoot, "nexus-agent-image-build-*"))
+		if globErr != nil {
+			continue
+		}
+		for _, m := range matches {
+			if rmErr := os.RemoveAll(m); rmErr != nil {
+				t.Logf("cleanup: remove %s: %v", m, rmErr)
+			} else {
+				t.Logf("cleanup: removed %s", m)
+			}
+		}
 	}
 }
 
