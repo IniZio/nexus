@@ -868,6 +868,91 @@ func TestDelegateTeardown_FallbackRmNotFound_ReportsSuccess(t *testing.T) {
 	}
 }
 
+func TestDelegateAgentDispatch_ClearsMarkerBeforeAgent(t *testing.T) {
+	var execArgvs [][]string
+	rmCalled := false
+	agentCalled := false
+	rmBeforeAgent := false
+
+	orig := runHostCLI
+	t.Cleanup(func() { runHostCLI = orig })
+	runHostCLI = func(_ context.Context, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "agent" {
+			agentCalled = true
+			if rmCalled {
+				rmBeforeAgent = true
+			}
+		}
+		return "dispatched", nil
+	}
+
+	recSvc := &dispatchRecordSvc{
+		stubService: &stubService{},
+		onExec: func(argv []string) {
+			execArgvs = append(execArgvs, append([]string(nil), argv...))
+			rmCalled = true
+		},
+	}
+
+	cs, closeFn := connectPairSvc(t, recSvc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_dispatch", map[string]any{"ref": "proj/branch", "brief": "do work"})
+	if res.IsError {
+		t.Fatalf("dispatch returned error: %s", resultText(t, res))
+	}
+	if len(execArgvs) != 1 {
+		t.Fatalf("exec call count = %d, want 1", len(execArgvs))
+	}
+	want := []string{"rm", "-f", delegateDoneMarker}
+	if !argsEqual(execArgvs[0], want) {
+		t.Errorf("exec argv = %q, want %q", execArgvs[0], want)
+	}
+	if !agentCalled {
+		t.Fatal("herdr agent call not observed")
+	}
+	if !rmBeforeAgent {
+		t.Error("rm was not called before the agent command")
+	}
+}
+
+type dispatchRecordSvc struct {
+	*stubService
+	onExec func([]string)
+}
+
+func (s *dispatchRecordSvc) Exec(_ context.Context, _ string, argv []string, _ map[string]string, _, _ string) (int32, string, string, error) {
+	if s.onExec != nil {
+		s.onExec(argv)
+	}
+	return 0, "", "", nil
+}
+
+func TestDelegateAgentDispatch_MarkerClearErrorDoesNotFailDispatch(t *testing.T) {
+	orig := runHostCLI
+	t.Cleanup(func() { runHostCLI = orig })
+	runHostCLI = func(_ context.Context, argv ...string) (string, error) {
+		return "dispatched", nil
+	}
+
+	svc := &dispatchErrExecSvc{stubService: &stubService{}}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_dispatch", map[string]any{"ref": "proj/branch", "brief": "do work"})
+	if res.IsError {
+		t.Fatalf("dispatch must succeed even when marker clear fails: %s", resultText(t, res))
+	}
+}
+
+type dispatchErrExecSvc struct {
+	*stubService
+}
+
+func (s *dispatchErrExecSvc) Exec(_ context.Context, _ string, _ []string, _ map[string]string, _, _ string) (int32, string, string, error) {
+	return 1, "", "no such container", fmt.Errorf("exec: sandbox not reachable")
+}
+
 func TestDelegateTeardown_FallbackRmRealError_ReturnsError(t *testing.T) {
 	setTeardownPollTiming(t, 0, 0)
 	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")

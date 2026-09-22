@@ -361,6 +361,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if args.Brief == "" {
 			return errorResult(fmt.Errorf("brief is required")), nil, nil
 		}
+		_, _, _, _ = svc.Exec(ctx, args.Ref, []string{"rm", "-f", delegateDoneMarker}, nil, "/", "")
 		brief := standingOrders + args.Brief
 		out, runErr := runHostCLI(ctx, "herdr", "agent", "--autonomous", "--no-focus", args.Ref, brief)
 		if runErr != nil {
