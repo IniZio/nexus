@@ -35,8 +35,16 @@ report so the platform can be fixed.
 Egress is policy-gated. A 403 from the proxy names the policy that denied you:
 report it, do not route around it.
 Containers built or run by docker inside this VM already trust the sandbox TLS perimeter (CA at /etc/nexus/ca, SSL_CERT_FILE and friends pre-set); a 403 from a TLS-intercepted host is egress policy, not a certificate problem — report it, do not work around it.
+When your task is complete and all commits are pushed, write a one-line summary to ` + delegateDoneMarker + ` as your final act (e.g. ` + "`" + `echo "all tests green, PR opened" > ` + delegateDoneMarker + "`" + `); the host polls for that file to detect completion.
 
 `
+
+// delegateDoneMarker is the path the in-guest agent writes as its final act to
+// signal completion. It lives outside /workspace so it never dirties git status.
+// The agent runs as root inside the microVM, so /run/nexus is writable after
+// "mkdir -p /run/nexus". If /run is not writable in a future non-root setup,
+// fall back to ${XDG_RUNTIME_DIR:-/tmp}/nexus-delegate-done instead.
+const delegateDoneMarker = "/run/nexus/delegate-done"
 
 // runHostCLI runs the nexus host binary with argv and returns its combined
 // output. It is a package variable so tests can substitute a fake executor.
@@ -91,9 +99,11 @@ type delegateAgentPollArgs struct {
 }
 
 type delegateAgentPollResult struct {
-	GitLog     string `json:"git_log"`
-	GitStatus  string `json:"git_status"`
-	BranchName string `json:"branch_name"`
+	GitLog        string `json:"git_log,omitempty"`
+	GitStatus     string `json:"git_status,omitempty"`
+	BranchName    string `json:"branch_name,omitempty"`
+	DoneVia       string `json:"done_via,omitempty"`
+	MarkerContent string `json:"marker_content,omitempty"`
 }
 
 type delegateTeardownArgs struct {
@@ -361,11 +371,19 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 
 	gosdk.AddTool(srv, &gosdk.Tool{
 		Name: "delegate_agent_poll",
-		Description: "Poll the in-guest agent's progress by reading git state from /workspace. " +
-			"Returns {git_log, git_status, branch_name}.",
+		Description: "Poll the in-guest agent's progress. Checks " + delegateDoneMarker + " first " +
+			"(done_via:marker); falls back to git log/status heuristic (done_via:git). " +
+			"Returns {git_log, git_status, branch_name, done_via, marker_content}.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentPollArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
 			return errorResult(fmt.Errorf("ref is required")), nil, nil
+		}
+		markerCode, markerOut, _, markerExecErr := svc.Exec(ctx, args.Ref, []string{"cat", delegateDoneMarker}, nil, "/", "")
+		if markerExecErr == nil && markerCode == 0 {
+			return successResult(delegateAgentPollResult{
+				DoneVia:       "marker",
+				MarkerContent: strings.TrimSpace(markerOut),
+			}), nil, nil
 		}
 		runGit := func(gitArgv []string) (string, error) {
 			code, stdout, stderr, execErr := svc.Exec(ctx, args.Ref, gitArgv, nil, "/workspace", "")
@@ -393,6 +411,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			GitLog:     gitLog,
 			GitStatus:  gitStatus,
 			BranchName: branchName,
+			DoneVia:    "git",
 		}), nil, nil
 	})
 

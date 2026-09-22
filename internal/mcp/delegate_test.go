@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ── exec seam fake ────────────────────────────────────────────────────────────
@@ -544,6 +546,110 @@ func TestDelegateTeardown_Unbound_FallsBackToSandboxRm(t *testing.T) {
 
 // Hook did not reap: the sandbox is still listed after the herdr remove, so
 // teardown falls back to `nexus sandbox rm` and still reports success.
+// connectPairSvc is like connectPair but accepts any SandboxService.
+func connectPairSvc(t *testing.T, svc SandboxService) (*gosdk.ClientSession, func()) {
+	t.Helper()
+	ctx := context.Background()
+	clientTransport, serverTransport := gosdk.NewInMemoryTransports()
+	srv := NewServer(svc)
+	ss, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	client := gosdk.NewClient(&gosdk.Implementation{Name: "test-client", Version: "v0"}, nil)
+	cs, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	return cs, func() { cs.Close(); ss.Wait() }
+}
+
+type execResponse struct {
+	code   int32
+	stdout string
+	stderr string
+	err    error
+}
+
+type seqExecService struct {
+	*stubService
+	responses []execResponse
+	idx       int
+}
+
+func (s *seqExecService) Exec(_ context.Context, ref string, argv []string, env map[string]string, cwd, stdin string) (int32, string, string, error) {
+	if s.idx >= len(s.responses) {
+		return 1, "", "no more canned responses", nil
+	}
+	r := s.responses[s.idx]
+	s.idx++
+	return r.code, r.stdout, r.stderr, r.err
+}
+
+func TestDelegateAgentPoll_MarkerPresent_ReturnsDoneViaMarker(t *testing.T) {
+	t.Helper()
+	svc := &seqExecService{
+		stubService: &stubService{},
+		responses: []execResponse{
+			{code: 0, stdout: "all tests green, PR opened\n"},
+		},
+	}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := data["done_via"]; got != "marker" {
+		t.Errorf("done_via = %q, want %q", got, "marker")
+	}
+	if got := data["marker_content"]; got != "all tests green, PR opened" {
+		t.Errorf("marker_content = %q, want trimmed summary", got)
+	}
+	if _, ok := data["git_log"]; ok {
+		t.Errorf("git_log present but should be absent when marker fires")
+	}
+	if svc.idx != 1 {
+		t.Errorf("expected exactly 1 exec call (marker check), got %d", svc.idx)
+	}
+}
+
+func TestDelegateAgentPoll_MarkerAbsent_FallsBackToGit(t *testing.T) {
+	t.Helper()
+	svc := &seqExecService{
+		stubService: &stubService{},
+		responses: []execResponse{
+			{code: 1, stderr: "No such file"},
+			{code: 0, stdout: "abc1234 fix: thing\n"},
+			{code: 0, stdout: ""},
+			{code: 0, stdout: "feat/work\n"},
+		},
+	}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := data["done_via"]; got != "git" {
+		t.Errorf("done_via = %q, want %q", got, "git")
+	}
+	if got, _ := data["git_log"].(string); !strings.Contains(got, "fix: thing") {
+		t.Errorf("git_log = %q, want log output", got)
+	}
+	if svc.idx != 4 {
+		t.Errorf("expected 4 exec calls (marker + 3 git), got %d", svc.idx)
+	}
+}
+
 func setTeardownPollTiming(t *testing.T, interval, timeout time.Duration) {
 	t.Helper()
 	origI, origT := teardownPollInterval, teardownPollTimeout

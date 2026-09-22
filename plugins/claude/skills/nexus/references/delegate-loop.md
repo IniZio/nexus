@@ -105,13 +105,29 @@ See `delegate-briefs.md` for what a brief must contain.
 { "ref": "project/name" }
 ```
 
-Returns `{ok, data:{git_log, git_status, branch_name}}`. Poll every 30 seconds.
-Declare done when `git_log` is non-empty AND `git_status` is empty. Give up at
-45 minutes and surface the last poll response as evidence.
+Returns `{ok, data:{done_via, marker_content, git_log, git_status, branch_name}}`.
+Poll every 30 seconds; give up at 45 minutes and surface the last poll response.
+
+**Completion signals** (checked in order):
+
+1. **`done_via: "marker"`** — the agent wrote `/run/nexus/delegate-done`; the
+   file's content is in `marker_content`. This is the preferred signal: the agent
+   writes it as its final act (one-line summary). Declare done immediately.
+
+2. **`done_via: "git"`** — marker absent; falls back to git heuristic. Declare
+   done when `git_log` is non-empty AND `git_status` is empty.
+
+**Brief requirement:** every brief dispatched via `delegate_agent_dispatch` must
+instruct the agent to write the marker on completion (this is injected
+automatically via `standingOrders`).
 
 **CLI equivalent:**
 
 ```bash
+# marker check
+ssh <worktree-sandbox> cat /run/nexus/delegate-done
+
+# git fallback
 git -C <worktree-path> log --oneline HEAD
 git -C <worktree-path> status --porcelain
 ```
