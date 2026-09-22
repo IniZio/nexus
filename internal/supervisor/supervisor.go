@@ -48,7 +48,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -493,9 +492,6 @@ func RunDetached(cfg Config) error {
 		return fmt.Errorf("supervisor: mkdir state dir %s: %w", cfg.StateDir, err)
 	}
 
-	hasClaudeRWMount := false
-	claudeHostHome := ""
-
 	// ── 1. Open sandbox store ─────────────────────────────────────────────────
 	st, err := store.NewFileStore(cfg.StoreRoot)
 	if err != nil {
@@ -926,8 +922,6 @@ func RunDetached(cfg Config) error {
 			// the SSH→HTTPS remote rewrite in probeAndSeedGuest so "git push"
 			// routes through the MITM proxy on this boot and every restart.
 			IsHumanGitVM:     sb.AgentName == "",
-			HasClaudeRWMount: hasClaudeRWMount,
-			ClaudeHostHome:   claudeHostHome,
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -1431,101 +1425,6 @@ fi
 	}
 }
 
-/**
- * claudePrivateDirs / claudePrivateFiles are the entries under /root/.claude
- * that hold per-session or per-machine state and must never be shared
- * between the host and a sandbox, or between sandboxes: transcripts
- * (projects), prompt history, todos, shell snapshots, caches, IDE and job
- * locks. Everything else in ~/.claude — credentials, settings, CLAUDE.md,
- * plugins, skills, commands, hooks — is operator configuration and stays on
- * the shared live mount so a credential refresh in either direction is seen
- * by both. Files must be listed separately: a bind onto a file needs a file
- * backing, and a mkdir at that path would shadow the host's file with a dir.
- */
-var claudePrivateDirs = []string{
-	"projects", "sessions", "session-env", "todos", "file-history",
-	"shell-snapshots", "debug", "cache", "paste-cache", "tmp", "transcripts",
-	"telemetry", "statsig", "ide", "jobs", "daemon",
-}
-
-var claudePrivateFiles = []string{"history.jsonl", "daemon.lock", "scheduled_tasks.lock"}
-
-/** claudePrivateBackingRoot is where the private backings live: the governor-visible agentcfg volume when mounted, else root ext4. */
-const claudePrivateBackingRoot = "/var/lib/nexus/agentcfg/private"
-
-var seedClaudePrivateStateFn = seedClaudePrivateState
-
-/**
- * seedClaudePrivateState bind-mounts a sandbox-private backing over each
- * entry of claudePrivateDirs/claudePrivateFiles inside /root/.claude while
- * the parent stays the shared live host mount. Backings persist across
- * stop/start on the agentcfg volume (or root ext4 when that volume is not
- * attached — a bare `sandbox create` has neither the volume nor even
- * /var/lib/nexus, and must still boot: isolation over governor visibility).
- * Idempotent: an entry
- * already on a different device than its parent is left alone. Nothing is
- * copied out of the shared dir: those transcripts were written under one
- * slug by every sandbox and cannot be attributed to this one.
- */
-func seedClaudePrivateState(ctx context.Context, id domain.SandboxID, execer service.GuestExecer) error {
-	script := fmt.Sprintf(`set -eu
-root=/root/.claude
-backing=%s
-mkdir -p /var/lib/nexus
-_mp_dev=$(stat -c '%%d' /var/lib/nexus/agentcfg 2>/dev/null) || _mp_dev=""
-_par_dev=$(stat -c '%%d' /var/lib/nexus)
-if [ -z "$_mp_dev" ] || [ "$_mp_dev" = "$_par_dev" ]; then
-    backing=/var/lib/nexus/agentcfg-private
-    echo "claude-private: agentcfg volume absent; backings on root ext4 at $backing" >&2
-fi
-mkdir -p "$root" "$backing"
-root_dev=$(stat -c '%%d' "$root")
-is_masked() { [ "$(stat -c '%%d' "$1" 2>/dev/null || echo "$root_dev")" != "$root_dev" ]; }
-for d in %s; do
-    is_masked "$root/$d" && continue
-    mkdir -p "$backing/$d" "$root/$d"
-    mount --bind "$backing/$d" "$root/$d"
-done
-for f in %s; do
-    is_masked "$root/$f" && continue
-    [ -e "$backing/$f" ] || : > "$backing/$f"
-    [ -e "$root/$f" ] || : > "$root/$f"
-    mount --bind "$backing/$f" "$root/$f"
-done
-for p in %s %s; do
-    is_masked "$root/$p" || { echo "claude-private: $root/$p is still on the shared mount" >&2; exit 1; }
-done
-`, claudePrivateBackingRoot, strings.Join(claudePrivateDirs, " "), strings.Join(claudePrivateFiles, " "),
-		strings.Join(claudePrivateDirs, " "), strings.Join(claudePrivateFiles, " "))
-	code, err := execer(ctx, id, []string{"/bin/bash", "-c", script}, nil)
-	if err != nil {
-		return fmt.Errorf("claude private state: %w", err)
-	}
-	if code != 0 {
-		return fmt.Errorf("claude private state script exited %d", code)
-	}
-	return nil
-}
-
-var seedClaudeHomeSymlinkFn = seedClaudeHomeSymlink
-
-func seedClaudeHomeSymlink(ctx context.Context, id domain.SandboxID, hostHome string, execer service.GuestExecer) error {
-	script := fmt.Sprintf(`set -eu
-mkdir -p %s
-if [ ! -e %s/.claude ] || [ -L %s/.claude ]; then
-    ln -sfn /root/.claude %s/.claude
-fi
-`, hostHome, hostHome, hostHome, hostHome)
-	code, err := execer(ctx, id, []string{"/bin/bash", "-c", script}, nil)
-	if err != nil {
-		return fmt.Errorf("claude home symlink: %w", err)
-	}
-	if code != 0 {
-		return fmt.Errorf("claude home symlink script exited %d", code)
-	}
-	return nil
-}
-
 // seedGitIdentityFn is the function called by probeAndSeedGuest to write the
 // guest gitconfig (operator identity, safe.directory for every source path,
 // per-sandbox branch). Default is service.SeedGitIdentity; tests replace it
@@ -1569,12 +1468,7 @@ type guestSeedInputs struct {
 	// workspace from SSH form to HTTPS form so that "git push" routes through
 	// the MITM proxy, which intercepts HTTPS traffic only.
 	IsHumanGitVM bool
-	// HasClaudeRWMount is true when the sandbox has a live rw virtiofs mount at
-	// /root/.claude. When true, the overlayfs mount via seedOverlayClaudeConfigFn
-	// is skipped — the live mount is the direct source, no overlay needed.
-	HasClaudeRWMount bool
-	ClaudeHostHome   string // host home dir when HasClaudeRWMount; "" or "/root" skips companion symlink
-	HostUID          int
+	HostUID      int
 	HostGID          int
 	HostUIDSeeder    service.GuestSeeder
 }
@@ -1600,9 +1494,8 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 
 	// A-MOUNT overlay setup (FIRST seed step). Establishes a writable overlayfs
 	// on /root/.claude before any other seed writes so that seedAgentOnboarding
-	// writes land in the upper layer. Skipped when HasClaudeRWMount is true —
-	// the live virtiofs mount IS the effective /root/.claude; no overlay needed.
-	if in.AgentCfgLowerGuestPath != "" && !in.HasClaudeRWMount {
+	// writes land in the upper layer.
+	if in.AgentCfgLowerGuestPath != "" {
 		ovlErr := seedOverlayClaudeConfigFn(ctx, id, in.AgentCfgLowerGuestPath, in.Execer)
 		switch {
 		case ovlErr == nil:
@@ -1619,33 +1512,6 @@ func probeAndSeedGuest(ctx context.Context, prober GuestProber, in guestSeedInpu
 		default:
 			// D-RAM-13: Branch 3 or attach error — fail closed, boot aborts.
 			return fmt.Errorf("supervisor: agentcfg overlay mount failed (fail-closed): %w", ovlErr)
-		}
-	}
-
-	/**
-	 * Live rw ~/.claude mount: the whole host dir is the guest's /root/.claude,
-	 * so without masking every sandbox's session transcripts land in the
-	 * host's ~/.claude/projects/-workspace/ (one slug for every sandbox) and
-	 * the guest lists the host's sessions as its own. This is the 2026-06-22
-	 * leak (NEX3-39) reintroduced by the live-mount design; the private binds
-	 * restore per-sandbox state while the parent stays shared for credential
-	 * write-through. Fail-closed like the overlay above: a sandbox that cannot
-	 * isolate its sessions must not boot and silently write into the host's.
-	 */
-	if in.HasClaudeRWMount {
-		if privErr := seedClaudePrivateStateFn(ctx, id, in.Execer); privErr != nil {
-			return fmt.Errorf("supervisor: claude private state binds failed (fail-closed): %w", privErr)
-		}
-		slog.Info("supervisor.claude_private_state_seeded", "sandbox", id, "dirs", claudePrivateDirs, "files", claudePrivateFiles)
-	}
-
-	if in.HasClaudeRWMount && in.ClaudeHostHome != "" && in.ClaudeHostHome != "/root" {
-		if symlinkErr := seedClaudeHomeSymlinkFn(ctx, id, in.ClaudeHostHome, in.Execer); symlinkErr != nil {
-			slog.Warn("supervisor.claude_home_symlink_failed",
-				"sandbox", id, "host_home", in.ClaudeHostHome, "err", symlinkErr,
-				"action", "plugin paths using host-absolute form will not resolve in guest")
-		} else {
-			slog.Info("supervisor.claude_home_symlink_seeded", "sandbox", id, "link", in.ClaudeHostHome+"/.claude")
 		}
 	}
 
