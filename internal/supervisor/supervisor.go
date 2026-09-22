@@ -534,22 +534,7 @@ func RunDetached(cfg Config) error {
 	broker := cred.NewBroker()
 	svc = svc.WithBroker(broker)
 
-	var refreshers []*cred.Refresher
-	if cfg.CredsFile != "" {
-		for _, host := range service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) {
-			r, rErr := cred.NewRefresher(cfg.CredsFile, host, broker)
-			if errors.Is(rErr, cred.ErrStoreAbsent) {
-				slog.Info("supervisor.creds_absent", "path", cfg.CredsFile)
-				break // same file for all hosts; no point trying others
-			}
-			if rErr != nil {
-				slog.Warn("supervisor.refresher_init_failed", "host", host, "err", rErr)
-				continue
-			}
-			refreshers = append(refreshers, r)
-			slog.Info("supervisor.refresher_ready", "host", host, "path", cfg.CredsFile)
-		}
-	}
+	refreshers := buildClaudeRefreshers(cfg.CredsFile, broker)
 
 	// ── 3b. Resolve sandbox ID for agent client ───────────────────────────────
 	// Resolve the sandbox record now (before VM boot) so we can construct the
@@ -1951,6 +1936,27 @@ func seedHumanSecrets(
 // passing: it asserted the value was TRANSPORTED, never that it reached the VM.
 // A test over this function closes the config half only — that the supervisor
 // actually calls it is proven by booting a sandbox and reading nproc.
+func buildClaudeRefreshers(credsFile string, broker *cred.Broker) []*cred.Refresher {
+	if credsFile == "" {
+		return nil
+	}
+	var rs []*cred.Refresher
+	for _, host := range service.AgentEgressHosts(cred.MustProfileByName(cred.ClaudeCodeProfileName)) {
+		r, rErr := cred.NewRefresher(credsFile, host, broker)
+		if errors.Is(rErr, cred.ErrStoreAbsent) {
+			slog.Info("supervisor.creds_absent", "path", credsFile)
+			break
+		}
+		if rErr != nil {
+			slog.Warn("supervisor.refresher_init_failed", "host", host, "err", rErr)
+			continue
+		}
+		rs = append(rs, r)
+		slog.Info("supervisor.refresher_ready", "host", host, "path", credsFile)
+	}
+	return rs
+}
+
 func buildSupervisorDriverConfig(
 	cfg Config,
 	memMaxMiB, vcpuMax uint32,

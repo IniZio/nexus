@@ -8,7 +8,7 @@ status: active
 trace: AC-2
 ---
 
-In every claude-code sandbox, no process **shall** carry `--dangerously-skip-permissions` and no seeded file **shall** set `bypassPermissions` or `skipDangerousModePermissionPrompt`. The guest agent **shall** run in Claude Code `auto` permission mode (derived from the host `~/.claude/settings.json` which is live-mounted). The `claudeReadyMatch` detector **shall** match the auto-mode ready footer (`"auto mode on"`) and **shall not** match the bypass-mode footer.
+In every claude-code sandbox, no process **shall** carry `--dangerously-skip-permissions` and no seeded file **shall** set `bypassPermissions` or `skipDangerousModePermissionPrompt`. The guest agent **shall** run in Claude Code `auto` permission mode (derived from the host `~/.claude/settings.json` which is overlay-projected via the MountAllowlist). The `claudeReadyMatch` detector **shall** match the auto-mode ready footer (`"auto mode on"`) and **shall not** match the bypass-mode footer.
 
 The agent **shall** complete a delegated brief unattended via `delegate_agent_dispatch` / `nexus herdr agent` without any bypass flag.
 

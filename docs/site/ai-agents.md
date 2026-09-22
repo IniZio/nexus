@@ -117,18 +117,18 @@ An unregistered name is **refused**, never silently defaulted: a typo must not b
 
 | Field | Effect |
 |---|---|
-| `CredDirLiveMount` | when true, the host credential directory is mounted read-write into the guest instead of using placeholder seeding |
+| `PlaceholderEnvVar` | the guest environment variable that carries the broker placeholder value (e.g. `CLAUDE_CODE_OAUTH_TOKEN`); the MITM proxy substitutes the real bearer token on every request to the registered egress hosts — no credential is written to the guest disk |
 | `EgressHosts` | the entire allowlist for that sandbox — everything else is denied |
 | `CACertEnvVars` | how the agent is told to trust the MITM CA (`NODE_EXTRA_CA_CERTS` for Node-based agents) |
 | `GuestEnv` | extra guest environment, e.g. disabling telemetry that would retry against a default-deny perimeter |
 
-For `claude-code`, no placeholder is seeded and no broker swap occurs — the guest reads and refreshes its own real credential. See [egress and perimeter](/security/egress-and-perimeter).
+For `claude-code`, `CLAUDE_CODE_OAUTH_TOKEN` is set to a broker placeholder in the guest environment. The MITM proxy performs the real-token substitution on every request to `api.anthropic.com` and `platform.claude.com`; the host `~/.claude` directory is not mounted into the sandbox. See [egress and perimeter](/security/egress-and-perimeter).
 
 ---
 
 ## Permission mode
 
-Claude Code sandboxes run in `auto` permission mode. No process in a sandbox carries `--dangerously-skip-permissions`, and no seeded file sets `bypassPermissions` or `skipDangerousModePermissionPrompt`. The host's `~/.claude/settings.json` is mounted live and already declares `permissions.defaultMode = "auto"`.
+Claude Code sandboxes run in `auto` permission mode. No process in a sandbox carries `--dangerously-skip-permissions`, and no seeded file sets `bypassPermissions` or `skipDangerousModePermissionPrompt`. The host's `~/.claude/settings.json` is overlay-projected via the MountAllowlist and already declares `permissions.defaultMode = "auto"`.
 
 The `claudeReadyMatch` detector that drives `delegate_agent_dispatch` is calibrated for the auto-mode footer (`"auto mode on"`), not the manual-mode (`"? for shortcuts"`) or bypass-mode footer. Every guest launch passes `--permission-mode auto` explicitly, because a bare `claude` starts in whatever mode the mounted host `settings.json` selects.
 
