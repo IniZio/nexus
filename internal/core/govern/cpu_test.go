@@ -550,6 +550,52 @@ func TestCPUResizeErrorCooldownFires(t *testing.T) {
 	}
 }
 
+func TestCPUDriftSettleWindowSuppresses(t *testing.T) {
+	clk := newFakeClock()
+	bounds := cpuBounds(1, 4)
+	g, a, fr := newCPUGovernorAndAxis(clk, 2, bounds)
+	ctx := context.Background()
+
+	injectCPUSample(g, clk, pressuredSample())
+	a.Evaluate(ctx)
+	if fr.callCount() != 1 || fr.calls[0] != 3 {
+		t.Fatalf("setup grow: want 1 call to 3, got %v", fr.calls)
+	}
+
+	clk.Advance(cpuDriftSettle / 2)
+	staleSample := deadBandSample()
+	staleSample.VCPUOnline = 2
+	injectCPUSample(g, clk, staleSample)
+	a.Evaluate(ctx)
+
+	if a.currentVCPUs != 3 {
+		t.Errorf("inside settle window: currentVCPUs = %d, want 3 (drift suppressed)", a.currentVCPUs)
+	}
+}
+
+func TestCPUDriftAfterSettleWindowReconciles(t *testing.T) {
+	clk := newFakeClock()
+	bounds := cpuBounds(1, 4)
+	g, a, fr := newCPUGovernorAndAxis(clk, 2, bounds)
+	ctx := context.Background()
+
+	injectCPUSample(g, clk, pressuredSample())
+	a.Evaluate(ctx)
+	if fr.callCount() != 1 || fr.calls[0] != 3 {
+		t.Fatalf("setup grow: want 1 call to 3, got %v", fr.calls)
+	}
+
+	clk.Advance(cpuDriftSettle + time.Second)
+	staleSample := deadBandSample()
+	staleSample.VCPUOnline = 2
+	injectCPUSample(g, clk, staleSample)
+	a.Evaluate(ctx)
+
+	if a.currentVCPUs != 2 {
+		t.Errorf("after settle window: currentVCPUs = %d, want 2 (drift reconciled)", a.currentVCPUs)
+	}
+}
+
 // errFakeResizeFailure is a sentinel error for TestCPUResizeErrorCooldownFires.
 var errFakeResizeFailure = errCPUResizeFail("cpu resize failed")
 
