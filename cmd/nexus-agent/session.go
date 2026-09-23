@@ -53,6 +53,18 @@ type Session struct {
 	// exitCh carries the exit code to the coordinator goroutine.
 	// Buffered(1): either cmd.Wait() or the PID-1 reap loop sends exactly once.
 	exitCh chan int32
+
+	pendingRID     uint64
+	pendingRIDOnce sync.Once
+	hasPendingRID  bool
+}
+
+func (s *Session) claimPendingReader() {
+	s.pendingRIDOnce.Do(func() {
+		if s.hasPendingRID {
+			s.ring.RemoveReader(s.pendingRID)
+		}
+	})
 }
 
 // setExited records the exit code, marks the session done, and closes the

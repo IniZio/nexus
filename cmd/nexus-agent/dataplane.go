@@ -60,29 +60,38 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	oldest := sess.ring.OldestOffset()
+	from := hs.ResumeFromOffset
+	var bytesLost uint64
+	if from < oldest {
+		bytesLost = oldest - from
+	}
+
 	alreadyExited := sess.exited.Load()
 	if alreadyExited {
 		_ = w.WriteHandshakeAck(wire.HandshakeAck{
-			Status:   wire.AckExited,
-			ExitCode: sess.exitCode.Load(),
+			Status:    wire.AckExited,
+			ExitCode:  sess.exitCode.Load(),
+			BytesLost: bytesLost,
 		})
-		// Replay ring tail then Exit (per spec: don't lose buffered output).
-		streamRingToWriter(w, sess.ring, hs.ResumeFromOffset)
+		readerID := sess.ring.AddReader(from)
+		streamRingToWriter(w, sess.ring, readerID, from)
+		sess.ring.RemoveReader(readerID)
 		_ = w.WriteExit(wire.Exit{Code: sess.exitCode.Load()})
 		return
 	}
 
-	_ = w.WriteHandshakeAck(wire.HandshakeAck{Status: wire.AckAlive})
+	_ = w.WriteHandshakeAck(wire.HandshakeAck{Status: wire.AckAlive, BytesLost: bytesLost})
 
-	// outbound (ring → frames) and inbound (frames → PTY/stdin)
-	// The outbound goroutine is authoritative: it closes doneCh when it has
-	// sent the Exit frame. conn.Close() (deferred above) then unblocks the
-	// inbound goroutine's ReadFrame.
+	readerID := sess.ring.AddReader(from)
+	sess.claimPendingReader()
+
 	doneCh := make(chan struct{})
 
 	go func() {
 		defer close(doneCh)
-		streamRingToWriter(w, sess.ring, hs.ResumeFromOffset)
+		defer sess.ring.RemoveReader(readerID)
+		streamRingToWriter(w, sess.ring, readerID, from)
 		_ = w.WriteExit(wire.Exit{Code: sess.exitCode.Load()})
 	}()
 
@@ -141,16 +150,16 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 	<-doneCh
 }
 
-// streamRingToWriter replays the ring from from and streams new data until the
-// ring is closed and all bytes have been sent. Returns when done.
-func streamRingToWriter(w *wire.Writer, ring *Ring, from uint64) {
+// streamRingToWriter streams ring data to w until the ring is closed and drained.
+// stdout and stderr are both tagged StreamStdout because they share one ring.
+func streamRingToWriter(w *wire.Writer, ring *Ring, readerID uint64, from uint64) {
 	off := from
 	for {
-		data, newOff, done := ring.WaitNext(off)
+		data, newOff, done, _ := ring.WaitNextCursored(readerID, off)
 		off = newOff
 		if len(data) > 0 {
 			if err := w.WriteData(wire.StreamStdout, data); err != nil {
-				return // connection closed
+				return
 			}
 		}
 		if done && len(data) == 0 {

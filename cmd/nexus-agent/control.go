@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"google.golang.org/grpc/codes"
@@ -92,6 +93,10 @@ func (cs *controlServer) execPTY(cmd *exec.Cmd, env []string, opts *agentpb.PtyO
 		}
 	}
 
+	sess.pendingRID = sess.ring.AddReader(0)
+	sess.hasPendingRID = true
+	time.AfterFunc(30*time.Second, sess.claimPendingReader)
+
 	err := cs.a.sessions.spawn(sess, func() (int, error) {
 		ptmx, err := pty.StartWithSize(cmd, sz)
 		if err != nil {
@@ -101,11 +106,11 @@ func (cs *controlServer) execPTY(cmd *exec.Cmd, env []string, opts *agentpb.PtyO
 		return cmd.Process.Pid, nil
 	})
 	if err != nil {
+		sess.claimPendingReader()
 		return status.Errorf(codes.Internal, "pty.StartWithSize: %v", err)
 	}
 	ptmx := sess.ptmx
 
-	// Single goroutine: feed ring, then get exit code, then mark done.
 	go func() {
 		feedRingFromReader(ptmx, sess.ring)
 		ptmx.Close()
@@ -157,6 +162,10 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 	cmd.Stdin = stdinR
 
 	sess.stdinW = stdinW
+	sess.pendingRID = sess.ring.AddReader(0)
+	sess.hasPendingRID = true
+	time.AfterFunc(30*time.Second, sess.claimPendingReader)
+
 	err = cs.a.sessions.spawn(sess, func() (int, error) {
 		if err := cmd.Start(); err != nil {
 			return 0, err
@@ -164,6 +173,7 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 		return cmd.Process.Pid, nil
 	})
 	if err != nil {
+		sess.claimPendingReader()
 		stdoutR.Close()
 		stdoutW.Close()
 		stderrR.Close()
