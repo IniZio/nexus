@@ -37,12 +37,19 @@ func buildFakeHome(t *testing.T, dir string) {
 	settings := map[string]any{
 		"model":               "claude-opus-4-5",
 		"theme":               "dark",
+		"statusLine":          map[string]string{"type": "command", "command": "bun hud.ts"},
 		"apiKeyHelper":        "secret-script",
 		"awsCredentialExport": "aws-secret",
 		"gcpAuthRefresh":      "gcp-secret",
 		"otelHeadersHelper":   "otel-secret",
-		"env":                 map[string]string{"MY_SECRET": "hunter2"},
-		"permissions":         map[string]any{"allow": []string{"*"}},
+		"env": map[string]string{
+			"MY_SECRET":         "hunter2",
+			"GITHUB_TOKEN":      "ghp_real",
+			"ANTHROPIC_API_KEY": "sk-ant-real",
+			"TMPDIR":            "/dev/shm/host-only",
+			"API_TIMEOUT_MS":    "600000",
+		},
+		"permissions": map[string]any{"allow": []string{"*"}},
 		"hooks": map[string]any{
 			"PreToolUse": []map[string]any{{"matcher": ".*", "hooks": []map[string]any{{"type": "command", "command": "evil"}}}},
 		},
@@ -72,7 +79,6 @@ var knownSecretSettingsKeys = []string{
 	"awsCredentialExport",
 	"gcpAuthRefresh",
 	"otelHeadersHelper",
-	"env",
 	"hooks",
 	"permissions",
 }
@@ -166,8 +172,10 @@ func TestAssembleCuratedConfig(t *testing.T) {
 	}
 }
 
-// TestAssembleCuratedConfig_AllowlistDropsUnknownAndSecret verifies allowlist posture.
-func TestAssembleCuratedConfig_AllowlistDropsUnknownAndSecret(t *testing.T) {
+// TestAssembleCuratedConfig_DenylistKeepsUnknownDropsSecret verifies the
+// claude-code denylist posture: unlisted keys pass, denied keys and
+// credential/host-path env entries do not.
+func TestAssembleCuratedConfig_DenylistKeepsUnknownDropsSecret(t *testing.T) {
 	srcDir := t.TempDir()
 	destDir := t.TempDir()
 	buildFakeHome(t, srcDir)
@@ -183,14 +191,26 @@ func TestAssembleCuratedConfig_AllowlistDropsUnknownAndSecret(t *testing.T) {
 	if err := json.Unmarshal(data, &staged); err != nil {
 		t.Fatalf("parse staged settings.json: %v", err)
 	}
-	for _, k := range []string{"model", "theme"} {
+	for _, k := range []string{"model", "theme", "statusLine", "someFutureSecretKey"} {
 		if _, ok := staged[k]; !ok {
-			t.Errorf("portable key %q was dropped", k)
+			t.Errorf("non-denied key %q was dropped", k)
 		}
 	}
-	for _, k := range []string{"sandbox", "someFutureSecretKey"} {
+	for _, k := range []string{"sandbox", "hooks", "permissions", "apiKeyHelper"} {
 		if _, leaked := staged[k]; leaked {
-			t.Errorf("non-allowlisted key %q leaked into staged settings.json", k)
+			t.Errorf("denied key %q leaked into staged settings.json", k)
+		}
+	}
+	var env map[string]string
+	if err := json.Unmarshal(staged["env"], &env); err != nil {
+		t.Fatalf("parse staged env: %v", err)
+	}
+	if env["API_TIMEOUT_MS"] != "600000" {
+		t.Errorf("benign env API_TIMEOUT_MS dropped: %v", env)
+	}
+	for _, k := range []string{"MY_SECRET", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "TMPDIR"} {
+		if _, leaked := env[k]; leaked {
+			t.Errorf("env %q leaked into staged settings.json", k)
 		}
 	}
 }

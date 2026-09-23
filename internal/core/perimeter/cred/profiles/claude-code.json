@@ -20,21 +20,15 @@
   "MCPConfigFormat": "claude-json",
   "MountAllowlist": ["CLAUDE.md", "skills/**", "settings.json", "plugins/**"],
   "SymlinkPreservePrefixes": ["plugins"],
-  "SettingsAllowlist": {
-    "model": true,
-    "advisorModel": true,
-    "availableModels": true,
-    "theme": true,
-    "tui": true,
-    "defaultShell": true,
-    "attribution": true,
-    "enabledPlugins": true,
-    "extraKnownMarketplaces": true,
-    "autoMode": true,
-    "effortLevel": true,
-    "autoUpdatesChannel": true,
-    "enableWorkflows": true,
-    "skipDangerousModePermissionPrompt": true
+  "SettingsDenylist": {
+    "apiKeyHelper": true,
+    "awsAuthRefresh": true,
+    "awsCredentialExport": true,
+    "gcpAuthRefresh": true,
+    "otelHeadersHelper": true,
+    "hooks": true,
+    "permissions": true,
+    "sandbox": true
   },
   "BypassConsentKey": "",
   "ToolRecipe": {

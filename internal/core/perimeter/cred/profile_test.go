@@ -202,3 +202,38 @@ func TestCursorAgentProfile_CredentialedHostSuffix(t *testing.T) {
 		t.Error("CredentialedHost must not be empty when CredentialedHostSuffix is set")
 	}
 }
+
+func TestSettingsEnvDropped(t *testing.T) {
+	cases := []struct {
+		name, value string
+		want        bool
+	}{
+		{"ANTHROPIC_API_KEY", "sk-ant-x", true},
+		{"GITHUB_TOKEN", "ghp_x", true},
+		{"aws_secret_access_key", "x", true},
+		{"DB_PASSWORD", "x", true},
+		{"ANTHROPIC_AUTH_TOKEN", "x", true},
+		{"TMPDIR", "/dev/shm/host", true},
+		{"SOME_DIR", "~/cache", true},
+		{"API_TIMEOUT_MS", "600000", false},
+		{"ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-5", false},
+		{"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1", false},
+	}
+	for _, tc := range cases {
+		if got := cred.SettingsEnvDropped(tc.name, tc.value); got != tc.want {
+			t.Errorf("SettingsEnvDropped(%q, %q) = %v, want %v", tc.name, tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestClaudeCodeProfile_SettingsDenylist(t *testing.T) {
+	p := cred.MustProfileByName(cred.ClaudeCodeProfileName)
+	if len(p.SettingsAllowlist) != 0 {
+		t.Errorf("claude-code must use SettingsDenylist, not SettingsAllowlist: %v", p.SettingsAllowlist)
+	}
+	for _, k := range []string{"apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "gcpAuthRefresh", "otelHeadersHelper", "hooks", "permissions"} {
+		if !p.SettingsDenylist[k] {
+			t.Errorf("claude-code SettingsDenylist missing %q", k)
+		}
+	}
+}

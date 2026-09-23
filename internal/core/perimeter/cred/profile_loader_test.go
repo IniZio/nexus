@@ -94,6 +94,11 @@ func TestDecodeProfile_Rejection(t *testing.T) {
 			doc:     `{"Name": "x", "EgressHosts": [1, 2, 3}`,
 			wantSub: "test-doc.json",
 		},
+		{
+			name:    "allowlist and denylist both set",
+			doc:     `{"Name":"x","SettingsAllowlist":{"model":true},"SettingsDenylist":{"hooks":true}}`,
+			wantSub: "mutually exclusive",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
