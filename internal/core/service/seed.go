@@ -730,38 +730,6 @@ func buildUserMountScript(manifest UserMountManifest) string {
 	var b strings.Builder
 	b.WriteString("set -eu\n\n")
 
-	// Step 1: per-tool-dir symlinks host_home/<dir> -> /root/<dir>.
-	if manifest.HostHome != "" && manifest.HostHome != "/root" {
-		seen := map[string]bool{}
-		var comps []string
-		for _, m := range manifest.Mounts {
-			rel := strings.TrimPrefix(m.GuestPath, "/root/")
-			if rel == m.GuestPath || rel == "" {
-				continue
-			}
-			comp := rel
-			if i := strings.IndexByte(rel, '/'); i >= 0 {
-				comp = rel[:i]
-			}
-			if comp == "" || seen[comp] {
-				continue
-			}
-			seen[comp] = true
-			comps = append(comps, comp)
-		}
-		if len(comps) > 0 {
-			qHome := shSingleQuote(manifest.HostHome)
-			fmt.Fprintf(&b, "# 1. Tool-dir symlinks: %s/<dir> -> /root/<dir>\n", manifest.HostHome)
-			fmt.Fprintf(&b, "mkdir -p %s\n", qHome)
-			for _, comp := range comps {
-				qDst := shSingleQuote(manifest.HostHome + "/" + comp)
-				qSrc := shSingleQuote("/root/" + comp)
-				fmt.Fprintf(&b, "if [ ! -e %s ] && [ ! -L %s ]; then ln -s %s %s; fi\n", qDst, qDst, qSrc, qDst)
-			}
-			b.WriteString("\n")
-		}
-	}
-
 	// Step 2: PATH drop-in.
 	qProfile := shSingleQuote(GuestUserMountsProfilePath)
 	fmt.Fprintf(&b, "# 2. PATH drop-in\n")

@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // ResolvePluginSymlinkMounts returns "<host>:<guest>:ro" bind-mount specs for
@@ -171,55 +169,6 @@ func resolveGroundworkMount(worktreePath string) string {
 		return ""
 	}
 	return groundwork + ":" + groundwork
-}
-
-// ResolveHookRuntimeMounts returns read-only LiveMount entries for ~/.local/bin and ~/.local/share/mise/installs at host-path identity; nil on non-linux or absent dirs.
-func ResolveHookRuntimeMounts(hostHome, goos string, statFn func(string) (os.FileInfo, error)) []domain.LiveMount {
-	if goos != "linux" {
-		return nil
-	}
-	candidates := []string{
-		filepath.Join(hostHome, ".local", "bin"),
-		filepath.Join(hostHome, ".local", "share", "mise", "installs"),
-	}
-	var mounts []domain.LiveMount
-	for _, dir := range candidates {
-		if _, err := statFn(dir); err == nil {
-			mounts = append(mounts, domain.LiveMount{
-				HostPath:  dir,
-				GuestPath: dir,
-				ReadOnly:  true,
-			})
-		}
-	}
-	return mounts
-}
-
-// ResolveHookRuntimePathDirs returns dirs of "bun" and "rtk" that fall under projectedDirs; nil on non-linux or no match.
-func ResolveHookRuntimePathDirs(goos string, lookPath func(string) (string, error), projectedDirs []string) []string {
-	if goos != "linux" {
-		return nil
-	}
-	seen := map[string]bool{}
-	var dirs []string
-	for _, name := range []string{"rtk", "bun"} {
-		p, err := lookPath(name)
-		if err != nil {
-			continue
-		}
-		dir := filepath.Dir(p)
-		if seen[dir] {
-			continue
-		}
-		for _, pd := range projectedDirs {
-			if dir == pd || strings.HasPrefix(dir, pd+string(filepath.Separator)) {
-				seen[dir] = true
-				dirs = append(dirs, dir)
-				break
-			}
-		}
-	}
-	return dirs
 }
 
 func readMarketplacePaths(pluginsDir string) (paths []string, warnings []string) {

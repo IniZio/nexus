@@ -4,12 +4,65 @@ package agent
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 )
+
+// EnsureHostHomeSymlink creates a symlink at hostHome pointing to /root so that
+// host-absolute paths inside config files (e.g. /home/alice/.claude/plugins/...)
+// resolve correctly inside the guest.
+//
+// Skip conditions (any one → no-op):
+//   - hostHome is empty, "/root", not absolute, or contains ".."
+//   - hostHome already exists as a symlink (leave as-is)
+//   - hostHome exists as a non-empty real directory (log warning, leave as-is)
+//
+// If hostHome exists as an empty real directory it is removed and replaced with
+// the symlink. If the path does not exist its parent is created first.
+func EnsureHostHomeSymlink(hostHome string) error {
+	if hostHome == "" || hostHome == "/root" {
+		return nil
+	}
+	if !filepath.IsAbs(hostHome) || strings.Contains(hostHome, "..") {
+		return nil
+	}
+
+	fi, err := os.Lstat(hostHome)
+	if err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return nil // already a symlink — leave it
+		}
+		// Exists as a real entry (dir or file).
+		entries, readErr := os.ReadDir(hostHome)
+		if readErr != nil {
+			return fmt.Errorf("hosthome: readdir %s: %w", hostHome, readErr)
+		}
+		if len(entries) > 0 {
+			slog.Warn("hosthome: exists as non-empty directory; leaving it", "path", hostHome)
+			return nil
+		}
+		// Empty real directory — remove it so we can create the symlink.
+		if rmErr := os.Remove(hostHome); rmErr != nil {
+			return fmt.Errorf("hosthome: rmdir %s: %w", hostHome, rmErr)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("hosthome: lstat %s: %w", hostHome, err)
+	} else {
+		// Path does not exist — create parent directories.
+		if mkErr := os.MkdirAll(filepath.Dir(hostHome), 0o755); mkErr != nil {
+			return fmt.Errorf("hosthome: mkdir parent of %s: %w", hostHome, mkErr)
+		}
+	}
+
+	if symErr := os.Symlink("/root", hostHome); symErr != nil {
+		return fmt.Errorf("hosthome: symlink %s -> /root: %w", hostHome, symErr)
+	}
+	return nil
+}
 
 func (m GuestMount) mountFlags() uintptr {
 	if m.ReadOnly {

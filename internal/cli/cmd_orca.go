@@ -334,6 +334,7 @@ func buildOrcaSpawnConfig(
 	credsFile string,
 	guestPath string,
 	hasScratchDisk bool,
+	hostHome string,
 ) supervisor.SpawnConfig {
 	// Build the kernel cmdline for the supervisor-owned VM. The supervisor
 	// reboots the VM independently (CLI stops the initial boot before handoff),
@@ -364,7 +365,7 @@ func buildOrcaSpawnConfig(
 	if hasScratchDisk {
 		scratchIdx = len(extraDiskPaths) - 1
 	}
-	cmdline := guestBootCmdline(mounts, arArgs, sandboxHandle, scratchIdx)
+	cmdline := guestBootCmdline(mounts, arArgs, sandboxHandle, scratchIdx, hostHome)
 
 	return supervisor.SpawnConfig{
 		Config: supervisor.Config{
@@ -695,6 +696,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	if opts.Workspace != nil {
 		guestWorkspacePath = opts.Workspace.GuestPath
 	}
+	orcaHostHome, _ := os.UserHomeDir()
 	spawnCfg := buildOrcaSpawnConfig(
 		sb.ID.String(), sb.Handle(), storeRoot, stateDir, chBin, socketDir, kernelPath, capturedDiskPath,
 		capturedExtraDisks,
@@ -708,6 +710,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		// iff workspace was requested and NoScratchDisk was not set (orca never
 		// sets NoScratchDisk, so workspace presence is sufficient here).
 		opts.Workspace != nil,
+		orcaHostHome,
 	)
 	// Non-ephemeral supervisor: watchdog pipe is nil (orca sandbox persists after CLI exit).
 	pid, _, err := supervisor.SpawnDetached(spawnCfg)

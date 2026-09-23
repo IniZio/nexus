@@ -20,7 +20,7 @@ import (
 
 func TestGuestBootCmdline_NoMounts(t *testing.T) {
 	t.Parallel()
-	got := guestBootCmdline(nil, " --auto-resize", "proj/name", -1)
+	got := guestBootCmdline(nil, " --auto-resize", "proj/name", -1, "")
 
 	if !strings.HasPrefix(got, diskBootCmdlineBase+" --") {
 		t.Errorf("cmdline must start with the base boot args; got %q", got)
@@ -39,7 +39,7 @@ func TestGuestBootCmdline_WithMounts(t *testing.T) {
 		{Device: "/dev/vdb", Target: "/workspace", FSType: "ext4", IsWorkspace: true},
 		{Device: "/dev/vdc", Target: "/cache", FSType: "ext4", ReadOnly: true},
 	}
-	got := guestBootCmdline(mounts, " --auto-resize", "proj/name", -1)
+	got := guestBootCmdline(mounts, " --auto-resize", "proj/name", -1, "")
 
 	if n := strings.Count(got, "--workspace-mount="); n != len(mounts) {
 		t.Errorf("expected one --workspace-mount token per mount (%d), got %d in %q", len(mounts), n, got)
@@ -73,12 +73,13 @@ func TestGuestBootCmdline_SupervisorReconstructionMatchesCreate(t *testing.T) {
 	// The scratch index is len(extraDiskPaths)-1 = 1, not a literal.
 	extraDiskPaths := []string{"/fake/workspace.img", "/fake/scratch.img"}
 	scratchIdx := len(extraDiskPaths) - 1
-	create := guestBootCmdline(mounts, pid1Args, handle, scratchIdx)
+	create := guestBootCmdline(mounts, pid1Args, handle, scratchIdx, "")
 
 	cfg := buildOrcaSpawnConfig(
 		"01J0SPAWN", handle, t.TempDir(), t.TempDir(), "", "", "/k", "/d",
 		extraDiskPaths, bounds, 1, true, 0, "", "/workspace",
 		true, // hasScratchDisk: workspace present, NoScratchDisk not set
+		"",   // hostHome: empty in test (nested/orca path)
 	)
 
 	if cfg.Cmdline != create {
@@ -101,7 +102,7 @@ func TestGuestBootCmdline_NoScratchDisk(t *testing.T) {
 
 	// scratchIdx=-1: HasScratchDisk=false (e.g. NoScratchDisk=true was set).
 	// Even though mounts is non-empty, --scratch-disk= MUST be absent.
-	got := guestBootCmdline(mounts, " --auto-resize", "proj/name", -1)
+	got := guestBootCmdline(mounts, " --auto-resize", "proj/name", -1, "")
 	if strings.Contains(got, "--scratch-disk=") {
 		t.Errorf("no-scratch sandbox must not emit --scratch-disk=; got %q", got)
 	}
@@ -128,6 +129,7 @@ func TestGuestBootCmdline_NoScratchDisk_OrcaPath(t *testing.T) {
 		0,    // workspaceDiskIndex
 		"", "/workspace",
 		false, // hasScratchDisk=false — explicitly not attached
+		"",    // hostHome: empty in test
 	)
 	if strings.Contains(cfg.Cmdline, "--scratch-disk=") {
 		t.Errorf("no-scratch orca sandbox must not emit --scratch-disk=; got %q", cfg.Cmdline)
@@ -143,20 +145,20 @@ func TestScratchDiskCmdlineArg_PresenceAbsence(t *testing.T) {
 	// Case 1: scratch disk present at ExtraDisks index 1 → /dev/vdc (b+1=c)
 	withScratch := guestBootCmdline(
 		[]agent.GuestMount{{Device: "/dev/vdb", Target: "/workspace", FSType: "ext4", IsWorkspace: true}},
-		" --auto-resize", "proj/name", 1,
+		" --auto-resize", "proj/name", 1, "",
 	)
 	if !strings.Contains(withScratch, "--scratch-disk=/dev/vdc") {
 		t.Errorf("scratch disk at idx=1 must emit --scratch-disk=/dev/vdc; got %q", withScratch)
 	}
 
 	// Case 2: 5 extra disks (indices 0-4); scratch at index 4 → /dev/vdf (b+4=f)
-	withScratchF := guestBootCmdline(nil, " --auto-resize", "proj/name", 4)
+	withScratchF := guestBootCmdline(nil, " --auto-resize", "proj/name", 4, "")
 	if !strings.Contains(withScratchF, "--scratch-disk=/dev/vdf") {
 		t.Errorf("scratch disk at idx=4 must emit --scratch-disk=/dev/vdf; got %q", withScratchF)
 	}
 
 	// Case 3: no scratch disk (idx < 0) → --scratch-disk= must be absent
-	withoutScratch := guestBootCmdline(nil, " --auto-resize", "proj/name", -1)
+	withoutScratch := guestBootCmdline(nil, " --auto-resize", "proj/name", -1, "")
 	if strings.Contains(withoutScratch, "--scratch-disk=") {
 		t.Errorf("no scratch disk (idx=-1) must not emit --scratch-disk=; got %q", withoutScratch)
 	}
@@ -219,7 +221,7 @@ func TestBootScratchDiskPresent_CmdlineIntegration(t *testing.T) {
 	scratchExtraDisks := []service.ExtraDisk{{Path: "/fake/scratch.img"}}
 	scratchIdx := len(scratchExtraDisks) - 1 // = 0
 
-	cmdline := guestBootCmdline(nil, " --auto-resize", "proj/worktree", scratchIdx)
+	cmdline := guestBootCmdline(nil, " --auto-resize", "proj/worktree", scratchIdx, "")
 	if !strings.Contains(cmdline, "--scratch-disk=/dev/vdb") {
 		t.Errorf("worktree-shape cmdline must contain --scratch-disk=/dev/vdb; got %q", cmdline)
 	}
@@ -308,7 +310,7 @@ func TestBuildLiveMountDriverSpec_WorktreeShape(t *testing.T) {
 	}
 	ar := vmcfg.Result{}
 
-	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", liveMounts, nil, nil, "proj", "wt")
+	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", liveMounts, nil, nil, "proj", "wt", "")
 
 	if !spec.HasScratchDisk {
 		t.Error("buildLiveMountDriverSpec must set HasScratchDisk=true for a /workspace LiveMount with empty workspacePath")
@@ -322,7 +324,7 @@ func TestBuildLiveMountDriverSpec_NoWorkspace_NoMount(t *testing.T) {
 	f := sandboxCreateFlags{memoryMiB: 512, vcpus: 1}
 	ar := vmcfg.Result{}
 
-	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", nil, nil, nil, "proj", "plain")
+	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", nil, nil, nil, "proj", "plain", "")
 
 	if spec.HasScratchDisk {
 		t.Error("buildLiveMountDriverSpec must set HasScratchDisk=false with no workspace and no LiveMounts")
@@ -339,7 +341,7 @@ func TestBuildLiveMountDriverSpec_WorkspacePath(t *testing.T) {
 	}
 	ar := vmcfg.Result{}
 
-	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", nil, nil, nil, "proj", "ws")
+	spec := buildLiveMountDriverSpec(f, ar, "/boot/vmlinux", nil, nil, nil, "proj", "ws", "")
 
 	if !spec.HasScratchDisk {
 		t.Error("buildLiveMountDriverSpec must set HasScratchDisk=true when workspacePath is set")
@@ -357,7 +359,7 @@ func TestBuildLiveMountDriverSpec_GuestMountsAssembly(t *testing.T) {
 	f := sandboxCreateFlags{memoryMiB: 512, vcpus: 1}
 	ar := vmcfg.Result{}
 
-	spec := buildLiveMountDriverSpec(f, ar, "/k", live, boot, named, "p", "n")
+	spec := buildLiveMountDriverSpec(f, ar, "/k", live, boot, named, "p", "n", "")
 
 	if len(spec.GuestMounts) != 3 {
 		t.Fatalf("expected 3 GuestMounts (named+boot+live), got %d", len(spec.GuestMounts))
@@ -365,4 +367,33 @@ func TestBuildLiveMountDriverSpec_GuestMountsAssembly(t *testing.T) {
 	if spec.GuestMounts[0].Device != "/dev/vdb" {
 		t.Errorf("first GuestMount must be named disk; got %v", spec.GuestMounts[0])
 	}
+}
+
+// TestGuestBootCmdline_HostHome verifies that a non-empty hostHome adds --hosthome=
+// to the assembled cmdline, and that an empty hostHome omits it.
+func TestGuestBootCmdline_HostHome(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-empty hostHome appended", func(t *testing.T) {
+		got := guestBootCmdline(nil, " --auto-resize", "proj/name", -1, "/home/alice")
+		if !strings.Contains(got, "--hosthome=/home/alice") {
+			t.Errorf("expected --hosthome=/home/alice in cmdline; got %q", got)
+		}
+	})
+
+	t.Run("empty hostHome omitted", func(t *testing.T) {
+		got := guestBootCmdline(nil, " --auto-resize", "proj/name", -1, "")
+		if strings.Contains(got, "--hosthome=") {
+			t.Errorf("empty hostHome must not emit --hosthome=; got %q", got)
+		}
+	})
+
+	t.Run("buildLiveMountDriverSpec propagates hostHome to HostHome field", func(t *testing.T) {
+		f := sandboxCreateFlags{memoryMiB: 512, vcpus: 1}
+		ar := vmcfg.Result{}
+		spec := buildLiveMountDriverSpec(f, ar, "/k", nil, nil, nil, "p", "n", "/home/bob")
+		if spec.HostHome != "/home/bob" {
+			t.Errorf("HostHome = %q, want %q", spec.HostHome, "/home/bob")
+		}
+	})
 }

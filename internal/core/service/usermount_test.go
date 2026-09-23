@@ -342,3 +342,26 @@ func TestWriteUserMountManifest_RoundTrip(t *testing.T) {
 		t.Fatalf("Mounts len = %d, want %d", len(got.Mounts), len(m.Mounts))
 	}
 }
+
+func TestMirroredHostPathDirs(t *testing.T) {
+	mounts := []service.ResolvedUserMount{
+		{HostPath: "/home/a/.local/bin"},
+		{HostPath: "/home/a/.local/share/mise/installs"},
+		{HostPath: "/home/a/.gitconfig", IsFile: true},
+	}
+	hostPATH := strings.Join([]string{
+		"/home/a/.local/share/mise/installs/bun/latest/bin",
+		"/usr/bin",
+		"/home/a/.local/bin",
+		"/home/a/.local/bin/", // duplicate after Clean
+		"/home/a/.local/binx", // sibling prefix, not inside the mount
+		"/home/a/.gitconfig",  // file mount never contributes
+		"",
+	}, ":")
+
+	got := service.MirroredHostPathDirs(hostPATH, mounts)
+	want := []string{"/home/a/.local/share/mise/installs/bun/latest/bin", "/home/a/.local/bin"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("MirroredHostPathDirs = %v, want %v", got, want)
+	}
+}

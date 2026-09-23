@@ -733,6 +733,7 @@ func buildLiveMountDriverSpec(
 	bootGuestMounts []agent.GuestMount,
 	namedDiskMounts []agent.GuestMount,
 	project, name string,
+	hostHome string,
 ) sandboxDriverSpec {
 	liveGuestMounts := liveMountsToGuestMounts(bootLiveMounts)
 	allGuestMounts := append(append([]agent.GuestMount{}, namedDiskMounts...),
@@ -746,18 +747,23 @@ func buildLiveMountDriverSpec(
 		NestedVirt:     f.nestedVirt,
 		PID1Args:       ar.PID1Args,
 		SBHandle:       project + "/" + name,
+		HostHome:       hostHome,
 		LiveMounts:     bootLiveMounts,
 		GuestMounts:    allGuestMounts,
 		HasScratchDisk: bootScratchDiskPresent(f.workspacePath, bootLiveMounts),
 	}
 }
 
-func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string, scratchDiskIdx int) string {
+func guestBootCmdline(mounts []agent.GuestMount, pid1Args, sandboxHandle string, scratchDiskIdx int, hostHome string) string {
 	base := diskBootCmdlineBase + " --"
 	if len(mounts) > 0 {
 		base = workspaceMountCmdline(mounts)
 	}
-	return base + pid1Args + scratchDiskCmdlineArg(scratchDiskIdx) + " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
+	result := base + pid1Args + scratchDiskCmdlineArg(scratchDiskIdx) + " --sandbox-handle=" + sandboxHandleHostname(sandboxHandle)
+	if hostHome != "" {
+		result += " --hosthome=" + hostHome
+	}
+	return result
 }
 
 func scratchDiskCmdlineArg(idx int) string {
@@ -1290,6 +1296,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	var bootGuestMounts []agent.GuestMount
 	var bootLiveMounts []domain.LiveMount // D-PD-53: captured by newDriver closure
 	var caps sandboxDriverCaptures
+	// Host home is aliased to /root in the guest (--hosthome) so absolute host
+	// paths in any agent's config resolve; captured by newDriver.
+	sandboxHostHome, _ := os.UserHomeDir()
 
 	ar := vmcfg.Resolve(vmcfg.Config{
 		BootMemMiB: f.memoryMiB,
@@ -1308,7 +1317,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	)
 
 	newDriver := func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
-		spec := buildLiveMountDriverSpec(f, ar, kernelPath, bootLiveMounts, bootGuestMounts, namedDiskMounts, project, name)
+		spec := buildLiveMountDriverSpec(f, ar, kernelPath, bootLiveMounts, bootGuestMounts, namedDiskMounts, project, name, sandboxHostHome)
 		return buildSandboxDriverFactory(spec, &caps)(ext4Path, extraDisks)
 	}
 
@@ -1465,10 +1474,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 						slog.Warn("sandbox create: failed to load user global config; user mounts disabled", "err", ugErr)
 					}
 					manifest := service.BuildUserMountManifest(hostHome, []string(userGlobalCfg.Sandbox.Mounts))
-					manifest.ExtraPathDirs = service.ResolveHookRuntimePathDirs(runtime.GOOS, exec.LookPath, []string{
-						filepath.Join(hostHome, ".local", "bin"),
-						filepath.Join(hostHome, ".local", "share", "mise", "installs"),
-					})
+					manifest.ExtraPathDirs = service.MirroredHostPathDirs(os.Getenv("PATH"), manifest.Mounts)
 					if len(agentProfile.ToolRecipe.Packages) > 0 {
 						for _, w := range service.CheckRecipeShadows([]string(userGlobalCfg.Sandbox.Mounts), agentProfile.ToolRecipe) {
 							slog.Warn("sandbox create: " + w)

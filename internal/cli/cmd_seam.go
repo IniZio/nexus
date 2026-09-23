@@ -46,6 +46,7 @@ type sandboxDriverSpec struct {
 	NestedVirt   bool
 	PID1Args     string             // from vmcfg.Resolve; "" → no extra pid1 args
 	SBHandle     string             // "project/name" for cmdline; "" → omit handle
+	HostHome     string             // host home dir for --hosthome= cmdline param; "" → omit
 	LiveMounts   []domain.LiveMount // nil for MCP/run paths
 	GuestMounts  []agent.GuestMount // nil for MCP/run paths
 	// HasScratchDisk is true when a scratch disk was actually attached as the
@@ -112,7 +113,7 @@ func buildSandboxDriverFactory(spec sandboxDriverSpec, caps *sandboxDriverCaptur
 			if spec.HasScratchDisk {
 				scratchIdx = len(cfg.ExtraDisks) - 1
 			}
-			cfg.Cmdline = guestBootCmdline(spec.GuestMounts, spec.PID1Args, spec.SBHandle, scratchIdx)
+			cfg.Cmdline = guestBootCmdline(spec.GuestMounts, spec.PID1Args, spec.SBHandle, scratchIdx, spec.HostHome)
 		} else if spec.PID1Args != "" {
 			cfg.Cmdline = diskBootCmdlineBase + " --" + spec.PID1Args
 		}

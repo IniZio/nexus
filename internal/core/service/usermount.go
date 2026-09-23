@@ -103,6 +103,31 @@ func BuildUserMountManifest(hostHome string, mounts []string) UserMountManifest 
 	return m
 }
 
+// MirroredHostPathDirs returns the entries of hostPATH that lie inside a
+// directory mount's host path, deduped, in host PATH order. They resolve in the
+// guest because the host home is aliased to /root.
+func MirroredHostPathDirs(hostPATH string, mounts []ResolvedUserMount) []string {
+	seen := map[string]bool{}
+	var dirs []string
+	for _, dir := range filepath.SplitList(hostPATH) {
+		dir = filepath.Clean(dir)
+		if dir == "." || seen[dir] {
+			continue
+		}
+		for _, m := range mounts {
+			if m.IsFile {
+				continue
+			}
+			if dir == m.HostPath || strings.HasPrefix(dir, m.HostPath+"/") {
+				seen[dir] = true
+				dirs = append(dirs, dir)
+				break
+			}
+		}
+	}
+	return dirs
+}
+
 func expandHome(path, hostHome string) string {
 	if strings.HasPrefix(path, "~/") {
 		return filepath.Join(hostHome, path[2:])
