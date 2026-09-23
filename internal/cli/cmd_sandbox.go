@@ -62,6 +62,8 @@ const (
 	sandboxErrCodeAgentUnreachable = "agent_unreachable"
 
 	sandboxErrCodeBadCredential = "bad_credential"
+
+	sandboxErrCodeNotBootable = "not_bootable"
 )
 
 type sandboxNoopDriver struct {
@@ -129,6 +131,10 @@ func sandboxCodeFor(err error) string {
 		return sandboxErrCodeNoGuestImage
 	case errors.Is(err, service.ErrAgentUnreachable):
 		return sandboxErrCodeAgentUnreachable
+	case errors.Is(err, service.ErrNotBootable):
+		return sandboxErrCodeNotBootable
+	case errors.Is(err, cloudhypervisor.ErrNoRootDisk):
+		return sandboxErrCodeNotBootable
 	default:
 		return ErrCodeInternalError
 	}
@@ -990,7 +996,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			return errSandbox("sandbox create", err)
 		}
 		out.EmitSuccess("sandbox.created", toSandboxInfoJSON(sb),
-			fmt.Sprintf("created sandbox %s (%s)", sb.Handle(), sb.ID))
+			fmt.Sprintf("created store-only sandbox %s (%s) — not bootable; use --image, --rootfs, or --file to create a bootable sandbox", sb.Handle(), sb.ID))
 		return nil
 	}
 
@@ -2097,11 +2103,11 @@ func runSandboxStart(ctx context.Context, args []string, out *Output, svc *servi
 	if err != nil {
 		return errSandbox("sandbox start", err)
 	}
-	if err := ensureDetachedSupervisor(ctx, svc, sb); err != nil {
-		slog.Info("sandbox start: no detached supervisor; in-process start", "sandbox", sb.ID, "err", err)
+	if supervisorErr := ensureDetachedSupervisor(ctx, svc, sb); supervisorErr != nil {
+		slog.Info("sandbox start: no detached supervisor; in-process start", "sandbox", sb.ID, "err", supervisorErr)
 		started, startErr := svc.Start(ctx, args[0])
 		if startErr != nil {
-			return errSandbox("sandbox start", startErr)
+			return errSandbox("sandbox start", fmt.Errorf("%w (supervisor unavailable: %v)", startErr, supervisorErr))
 		}
 		sb = started
 	} else {
