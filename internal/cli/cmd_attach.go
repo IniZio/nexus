@@ -26,7 +26,7 @@ type attachDoneJSON struct {
 // runAttach is the registered Run function for the "attach" command.
 func runAttach(ctx context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
-	fromFlag := fs.Uint64("from", 0, "byte offset in the guest output ring to resume from")
+	fromFlag := fs.Uint64("from", 0, "byte offset in the guest ring to resume from; for non-PTY sessions the agent aligns forward to the next record boundary")
 
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "attach: " + err.Error()}

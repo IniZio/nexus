@@ -38,7 +38,8 @@ type Session struct {
 	stdinW *os.File // write end of stdin pipe; nil for PTY sessions
 
 	// Output history (shared by all data-plane connections for this session).
-	ring *Ring
+	ring   *Ring
+	tagged bool // true when ring holds tagged records (non-PTY exec)
 
 	// Exit state – written once, read many.
 	exitCode atomic.Int32

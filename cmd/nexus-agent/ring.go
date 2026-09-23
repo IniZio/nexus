@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"encoding/binary"
+	"sync"
+)
 
 type Ring struct {
 	mu   sync.Mutex
@@ -19,6 +22,10 @@ type Ring struct {
 }
 
 const defaultRingCap = 16 * 1024 * 1024
+
+// maxTaggedPayload is the maximum data length allowed in a tagged ring record.
+// Matches wire.MaxDataPayload; larger values indicate a corrupt header.
+const maxTaggedPayload = 64 * 1024
 
 func newRing(capacity int) *Ring {
 	r := &Ring{
@@ -97,6 +104,74 @@ func (r *Ring) Write(p []byte) {
 	r.mu.Unlock()
 }
 
+// WriteRecord appends a tagged record [tag(1)][dataLen(4 BE)][data] to the ring.
+// Eviction is record-aligned so OldestOffset() always lands on a record boundary.
+func (r *Ring) WriteRecord(tag byte, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	var hdr [5]byte
+	hdr[0] = tag
+	binary.BigEndian.PutUint32(hdr[1:], uint32(len(data)))
+	n := 5 + len(data)
+
+	r.mu.Lock()
+	for !r.done && len(r.readers) > 0 {
+		need := r.tot + uint64(n)
+		if need <= uint64(r.cap) {
+			break
+		}
+		if r.minCursorLocked() >= need-uint64(r.cap) {
+			break
+		}
+		r.cond.Wait()
+	}
+	if r.done {
+		r.mu.Unlock()
+		return
+	}
+
+	for r.used+n > r.cap {
+		if r.used < 5 {
+			r.head = 0
+			r.used = 0
+			break
+		}
+		var lb [4]byte
+		for i := 0; i < 4; i++ {
+			lb[i] = r.buf[(r.head+1+i)%r.cap]
+		}
+		recTotalLen := 5 + int(binary.BigEndian.Uint32(lb[:]))
+		if recTotalLen > r.used {
+			r.head = (r.head + r.used) % r.cap
+			r.used = 0
+			break
+		}
+		r.head = (r.head + recTotalLen) % r.cap
+		r.used -= recTotalLen
+	}
+
+	writeToRingLocked(r, hdr[:])
+	writeToRingLocked(r, data)
+	r.tot += uint64(n)
+	r.cond.Broadcast()
+	r.mu.Unlock()
+}
+
+func writeToRingLocked(r *Ring, p []byte) {
+	for len(p) > 0 {
+		tail := (r.head + r.used) % r.cap
+		toEnd := r.cap - tail
+		chunk := len(p)
+		if chunk > toEnd {
+			chunk = toEnd
+		}
+		copy(r.buf[tail:tail+chunk], p[:chunk])
+		p = p[chunk:]
+		r.used += chunk
+	}
+}
+
 func (r *Ring) Close() {
 	r.mu.Lock()
 	r.done = true
@@ -123,6 +198,44 @@ func (r *Ring) OldestOffset() uint64 {
 	o := r.oldestLocked()
 	r.mu.Unlock()
 	return o
+}
+
+// SnapToRecordBoundary returns the record-start offset for the record that
+// contains from. If from is already at a boundary it is returned unchanged.
+// If from <= oldest, returns oldest. If from >= tot, returns tot.
+// A corrupt header (length > maxTaggedPayload) causes a fallback to oldest.
+func (r *Ring) SnapToRecordBoundary(from uint64) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	oldest := r.oldestLocked()
+	if from <= oldest {
+		return oldest
+	}
+	if from >= r.tot {
+		return r.tot
+	}
+	pos := oldest
+	for pos < from {
+		avail := int(r.tot - pos)
+		if avail < 5 {
+			return r.tot
+		}
+		base := r.head + int(pos-oldest)
+		var lb [4]byte
+		for i := 0; i < 4; i++ {
+			lb[i] = r.buf[(base+1+i)%r.cap]
+		}
+		recDataLen := int(binary.BigEndian.Uint32(lb[:]))
+		if recDataLen > maxTaggedPayload || 5+recDataLen > avail {
+			return oldest
+		}
+		next := pos + uint64(5+recDataLen)
+		if next > from {
+			return pos
+		}
+		pos = next
+	}
+	return pos
 }
 
 const ringChunk = 64 * 1024

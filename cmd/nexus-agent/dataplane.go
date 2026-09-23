@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"net"
 	"sync"
 
@@ -62,9 +63,14 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 
 	oldest := sess.ring.OldestOffset()
 	from := hs.ResumeFromOffset
+	if sess.tagged {
+		from = sess.ring.SnapToRecordBoundary(from)
+	} else if from < oldest {
+		from = oldest
+	}
 	var bytesLost uint64
-	if from < oldest {
-		bytesLost = oldest - from
+	if from > hs.ResumeFromOffset {
+		bytesLost = from - hs.ResumeFromOffset
 	}
 
 	alreadyExited := sess.exited.Load()
@@ -75,7 +81,7 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 			BytesLost: bytesLost,
 		})
 		readerID := sess.ring.AddReader(from)
-		streamRingToWriter(w, sess.ring, readerID, from)
+		streamRingToWriter(w, sess.ring, readerID, from, sess.tagged)
 		sess.ring.RemoveReader(readerID)
 		_ = w.WriteExit(wire.Exit{Code: sess.exitCode.Load()})
 		return
@@ -91,7 +97,7 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 	go func() {
 		defer close(doneCh)
 		defer sess.ring.RemoveReader(readerID)
-		streamRingToWriter(w, sess.ring, readerID, from)
+		streamRingToWriter(w, sess.ring, readerID, from, sess.tagged)
 		_ = w.WriteExit(wire.Exit{Code: sess.exitCode.Load()})
 	}()
 
@@ -150,19 +156,45 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 	<-doneCh
 }
 
-// streamRingToWriter streams ring data to w until the ring is closed and drained.
-// stdout and stderr are both tagged StreamStdout because they share one ring.
-func streamRingToWriter(w *wire.Writer, ring *Ring, readerID uint64, from uint64) {
+func streamRingToWriter(w *wire.Writer, ring *Ring, readerID uint64, from uint64, tagged bool) {
 	off := from
+	var carry []byte
 	for {
-		data, newOff, done, _ := ring.WaitNextCursored(readerID, off)
+		chunk, newOff, done, _ := ring.WaitNextCursored(readerID, off)
 		off = newOff
-		if len(data) > 0 {
-			if err := w.WriteData(wire.StreamStdout, data); err != nil {
-				return
+		if len(chunk) > 0 {
+			if tagged {
+				var data []byte
+				if len(carry) > 0 {
+					data = append(carry, chunk...)
+					carry = nil
+				} else {
+					data = chunk
+				}
+				for len(data) >= 5 {
+					tag := wire.StreamTag(data[0])
+					plen := int(binary.BigEndian.Uint32(data[1:5]))
+					if plen > maxTaggedPayload {
+						return
+					}
+					if len(data) < 5+plen {
+						break
+					}
+					if err := w.WriteData(tag, data[5:5+plen]); err != nil {
+						return
+					}
+					data = data[5+plen:]
+				}
+				if len(data) > 0 {
+					carry = append(carry[:0], data...)
+				}
+			} else {
+				if err := w.WriteData(wire.StreamStdout, chunk); err != nil {
+					return
+				}
 			}
 		}
-		if done && len(data) == 0 {
+		if done && len(chunk) == 0 {
 			return
 		}
 	}

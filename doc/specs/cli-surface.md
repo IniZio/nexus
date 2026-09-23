@@ -33,7 +33,7 @@ These are registered with `Hidden: true` and do not appear in `nexus --help`. Th
 Summary: Reattach to an existing guest session
 
 Flags:
-- `--from uint64` — byte offset in the guest output ring to resume from (default 0)
+- `--from uint64` — byte offset in the guest ring to resume from; for non-PTY sessions the agent aligns forward to the next record boundary (default 0)
 
 ---
 

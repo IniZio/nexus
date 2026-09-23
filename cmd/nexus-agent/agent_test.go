@@ -148,10 +148,9 @@ func TestExecStreamAndReattach(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", code)
 	}
 
-	// "NEXUS" is 5 bytes. Reconnect at offset 3 → expect "US".
 	conn2, w2, r2 := dialData(t, dataLis)
 
-	if err := w2.WriteHandshake(wire.Handshake{SessionID: "s-reattach", ResumeFromOffset: 3}); err != nil {
+	if err := w2.WriteHandshake(wire.Handshake{SessionID: "s-reattach", ResumeFromOffset: 0}); err != nil {
 		t.Fatalf("WriteHandshake2: %v", err)
 	}
 
@@ -159,16 +158,58 @@ func TestExecStreamAndReattach(t *testing.T) {
 	if err != nil || ack2.Type != wire.FrameHandshakeAck {
 		t.Fatalf("expected HandshakeAck2, got type=%v err=%v", ack2.Type, err)
 	}
-	// Status may be Alive or Exited depending on timing — both are valid.
 
 	frames2 := collectFrames(t, conn2, r2, 5*time.Second)
 
 	out2 := dataBytes(frames2)
-	if string(out2) != "US" {
-		t.Fatalf("reattach offset 3: got %q, want \"US\"", out2)
+	if string(out2) != "NEXUS" {
+		t.Fatalf("reattach offset 0: got %q, want \"NEXUS\"", out2)
 	}
 	if gotExit2, _ := hasExitFrame(frames2); !gotExit2 {
 		t.Fatal("expected Exit frame on reattach, not received")
+	}
+}
+
+func TestExecTaggedMidRecordResumeSnap(t *testing.T) {
+	client, dataLis, cancel := testHarness(t)
+	defer cancel()
+
+	ctx := context.Background()
+
+	_, err := client.Exec(ctx, &agentpb.ExecRequest{
+		SessionId: "s-midrecord",
+		Argv:      []string{"sh", "-c", "printf NEXUS"},
+	})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	conn1, w1, r1 := dialData(t, dataLis)
+	if err := w1.WriteHandshake(wire.Handshake{SessionID: "s-midrecord", ResumeFromOffset: 0}); err != nil {
+		t.Fatalf("WriteHandshake: %v", err)
+	}
+	if _, err := r1.ReadFrame(); err != nil {
+		t.Fatalf("ReadFrame ack: %v", err)
+	}
+	collectFrames(t, conn1, r1, 5*time.Second)
+
+	conn2, w2, r2 := dialData(t, dataLis)
+	if err := w2.WriteHandshake(wire.Handshake{SessionID: "s-midrecord", ResumeFromOffset: 3}); err != nil {
+		t.Fatalf("WriteHandshake2: %v", err)
+	}
+	ack2, err := r2.ReadFrame()
+	if err != nil || ack2.Type != wire.FrameHandshakeAck {
+		t.Fatalf("expected HandshakeAck2, got type=%v err=%v", ack2.Type, err)
+	}
+
+	frames2 := collectFrames(t, conn2, r2, 5*time.Second)
+	out2 := dataBytes(frames2)
+
+	if string(out2) != "NEXUS" {
+		t.Fatalf("mid-record from=3 snap: got %q, want \"NEXUS\" (snapped to record start)", out2)
+	}
+	if ok, _ := hasExitFrame(frames2); !ok {
+		t.Fatal("expected Exit frame on mid-record reattach")
 	}
 }
 

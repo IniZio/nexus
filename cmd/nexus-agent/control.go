@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/IniZio/nexus/internal/core/agent/agentpb"
+	"github.com/IniZio/nexus/internal/core/agent/wire"
 	"github.com/IniZio/nexus/internal/core/bootspec"
 )
 
@@ -162,6 +163,7 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 	cmd.Stdin = stdinR
 
 	sess.stdinW = stdinW
+	sess.tagged = true
 	sess.pendingRID = sess.ring.AddReader(0)
 	sess.hasPendingRID = true
 	time.AfterFunc(30*time.Second, sess.claimPendingReader)
@@ -192,8 +194,16 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 	// called only after all output has been written.
 	var feedWg sync.WaitGroup
 	feedWg.Add(2)
-	go func() { defer feedWg.Done(); feedRingFromReader(stdoutR, sess.ring); stdoutR.Close() }()
-	go func() { defer feedWg.Done(); feedRingFromReader(stderrR, sess.ring); stderrR.Close() }()
+	go func() {
+		defer feedWg.Done()
+		feedRingFromReaderTagged(stdoutR, sess.ring, byte(wire.StreamStdout))
+		stdoutR.Close()
+	}()
+	go func() {
+		defer feedWg.Done()
+		feedRingFromReaderTagged(stderrR, sess.ring, byte(wire.StreamStderr))
+		stderrR.Close()
+	}()
 
 	if cs.a.isPid1 {
 		// Reap loop delivers exit code; we wait for feeders first.
@@ -435,6 +445,19 @@ func feedRingFromReader(r io.Reader, ring *Ring) {
 		n, err := r.Read(buf)
 		if n > 0 {
 			ring.Write(buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func feedRingFromReaderTagged(r io.Reader, ring *Ring, tag byte) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			ring.WriteRecord(tag, buf[:n])
 		}
 		if err != nil {
 			return
