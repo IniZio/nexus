@@ -60,6 +60,10 @@ import (
 // to the machine contract layer.
 var ErrNoSubstrate = errors.New("service: no substrate configured")
 
+// ErrNotBootable is returned by Start when the sandbox record has no backing
+// root disk — i.e. it was created without --image, --rootfs, or --file.
+var ErrNotBootable = errors.New("service: sandbox is not bootable")
+
 // ErrNoArtifactStore is returned when an operation requires an artifact store
 // but none is attached via WithArtifacts.
 var ErrNoArtifactStore = errors.New("service: no artifact store attached")
@@ -506,6 +510,16 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 						return fmt.Errorf("start volume guard: %w", checkErr)
 					}
 				}
+			}
+		}
+		// Bootability guard: when diskDir is explicitly set (always true in
+		// tests via WithDiskDir), check for the backing disk before calling
+		// the driver.  When diskDir is empty the driver's ErrNoRootDisk
+		// sentinel fires instead — both paths map to sandboxErrCodeNotBootable.
+		if s.diskDir != "" {
+			candidate := filepath.Join(s.diskDir, rec.ID.String()+".raw")
+			if _, serr := os.Stat(candidate); os.IsNotExist(serr) {
+				return fmt.Errorf("%w: sandbox %s was created without an image (store-only record); recreate with --image, --rootfs, or --file to boot it", ErrNotBootable, rec.ID)
 			}
 		}
 		instanceID, err := s.driver.Start(ctx, driver.StartRequest{

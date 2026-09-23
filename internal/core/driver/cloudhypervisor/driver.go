@@ -25,6 +25,11 @@ import (
 // explicitly before sandboxes can be started.
 var ErrNoKernelConfigured = errors.New("cloudhypervisor: no guest kernel configured: guest image pipeline not yet implemented")
 
+// ErrNoRootDisk is returned by Start when neither a root disk nor an initramfs
+// is configured.  A store-only record (created without --image/--rootfs/--file)
+// triggers this rather than timing out inside the netns child.
+var ErrNoRootDisk = errors.New("cloudhypervisor: no root disk or initramfs: sandbox was created without an image")
+
 // maxSocketPathLen is the maximum length of a Unix socket path on Linux.
 // sockaddr_un.sun_path is 108 bytes including the null terminator, so the
 // usable length is 107 bytes.
@@ -684,6 +689,12 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		if _, serr := os.Stat(diskImagePath); serr != nil {
 			return "", fmt.Errorf("cloudhypervisor: start %s: root disk: %w", id, serr)
 		}
+	}
+
+	// A store-only record has neither disk nor initramfs; refuse before the
+	// netns child spawns so the caller gets ErrNoRootDisk, not a ten-second timeout.
+	if diskImagePath == "" && d.cfg.InitramfsPath == "" {
+		return "", fmt.Errorf("%w: %s", ErrNoRootDisk, id)
 	}
 
 	socketPath := d.socketPath(id)
