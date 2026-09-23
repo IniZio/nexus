@@ -178,8 +178,13 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 	if ackFrame.HandshakeAck == nil {
 		return 0, fmt.Errorf("agent: pump: expected HandshakeAck, got frame type %d", ackFrame.Type)
 	}
-	// If AckExited, the guest may still replay ring bytes before the Exit
-	// frame. The drain loop below handles both the alive and exited cases.
+	var overrunLoss uint64
+	if ackFrame.HandshakeAck.BytesLost > 0 {
+		overrunLoss = ackFrame.HandshakeAck.BytesLost
+		if opts.stderr != nil {
+			fmt.Fprintf(opts.stderr, "nexus: %d bytes of output lost (ring overrun)\n", overrunLoss)
+		}
+	}
 
 	var wrMu sync.Mutex // wire.Writer is not safe for concurrent use.
 
@@ -251,7 +256,9 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 			switch frame.Data.Tag {
 			case wire.StreamStdout:
 				if opts.stdout != nil {
-					_, _ = opts.stdout.Write(frame.Data.Payload)
+					if _, werr := opts.stdout.Write(frame.Data.Payload); werr != nil {
+						return 0, pumpErr("write stdout", werr)
+					}
 				}
 			case wire.StreamStderr:
 				if opts.stderr != nil {
@@ -259,8 +266,11 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 				}
 			}
 		case wire.FrameExit:
-			return frame.Exit.Code, nil
-			// FrameWinsize received from the guest is ignored on the host receive path.
+			code := frame.Exit.Code
+			if overrunLoss > 0 && code == 0 {
+				code = 1
+			}
+			return code, nil
 		}
 	}
 }

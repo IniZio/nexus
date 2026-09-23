@@ -78,8 +78,9 @@ type Handshake struct {
 // [Handshake].  After sending the ack the guest streams [Data] frames beginning
 // at the requested offset.
 type HandshakeAck struct {
-	Status   AckStatus
-	ExitCode int32 // meaningful only when Status == AckExited
+	Status    AckStatus
+	ExitCode  int32  // meaningful only when Status == AckExited
+	BytesLost uint64 // bytes evicted before this reader attached (0 = no loss)
 }
 
 // Data carries an incremental chunk of stdio bytes in one direction.
@@ -162,13 +163,14 @@ func (wr *Writer) WriteHandshake(h Handshake) error {
 
 // WriteHandshakeAck encodes and sends a [HandshakeAck] frame.
 func (wr *Writer) WriteHandshakeAck(a HandshakeAck) error {
-	// payload: 1-byte status + 4-byte exit_code (always present; 0 when alive)
-	const payloadLen = 5
+	// payload: 1-byte status + 4-byte exit_code + 8-byte bytes_lost = 13 bytes
+	const payloadLen = 13
 	buf := make([]byte, headerLen+payloadLen)
 	binary.BigEndian.PutUint32(buf[0:], payloadLen)
 	buf[4] = byte(FrameHandshakeAck)
 	buf[5] = byte(a.Status)
 	binary.BigEndian.PutUint32(buf[6:], uint32(a.ExitCode))
+	binary.BigEndian.PutUint64(buf[10:], a.BytesLost)
 	_, err := wr.w.Write(buf)
 	return err
 }
@@ -298,13 +300,14 @@ func decodeHandshakeAck(p []byte) (Frame, error) {
 	if len(p) < 5 {
 		return Frame{}, errors.New("wire: handshake_ack payload too short")
 	}
-	return Frame{
-		Type: FrameHandshakeAck,
-		HandshakeAck: &HandshakeAck{
-			Status:   AckStatus(p[0]),
-			ExitCode: int32(binary.BigEndian.Uint32(p[1:])),
-		},
-	}, nil
+	ack := &HandshakeAck{
+		Status:   AckStatus(p[0]),
+		ExitCode: int32(binary.BigEndian.Uint32(p[1:])),
+	}
+	if len(p) >= 13 {
+		ack.BytesLost = binary.BigEndian.Uint64(p[5:])
+	}
+	return Frame{Type: FrameHandshakeAck, HandshakeAck: ack}, nil
 }
 
 // decodeData parses a Data payload.

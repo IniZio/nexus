@@ -2,57 +2,101 @@ package main
 
 import "sync"
 
-// Ring is a bounded in-RAM ring buffer with a monotonic byte offset.
-// It is the guest-authoritative output store for a session's combined
-// stdout+stderr stream. Multiple goroutines may call WaitNext concurrently
-// (fan-out readers, one per data-plane connection).
-//
-// The monotonic total-bytes counter lets hosts replay from an exact byte
-// offset across reconnects: the host tracks its cursor, the guest is
-// authoritative over the buffer contents.
 type Ring struct {
 	mu   sync.Mutex
 	cond *sync.Cond
 
-	buf  []byte // circular storage
+	buf  []byte
 	cap  int
-	head int    // index of the oldest byte
-	used int    // number of valid bytes currently held
-	tot  uint64 // monotonic count: total bytes ever Written
+	head int
+	used int
+	tot  uint64
 
-	done bool // no more writes; wake all blocked readers
+	done bool
+
+	readers map[uint64]uint64
+	nextRID uint64
 }
 
-const defaultRingCap = 16 * 1024 * 1024 // 16 MiB per session
+const defaultRingCap = 16 * 1024 * 1024
 
 func newRing(capacity int) *Ring {
-	r := &Ring{buf: make([]byte, capacity), cap: capacity}
+	r := &Ring{
+		buf:     make([]byte, capacity),
+		cap:     capacity,
+		readers: make(map[uint64]uint64),
+	}
 	r.cond = sync.NewCond(&r.mu)
 	return r
 }
 
-// Write appends p to the ring, evicting the oldest bytes when full.
+func (r *Ring) AddReader(from uint64) uint64 {
+	r.mu.Lock()
+	id := r.nextRID
+	r.nextRID++
+	r.readers[id] = from
+	r.mu.Unlock()
+	return id
+}
+
+func (r *Ring) RemoveReader(id uint64) {
+	r.mu.Lock()
+	delete(r.readers, id)
+	r.cond.Broadcast()
+	r.mu.Unlock()
+}
+
+func (r *Ring) minCursorLocked() uint64 {
+	min := r.tot
+	for _, c := range r.readers {
+		if c < min {
+			min = c
+		}
+	}
+	return min
+}
+
+// Write appends p. Blocks when attached readers would lose bytes; evicts freely with no readers.
 func (r *Ring) Write(p []byte) {
 	if len(p) == 0 {
 		return
 	}
 	r.mu.Lock()
-	for _, b := range p {
+	for !r.done && len(r.readers) > 0 {
+		need := r.tot + uint64(len(p))
+		if need <= uint64(r.cap) {
+			break
+		}
+		if r.minCursorLocked() >= need-uint64(r.cap) {
+			break
+		}
+		r.cond.Wait()
+	}
+	if r.done {
+		r.mu.Unlock()
+		return
+	}
+	totalLen := uint64(len(p))
+	for len(p) > 0 {
 		tail := (r.head + r.used) % r.cap
-		r.buf[tail] = b
+		toEnd := r.cap - tail
+		chunk := len(p)
+		if chunk > toEnd {
+			chunk = toEnd
+		}
+		copy(r.buf[tail:tail+chunk], p[:chunk])
+		p = p[chunk:]
 		if r.used < r.cap {
-			r.used++
+			r.used += chunk
 		} else {
-			// Overwrite oldest byte
-			r.head = (r.head + 1) % r.cap
+			r.head = (r.head + chunk) % r.cap
 		}
 	}
-	r.tot += uint64(len(p))
+	r.tot += totalLen
 	r.cond.Broadcast()
 	r.mu.Unlock()
 }
 
-// Close marks the ring done (no more writes). All blocked WaitNext calls wake.
 func (r *Ring) Close() {
 	r.mu.Lock()
 	r.done = true
@@ -60,7 +104,6 @@ func (r *Ring) Close() {
 	r.mu.Unlock()
 }
 
-// Total returns the current monotonic byte count.
 func (r *Ring) Total() uint64 {
 	r.mu.Lock()
 	t := r.tot
@@ -68,7 +111,6 @@ func (r *Ring) Total() uint64 {
 	return t
 }
 
-// IsDone reports whether Close has been called.
 func (r *Ring) IsDone() bool {
 	r.mu.Lock()
 	d := r.done
@@ -76,42 +118,66 @@ func (r *Ring) IsDone() bool {
 	return d
 }
 
-const ringChunk = 64 * 1024 // 64 KiB – matches wire.MaxDataPayload
+func (r *Ring) OldestOffset() uint64 {
+	r.mu.Lock()
+	o := r.oldestLocked()
+	r.mu.Unlock()
+	return o
+}
 
-// WaitNext blocks until data is available past from, or the ring is closed.
-// Returns up to ringChunk bytes, the advanced offset, and whether the ring is
-// done. Callers loop, passing newOff each time, until done && len(data)==0.
+const ringChunk = 64 * 1024
+
+// WaitNext blocks until data past from is available or the ring is closed.
 func (r *Ring) WaitNext(from uint64) (data []byte, newOff uint64, done bool) {
 	r.mu.Lock()
 	for from == r.tot && !r.done {
 		r.cond.Wait()
 	}
-	data, newOff = r.snapshotLocked(from)
+	data, newOff, _ = r.snapshotLocked(from)
 	done = r.done
 	r.mu.Unlock()
 	return
 }
 
-// snapshotLocked copies up to ringChunk bytes starting at from.
-// Must be called with r.mu held.
-func (r *Ring) snapshotLocked(from uint64) ([]byte, uint64) {
+// WaitNextCursored advances the reader cursor and reports overrun when bytes were evicted.
+func (r *Ring) WaitNextCursored(id uint64, from uint64) (data []byte, newOff uint64, done bool, overrun bool) {
+	r.mu.Lock()
+	for from == r.tot && !r.done {
+		r.cond.Wait()
+	}
+	data, newOff, overrun = r.snapshotLocked(from)
+	if _, ok := r.readers[id]; ok {
+		r.readers[id] = newOff
+		r.cond.Broadcast()
+	}
+	done = r.done
+	r.mu.Unlock()
+	return
+}
+
+func (r *Ring) snapshotLocked(from uint64) (data []byte, newOff uint64, overrun bool) {
 	oldest := r.oldestLocked()
 	if from < oldest {
+		overrun = true
 		from = oldest
 	}
 	if from >= r.tot {
-		return nil, r.tot
+		return nil, r.tot, overrun
 	}
 	n := int(r.tot - from)
 	if n > ringChunk {
 		n = ringChunk
 	}
-	start := (r.head + int(from-oldest)) % r.cap
+	startIdx := (r.head + int(from-oldest)) % r.cap
 	out := make([]byte, n)
-	for i := range out {
-		out[i] = r.buf[(start+i)%r.cap]
+	toEnd := r.cap - startIdx
+	if toEnd >= n {
+		copy(out, r.buf[startIdx:startIdx+n])
+	} else {
+		copy(out, r.buf[startIdx:r.cap])
+		copy(out[toEnd:], r.buf[:n-toEnd])
 	}
-	return out, from + uint64(n)
+	return out, from + uint64(n), overrun
 }
 
 func (r *Ring) oldestLocked() uint64 {
