@@ -75,6 +75,10 @@ const (
 	// adaptive poll cadence. Without this fix: 5×2s = 10s under memory pressure,
 	// 2× more shrink-aggressive than the ported 20s law.
 	cpuShrinkWindow = time.Duration(cpuShrinkConsecutive-1) * cpuEvalInterval // = 20 s
+
+	// cpuDriftSettle: quiet window after a resize before drift reconciliation fires.
+	// Guest onliner ticks every 3s; 10s covers that plus sample-scheduling latency.
+	cpuDriftSettle = 10 * time.Second
 )
 
 // cpuAxis implements AxisEvaluator for the CPU resize dimension.
@@ -146,12 +150,17 @@ func (a *cpuAxis) Evaluate(ctx context.Context) {
 		return
 	}
 
+	now := a.g.clock.Now()
+
 	// Drift detection: reconcile axis accounting to guest ground truth.
 	// VCPUOnline is measured by the guest agent (sysfs); VCPUCount is the boot
 	// ceiling. A partial CH failure (fewer CPUs onlined than requested) must not
-	// leave the governor's accounting silently wrong.
+	// leave the governor's accounting silently wrong. Skipped while settling: the
+	// guest onlines hot-plugged CPUs on a ticker, so a sample taken just after a
+	// resize still shows the old count.
 	// Source: OLD InitAdoptedCPUState (cpu_resize.go:325-358).
-	if s.VCPUOnline != 0 && s.VCPUOnline != a.currentVCPUs {
+	settling := !a.lastResizeTime.IsZero() && now.Sub(a.lastResizeTime) < cpuDriftSettle
+	if s.VCPUOnline != 0 && s.VCPUOnline != a.currentVCPUs && !settling {
 		slog.Warn("govern.cpu.vcpu_drift",
 			"expected", a.currentVCPUs,
 			"online", s.VCPUOnline,
@@ -163,8 +172,6 @@ func (a *cpuAxis) Evaluate(ctx context.Context) {
 	if current == 0 {
 		current = minVCPUs
 	}
-
-	now := a.g.clock.Now()
 
 	// Update time-based run windows. These are updated BEFORE the cooldown check
 	// so the windows accumulate during cooldown — matching OLD recordCPUStatsSample
