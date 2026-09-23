@@ -55,6 +55,12 @@ rename leaves them on their old inode, which is what you want:
 `make vet` and `make test` remain the right way to check and test — only the
 binary-producing step needs the explicit `-o`.
 
+## Issue tracking: no Linear
+
+This project no longer uses Linear. `NEX3-*` ids in code comments, commits,
+and docs are historical labels only. Do not file, search, or offer Linear
+issues; capture follow-ups and design questions under `.groundwork/`.
+
 ## Developing nexus inside nexus
 
 nexus is developed in its own product: a unit of work gets a git worktree, a
