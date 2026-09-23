@@ -97,6 +97,9 @@ func newForkInflightHarness(t *testing.T) *forkInflightHarness {
 	if err := st.Create(ctx, parent); err != nil {
 		t.Fatalf("seed parent record: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(diskDir, parent.ID.String()+".raw"), []byte("root"), 0o600); err != nil {
+		t.Fatalf("seed parent disk: %v", err)
+	}
 	started, err := svc.Start(ctx, parent.ID.String())
 	if err != nil {
 		t.Fatalf("Start(parent): %v", err)
