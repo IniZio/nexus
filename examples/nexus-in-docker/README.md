@@ -33,6 +33,28 @@ The container is privileged toward the host kernel; isolation lives in the VM.
 
 `--privileged` is NOT required. The two `--cap-add` flags above suffice.
 
+### Kubernetes: also add `SETFCAP`
+
+The CH driver re-execs its network helper in a new user namespace that maps
+in-ns uid 0 to the host uid (`internal/core/driver/cloudhypervisor/ch_netns_linux.go`).
+When nexus runs as root, that is a uid-0 mapping, which on kernel >= 5.12
+requires `CAP_SETFCAP`. Docker's default capability set includes it; a pod
+with `capabilities.drop: [ALL]` does not, and the spawn fails with
+`fork/exec ...: operation not permitted` (the `uid_map` write is refused).
+
+```yaml
+securityContext:
+  privileged: false
+  capabilities:
+    drop: [ALL]
+    add: [NET_ADMIN, SYS_ADMIN, SETFCAP]
+```
+
+`SYS_ADMIN` puts the pod at the `privileged` Pod Security level, so label the
+namespace accordingly. Reproduce the requirement with `unshare -Urn true`
+(fails without `SETFCAP`); `unshare -Un true` maps nothing and passes, so it
+is not a valid probe.
+
 ## Four portability gotchas
 
 ### 1. State ownership (disk locking)
@@ -65,10 +87,11 @@ in `/tmp/nexus-0/` → every exec fails with "no such file or directory".
 
 Docker's `--cap-add SYS_ADMIN` is insufficient to remount `/proc/sys/net`
 as writable (the kernel blocks proc remount in user namespaces inside Docker).
-nexus writes `disable_ipv6` and `forwarding` sysctls before bringing up TAP
-interfaces; these writes are **best-effort** (non-fatal on EROFS) — the Linux
-defaults (forwarding=0, IPv6 link-local in an isolated netns) are safe.  A
-warning is printed to stderr but the VM boots normally.
+
+nexus writes two sysctls before bringing TAP interfaces up:
+
+- **forwarding=0** — hard-fail. nexus first tries `/proc/sys/net/ipv4/conf/<iface>/forwarding`; when that returns EROFS it falls back to `RTM_SETLINK IFLA_AF_SPEC→AF_INET→IFLA_INET_CONF` via rtnetlink (requires only `CAP_NET_ADMIN`, kernel path `net/ipv4/devinet.c inet_set_link_af`). After the netlink set it reads `/proc/sys` back to verify the value is 0 — reads always succeed on a read-only mount. If neither path succeeds, or verification shows non-zero, nexus returns a hard error and the VM does not boot.
+- **disable_ipv6=1** — best-effort. On EROFS a warning is printed and boot continues; IPv6 link-local cannot cross a `CLONE_NEWNET` boundary so omitting the write is harmless.
 
 ## Binary provenance
 
