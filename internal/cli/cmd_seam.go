@@ -79,10 +79,18 @@ func buildSandboxDriverFactory(spec sandboxDriverSpec, caps *sandboxDriverCaptur
 	return func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		cfg := buildCHConfig(spec.KernelPath, ext4Path, spec.MemoryMiB, spec.VCPUs)
 		cfg.NestedVirt = spec.NestedVirt
-		if spec.MemoryMaxMiB > 0 {
+		effectiveBootMem := spec.MemoryMiB
+		if effectiveBootMem == 0 {
+			effectiveBootMem = 512
+		}
+		if spec.MemoryMaxMiB > effectiveBootMem {
 			cfg.MemoryMaxMiB = spec.MemoryMaxMiB
 		}
-		if spec.VCPUMax > 0 {
+		effectiveBootCPUs := spec.VCPUs
+		if effectiveBootCPUs == 0 {
+			effectiveBootCPUs = 1
+		}
+		if spec.VCPUMax > effectiveBootCPUs {
 			cfg.VCPUMax = spec.VCPUMax
 		}
 		var capturedExtras []string
