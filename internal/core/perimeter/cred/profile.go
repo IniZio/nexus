@@ -1,6 +1,9 @@
 package cred
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 type CredentialFormat string
 
@@ -68,7 +71,16 @@ type AgentProfile struct {
 
 	SymlinkPreservePrefixes []string
 
+	// SettingsAllowlist: only these settings keys are staged into the guest.
+	// Used when the settings file can carry PII under arbitrary keys (cursor's
+	// authInfo). Mutually exclusive with SettingsDenylist.
 	SettingsAllowlist map[string]bool
+
+	// SettingsDenylist: every settings key is staged EXCEPT these (credential
+	// helpers, host-bound hooks/permissions). A top-level "env" object is
+	// additionally filtered by [SettingsEnvDropped]. Mutually exclusive with
+	// SettingsAllowlist.
+	SettingsDenylist map[string]bool
 
 	BypassConsentKey string
 
@@ -134,6 +146,26 @@ func MustProfileByName(name string) AgentProfile {
 		panic("cred: profile not registered: " + name)
 	}
 	return p
+}
+
+// settingsEnvSecretMarkers are case-insensitive substrings of an env var name
+// that mark it as credential-bearing (ANTHROPIC_API_KEY, GITHUB_TOKEN,
+// AWS_SECRET_ACCESS_KEY, DB_PASSWORD, ANTHROPIC_AUTH_TOKEN, ...).
+var settingsEnvSecretMarkers = []string{"KEY", "TOKEN", "SECRET", "PASS", "AUTH", "CREDENTIAL", "COOKIE", "SESSION"}
+
+// SettingsEnvDropped reports whether a settings.json "env" entry must not be
+// staged into the guest: its name looks credential-bearing (the real token
+// never enters the guest; brokered credentials arrive as placeholders), or its
+// value is a host filesystem path (e.g. TMPDIR=/dev/shm/...), which does not
+// exist in the guest.
+func SettingsEnvDropped(name, value string) bool {
+	upper := strings.ToUpper(name)
+	for _, m := range settingsEnvSecretMarkers {
+		if strings.Contains(upper, m) {
+			return true
+		}
+	}
+	return strings.HasPrefix(value, "/") || strings.HasPrefix(value, "~")
 }
 
 func ProfileNames() []string {

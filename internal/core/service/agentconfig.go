@@ -317,14 +317,19 @@ func copyRaw(src, dst string) error {
 	return os.WriteFile(dst, data, 0o444)
 }
 
-// copyFilteredSettings reads srcPath as JSON and writes only the keys
-// allowlisted by profile.SettingsAllowlist to dstPath at mode 0444. Any key
-// not in the allowlist — including unrecognised/future keys, and including
-// account identity/PII like cursor's authInfo (email, displayName, userId,
-// authId — not a token; the token lives in auth.json, not cli-config.json) —
-// is dropped, so PII and unvetted keys can never ride in on a key this profile
-// has not explicitly approved. A nil/empty allowlist drops
-// every key (see [cred.AgentProfile.SettingsAllowlist]'s zero-value doc).
+// copyFilteredSettings reads srcPath as JSON, filters its keys, and writes the
+// result to dstPath at mode 0444.
+//
+// Denylist mode (profile.SettingsDenylist non-empty, e.g. claude-code): every
+// key is kept except the denied ones (credential helpers, host-bound hooks and
+// permissions), and the "env" object is filtered entry-by-entry via
+// [cred.SettingsEnvDropped] so credential-named or host-path values never
+// reach the guest.
+//
+// Allowlist mode (otherwise, e.g. cursor): only keys in
+// profile.SettingsAllowlist survive, so account identity/PII like cursor's
+// authInfo (email, displayName, userId, authId) can never ride in on an
+// unvetted key. A nil/empty allowlist drops every key.
 //
 // When profile.BypassConsentKey is set, that key is always forced to true in
 // the output regardless of the host value, so the staged lower overlayfs
@@ -348,9 +353,25 @@ func copyFilteredSettings(src, dst string, profile cred.AgentProfile) error {
 		return nil
 	}
 
-	for key := range raw {
-		if !profile.SettingsAllowlist[key] {
-			delete(raw, key)
+	if len(profile.SettingsDenylist) > 0 {
+		for key := range raw {
+			if profile.SettingsDenylist[key] {
+				delete(raw, key)
+			}
+		}
+		if env, ok := raw["env"]; ok {
+			filtered, err := filterSettingsEnv(env)
+			if err != nil {
+				delete(raw, "env")
+			} else {
+				raw["env"] = filtered
+			}
+		}
+	} else {
+		for key := range raw {
+			if !profile.SettingsAllowlist[key] {
+				delete(raw, key)
+			}
 		}
 	}
 	if profile.BypassConsentKey != "" {
@@ -363,6 +384,22 @@ func copyFilteredSettings(src, dst string, profile cred.AgentProfile) error {
 		return err
 	}
 	return os.WriteFile(dst, out, 0o444)
+}
+
+// filterSettingsEnv drops entries of a settings "env" object that
+// [cred.SettingsEnvDropped] rejects. A non-object or non-string-valued env is
+// an error so the caller drops the whole key rather than staging it unvetted.
+func filterSettingsEnv(env json.RawMessage) (json.RawMessage, error) {
+	var m map[string]string
+	if err := json.Unmarshal(env, &m); err != nil {
+		return nil, err
+	}
+	for name, value := range m {
+		if cred.SettingsEnvDropped(name, value) {
+			delete(m, name)
+		}
+	}
+	return json.Marshal(m)
 }
 
 // ensureStagedBypassConsentKey guarantees that destDir/<settings file> exists

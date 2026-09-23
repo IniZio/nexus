@@ -115,5 +115,8 @@ func decodeProfile(data []byte, docName string) (AgentProfile, error) {
 	if p.Name == "" {
 		return AgentProfile{}, fmt.Errorf("cred: profile %q: Name is required", docName)
 	}
+	if len(p.SettingsAllowlist) > 0 && len(p.SettingsDenylist) > 0 {
+		return AgentProfile{}, fmt.Errorf("cred: profile %q: SettingsAllowlist and SettingsDenylist are mutually exclusive", docName)
+	}
 	return p, nil
 }
