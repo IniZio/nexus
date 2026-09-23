@@ -13,7 +13,6 @@ import (
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
-	"github.com/IniZio/nexus/internal/core/vmcfg"
 	mcpsrv "github.com/IniZio/nexus/internal/mcp"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -64,18 +63,16 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 	// pins on the way out is safe.
 	defer imgCache.Close() //nolint:errcheck
 
-	// Resolve auto-resize bounds so MCP-created sandboxes carry the same
-	// MemoryMaxMiB / VCPUMax hotplug configuration as CLI-created ones.
-	ar := vmcfg.Resolve(vmcfg.Config{BootMemMiB: opts.MemoryMiB, BootVCPUs: opts.VCPUs})
+	mcpSizing, _ := resolveRunSizing(opts.MemoryMiB, 0, opts.VCPUs, 0)
 
 	newDriver := buildSandboxDriverFactory(sandboxDriverSpec{
 		KernelPath:   kernelPath,
 		MemoryMiB:    opts.MemoryMiB,
 		VCPUs:        opts.VCPUs,
-		MemoryMaxMiB: ar.MemoryMaxMiB,
-		VCPUMax:      ar.VCPUMax,
+		MemoryMaxMiB: mcpSizing.DriverMemoryMaxMiB,
+		VCPUMax:      mcpSizing.DriverVCPUMax,
 		NestedVirt:   opts.NestedVirt,
-		PID1Args:     ar.PID1Args,
+		PID1Args:     mcpSizing.PID1Args,
 		SBHandle:     project + "/" + name,
 	}, nil)
 
@@ -118,18 +115,16 @@ func (m *mcpService) RunEphemeral(ctx context.Context, project, name string, opt
 	// closed or its pins outlive the request.
 	defer imgCache.Close() //nolint:errcheck
 
-	// Resolve auto-resize bounds so MCP-run sandboxes carry MemoryMaxMiB /
-	// VCPUMax hotplug configuration identical to the sandbox-create path.
-	ar := vmcfg.Resolve(vmcfg.Config{BootMemMiB: opts.MemoryMiB, BootVCPUs: opts.VCPUs})
+	mcpRunSizing, _ := resolveRunSizing(opts.MemoryMiB, 0, opts.VCPUs, 0)
 
 	newDriver := buildSandboxDriverFactory(sandboxDriverSpec{
 		KernelPath:   kernelPath,
 		MemoryMiB:    opts.MemoryMiB,
 		VCPUs:        opts.VCPUs,
-		MemoryMaxMiB: ar.MemoryMaxMiB,
-		VCPUMax:      ar.VCPUMax,
+		MemoryMaxMiB: mcpRunSizing.DriverMemoryMaxMiB,
+		VCPUMax:      mcpRunSizing.DriverVCPUMax,
 		NestedVirt:   opts.NestedVirt,
-		PID1Args:     ar.PID1Args,
+		PID1Args:     mcpRunSizing.PID1Args,
 		SBHandle:     project + "/" + name,
 	}, nil)
 

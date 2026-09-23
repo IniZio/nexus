@@ -300,8 +300,10 @@ Delegates to `sandbox rm`. Args: `<sandbox-ref>`
 Summary: Create, boot, and exec into a sandbox in one step
 
 Flags:
-- `--memory uint` — guest RAM in MiB (0 = driver default)
-- `--vcpus uint` — number of virtual CPUs (0 = driver default)
+- `--memory uint` — guest RAM in MiB; hard cap with no hotplug headroom when set without `--memory-max` (0 = driver default with 4× hotplug)
+- `--memory-max uint` — RAM ceiling for hotplug in MiB; requires `--memory` (0 = pin at `--memory`)
+- `--vcpus uint` — number of virtual CPUs; hard cap when set without `--vcpus-max` (0 = driver default with 4× hotplug)
+- `--vcpus-max uint` — vCPU ceiling for hotplug; requires `--vcpus` (0 = pin at `--vcpus`)
 - `--name string` — sandbox name (default: generated)
 - `--project string` — sandbox project (default: ephemeral)
 - `--force` — skip the disk-space preflight
