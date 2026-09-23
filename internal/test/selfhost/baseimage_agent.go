@@ -26,8 +26,10 @@ const (
 	nodeSHA256AMD64 = "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
 )
 
-// ClaudeCodeVersion is sourced from the profile recipe (FloatingVersion = "latest").
-var ClaudeCodeVersion = cred.MustProfileByName(cred.ClaudeCodeProfileName).ToolRecipe.Packages[0].Version
+// ClaudeCodeVersion is the npm version for this fixture. It is not taken from
+// the profile recipe: that package is OCI-kind, so its Version is an image
+// digest, and the recipe layer overlays /usr/local/bin/claude at create anyway.
+const ClaudeCodeVersion = cred.FloatingVersion
 
 const (
 	GHVersion = "2.98.0"

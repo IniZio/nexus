@@ -43,13 +43,13 @@
       {
         "Kind": "oci",
         "Name": "claude-code",
-        "Version": "latest",
+        "Version": "sha256:e8968eef67b795c49f7011bfb2fa5e0106b6033c52c418163ba0747285b18ec9",
         "URLTemplate": "",
         "SHA256ByArch": null,
         "InstallDir": "/usr/local/share/claude/versions",
         "Symlinks": [{"LinkPath": "/usr/local/bin/claude", "TargetPath": ""}],
         "VersionCmd": "",
-        "Image": "docker/sandbox-templates:claude-code-minimal-nightly",
+        "Image": "docker/sandbox-templates:claude-code-minimal-0.6.0",
         "SrcPath": "/home/agent/.local/share/claude/versions/",
         "BinRel": ""
       }

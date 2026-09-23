@@ -275,10 +275,12 @@ func TestClaudeCodeProfile_ToolRecipeShape(t *testing.T) {
 	if pkg.Name != "claude-code" {
 		t.Errorf("Packages[0].Name = %q; want %q", pkg.Name, "claude-code")
 	}
-	if !pkg.IsFloating() {
-		t.Errorf("Packages[0].Version = %q; want FloatingVersion (%q)", pkg.Version, FloatingVersion)
+	// Pinned by digest: no registry lookup at create and a stable image cache key.
+	const wantVersion = "sha256:e8968eef67b795c49f7011bfb2fa5e0106b6033c52c418163ba0747285b18ec9"
+	if pkg.Version != wantVersion {
+		t.Errorf("Packages[0].Version = %q; want %q", pkg.Version, wantVersion)
 	}
-	const wantImage = "docker/sandbox-templates:claude-code-minimal-nightly"
+	const wantImage = "docker/sandbox-templates:claude-code-minimal-0.6.0"
 	if pkg.Image != wantImage {
 		t.Errorf("Packages[0].Image = %q; want %q", pkg.Image, wantImage)
 	}
