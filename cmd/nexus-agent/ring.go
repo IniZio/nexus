@@ -104,6 +104,37 @@ func (r *Ring) Write(p []byte) {
 	r.mu.Unlock()
 }
 
+// simulateEvictLocked returns the oldest offset that would result after
+// evicting enough whole records to make room for n additional bytes.
+// Does NOT mutate the ring. Returns the current oldest when no eviction is needed.
+func (r *Ring) simulateEvictLocked(n int) uint64 {
+	if r.used+n <= r.cap {
+		return r.oldestLocked()
+	}
+	oldest := r.oldestLocked()
+	head := r.head
+	used := r.used
+	evicted := 0
+	for used+n > r.cap {
+		if used < 5 {
+			// Ring corrupt / undersized; treat as full eviction.
+			return r.tot
+		}
+		var lb [4]byte
+		for i := 0; i < 4; i++ {
+			lb[i] = r.buf[(head+1+i)%r.cap]
+		}
+		recTotalLen := 5 + int(binary.BigEndian.Uint32(lb[:]))
+		if recTotalLen > used {
+			return r.tot
+		}
+		head = (head + recTotalLen) % r.cap
+		used -= recTotalLen
+		evicted += recTotalLen
+	}
+	return oldest + uint64(evicted)
+}
+
 // WriteRecord appends a tagged record [tag(1)][dataLen(4 BE)][data] to the ring.
 // Eviction is record-aligned so OldestOffset() always lands on a record boundary.
 func (r *Ring) WriteRecord(tag byte, data []byte) {
@@ -117,11 +148,13 @@ func (r *Ring) WriteRecord(tag byte, data []byte) {
 
 	r.mu.Lock()
 	for !r.done && len(r.readers) > 0 {
-		need := r.tot + uint64(n)
-		if need <= uint64(r.cap) {
+		newOldest := r.simulateEvictLocked(n)
+		if newOldest == r.oldestLocked() {
+			// No eviction needed; ring has room.
 			break
 		}
-		if r.minCursorLocked() >= need-uint64(r.cap) {
+		if r.minCursorLocked() >= newOldest {
+			// All attached readers have advanced past the eviction point.
 			break
 		}
 		r.cond.Wait()

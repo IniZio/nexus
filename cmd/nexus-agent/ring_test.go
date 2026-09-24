@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 	"time"
+
+	"github.com/IniZio/nexus/internal/core/agent/wire"
 )
 
 func TestRing_AttachedReaderBlocksWriter(t *testing.T) {
@@ -269,6 +271,37 @@ func TestRing_SnapToRecordBoundary_MutationCheck(t *testing.T) {
 	}
 	if snapped != 0 {
 		t.Errorf("expected snap to 0 (start of first record containing offset 4), got %d", snapped)
+	}
+}
+
+// TestRing_WriteRecordMustNotEvictPastAttachedCursor verifies that WriteRecord
+// blocks when eviction would move oldest past an attached reader's cursor,
+// rather than evicting and leaving the reader stranded mid-record.
+func TestRing_WriteRecordMustNotEvictPastAttachedCursor(t *testing.T) {
+	// Three records of 100 bytes each: total wire bytes = 3*(5+100) = 315.
+	// Ring capacity exactly 315 → just fits.
+	r := newRing(315)
+	for i := 0; i < 3; i++ {
+		r.WriteRecord(byte(wire.StreamStderr), make([]byte, 100)) // records at 0,105,210
+	}
+	// Attach a reader whose cursor is mid-record-2 (byte 206, inside [210,315)).
+	rid := r.AddReader(206)
+	done := make(chan struct{})
+	go func() { r.WriteRecord(byte(wire.StreamStderr), make([]byte, 200)); close(done) }()
+	select {
+	case <-done:
+		_, _, _, overrun := r.WaitNextCursored(rid, 206)
+		t.Fatalf("writer evicted past attached cursor: oldest=%d overrun=%v", r.OldestOffset(), overrun)
+	case <-time.After(100 * time.Millisecond):
+		// Correct: writer is blocked because eviction would pass cursor 206.
+	}
+	r.RemoveReader(rid)
+	r.Close()
+	// After removing the reader, the blocked write must complete.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer did not unblock after reader was removed")
 	}
 }
 

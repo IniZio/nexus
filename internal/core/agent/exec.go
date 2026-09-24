@@ -262,8 +262,16 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 				}
 			case wire.StreamStderr:
 				if opts.stderr != nil {
-					_, _ = opts.stderr.Write(frame.Data.Payload)
+					if _, werr := opts.stderr.Write(frame.Data.Payload); werr != nil {
+						return 0, pumpErr("write stderr", werr)
+					}
 				}
+			default:
+				// StreamStdin (tag=0) or unknown tag in a guest→host Data frame
+				// is a protocol error: the guest sent garbled output (likely a
+				// misaligned ring read). Treat as fatal so rc is never fabricated
+				// as 0.
+				return 0, fmt.Errorf("agent: pump: protocol error: unexpected data tag %d from guest", frame.Data.Tag)
 			}
 		case wire.FrameExit:
 			code := frame.Exit.Code
