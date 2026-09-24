@@ -77,16 +77,22 @@ func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBy
 		return "", fmt.Errorf("ocirun: agentBytes must not be empty")
 	}
 
-	// Ref-based cache hit: if any entry already carries this ref, skip the pull.
+	// Hit only when ref and agent tag both match; empty/mismatched tag = re-bake.
+	currentTag := image.BuilderAgentTag(agentBytes)
 	imgs, listErr := c.List(ctx)
 	if listErr != nil {
 		return "", fmt.Errorf("ocirun: list cache: %w", listErr)
 	}
 	for _, img := range imgs {
-		if img.Ref == ociRef {
-			slog.Info("ocirun: cache hit", "ref", ociRef, "digest", img.Digest)
-			return string(img.Digest), nil
+		if img.Ref != ociRef {
+			continue
 		}
+		if img.AgentTag != currentTag {
+			slog.Info("ocirun: agent changed, re-baking", "ref", ociRef, "cached_tag", img.AgentTag, "current_tag", currentTag)
+			break
+		}
+		slog.Info("ocirun: cache hit", "ref", ociRef, "digest", img.Digest)
+		return string(img.Digest), nil
 	}
 
 	slog.Info("ocirun: pulling OCI image (may take a moment)", "ref", ociRef)
@@ -141,6 +147,7 @@ func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBy
 		Ref:       ociRef,
 		Kind:      domain.KindBase,
 		CreatedAt: time.Now().UTC(),
+		AgentTag:  currentTag,
 	}
 	if putErr := c.Put(ctx, domainImg, f); putErr != nil {
 		return "", fmt.Errorf("ocirun: cache put: %w", putErr)

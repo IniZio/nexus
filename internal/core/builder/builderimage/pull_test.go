@@ -48,7 +48,8 @@ func TestPullAndCacheOCI_CacheHit(t *testing.T) {
 		t.Fatalf("NewCache: %v", err)
 	}
 
-	// Pre-seed the cache with an entry carrying the target ref.
+	// Pre-seed the cache with an entry carrying the target ref and the correct
+	// agent tag so the hit path is taken (empty tag now counts as a miss).
 	content := []byte("fake-ext4-content-for-hit-test")
 	h := sha256.Sum256(content)
 	existingDigest := domain.Digest("sha256:" + hex.EncodeToString(h[:]))
@@ -57,6 +58,7 @@ func TestPullAndCacheOCI_CacheHit(t *testing.T) {
 		Ref:       "alpine:3.20",
 		Kind:      domain.KindBase,
 		CreatedAt: time.Now().UTC(),
+		AgentTag:  image.BuilderAgentTag(fakeAgentBytes),
 	}
 	if err := c.Put(context.Background(), existingImg, bytes.NewReader(content)); err != nil {
 		t.Fatalf("pre-seed Put: %v", err)

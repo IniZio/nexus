@@ -1287,7 +1287,16 @@ func resolveExt4(
 			}
 			return resolveExt4(ctx, ImageSpec{Digest: digest}, cache, cacheRoot, nil)
 		case 1:
-			d := matches[0].Digest
+			m := matches[0]
+			// Stale bake: re-pull when agent changed (or entry predates tag tracking).
+			if len(agentBytes) > 0 && m.Kind == domain.KindBase && m.AgentTag != image.BuilderAgentTag(agentBytes) {
+				digest, pullErr := ociPullAndCacheFn(ctx, spec.Ref, cache, agentBytes)
+				if pullErr != nil {
+					return "", "", fmt.Errorf("resolve image: pull OCI %q: %w", spec.Ref, pullErr)
+				}
+				return resolveExt4(ctx, ImageSpec{Digest: digest}, cache, cacheRoot, nil)
+			}
+			d := m.Digest
 			return filepath.Join(cacheRoot, d.Algo(), d.Hex(), "artifact"), string(d), nil
 		default:
 			// Refuse rather than pick. Cache.Put transfers a ref to the newest

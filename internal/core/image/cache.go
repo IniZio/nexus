@@ -72,6 +72,7 @@ type imageRecord struct {
 	Kind          domain.ImageKind `json:"kind"`
 	Size          int64            `json:"size"`
 	CreatedAt     time.Time        `json:"created_at"`
+	AgentTag      string           `json:"agent_tag,omitempty"`
 }
 
 func (r imageRecord) toDomain() domain.Image {
@@ -81,6 +82,7 @@ func (r imageRecord) toDomain() domain.Image {
 		Kind:      r.Kind,
 		Size:      r.Size,
 		CreatedAt: r.CreatedAt,
+		AgentTag:  r.AgentTag,
 	}
 }
 
@@ -445,6 +447,7 @@ func (c *Cache) Put(ctx context.Context, img domain.Image, r io.Reader) error {
 		Kind:          img.Kind,
 		Size:          n,
 		CreatedAt:     createdAt,
+		AgentTag:      img.AgentTag,
 	}
 	if err := writeMeta(c.metaPath(img.Digest), rec); err != nil {
 		return fmt.Errorf("image cache: put: write meta: %w", err)
@@ -490,6 +493,7 @@ func (c *Cache) releaseRefFrom(ref string, keep domain.Digest) error {
 			Kind:          img.Kind,
 			Size:          img.Size,
 			CreatedAt:     img.CreatedAt,
+			AgentTag:      img.AgentTag,
 		}
 		if err := writeMeta(c.metaPath(img.Digest), rec); err != nil {
 			return fmt.Errorf("release ref %q from %s: %w", ref, img.Digest, err)

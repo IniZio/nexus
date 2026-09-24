@@ -199,4 +199,8 @@ type Image struct {
 
 	// CreatedAt is the wall-clock time the artifact was first stored in the cache.
 	CreatedAt time.Time
+
+	// AgentTag is the first-8-bytes sha256 hex of the nexus-agent binary baked
+	// into this image. Empty for entries written before agent-tag tracking.
+	AgentTag string
 }
