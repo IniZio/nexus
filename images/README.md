@@ -123,5 +123,5 @@ will be added in a future slice.
 The base image (`ghcr.io/inizio/nexus-base`) is pushed from CI via `GITHUB_TOKEN`.
 GitHub creates GHCR packages as **private** on first push; anonymous pulls will fail
 until the package is set **Public** manually in the GitHub Packages settings UI.
-This is a one-time step — see `docs/site/operations/resource-lifecycle.md` for
+This is a one-time step — see `doc/site/operations/resource-lifecycle.md` for
 the full procedure.

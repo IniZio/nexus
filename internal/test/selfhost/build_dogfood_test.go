@@ -5,7 +5,7 @@
 // Proves end-to-end that the enlarged agent base image (MBH-S1) ships a
 // buildable, testable nexus source tree inside the guest VM.
 //
-// Definition of done (docs/site/index.md — concepts/index.md not yet written):
+// Definition of done (doc/site/index.md — concepts/index.md not yet written):
 //  1. `go build ./...` exits 0 from /workspace inside the guest.
 //  2. `go test ./...` (unit tests only; no -tags integration) exits 0.
 //

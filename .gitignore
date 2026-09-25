@@ -31,11 +31,11 @@ coverage.html
 .scratch/
 /buildorca
 
-# Docs site build artifacts (VitePress). The Markdown under docs/site is the
+# Docs site build artifacts (VitePress). The Markdown under doc/site is the
 # source; node_modules and the rendered output are never committed.
-docs/site/node_modules/
-docs/site/.vitepress/dist/
-docs/site/.vitepress/cache/
+doc/site/node_modules/
+doc/site/.vitepress/dist/
+doc/site/.vitepress/cache/
 __pycache__/
 
 # repro harness generated blobs and build logs (~450 MB of binary test files

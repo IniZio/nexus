@@ -564,14 +564,14 @@ func TestResolveMounts_BareTildeExpandedToHome(t *testing.T) {
 // ---- JSON Schema drift test ----
 
 // TestSchemaCoversAllStructFields reads the JSON Schema at
-// docs/schema/nexus.schema.json and verifies that every Go struct field
+// doc/schema/nexus.schema.json and verifies that every Go struct field
 // (identified by its yaml tag) has a counterpart in the schema's property
 // definitions. This test FAILS when a field is added to a Go struct without
 // updating the schema — preventing the schema from silently rotting into a lie.
 //
-// The schema path is relative to this package: ../../../docs/schema/nexus.schema.json.
+// The schema path is relative to this package: ../../../doc/schema/nexus.schema.json.
 func TestSchemaCoversAllStructFields(t *testing.T) {
-	schemaPath := filepath.Join("..", "..", "..", "docs", "schema", "nexus.schema.json")
+	schemaPath := filepath.Join("..", "..", "..", "doc", "schema", "nexus.schema.json")
 	data, err := os.ReadFile(schemaPath)
 	if err != nil {
 		t.Fatalf("cannot read JSON schema at %s: %v — create the schema or fix the path", schemaPath, err)
@@ -616,7 +616,7 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 	// Top-level fields: "version", "egress", "sandbox".
 	for _, name := range []string{"version", "egress", "sandbox"} {
 		if _, ok := topProps[name]; !ok {
-			t.Errorf("schema missing top-level property %q — add it to docs/schema/nexus.schema.json", name)
+			t.Errorf("schema missing top-level property %q — add it to doc/schema/nexus.schema.json", name)
 		}
 	}
 
@@ -624,7 +624,7 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 	egressProps := props(schema, "properties", "egress", "properties")
 	for _, name := range yamlFields(reflect.TypeOf(config.EgressConfig{})) {
 		if _, ok := egressProps[name]; !ok {
-			t.Errorf("schema missing egress property %q — add it to docs/schema/nexus.schema.json", name)
+			t.Errorf("schema missing egress property %q — add it to doc/schema/nexus.schema.json", name)
 		}
 	}
 
@@ -632,7 +632,7 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 	sandboxProps := props(schema, "properties", "sandbox", "properties")
 	for _, name := range yamlFields(reflect.TypeOf(config.SandboxConfig{})) {
 		if _, ok := sandboxProps[name]; !ok {
-			t.Errorf("schema missing sandbox property %q — add it to docs/schema/nexus.schema.json", name)
+			t.Errorf("schema missing sandbox property %q — add it to doc/schema/nexus.schema.json", name)
 		}
 	}
 
@@ -644,7 +644,7 @@ func TestSchemaCoversAllStructFields(t *testing.T) {
 	knownTopLevel := map[string]bool{"version": true, "egress": true, "sandbox": true}
 	for key := range topProps {
 		if !knownTopLevel[key] {
-			t.Errorf("schema has unknown top-level property %q — remove it from docs/schema/nexus.schema.json or add to the Go config struct", key)
+			t.Errorf("schema has unknown top-level property %q — remove it from doc/schema/nexus.schema.json or add to the Go config struct", key)
 		}
 	}
 

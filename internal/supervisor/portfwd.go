@@ -82,7 +82,7 @@ type portForwardSupervisor struct {
 	interval        time.Duration
 	discoverTimeout time.Duration // bounds each DiscoverOne call; zero means portFwdDiscoverTimeout
 	listeners       map[uint16]net.Listener
-	hostPorts       map[uint16]uint16                          // ephemeral host port per bound guest port
+	hostPorts       map[uint16]uint16
 	listenFunc      func(string, string) (net.Listener, error) // nil uses net.Listen; overrideable in tests
 	bindErrs        map[uint16]error                           // last host-bind failure per port; retried every tick
 	reporter        func(ctx context.Context, pairs []guestHostPair)

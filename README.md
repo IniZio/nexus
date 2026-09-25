@@ -17,7 +17,7 @@ herdr plugin install IniZio/nexus/plugins/herdr
 ```
 
 This downloads the pinned binary from GitHub Releases, verifies it, and installs
-it to `~/.local/bin/nexus`. See [docs/site/quickstart.md](docs/site/quickstart.md)
+it to `~/.local/bin/nexus`. See [doc/site/quickstart.md](doc/site/quickstart.md)
 for kernel/agent image prerequisites and the one manual herdr config step.
 
 **Build from source:**
@@ -52,8 +52,8 @@ For ephemeral one-shot runs: `nexus run alpine:3.20 -- sh -c 'echo hello'`
 ## Documentation
 
 - **Product manual:** https://inizio.github.io/nexus/ — or serve locally with `make docs`
-- **Architecture:** [docs/architecture/README.md](docs/architecture/README.md)
-- **Design notes:** [docs/design/](docs/design/)
+- **Architecture:** [doc/architecture/README.md](doc/architecture/README.md)
+- **Design notes:** [doc/design/](doc/design/)
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Development

@@ -898,7 +898,7 @@ func (e errDirEntry) Info() (fs.FileInfo, error) { return nil, e.infoErr }
 // srcDir (the user's worktree) and Dir(outExt4) (the store / $TMPDIR) are
 // routinely on different mounts. If statfs measures the wrong filesystem the
 // guard silently reports wrong headroom — the disk-margin analysis in
-// docs/site/recipes/docker-in-sandbox.md §disk-space guard relies on it measuring the output
+// doc/site/recipes/docker-in-sandbox.md §disk-space guard relies on it measuring the output
 // filesystem.
 //
 // Falsifiability: mutate the statfsAvail call target from filepath.Dir(outExt4)

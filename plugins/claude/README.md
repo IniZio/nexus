@@ -9,7 +9,7 @@ policy, delegating work into a worktree sandbox), the `/nexus:nexus-init`,
 
 `nexus` must be on `PATH` — the MCP server is launched as `nexus mcp`. Install
 it via the herdr plugin (see the
-[quickstart](../../docs/site/quickstart.md#install)), or build from source with
+[quickstart](../../doc/site/quickstart.md#install)), or build from source with
 `go build -o ~/.local/bin/nexus ./cmd/nexus`.
 
 ## Install

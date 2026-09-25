@@ -2,7 +2,7 @@
 """
 validate-cli-examples.py
 ========================
-Validates every `nexus ...` invocation found in docs/site/**/*.md code blocks
+Validates every `nexus ...` invocation found in doc/site/**/*.md code blocks
 against the real flag sets parsed from internal/cli/cmd_*.go.
 
 Exit 0  — all invocations are clean.
@@ -88,7 +88,7 @@ TARGET SPELLINGS (R1)
 REMOVED FLAGS (R2)
   Some flags are removed from the target even though they exist in source today.
   Any code-block occurrence is a violation.  See removed_flags in
-  docs/site/cli-surface.toml for the current list.
+  doc/site/cli-surface.toml for the current list.
 
 OLD SPELLING (R3)
   `nexus sandbox <lifecycle-verb>` in a code block is a violation on every page.
@@ -99,7 +99,7 @@ SOURCE OF TRUTH FOR ALLOWLISTS
   All five allowlists (target_only_verbs, target_only_flags, partial_flags,
   removed_verbs, removed_flags) are loaded at runtime from:
 
-    docs/site/cli-surface.toml
+    doc/site/cli-surface.toml
 
   Edit that file to add, remove, or reclassify surface.  Every entry in
   target_only_flags and partial_flags MUST have a corresponding <Badge> in the
@@ -140,7 +140,7 @@ CLI_DIR = os.environ.get(
     "NEXUS_CLI_DIR", os.path.join(REPO_ROOT, "internal", "cli")
 )
 DOCS_DIR = os.environ.get(
-    "NEXUS_DOCS_DIR", os.path.join(REPO_ROOT, "docs", "site")
+    "NEXUS_DOCS_DIR", os.path.join(REPO_ROOT, "doc", "site")
 )
 SURFACE_MANIFEST = os.environ.get(
     "NEXUS_SURFACE_MANIFEST", os.path.join(DOCS_DIR, "cli-surface.toml")
@@ -156,7 +156,7 @@ def load_surface_manifest() -> tuple[
     dict,
 ]:
     """
-    Load the CLI surface manifest from docs/site/cli-surface.toml.
+    Load the CLI surface manifest from doc/site/cli-surface.toml.
 
     Returns (target_only_verbs, target_only_flags, partial_flags,
              removed_verbs, removed_flags, manifest_entries).

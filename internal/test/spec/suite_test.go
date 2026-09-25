@@ -133,7 +133,7 @@ func scenarioTagNames(sc *godog.Scenario) []string {
 func registerSteps(sc *godog.ScenarioContext) {
 
 	// ── Scenario 1: BUILT ─────────────────────────────────────────────────
-	// Docs:    docs/site/cli/sandbox-commands.md — sandbox list section.
+	// Docs:    doc/site/cli/sandbox-commands.md — sandbox list section.
 	//          No danger/warning badge → capability is fully built.
 	// Driver:  service.List on a fresh FileStore.
 
@@ -160,7 +160,7 @@ func registerSteps(sc *godog.ScenarioContext) {
 	})
 
 	// ── Scenario 2: PARTIAL (warning) ─────────────────────────────────────
-	// Docs:    docs/site/ai-agents.md:74
+	// Docs:    doc/site/ai-agents.md:74
 	//            <Badge type="warning" text="partial" /> — target design exposes
 	//            `nexus create` as a top-level verb; current impl uses
 	//            `nexus sandbox create`.
@@ -188,7 +188,7 @@ func registerSteps(sc *godog.ScenarioContext) {
 			return gctx, fmt.Errorf(
 				"'create' is not a registered top-level command — "+
 					"current impl uses 'nexus sandbox create' "+
-					"(docs/site/ai-agents.md:74, badge: partial): %w",
+					"(doc/site/ai-agents.md:74, badge: partial): %w",
 				godog.ErrPending,
 			)
 		}
@@ -196,7 +196,7 @@ func registerSteps(sc *godog.ScenarioContext) {
 	})
 
 	// ── Scenario 3: NOT BUILT (danger) ────────────────────────────────────
-	// Docs:    docs/site/ai-agents.md:96
+	// Docs:    doc/site/ai-agents.md:96
 	//            ### Public agent launch surface
 	//            <Badge type="danger" text="not built" />
 	// Outcome: PENDING — the "agent" verb is absent from the CLI registry, so
@@ -217,12 +217,12 @@ func registerSteps(sc *godog.ScenarioContext) {
 			s := gctx.Value(ctxKey{}).(*specCtx)
 			if !s.cmdFound {
 				// Known gap: public agent launch surface not yet built.
-				// docs/site/ai-agents.md:96, badge: not-built.
+				// doc/site/ai-agents.md:96, badge: not-built.
 				s.hadPending = true
 				return gctx, fmt.Errorf(
 					"'agent' is not a registered command — "+
 						"public agent launch surface not yet built "+
-						"(docs/site/ai-agents.md:96, badge: not-built): %w",
+						"(doc/site/ai-agents.md:96, badge: not-built): %w",
 					godog.ErrPending,
 				)
 			}
@@ -230,7 +230,7 @@ func registerSteps(sc *godog.ScenarioContext) {
 		})
 
 	// ── Scenarios 4–5: BUILT — D-PD-53 live-mount guard ──────────────────
-	// Docs:    docs/site/cli/sandbox-commands.md (fork / snapshot sections).
+	// Docs:    doc/site/cli/sandbox-commands.md (fork / snapshot sections).
 	//          No danger/warning badge → capability is fully built.
 	// Scenario 4: refusal path — a sandbox with a live host-directory mount
 	//             must be refused by both Fork and Snapshot, citing D-PD-53.

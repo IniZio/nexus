@@ -6,7 +6,7 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
   # ── Scenario 1: BUILT ────────────────────────────────────────────────────
   # Capability: sandbox list returns an empty array on a fresh store.
   # Badge:      no danger/warning badge → built.
-  # Docs ref:   docs/site/cli/sandbox-commands.md (sandbox list section;
+  # Docs ref:   doc/site/cli/sandbox-commands.md (sandbox list section;
   #             no badge means the capability is fully implemented).
   @badge-built
   Scenario: Listing sandboxes on a fresh store returns an empty list
@@ -17,7 +17,7 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
   # ── Scenario 2: BUILT (tip) ──────────────────────────────────────────────
   # Capability: top-level `nexus create` verb.
   # Badge:      type="tip" text="built"
-  # Docs ref:   docs/site/cli/sandbox-commands.md
+  # Docs ref:   doc/site/cli/sandbox-commands.md
   #               ::: tip Both spellings work <Badge type="tip" text="built" />
   # Expected outcome: PASSES — `create` is a registered top-level command.
   #
@@ -34,7 +34,7 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
   # ── Scenario 3: NOT BUILT (danger) ───────────────────────────────────────
   # Capability: public agent launch surface (`nexus agent launch`).
   # Badge:      type="danger" text="not built"
-  # Docs ref:   docs/site/ai-agents.md:96
+  # Docs ref:   doc/site/ai-agents.md:96
   #               ### Public agent launch surface
   #               <Badge type="danger" text="not built" />
   # Expected outcome: PENDING — step is defined but returns godog.ErrPending;
@@ -49,7 +49,7 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
   # Capability: D-PD-53 guard — fork and snapshot refuse any sandbox that
   #             carries live host-directory mounts.
   # Badge:      no danger/warning badge → built.
-  # Docs ref:   docs/site/cli/sandbox-commands.md (fork / snapshot sections).
+  # Docs ref:   doc/site/cli/sandbox-commands.md (fork / snapshot sections).
   # Expected outcome: PASS — service.Fork and service.Snapshot both return an
   #             error whose message cites "D-PD-53".
   @badge-built
@@ -63,7 +63,7 @@ Feature: Sandbox capabilities — doc-as-spec badge reconciliation
   # ── Scenario 5: BUILT (negative control) ─────────────────────────────────
   # Capability: D-PD-53 guard is not over-broad.
   # Badge:      no danger/warning badge → built.
-  # Docs ref:   docs/site/cli/sandbox-commands.md (fork / snapshot sections).
+  # Docs ref:   doc/site/cli/sandbox-commands.md (fork / snapshot sections).
   # Expected outcome: PASS — a sandbox with no live mounts reaches the driver
   #             layer without D-PD-53 refusal.  The fake driver then fails for
   #             an unrelated reason (ErrNoSubstrate) which does not cite D-PD-53.

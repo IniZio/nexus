@@ -2,7 +2,7 @@
 """
 badge-coverage.py
 =================
-Measures which <Badge .../> occurrences in docs/site/**/*.md are
+Measures which <Badge .../> occurrences in doc/site/**/*.md are
 load-bearing — i.e. removing that single badge causes validate-cli-examples.py
 to fail.
 
@@ -41,7 +41,7 @@ _repo_root = Path(
 ).resolve()
 
 DOCS_DIR = Path(
-    os.environ.get("NEXUS_DOCS_DIR", str(_repo_root / "docs" / "site"))
+    os.environ.get("NEXUS_DOCS_DIR", str(_repo_root / "doc" / "site"))
 )
 CLI_DIR = Path(
     os.environ.get("NEXUS_CLI_DIR", str(_repo_root / "internal" / "cli"))
@@ -52,7 +52,7 @@ SURFACE_MANIFEST = Path(
 VALIDATOR = _script_dir / "validate-cli-examples.py"
 
 # ── Honesty baseline ──────────────────────────────────────────────────────────
-# Minimum total badge count that must be present in docs/site/**/*.md.
+# Minimum total badge count that must be present in doc/site/**/*.md.
 # Lower this by the exact number of badges removed whenever an intentional
 # removal is committed; the commit message is the explanation.
 

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/IniZio/nexus/docs/schema/nexus.schema.json",
+  "$id": "https://github.com/IniZio/nexus/doc/schema/nexus.schema.json",
   "title": ".nexus/config.yaml",
-  "description": "Per-repository nexus configuration file. Add `# yaml-language-server: $schema=<path-to-repo-root>/docs/schema/nexus.schema.json` as the first line of .nexus/config.yaml for editor autocomplete and validation.",
+  "description": "Per-repository nexus configuration file. Add `# yaml-language-server: $schema=<path-to-repo-root>/doc/schema/nexus.schema.json` as the first line of .nexus/config.yaml for editor autocomplete and validation.",
   "type": "object",
   "required": ["version"],
   "additionalProperties": false,

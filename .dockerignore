@@ -32,6 +32,6 @@ examples/nexus-in-docker/boottest/
 *.img
 
 # Docs build artefacts
-docs/site/node_modules
+doc/site/node_modules
 
 # Allow everything else (cmd/, internal/, go.mod, go.sum, images/, proto/, plugins/, third_party/, …)

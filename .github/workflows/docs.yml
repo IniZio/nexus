@@ -1,6 +1,6 @@
 name: Docs
 
-# Publishes the VitePress site under docs/site to GitHub Pages at
+# Publishes the VitePress site under doc/site to GitHub Pages at
 # https://inizio.github.io/nexus/.
 #
 # CI already builds the docs on every PR (ci.yml, job `docs-build`) — that job
@@ -11,7 +11,7 @@ on:
     branches:
       - main
     paths:
-      - 'docs/site/**'
+      - 'doc/site/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch: {}
 
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: docs/site
+        working-directory: doc/site
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +49,7 @@ jobs:
         with:
           node-version: "22"
           cache: "pnpm"
-          cache-dependency-path: docs/site/pnpm-lock.yaml
+          cache-dependency-path: doc/site/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -63,7 +63,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/site/.vitepress/dist
+          path: doc/site/.vitepress/dist
 
   deploy:
     name: Deploy to GitHub Pages

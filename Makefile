@@ -251,17 +251,17 @@ vet-integration:
 	go vet -p $(GOBUILD_P) -tags integration ./...
 
 # docs serves the documentation site locally with live reload.
-# docs-build renders it to docs/site/.vitepress/dist (gitignored).
+# docs-build renders it to doc/site/.vitepress/dist (gitignored).
 #
 # The site is the ONLY part of this repo with a JS toolchain, and it is scoped
-# to docs/site so the Go build never sees it. Requires pnpm; first run installs
-# VitePress into docs/site/node_modules.
+# to doc/site so the Go build never sees it. Requires pnpm; first run installs
+# VitePress into doc/site/node_modules.
 docs:
 	@echo "Docs dev server → http://localhost:5180"
-	cd docs/site && pnpm install --frozen-lockfile && pnpm run dev
+	cd doc/site && pnpm install --frozen-lockfile && pnpm run dev
 
 docs-build:
-	cd docs/site && pnpm install --frozen-lockfile && pnpm run build
+	cd doc/site && pnpm install --frozen-lockfile && pnpm run build
 
 # check-agent-fresh detects stale agent binaries in TWO places:
 #

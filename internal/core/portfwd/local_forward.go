@@ -49,7 +49,7 @@ type LocalForward struct {
 	ControlPath string
 	SSHHost     string
 	Port        uint16
-	RemotePort  uint16 // engine host port to proxy to; zero falls back to Port (keeps old-path behaviour)
+	RemotePort  uint16
 	RunConn     ConnRunner
 	ListenFunc  func(string, string) (net.Listener, error)
 

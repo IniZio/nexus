@@ -228,7 +228,7 @@ func probeIntentLease(path string) intentLeaseState {
 //
 // Residual limit: fsync guarantees are only as strong as the storage hardware
 // and driver stack honour them. True power-loss behaviour is not tested here;
-// see docs/site/operations/resource-lifecycle.md for the full durability contract
+// see doc/site/operations/resource-lifecycle.md for the full durability contract
 // and its unverified residuals.
 //
 // diskCopyPath and workspaceDiskPath are the planned disk paths; either may be
