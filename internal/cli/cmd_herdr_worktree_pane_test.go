@@ -286,7 +286,7 @@ func TestHerdrWorktreeSandbox_paneFailureSurfacesInAutoMode(t *testing.T) {
 			err := herdrWorktreeSandbox(
 				context.Background(), "w-pane", &w, root,
 				true /*openPane*/, tc.conditional, tc.auto, false,
-				func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+				func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ domain.EgressMCPPolicies, _ bool) error {
 					return nil
 				},
 				func(_ context.Context, _ string) (domain.Sandbox, error) {

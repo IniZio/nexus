@@ -40,7 +40,7 @@ func TestHerdrWorktreePluginMounts(t *testing.T) {
 		t.Fatalf("warnings = %q, want exactly one (dangling link)", warnings)
 	}
 
-	args := herdrWorktreeSandboxCreateArgs("h", "/w:/workspace", "--image", "x", got, nil, "", nil, false)
+	args := herdrWorktreeSandboxCreateArgs("h", "/w:/workspace", "--image", "x", got, nil, "", nil, nil, false)
 	found := false
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "--mount" && args[i+1] == wantSpec {

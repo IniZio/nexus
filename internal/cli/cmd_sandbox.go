@@ -290,7 +290,8 @@ type sandboxCreateFlags struct {
 	extraAgentNames  []string
 	allowHosts       []string                  // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo      string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
-	pathPolicies     domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
+	pathPolicies     domain.EgressPathPolicies  // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
+	mcpPolicies      domain.EgressMCPPolicies
 	mountNamed       []string                  // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
 	mountLive        []string                  // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
 	noShareSettings  bool                      // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
@@ -350,6 +351,17 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 			pp[""][ep.Host] = domain.EgressHostPolicy{Paths: ep.Paths}
 		}
 		f.pathPolicies = pp
+	}
+	if len(f.mcpPolicies) == 0 && len(cfg.Egress.MCP) > 0 {
+		mp := make(domain.EgressMCPPolicies, len(cfg.Egress.MCP))
+		for _, entry := range cfg.Egress.MCP {
+			mp[entry.Host] = domain.EgressMCPPolicy{
+				Path:  entry.Path,
+				Allow: entry.Allow,
+				Args:  entry.Args,
+			}
+		}
+		f.mcpPolicies = mp
 	}
 
 	if f.mountLive == nil && len(resolved.Mounts) > 0 {
@@ -617,6 +629,21 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				}
 			}
 			f.pathPolicies = pp
+		case "--egress-mcp-json":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --egress-mcp-json requires a JSON argument"}
+			}
+			i++
+			var mp domain.EgressMCPPolicies
+			if err := json.Unmarshal([]byte(args[i]), &mp); err != nil {
+				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --egress-mcp-json: %v", err)}
+			}
+			normalized := make(domain.EgressMCPPolicies, len(mp))
+			for h, pol := range mp {
+				nh := strings.ToLower(strings.TrimSuffix(h, "."))
+				normalized[nh] = pol
+			}
+			f.mcpPolicies = normalized
 		case "--mount-named":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --mount-named requires <volume-name>:<guest-path>"}
@@ -1549,6 +1576,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			AgentProfile:            agentProfile,                                 // zero value when --agent was not passed
 			AllowedRepo:             f.allowedRepo,                                // D-PD-36: set by --repo; empty for open-egress sandboxes
 			PathPolicies:            f.pathPolicies,                               // conveyed via --egress-policy-json on the worktree subprocess path
+			MCPPolicies:             f.mcpPolicies,
 			Volumes:                 namedVS,                                      // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts:       namedMounts,
 			LiveMounts:              bootLiveMounts, // D-PD-53: populated from --mount flags

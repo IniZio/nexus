@@ -44,9 +44,9 @@ type sandboxDriverSpec struct {
 	MemoryMaxMiB uint32 // 0 → driver default
 	VCPUMax      uint32 // 0 → driver default
 	NestedVirt   bool
-	PID1Args     string             // from vmcfg.Resolve; "" → no extra pid1 args
-	SBHandle     string             // "project/name" for cmdline; "" → omit handle
-	HostHome     string             // host home dir for --hosthome= cmdline param; "" → omit
+	PID1Args     string // from vmcfg.Resolve; "" → no extra pid1 args
+	SBHandle     string // "project/name" for cmdline; "" → omit handle
+	HostHome     string
 	LiveMounts   []domain.LiveMount // nil for MCP/run paths
 	GuestMounts  []agent.GuestMount // nil for MCP/run paths
 	// HasScratchDisk is true when a scratch disk was actually attached as the

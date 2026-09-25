@@ -78,6 +78,42 @@
             ]
           },
           "default": []
+        },
+        "mcp": {
+          "type": "array",
+          "description": "MCP server endpoint entries the sandbox may call.",
+          "items": {
+            "type": "object",
+            "description": "One MCP server endpoint. Restricts which tools may be called and optionally constrains per-tool argument values via glob patterns.",
+            "required": ["host", "allow"],
+            "additionalProperties": false,
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "MCP server hostname (lowercased). Required."
+              },
+              "path": {
+                "type": "string",
+                "description": "Optional path prefix for the MCP endpoint. Case-insensitive; trailing slash ignored. Requests to non-canonical paths (percent-encoding, double slashes, uppercase letters) are denied regardless of this value. Must start with / if set.",
+                "default": ""
+              },
+              "allow": {
+                "type": "array",
+                "description": "Tool name allowlist. At least one entry required.",
+                "items": { "type": "string" },
+                "minItems": 1
+              },
+              "args": {
+                "type": "object",
+                "description": "Per-tool argument constraints. Keys must be in allow; values are parameter-name→glob-pattern maps.",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" }
+                }
+              }
+            }
+          },
+          "default": []
         }
       }
     },

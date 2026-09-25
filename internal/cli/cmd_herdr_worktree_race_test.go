@@ -43,8 +43,6 @@ func TestHerdrWorktreeSandboxConcurrentCreateConverges(t *testing.T) {
 	handle := herdrWorktreeSandboxHandle("repo", branch) // "repo/feature-raceproof"
 
 	// stubInfo is the worktree info both callers will see.
-	// The handle is keyed on the checkout dir name (herdr names it after the
-	// branch at creation), so the fixture path must end in the branch slug.
 	stubInfo := herdrWorktreeInfo{
 		IsLinkedWorktree: true,
 		Branch:           branch,
@@ -75,7 +73,7 @@ func TestHerdrWorktreeSandboxConcurrentCreateConverges(t *testing.T) {
 	// Use a real ULID sandbox ID so HerdrSpaceGetByHandle succeeds after create.
 	stubID := domain.NewSandboxID()
 
-	createFn := func(_ context.Context, h, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+	createFn := func(_ context.Context, h, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ domain.EgressMCPPolicies, _ bool) error {
 		createCount.Add(1)
 		started <- struct{}{}
 		<-release // block until test releases

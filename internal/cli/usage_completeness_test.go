@@ -71,6 +71,7 @@ func TestSandboxCreateUsage_ListsEveryAcceptedFlag(t *testing.T) {
 	// consumed exclusively by the nexus worktree create path, not by operators.
 	internalFlags := map[string]bool{
 		"--egress-policy-json": true, // conveyed by herdrWorktreeSandboxCreateArgs; not for human use
+		"--egress-mcp-json":    true,
 	}
 
 	var missing []string

@@ -17,7 +17,7 @@ import (
 // TestHerdrWorktreeSandboxCreateArgs verifies the args produced by herdrWorktreeSandboxCreateArgs.
 func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 	t.Run("no secrets no allowedRepo", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", nil, false)
+		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", nil, nil, false)
 		joined := strings.Join(args, " ")
 		if strings.Contains(joined, "--secret") {
 			t.Errorf("unexpected --secret in args: %v", args)
@@ -32,7 +32,7 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 
 	t.Run("one GitHub secret plus allowedRepo", func(t *testing.T) {
 		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil,
-			[]string{"GH_TOKEN@github.com"}, "owner/repo", nil, false)
+			[]string{"GH_TOKEN@github.com"}, "owner/repo", nil, nil, false)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "--secret GH_TOKEN@github.com") {
 			t.Errorf("expected --secret GH_TOKEN@github.com in args: %v", args)
@@ -47,7 +47,7 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 
 	t.Run("GitLab secret no allowedRepo", func(t *testing.T) {
 		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil,
-			[]string{"GITLAB_TOKEN@gitlab.com"}, "", nil, false)
+			[]string{"GITLAB_TOKEN@gitlab.com"}, "", nil, nil, false)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "--secret GITLAB_TOKEN@gitlab.com") {
 			t.Errorf("expected --secret GITLAB_TOKEN@gitlab.com in args: %v", args)
@@ -61,7 +61,7 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 	})
 
 	t.Run("--file imageFlag produces docker disk flag", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("myhandle", "src:dst", "--file", "/some/dir", nil, nil, "", nil, false)
+		args := herdrWorktreeSandboxCreateArgs("myhandle", "src:dst", "--file", "/some/dir", nil, nil, "", nil, nil, false)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, herdrDockerDiskVolumeName("myhandle")) {
 			t.Errorf("expected docker disk (--mount-named …-docker) for --file path: %v", args)
@@ -72,7 +72,7 @@ func TestHerdrWorktreeSandboxCreateArgs(t *testing.T) {
 	})
 
 	t.Run("--image imageFlag does not produce docker disk flag", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("myhandle", "src:dst", "--image", "ref", nil, nil, "", nil, false)
+		args := herdrWorktreeSandboxCreateArgs("myhandle", "src:dst", "--image", "ref", nil, nil, "", nil, nil, false)
 		joined := strings.Join(args, " ")
 		if strings.Contains(joined, herdrDockerDiskVolumeName("myhandle")) {
 			t.Errorf("unexpected docker disk (--mount-named …-docker) for --image path: %v", args)
@@ -87,7 +87,7 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 		cfg.Egress.Secrets = config.EgressSecrets{
 			{Env: "GITLAB_TOKEN", Hosts: []string{"gitlab.com"}},
 		}
-		secrets, allowedRepo, _, err := buildWorktreeEgressArgs(cfg)
+		secrets, allowedRepo, _, _, err := buildWorktreeEgressArgs(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -104,7 +104,7 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 		cfg.Egress.Secrets = config.EgressSecrets{
 			{Env: "MYTOKEN", Hosts: []string{"git.corp.example.com"}},
 		}
-		secrets, _, _, err := buildWorktreeEgressArgs(cfg)
+		secrets, _, _, _, err := buildWorktreeEgressArgs(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -121,7 +121,7 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 		cfg.Egress.Secrets = config.EgressSecrets{
 			{Env: "GH_TOKEN", Hosts: []string{"api.github.com"}},
 		}
-		secrets, allowedRepo, pp, err := buildWorktreeEgressArgs(cfg)
+		secrets, allowedRepo, pp, _, err := buildWorktreeEgressArgs(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -143,7 +143,7 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 		cfg.Egress.Secrets = config.EgressSecrets{
 			{Env: "GH_TOKEN", Hosts: []string{"github.com"}},
 		}
-		_, _, _, err := buildWorktreeEgressArgs(cfg)
+		_, _, _, _, err := buildWorktreeEgressArgs(cfg)
 		if err == nil {
 			t.Fatal("expected D-PDE-16 error for GitHub secret without any policy, got nil")
 		}
@@ -160,7 +160,7 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 		cfg.Egress.Secrets = config.EgressSecrets{
 			{Env: "API_TOKEN", Hosts: []string{"api.example.com"}},
 		}
-		secrets, allowedRepo, pp, err := buildWorktreeEgressArgs(cfg)
+		secrets, allowedRepo, pp, _, err := buildWorktreeEgressArgs(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -177,7 +177,7 @@ func TestBuildWorktreeEgressArgs(t *testing.T) {
 
 	t.Run("f: empty config — no secrets, no policy", func(t *testing.T) {
 		cfg := config.Config{}
-		secrets, allowedRepo, pp, err := buildWorktreeEgressArgs(cfg)
+		secrets, allowedRepo, pp, _, err := buildWorktreeEgressArgs(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -275,7 +275,7 @@ func runWorktreeSandboxCapturingEgress(t *testing.T, worktreeDir string) (out st
 	}
 	t.Cleanup(func() { herdrExecCommandContext = old })
 	var called bool
-	create := func(_ context.Context, _, _, flag, val string, _ []string, s []string, _ string, _ domain.EgressPathPolicies, n bool) error {
+	create := func(_ context.Context, _, _, flag, val string, _ []string, s []string, _ string, _ domain.EgressPathPolicies, _ domain.EgressMCPPolicies, n bool) error {
 		called, imageFlag, imageVal, secrets, nested = true, flag, val, s, n
 		return nil
 	}
@@ -358,7 +358,7 @@ func TestHerdrWorktreeSandboxCreateArgs_PathPolicies(t *testing.T) {
 	}
 
 	t.Run("non-empty pathPolicies emits --egress-policy-json", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", pp, false)
+		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", pp, nil, false)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "--egress-policy-json") {
 			t.Fatalf("expected --egress-policy-json in args: %v", args)
@@ -383,7 +383,7 @@ func TestHerdrWorktreeSandboxCreateArgs_PathPolicies(t *testing.T) {
 	})
 
 	t.Run("nil pathPolicies omits --egress-policy-json", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", nil, false)
+		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", nil, nil, false)
 		for _, a := range args {
 			if a == "--egress-policy-json" {
 				t.Errorf("unexpected --egress-policy-json in args with nil pathPolicies: %v", args)
@@ -392,7 +392,7 @@ func TestHerdrWorktreeSandboxCreateArgs_PathPolicies(t *testing.T) {
 	})
 
 	t.Run("empty pathPolicies omits --egress-policy-json", func(t *testing.T) {
-		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", domain.EgressPathPolicies{}, false)
+		args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, nil, "", domain.EgressPathPolicies{}, nil, false)
 		for _, a := range args {
 			if a == "--egress-policy-json" {
 				t.Errorf("unexpected --egress-policy-json in args with empty pathPolicies: %v", args)
@@ -409,7 +409,7 @@ func TestHerdrWorktreeSandboxCreateArgs_AgentCfgDisk(t *testing.T) {
 	for _, imageFlag := range []string{"--image", "--file"} {
 		imageFlag := imageFlag
 		t.Run("agentcfg disk present for "+imageFlag, func(t *testing.T) {
-			args := herdrWorktreeSandboxCreateArgs(handle, "src:dst", imageFlag, "/some/val", nil, nil, "", nil, false)
+			args := herdrWorktreeSandboxCreateArgs(handle, "src:dst", imageFlag, "/some/val", nil, nil, "", nil, nil, false)
 			joined := strings.Join(args, " ")
 
 			if !strings.Contains(joined, wantVolName) {
@@ -433,7 +433,7 @@ func TestHerdrWorktreeSandboxCreateArgs_EgressOpenComposesWithPolicy(t *testing.
 	if err != nil {
 		t.Fatalf("config.Parse: %v", err)
 	}
-	secrets, allowedRepo, pp, err := buildWorktreeEgressArgs(cfg)
+	secrets, allowedRepo, pp, _, err := buildWorktreeEgressArgs(cfg)
 	if err != nil {
 		t.Fatalf("buildWorktreeEgressArgs: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestHerdrWorktreeSandboxCreateArgs_EgressOpenComposesWithPolicy(t *testing.
 		t.Fatalf("buildWorktreeEgressArgs produced no path policies from %q", egressTestCfgWithSecret)
 	}
 
-	args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, secrets, allowedRepo, pp, false)
+	args := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "myimage", nil, secrets, allowedRepo, pp, nil, false)
 
 	var sawOpen, sawPolicy bool
 	for i := 0; i+1 < len(args); i++ {

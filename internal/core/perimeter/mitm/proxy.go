@@ -141,6 +141,11 @@ type Config struct {
 	// ["refs/heads/nexus/*"] via domain.Envelope.ResolvedAllowedBranches.
 	AllowedBranches []string
 
+	// MCPPolicies restricts MCP JSON-RPC tool calls per host (lowercase host key).
+	// Hosts listed here are MITM'd even when AllowAll is true so the policy
+	// cannot be bypassed via CONNECT tunneling.
+	MCPPolicies map[string]MCPPolicy
+
 	// OnEgress, when non-nil, is called for every L7 egress verdict emitted
 	// by this proxy. Wire it to the shared egress-decisions sink so
 	// `nexus egress log` shows a unified MITM+netfilter stream. The hook is
@@ -248,6 +253,16 @@ func New(cfg Config) (*Proxy, error) {
 	for _, s := range cfg.SecretHostSuffixes {
 		secretSuffixes = append(secretSuffixes, strings.ToLower(s))
 	}
+	normalizedMCP := make(map[string]MCPPolicy, len(cfg.MCPPolicies))
+	for h, pol := range cfg.MCPPolicies {
+		nh := strings.ToLower(strings.TrimSuffix(h, "."))
+		if err := ValidateMCPPolicy(pol); err != nil {
+			return nil, fmt.Errorf("mitm: MCPPolicy for host %q: %w", h, err)
+		}
+		normalizedMCP[nh] = pol
+		secretSet[nh] = struct{}{}
+		allowSet.Add(nh)
+	}
 
 	log := cfg.Logger
 	if log == nil {
@@ -326,7 +341,7 @@ func New(cfg Config) (*Proxy, error) {
 	//   allowed host   → MITM (only reached in closed-egress mode)
 	//   other host     → reject (closed-egress mode)
 	inner.OnRequest().HandleConnect(goproxy.FuncHttpsHandler(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
-		hostname := stripHost(host)
+		hostname := strings.TrimSuffix(stripHost(host), ".")
 		lh := strings.ToLower(hostname)
 		log.Debug("mitm: CONNECT received", "sandbox", sandboxID, "host", hostname, "secretSuffixes", secretSuffixes)
 		if _, ok := secretSet[lh]; ok {
@@ -589,6 +604,10 @@ func New(cfg Config) (*Proxy, error) {
 				"sandbox", sandboxID, "host", h, "path", req.URL.Path)
 			return req, denyResponse(req)
 		})
+	}
+
+	if len(normalizedMCP) > 0 {
+		registerMCPHandlers(inner, normalizedMCP, sandboxID, log, cfg.OnEgress)
 	}
 
 	// OnRequest swaps placeholder Authorization tokens with real tokens.

@@ -17,8 +17,10 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -220,6 +222,102 @@ type EgressConfig struct {
 	// Unlike Allow (reachability only), Secrets entries attach a credential and
 	// are therefore security-critical — read from the trusted base ref only.
 	Secrets EgressSecrets `yaml:"secrets"`
+
+	// MCP lists MCP server endpoint entries the sandbox may call.
+	MCP EgressMCPs `yaml:"mcp"`
+}
+
+// EgressMCP is one MCP server endpoint entry.
+// It restricts which tools may be called on the server and optionally
+// constrains per-tool argument values via glob patterns.
+type EgressMCP struct {
+	Host  string                       `yaml:"host"`
+	Path  string                       `yaml:"path"`
+	Allow []string                     `yaml:"allow"`
+	Args  map[string]map[string]string `yaml:"args"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler for EgressMCP.
+func (e *EgressMCP) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("egress.mcp: entry must be a mapping, got YAML kind %d", value.Kind)
+	}
+	knownKeys := map[string]bool{"host": true, "path": true, "allow": true, "args": true}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		k := value.Content[i].Value
+		if !knownKeys[k] {
+			return fmt.Errorf("egress.mcp: unknown key %q", k)
+		}
+	}
+	type raw EgressMCP
+	if err := value.Decode((*raw)(e)); err != nil {
+		return fmt.Errorf("egress.mcp: %w", err)
+	}
+	e.Host = strings.ToLower(e.Host)
+	if e.Host == "" {
+		return fmt.Errorf("egress.mcp: host is required")
+	}
+	switch {
+	case strings.Contains(e.Host, "://"):
+		return fmt.Errorf("egress.mcp: host %q must not contain a scheme (://)", e.Host)
+	case strings.Contains(e.Host, ":"):
+		return fmt.Errorf("egress.mcp: host %q must not contain a port (:)", e.Host)
+	case strings.Contains(e.Host, "/"):
+		return fmt.Errorf("egress.mcp: host %q must not contain a path (/)", e.Host)
+	case strings.ContainsFunc(e.Host, unicode.IsSpace):
+		return fmt.Errorf("egress.mcp: host %q must not contain whitespace", e.Host)
+	case strings.HasSuffix(e.Host, "."):
+		return fmt.Errorf("egress.mcp: host %q must not have a trailing dot", e.Host)
+	}
+	if e.Path != "" && !strings.HasPrefix(e.Path, "/") {
+		return fmt.Errorf("egress.mcp: path %q must start with / for host %q", e.Path, e.Host)
+	}
+	if len(e.Allow) == 0 {
+		return fmt.Errorf("egress.mcp: allow must be non-empty for host %q", e.Host)
+	}
+	allowSet := make(map[string]bool, len(e.Allow))
+	for _, tool := range e.Allow {
+		if tool == "" {
+			return fmt.Errorf("egress.mcp: allow contains empty tool name for host %q", e.Host)
+		}
+		allowSet[tool] = true
+	}
+	for argKey, params := range e.Args {
+		if !allowSet[argKey] {
+			return fmt.Errorf("egress.mcp: args key %q is not in allow for host %q", argKey, e.Host)
+		}
+		for _, pattern := range params {
+			if _, err := path.Match(pattern, ""); err != nil {
+				return fmt.Errorf("egress.mcp: invalid glob %q for host %q: %w", pattern, e.Host, err)
+			}
+		}
+	}
+	return nil
+}
+
+// EgressMCPs is a list of EgressMCP entries.
+type EgressMCPs []EgressMCP
+
+// UnmarshalYAML implements yaml.Unmarshaler, rejecting duplicate hosts.
+func (e *EgressMCPs) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.SequenceNode {
+		return fmt.Errorf("config: egress.mcp must be a YAML sequence, got kind %d", value.Kind)
+	}
+	out := make(EgressMCPs, 0, len(value.Content))
+	seen := make(map[string]bool, len(value.Content))
+	for _, item := range value.Content {
+		var entry EgressMCP
+		if err := item.Decode(&entry); err != nil {
+			return err
+		}
+		if seen[entry.Host] {
+			return fmt.Errorf("egress.mcp: duplicate host %q", entry.Host)
+		}
+		seen[entry.Host] = true
+		out = append(out, entry)
+	}
+	*e = out
+	return nil
 }
 
 // Mounts is a list of host→guest mount entries in .nexus/config.yaml.

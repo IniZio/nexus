@@ -31,8 +31,7 @@ func TestParseSandboxCreate_Agent(t *testing.T) {
 	})
 
 	// An unknown name must be refused, not defaulted. Defaulting would answer
-	// a typo with Claude Code's credentials and egress allowlist. The fixture
-	// cannot be "codex": that name is now a registered profile.
+	// a typo with Claude Code's credentials and egress allowlist.
 	t.Run("unknown agent is refused and lists the known ones", func(t *testing.T) {
 		t.Parallel()
 		_, err := parseSandboxCreateArgs([]string{"--agent", "not-an-agent", "proj/name"})

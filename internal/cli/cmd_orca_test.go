@@ -705,7 +705,7 @@ func TestOrcaSpawnConfig_GovBoundsForwarded(t *testing.T) {
 		credsFile,
 		guestPath,
 		true, // hasScratchDisk: workspace present, NoScratchDisk not set
-		"",   // hostHome: empty in test
+		"",
 	)
 
 	// ── GovBounds must be non-zero ────────────────────────────────────────────
@@ -787,7 +787,7 @@ func TestOrcaSpawnConfig_NoWorkspace(t *testing.T) {
 		"",
 		"",    // no guest path
 		false, // hasScratchDisk: no workspace, no scratch
-		"",    // hostHome: empty in test
+		"",
 	)
 	if cfg.Config.HasWorkspaceDisk {
 		t.Error("HasWorkspaceDisk = true when no workspace; disk axis must not register")

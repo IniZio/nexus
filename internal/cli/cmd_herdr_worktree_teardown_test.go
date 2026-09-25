@@ -631,11 +631,6 @@ func TestWtTeardownFn_sandboxIDMismatch_guardRefusesSvcRemove(t *testing.T) {
 // ── reaper own-pane identity ─────────────────────────────────────────────────
 
 func TestHerdrWtReapOwnPane_usesExitingPaneNotBindingPane(t *testing.T) {
-	// Two guest tabs: p1 (recorded on the binding at create) and p7 (opened
-	// later). Closing p7 must exclude p7 from the remaining count — not p1,
-	// which is still alive. Excluding p1 is what tore the space down on a
-	// ctrl+d in the second tab.
-	//
 	// MUTATION PROOF: return binding.GuestPaneID unconditionally → got p1 → RED.
 	b := HerdrSpaceBinding{GuestPaneID: "wG:p1"}
 	env := map[string]string{"HERDR_PANE_ID": "wG:p7"}
@@ -648,9 +643,6 @@ func TestHerdrWtReapOwnPane_usesExitingPaneNotBindingPane(t *testing.T) {
 }
 
 func TestParseWtPaneListRemaining_secondTabCloseKeepsSpace(t *testing.T) {
-	// herdr has already dropped the closed pane p7 from the list; p1 is live.
-	// Excluding p7 leaves 1 remaining → no reap. Excluding p1 (the old bug)
-	// left 0 → reap.
 	out := []byte(`{"result":{"panes":[{"pane_id":"wG:p1"}]}}`)
 	if n, err := parseWtPaneListRemaining(out, nil, "wG:p7"); err != nil || n != 1 {
 		t.Fatalf("remaining = %d, %v; want 1 (p1 still open)", n, err)
@@ -660,14 +652,7 @@ func TestParseWtPaneListRemaining_secondTabCloseKeepsSpace(t *testing.T) {
 	}
 }
 
-// The last-pane action must STOP the sandbox and touch nothing else: no
-// Remove, no binding delete, no workspace close. Removal belongs to the
-// worktree.removed hook. A sandbox that is no longer the pane's (ID changed)
-// or not Running is left alone.
-//
-// Mutation proof: call herdrWtSandboxRemoverFn instead of the stopper → the
-// remover stub fails the test; drop the ID guard → stopped=[h] in the
-// mismatch case → RED.
+// MUTATION PROOF: swap stopper↔remover → remover stub fails; drop ID guard → stopped=[h] on mismatch → RED.
 func TestHerdrWtTeardownFn_StopsInsteadOfRemoving(t *testing.T) {
 	root := t.TempDir()
 	b := HerdrSpaceBinding{SpaceLabel: "nexus:repo/wt", HerdrWorkspaceID: "wS", SandboxHandle: "repo/wt", SandboxID: "sb-1", WorktreeManaged: true}

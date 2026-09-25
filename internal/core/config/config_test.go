@@ -1015,3 +1015,210 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// ---- egress.mcp tests ----
+
+func TestEgressMCPConfig_ValidFull(t *testing.T) {
+	data := []byte(`version: 1
+egress:
+  mcp:
+    - host: artifacts.oursky.codes
+      path: /mcp
+      allow: [get_artifact, list_artifacts, publish_zip]
+      args:
+        publish_zip:
+          projectSlug: "demo-*"
+`)
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(cfg.Egress.MCP) != 1 {
+		t.Fatalf("want 1 mcp entry, got %d", len(cfg.Egress.MCP))
+	}
+	m := cfg.Egress.MCP[0]
+	if m.Host != "artifacts.oursky.codes" {
+		t.Errorf("Host: want artifacts.oursky.codes, got %q", m.Host)
+	}
+	if m.Path != "/mcp" {
+		t.Errorf("Path: want /mcp, got %q", m.Path)
+	}
+	if len(m.Allow) != 3 {
+		t.Errorf("Allow: want 3 entries, got %v", m.Allow)
+	}
+	if m.Args["publish_zip"]["projectSlug"] != "demo-*" {
+		t.Errorf("Args: want demo-*, got %q", m.Args["publish_zip"]["projectSlug"])
+	}
+}
+
+func TestEgressMCPConfig_ValidMinimal(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: tools.example.com\n      allow: [call_tool]\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(cfg.Egress.MCP) != 1 {
+		t.Fatalf("want 1 mcp entry, got %d", len(cfg.Egress.MCP))
+	}
+	m := cfg.Egress.MCP[0]
+	if m.Host != "tools.example.com" {
+		t.Errorf("Host: want tools.example.com, got %q", m.Host)
+	}
+	if m.Path != "" {
+		t.Errorf("Path: want empty, got %q", m.Path)
+	}
+	if len(m.Args) != 0 {
+		t.Errorf("Args: want nil, got %v", m.Args)
+	}
+}
+
+func TestEgressMCPConfig_MissingHost_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - allow: [call_tool]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for mcp entry missing host, got nil")
+	}
+	if !strings.Contains(err.Error(), "host is required") {
+		t.Errorf("want 'host is required' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCPConfig_EmptyAllow_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: tools.example.com\n      allow: []\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for empty allow, got nil")
+	}
+	if !strings.Contains(err.Error(), "allow must be non-empty") {
+		t.Errorf("want 'allow must be non-empty' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCPConfig_MissingAllow_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: tools.example.com\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for missing allow, got nil")
+	}
+}
+
+func TestEgressMCPConfig_UnknownKey_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: tools.example.com\n      allow: [call_tool]\n      typo_key: oops\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for unknown key in mcp entry, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown key") {
+		t.Errorf("want 'unknown key' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCPConfig_ArgsKeyNotInAllow_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: tools.example.com\n      allow: [call_tool]\n      args:\n        other_tool:\n          param: value\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for args key not in allow, got nil")
+	}
+	if !strings.Contains(err.Error(), "not in allow") {
+		t.Errorf("want 'not in allow' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCPConfig_InvalidGlob_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: tools.example.com\n      allow: [call_tool]\n      args:\n        call_tool:\n          param: \"[bad\"\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for invalid glob pattern, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid glob") {
+		t.Errorf("want 'invalid glob' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCPConfig_DuplicateHost_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: tools.example.com\n      allow: [call_tool]\n    - host: tools.example.com\n      allow: [other_tool]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for duplicate host, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate host") {
+		t.Errorf("want 'duplicate host' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCPConfig_HostLowercased(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: Tools.Example.COM\n      allow: [call_tool]\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.Egress.MCP[0].Host != "tools.example.com" {
+		t.Errorf("Host: want lowercase tools.example.com, got %q", cfg.Egress.MCP[0].Host)
+	}
+}
+
+func TestEgressMCP_HostWithScheme_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: \"https://example.com\"\n      allow: [call_tool]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for host with scheme, got nil")
+	}
+	if !strings.Contains(err.Error(), "://") {
+		t.Errorf("want '://' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCP_HostWithPort_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: \"example.com:8080\"\n      allow: [call_tool]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for host with port, got nil")
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Errorf("want 'port' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCP_HostWithPath_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: \"example.com/mcp\"\n      allow: [call_tool]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for host with path, got nil")
+	}
+	if !strings.Contains(err.Error(), "path") {
+		t.Errorf("want 'path' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCP_HostWithWhitespace_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: \"example .com\"\n      allow: [call_tool]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for host with whitespace, got nil")
+	}
+	if !strings.Contains(err.Error(), "whitespace") {
+		t.Errorf("want 'whitespace' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCP_HostTrailingDot_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: \"example.com.\"\n      allow: [call_tool]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for host with trailing dot, got nil")
+	}
+	if !strings.Contains(err.Error(), "trailing dot") {
+		t.Errorf("want 'trailing dot' in error, got %q", err.Error())
+	}
+}
+
+func TestEgressMCP_PathNoSlash_Error(t *testing.T) {
+	data := []byte("version: 1\negress:\n  mcp:\n    - host: \"example.com\"\n      path: \"mcp\"\n      allow: [call_tool]\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for path without leading slash, got nil")
+	}
+	if !strings.Contains(err.Error(), "must start with /") {
+		t.Errorf("want 'must start with /' in error, got %q", err.Error())
+	}
+}

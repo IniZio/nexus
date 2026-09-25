@@ -346,6 +346,7 @@ type Envelope struct {
 	// restriction beyond what AllowedRepo provides via its wildcard shim.
 	// Populated by the worktree-sandbox path for generic egress.secrets entries.
 	PathPolicies EgressPathPolicies `json:"path_policies,omitempty"`
+	MCPPolicies  EgressMCPPolicies  `json:"mcp_policies,omitempty"`
 }
 
 // EgressGitHubPolicy pins MITM enforcement to one GitHub repository.
@@ -371,6 +372,18 @@ type EgressHostPolicy struct {
 // Inner key: hostname.
 // Converted to mitm.PathPolicies at sandbox start by the service layer.
 type EgressPathPolicies map[string]map[string]EgressHostPolicy
+
+// EgressMCPPolicy restricts which JSON-RPC tools may be called on an MCP endpoint.
+// Host is the authority key (already lowercased by config). Allow is the exact-match
+// tool allow-list (fail-closed). Args constrains specific tool arguments to glob patterns.
+type EgressMCPPolicy struct {
+	Path  string                       `json:"path,omitempty"`
+	Allow []string                     `json:"allow"`
+	Args  map[string]map[string]string `json:"args,omitempty"`
+}
+
+// EgressMCPPolicies maps lowercase hostname → MCP policy for that host.
+type EgressMCPPolicies map[string]EgressMCPPolicy
 
 // UnresolvedBranchSentinel is stored in Envelope.AllowedBranches by the
 // create path when a sandbox has a workspace bound (there is a worktree to

@@ -393,6 +393,115 @@ echo "$GH_TOKEN" | grep -E '^[0-9a-f]{64}$' && echo PASS || echo 'FAIL: real tok
 
 ---
 
+## MCP Endpoint Policies
+
+`egress.mcp` adds tool-level allow-listing on top of the credential brokering model.
+Where `egress.secrets` controls *which hosts* receive a credential, `egress.mcp`
+controls *which JSON-RPC methods* a sandbox may invoke on a given MCP server.
+
+### Schema
+
+```yaml
+version: 1
+egress:
+  mcp:
+    - host: api.example.com        # required; lowercased automatically
+      path: /mcp                   # optional; exact URL path; omitted = every POST to host
+      allow:                       # required; exact tool names (fail-closed)
+        - get_artifact
+        - list_artifacts
+      args:                        # optional; per-tool argument constraints
+        publish_zip:
+          projectSlug: "demo-*"   # glob pattern matched against argument value
+```
+
+`host` is the only required field beyond `allow`. `path` narrows which requests
+the policy intercepts — only POST bodies to that prefix are subject to tool-level
+checking; requests to other paths pass through. `args` entries constrain individual
+argument values with glob patterns; a call whose argument fails the pattern is
+denied as if the tool were not listed.
+
+**Host key constraints:** the `host` value must not contain a scheme (`://`), port (`:`),
+path segment (`/`), whitespace, or trailing dot. The proxy lowercases the key at
+construction time, so `MCP.TEST` and `mcp.test` are the same entry.
+
+**Path constraints:** `path` must start with `/`. Matching is case-insensitive with
+trailing slash ignored (`/mcp` matches `/mcp/`). Non-canonical paths (percent-encoded
+segments, double slashes, traversal dots) are always denied regardless of policy.
+
+### Fail-closed: what passes and what does not
+
+| Request type | Decision |
+|---|---|
+| `initialize`, `ping`, GET requests | Always pass through |
+| `tools/list` | Passes through; response is filtered to `allow`-listed tools only |
+| Tool call — tool in `allow`, args match | Passes through |
+| Tool call — tool in `allow`, arg fails glob | Denied (HTTP 200, `-32001`) |
+| Tool call — tool not in `allow` | Denied (HTTP 200, `-32001`) |
+| Tool call — JSON parse failure | Denied (HTTP 403, `-32700` or `-32600`) |
+| Batch request — any element denied | Entire batch denied |
+
+**Why HTTP 200 for tool denial, not 403:** MCP clients treat non-200 as a
+transport error and may retry or surface misleading messages. HTTP 200 with
+a JSON-RPC error is the correct JSON-RPC protocol pattern. The `id` from the
+request is echoed in the error response so the client can correlate it.
+
+**Parse failures are different:** a body that cannot be decoded at all indicates
+a malformed or unexpected payload; the proxy returns HTTP 403 with JSON-RPC
+`-32700` (parse error) or `-32600` (invalid request). This is intentionally
+harsher — a client sending unparseable JSON-RPC is not an MCP client behaving
+normally.
+
+**Fold-key rejection:** The proxy rejects any MCP request containing a key that
+case-folds to a significant field name (e.g., `Method`, `NAME`, `PARAMS`). This
+is fail-closed to prevent parser-differential attacks: Go's struct decoder matches
+fields with `strings.EqualFold`, so a map-based inspector and a struct-based
+upstream would otherwise disagree on what the request contained.
+
+**Method coverage:** All HTTP methods except GET, HEAD, and OPTIONS are inspected.
+PUT or other non-standard methods trigger the same body inspection as POST —
+there is no bypass via verb substitution.
+
+### `tools/list` filtering
+
+When a `tools/list` response comes back from the upstream server, the proxy
+strips any tool not in `allow` before forwarding it to the guest. This gives the
+agent a clean view of what it is permitted to call; it will not see tools it
+cannot use. The filtering is **best-effort UX**, not a security boundary: the
+security check happens on the request side, so a client that calls an unlisted
+tool directly (bypassing `tools/list`) gets the `-32001` denial regardless.
+
+### Audit visibility
+
+Every denied tool call appears in `nexus egress log` with:
+- `verdict: deny`
+- `reason: mcp:<tool-name>` (for tool-level denials) or `mcp:parse-error`
+- The target host and timestamp
+
+Argument values are **never logged** — only the argument key name and whether
+it passed or failed the pattern.
+
+### MCP hosts are added to the secret-host set
+
+Listing a host under `egress.mcp` automatically adds it to the MITM intercept
+set, exactly as if it were listed under `egress.secrets`. This ensures TLS
+interception happens even when `egress.policy` imposes open egress — without
+interception there is no proxy to enforce the policy.
+
+### Interaction with `egress.secrets` and `egress.policy`
+
+A host may appear in both `egress.mcp` and `egress.secrets` (to also broker a
+credential on that host). The MCP tool check runs **before** the credential
+swap: policy is about what the sandbox is allowed to do, and that decision is
+made before any credential is injected. A request denied by the MCP policy never
+reaches the credential-swap step.
+
+A host listed in `egress.mcp` obeys the same mutual-exclusion rule as all other
+policy-gated hosts: it may not simultaneously appear in `egress.allow`. The
+config loader rejects such a file at parse time.
+
+---
+
 ## Statements that are easy to over-generalise
 
 - "An agent sandbox boots with default-deny egress." True for sandboxes created with

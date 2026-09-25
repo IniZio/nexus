@@ -204,6 +204,10 @@ type CreateAndBootOptions struct {
 	// See domain.EgressPathPolicies for the key structure.
 	PathPolicies domain.EgressPathPolicies
 
+	// MCPPolicies carries per-server MCP egress policies to freeze into the
+	// Envelope. See domain.EgressMCPPolicies for the key structure.
+	MCPPolicies domain.EgressMCPPolicies
+
 	// AllowedBranches is the list of git ref patterns the sandbox may push to
 	// through the host-side git MITM. When left nil AND the create call also
 	// binds a workspace (Workspace, or a LiveMounts entry at /workspace),
@@ -896,6 +900,7 @@ func CreateAndBoot(
 			AllowedRepo:        opts.AllowedRepo,             // D-PD-36: per-repo path allowlist; enforced below
 			AllowedBranches:    resolveAllowedBranches(opts), // TBD-1: derived from the bound worktree's branch; see resolveAllowedBranches
 			PathPolicies:       opts.PathPolicies,            // T4: per-secret path policies; converted to mitm.PathPolicies at start
+			MCPPolicies:        opts.MCPPolicies,
 		},
 		RemoveOnExit:    opts.RemoveOnExit,
 		BaseRef:         opts.BaseRef, // G1: shallow-clone boundary SHA (D-PD-19); empty if no git workspace

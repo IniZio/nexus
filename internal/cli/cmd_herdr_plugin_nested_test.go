@@ -25,7 +25,7 @@ func TestHerdrWorktreeSandboxCreateArgs_nested_false_omits_flag(t *testing.T) {
 	//
 	// MUTATION PROOF: flip condition to `if !nested { args = append(args, "--nested") }`
 	// → --nested is present when nested=false → this test goes RED.
-	args := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, false)
+	args := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, nil, false)
 	for _, a := range args {
 		if a == "--nested" {
 			t.Errorf("--nested must NOT appear when nested=false; got args: %v", args)
@@ -38,7 +38,7 @@ func TestHerdrWorktreeSandboxCreateArgs_nested_true_adds_flag(t *testing.T) {
 	//
 	// MUTATION PROOF: remove the `if nested { args = append(args, "--nested") }` block
 	// → --nested is absent → this test goes RED.
-	args := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, true)
+	args := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, nil, true)
 	count := 0
 	for _, a := range args {
 		if a == "--nested" {
@@ -71,11 +71,11 @@ func TestHerdrWorktreeSandboxCreateArgs_nested_attaches_state_disk(t *testing.T)
 		}
 		return false
 	}
-	nested := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, true)
+	nested := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, nil, true)
 	if !hasSpec(nested) {
 		t.Errorf("nested=true must attach %q; got args: %v", wantSpec, nested)
 	}
-	flat := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, false)
+	flat := herdrWorktreeSandboxCreateArgs("repo/branch", "/wt:/workspace", "--image", "base", nil, nil, "", nil, nil, false)
 	if hasSpec(flat) {
 		t.Errorf("nested=false must NOT attach %q; got args: %v", wantSpec, flat)
 	}
@@ -279,7 +279,7 @@ func TestHerdrWorktreeSandbox_linkedWorktree_groundworkMountPassedToCreate(t *te
 	wantMount := filepath.Join(mainRepo, ".groundwork") + ":" + filepath.Join(mainRepo, ".groundwork")
 	var gotExtraMounts []string
 	err := callHerdrWorktreeSandbox(t, "w-gwproof", root, false, false,
-		func(_ context.Context, _, _, _, _ string, extraMounts []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+		func(_ context.Context, _, _, _, _ string, extraMounts []string, _ []string, _ string, _ domain.EgressPathPolicies, _ domain.EgressMCPPolicies, _ bool) error {
 			gotExtraMounts = extraMounts
 			return nil
 		},
@@ -330,7 +330,7 @@ func TestHerdrWorktreeSandbox_linkedWorktree_noGroundworkDir_noGroundworkMount(t
 
 	var gotExtraMounts []string
 	err := callHerdrWorktreeSandbox(t, "w-nogw", root, false, false,
-		func(_ context.Context, _, _, _, _ string, extraMounts []string, _ []string, _ string, _ domain.EgressPathPolicies, _ bool) error {
+		func(_ context.Context, _, _, _, _ string, extraMounts []string, _ []string, _ string, _ domain.EgressPathPolicies, _ domain.EgressMCPPolicies, _ bool) error {
 			gotExtraMounts = extraMounts
 			return nil
 		},
@@ -373,7 +373,7 @@ func TestHerdrWorktreeSandboxCreateArgs_nestedFlagThreadedToCreate(t *testing.T)
 		{"nested false → flag absent (default-off)", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := herdrWorktreeSandboxCreateArgs("r/b", "/p:/w", "--image", "img", nil, nil, "", nil, tc.nested)
+			args := herdrWorktreeSandboxCreateArgs("r/b", "/p:/w", "--image", "img", nil, nil, "", nil, nil, tc.nested)
 			found := false
 			for _, a := range args {
 				if a == "--nested" {

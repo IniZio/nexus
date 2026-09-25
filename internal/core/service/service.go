@@ -1005,10 +1005,14 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 		if seedCA != nil {
 			seedCertPEM, seedKeyPEM = seedCA.CertPEM, seedCA.KeyPEM
 		}
+		secretHosts := sb.Envelope.SecretHosts
+		for host := range sb.Envelope.MCPPolicies {
+			secretHosts = append(secretHosts, host)
+		}
 		proxy, err = mitm.New(mitm.Config{
 			SandboxID:          sb.ID,
 			AllowedHosts:       sb.Envelope.AllowedHosts,
-			SecretHosts:        sb.Envelope.SecretHosts,
+			SecretHosts:        secretHosts,
 			SecretHostSuffixes: sb.Envelope.SecretHostSuffixes,
 			Broker:             s.broker,
 			AllowAll:           allowAll && (len(sb.Envelope.SecretHosts) > 0 || sb.AgentName != ""),
@@ -1018,6 +1022,7 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			PathPolicies:       buildMITMPathPolicies(sb.Envelope.PathPolicies), // T4: per-secret path policies
 			AllowedBranches:    sb.Envelope.ResolvedAllowedBranches(),           // TBD-1: worktree-derived branch, or default/sentinel
 			OnEgress:           mitmOnEgress,                                    // shared egress-decisions sink
+			MCPPolicies:        buildMCPPolicies(sb.Envelope.MCPPolicies),
 		})
 		if err != nil {
 			fd.Close()
@@ -1861,6 +1866,22 @@ func buildMITMPathPolicies(pp domain.EgressPathPolicies) mitm.PathPolicies {
 			hm[host] = mp
 		}
 		out[placeholder] = hm
+	}
+	return out
+}
+
+func buildMCPPolicies(mp domain.EgressMCPPolicies) map[string]mitm.MCPPolicy {
+	if len(mp) == 0 {
+		return nil
+	}
+	out := make(map[string]mitm.MCPPolicy, len(mp))
+	for host, p := range mp {
+		nh := strings.ToLower(strings.TrimSuffix(host, "."))
+		out[nh] = mitm.MCPPolicy{
+			Path:  p.Path,
+			Allow: p.Allow,
+			Args:  p.Args,
+		}
 	}
 	return out
 }

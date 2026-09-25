@@ -447,8 +447,8 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if exeErr != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: resolve executable: " + exeErr.Error(), Err: exeErr}
 		}
-		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, nested bool) error {
-			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, nested)
+		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, nested bool) error {
+			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, mcpPolicies, nested)
 			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
 			/**
 			 * Run the create from the worktree checkout. `sandbox create` reads
@@ -3943,7 +3943,7 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
  * (D-PD-99-git: worktree .git resolution requires the main .git to be
  * reachable at its host absolute path inside the VM).
  */
-func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, nested bool) []string {
+func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, nested bool) []string {
 	args := []string{imageFlag, imageVal, "--mount", mountSpec}
 	for _, m := range extraMounts {
 		args = append(args, "--mount", m)
@@ -4028,6 +4028,12 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 		ppJSON, err := json.Marshal(pathPolicies)
 		if err == nil {
 			args = append(args, "--egress-policy-json", string(ppJSON))
+		}
+	}
+	if len(mcpPolicies) > 0 {
+		mpJSON, err := json.Marshal(mcpPolicies)
+		if err == nil {
+			args = append(args, "--egress-mcp-json", string(mpJSON))
 		}
 	}
 	if nested {
@@ -4275,7 +4281,7 @@ func herdrWorktreeGitDirMount(worktreePath string) string {
  * AllowedRepo is only set when the user passes --repo explicitly at the CLI.
  * The config path uses generic paths policies for all hosts including GitHub.
  */
-func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, err error) {
+func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, err error) {
 	for _, p := range cfg.Egress.Policy {
 		if len(p.Paths) > 0 {
 			pathPolicies = egressAddHostPolicy(pathPolicies, p.Host,
@@ -4298,7 +4304,7 @@ func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo s
 	for _, s := range cfg.Egress.Secrets {
 		for _, h := range s.Hosts {
 			if domain.IsGitHubHost(strings.ToLower(h)) && !egressGitHubHostBound(h, allowedRepo, pathPolicies) {
-				return nil, "", nil, fmt.Errorf(
+				return nil, "", nil, nil, fmt.Errorf(
 					"egress secret %q targets GitHub host %q but no egress.policy entry covers it "+
 						"(D-PDE-16: refusing create to avoid unscoped access)",
 					s.Env, h,
@@ -4307,7 +4313,18 @@ func buildWorktreeEgressArgs(cfg config.Config) (secrets []string, allowedRepo s
 		}
 	}
 
-	return secrets, allowedRepo, pathPolicies, nil
+	if len(cfg.Egress.MCP) > 0 {
+		mcpPolicies = make(domain.EgressMCPPolicies, len(cfg.Egress.MCP))
+		for _, entry := range cfg.Egress.MCP {
+			mcpPolicies[entry.Host] = domain.EgressMCPPolicy{
+				Path:  entry.Path,
+				Allow: entry.Allow,
+				Args:  entry.Args,
+			}
+		}
+	}
+
+	return secrets, allowedRepo, pathPolicies, mcpPolicies, nil
 }
 
 /**
@@ -4606,7 +4623,7 @@ func herdrWorktreeSandbox(
 	 * checkout's .nexus/config.yaml. Either channel alone is sufficient.
 	 */
 	nestedFlag bool,
-	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, bool) error,
+	createFn func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, domain.EgressMCPPolicies, bool) error,
 	getFn func(context.Context, string) (domain.Sandbox, error),
 ) error {
 	if _, err := herdrSpaceResolve(ctx, storeRoot, workspaceID); err == nil {
@@ -4813,10 +4830,11 @@ func herdrWorktreeSandbox(
 		egressSecrets      []string
 		egressAllowedRepo  string
 		egressPathPolicies domain.EgressPathPolicies
+		egressMCPPolicies  domain.EgressMCPPolicies
 		nestedCfg          bool
 	)
 	if cfgPath != "" {
-		egressSecrets, egressAllowedRepo, egressPathPolicies, err = buildWorktreeEgressArgs(checkoutCfg)
+		egressSecrets, egressAllowedRepo, egressPathPolicies, egressMCPPolicies, err = buildWorktreeEgressArgs(checkoutCfg)
 		if err != nil {
 			fmt.Fprintf(w, "worktree-sandbox: build egress args: %v\n", err)
 			if !failSafe {
@@ -4891,7 +4909,7 @@ func herdrWorktreeSandbox(
 	if rebindStale {
 		createErr = errHerdrWorktreeRebindStale
 	} else {
-		createErr = createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, nestedFlag || nestedCfg)
+		createErr = createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, egressMCPPolicies, nestedFlag || nestedCfg)
 	}
 	if createErr != nil {
 		/**
