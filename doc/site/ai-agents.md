@@ -54,7 +54,7 @@ The server exposes 13 tools: nine covering sandbox lifecycle and execution, and 
 | `sandbox_run` | Ephemeral create+boot+exec+remove in one call; args `{image, argv, memory?, vcpus?, project?, name?}`; the sandbox is removed unconditionally on completion |
 | `delegate_worktree_create` | Create a worktree-bound sandbox for a host repo path; `allowed_branches` is rejected if set — branch policy is derived from the worktree's current branch |
 | `delegate_agent_dispatch` | Submit a brief to the in-guest agent; blocks until the brief is delivered, not until the work is done |
-| `delegate_agent_poll` | Read the guest worktree's `git log`, `git status`, and branch name to detect progress |
+| `delegate_agent_poll` | Read herdr native agent state (`agent_status`, `state_change_seq`, `settled`, `question`) plus `git log`/`git status`/`branch_name`; optional `wait_ms` to block until idle/done/blocked; completion decided by marker or git, not `agent_status` alone |
 | `delegate_teardown` | Remove the sandbox and its herdr space; pass `force:true` to discard uncommitted changes, otherwise a dirty worktree returns a structured error listing the changed files |
 
 ### MCP gaps <Badge type="danger" text="not built" />

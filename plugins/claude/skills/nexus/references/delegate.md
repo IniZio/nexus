@@ -49,20 +49,33 @@ for policy authoring.
 
 ## Completion heuristic
 
-`delegate_agent_poll` returns `{git_log, git_status, branch_name}`. Work is done
-when **both** hold:
+`delegate_agent_poll` returns `{done_via, marker_content, git_log, git_status,
+branch_name, agent_status, state_change_seq, settled, question,
+agent_state_reason}`. Completion is decided by marker or git — `agent_status`
+is context, not proof.
 
-1. `git_log` is non-empty (at least one commit ahead of the base)
-2. `git_status` is empty (working tree clean)
+Work is done when one of these holds:
 
-**Do not infer done from `delegate_agent_dispatch` returning success.** That tool
-blocks only until the brief is confirmed delivered — not until the work finishes.
+1. **`done_via: "marker"`** — agent wrote `/run/nexus/delegate-done`; content
+   in `marker_content`. Preferred; declare done immediately.
+2. **`done_via: "git"`** — marker absent; `git_log` non-empty AND `git_status`
+   empty.
+
+`agent_status: "done"` supports the case but never decides it alone.
+
+Use `agent_status` to drive the poll loop (see `delegate-loop.md § 3` for the
+full table). Short version: `working` → wait; `blocked` → read `question` and
+answer; `unknown` → fall back to screen/movement heuristics.
+
+**Do not infer done from `delegate_agent_dispatch` returning success.** That
+tool blocks only until the brief is confirmed delivered — not until the work
+finishes.
 
 Poll every 30 seconds. Give up after 45 minutes (90 polls) and surface the last
 `git_log` and `git_status` as evidence. On a give-up, read the diff directly
-(`git -C <worktree> diff <base>...HEAD`) — pane output may lag or be truncated by
-the Claude UI; the diff is never truncated. See `delegate-loop.md` for the full
-polling posture.
+(`git -C <worktree> diff <base>...HEAD`) — pane output may lag or be truncated
+by the Claude UI; the diff is never truncated. See `delegate-loop.md` for the
+full polling posture.
 
 **No-op case.** If the agent determines no change is needed and commits nothing,
 `git_log` stays empty and the heuristic never fires — the timeout at 45 minutes

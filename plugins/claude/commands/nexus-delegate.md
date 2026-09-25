@@ -24,8 +24,11 @@ Loads the `nexus:nexus` skill, opens `references/delegate.md` and `references/de
    you provide, booting a worktree-bound sandbox.
 2. **Dispatch** — calls `delegate_agent_dispatch` with the brief, confirmed
    delivered when the tool returns.
-3. **Poll** — calls `delegate_agent_poll` every 30 seconds until `git_log` is
-   non-empty and `git_status` is clean, or 45 minutes elapse.
+3. **Poll** — calls `delegate_agent_poll` every 30 seconds. Uses `agent_status`
+   to drive the loop: `working` → wait; `blocked` → surfaces `question` for
+   answering; `done`/`idle` → checks marker then git. Declares done only when
+   `done_via: "marker"` or `done_via: "git"` (not on `agent_status` alone).
+   Gives up at 45 minutes.
 4. **Collect** — reads the diff from the worktree directly.
 5. **Reclaim** — calls `delegate_teardown`, then `herdr worktree remove`.
 

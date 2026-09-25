@@ -85,9 +85,11 @@ concluding it is a network issue.
 }
 ```
 
-Returns `{ok, data:{output}}` once the brief is **confirmed delivered** to the
-agent's input — not when the work is done. A non-zero / error result means the
-brief was NOT submitted; the VM is up but the agent has not read it.
+Returns `{ok, data:{delivered, output}}` once the brief is **confirmed
+delivered** to the agent's input — not when the work is done.
+`delivered: true` means herdr confirmed the state changed after the brief was
+sent (with screen-classifier fallback). `delivered: false` means the brief was
+NOT submitted; the VM is up but the agent has not read it.
 
 **CLI equivalent:**
 
@@ -105,10 +107,40 @@ See `delegate-briefs.md` for what a brief must contain.
 { "ref": "project/name" }
 ```
 
-Returns `{ok, data:{done_via, marker_content, git_log, git_status, branch_name}}`.
-Poll every 30 seconds; give up at 45 minutes and surface the last poll response.
+Optional arg:
+- `wait_ms` — omit or `0` for an instant snapshot; positive value blocks via
+  `herdr agent wait` until the agent reaches `idle`, `done`, or `blocked`, or
+  the timeout elapses.
 
-**Completion signals** (checked in order):
+Returns `{ok, data:{done_via, marker_content, git_log, git_status,
+branch_name, agent_status, state_change_seq, settled, question,
+agent_state_reason}}`.
+
+**New fields:**
+
+| Field | Values | Meaning |
+|---|---|---|
+| `agent_status` | `idle\|working\|blocked\|done\|unknown` | herdr 0.9.0 native detection of the guest pane state |
+| `state_change_seq` | integer | increments each time herdr detects a state transition; re-poll on change to avoid reading a stale snapshot |
+| `settled` | bool | `false` if the status kept changing through the re-poll budget (up to 3 re-polls, ~1.5 s settle); treat an unsettled `done` or `idle` with caution |
+| `question` | string | pane tail when `agent_status` is `blocked`; this is the question to answer |
+| `agent_state_reason` | string | when `agent_status` is `unknown`: one of `herdr_unavailable`, `agent_not_found`, `undetected`, `parse_error`, `timeout`, `no_herdr_binding` |
+
+Poll every 30 seconds. Give up at 45 minutes and surface the last poll
+response.
+
+**Poll loop by `agent_status`:**
+
+- **`working`** — leave it alone; re-poll in 30 s.
+- **`blocked`** — read `question`; answer in the pane (or surface to the human);
+  re-poll immediately after answering.
+- **`done` or `idle`** — check completion signals below; the settle guard
+  (`settled: true`, ~1.5 s) prevents a transient `done` from masking a
+  following `blocked`.
+- **`unknown`** — fall back to the screen/movement heuristics in
+  `self-hosting.md § Monitoring the pane`; do not treat `unknown` as done.
+
+**Completion signals** (checked in order — `agent_status` alone never decides):
 
 1. **`done_via: "marker"`** — the agent wrote `/run/nexus/delegate-done`; the
    file's content is in `marker_content`. This is the preferred signal: the agent
@@ -116,6 +148,9 @@ Poll every 30 seconds; give up at 45 minutes and surface the last poll response.
 
 2. **`done_via: "git"`** — marker absent; falls back to git heuristic. Declare
    done when `git_log` is non-empty AND `git_status` is empty.
+
+`agent_status: "done"` is supporting evidence, not proof. The marker and git
+state are the sole completion proof.
 
 **Brief requirement:** every brief dispatched via `delegate_agent_dispatch` must
 instruct the agent to write the marker on completion (this is injected

@@ -57,20 +57,37 @@ nexus exec <handle> -- bash -lc 'ls -l /dev/kvm; grep -m1 ^flags /proc/cpuinfo |
 
 ## Monitoring the pane
 
+**Primary signal: herdr agent state.**
+`delegate_agent_poll` returns `agent_status` (`idle|working|blocked|done|unknown`)
+and `state_change_seq` from `herdr agent get` on the guest pane. Re-poll when
+`state_change_seq` changes — it increments on every state transition. A settle
+guard (~1.5 s, up to 3 re-polls) prevents a transient `done` from masking a
+following `blocked`; poll returns `settled: false` when the status kept moving.
+
+Poll loop:
+- **`working`** — leave it; re-poll in 30 s.
+- **`blocked`** — read `question` from the poll response; answer in the pane
+  (or surface to the human); re-poll immediately.
+- **`done` / `idle`** — check marker and git signals (see `delegate-loop.md § 3`);
+  these decide completion, not `agent_status` alone.
+- **`unknown`** — herdr cannot read the state (`agent_state_reason` explains why);
+  fall back to the screen/movement heuristics below.
+
+**Fallback: screen/movement heuristics (use when `agent_status` is `unknown`).**
+
 Dispatch an agent and start a watcher in the same turn:
 
 ```bash
 scripts/watch-pane.sh <pane-id>      # run_in_background: true
 ```
 
-**Detect work by movement, not strings.** A working agent repaints every
-second (spinner, elapsed timer). A stopped agent renders a static pane.
-Movement holds across layout changes; marker strings do not.
+A working agent repaints every second (spinner, elapsed timer). A stopped agent
+renders a static pane. Movement holds across layout changes; marker strings do not.
 
 When the watcher fires on a question, answer through the pane surface, then
 restart the watcher — it exits on each stop.
 
-**Six documented false-stop modes:**
+**Six documented false-stop modes** (screen/movement fallback only):
 
 1. **Slash-command overlay** — autocomplete footer drops `esc to interrupt`;
    a working agent reads as idle.
