@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
+
+	herdragent "github.com/IniZio/nexus/internal/herdragent"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
@@ -193,57 +197,6 @@ func TestHerdrPaneWaitOutput_ArgvShape(t *testing.T) {
 			t.Errorf("args[%d]: got %q, want %q", i, capturedArgs[i], want)
 		}
 	}
-}
-
-// TestHerdrPaneReportAgent_ArgvShape verifies herdrPaneReportAgent argv with required flags.
-func TestHerdrPaneReportAgent_ArgvShape(t *testing.T) {
-	var capturedArgs []string
-	old := herdrExecCommandContext
-	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		capturedArgs = append([]string(nil), args...)
-		return exec.CommandContext(ctx, "true")
-	}
-	defer func() { herdrExecCommandContext = old }()
-
-	const herdrBin = "/usr/bin/herdr"
-	const paneID = "w1V:p2"
-	const source = "myproj/mybox"
-
-	if err := herdrPaneReportAgent(context.Background(), herdrBin, paneID, source); err != nil {
-		t.Fatalf("herdrPaneReportAgent: %v", err)
-	}
-	if len(capturedArgs) < 2 || capturedArgs[0] != "pane" || capturedArgs[1] != "report-agent" {
-		t.Fatalf("expected [pane report-agent ...], got %v", capturedArgs)
-	}
-	if capturedArgs[2] != paneID {
-		t.Errorf("args[2] (pane ID): got %q, want %q", capturedArgs[2], paneID)
-	}
-	containsFlag := func(flag, val string) bool {
-		for i, a := range capturedArgs {
-			if a == flag && i+1 < len(capturedArgs) && capturedArgs[i+1] == val {
-				return true
-			}
-		}
-		return false
-	}
-	if !containsFlag("--source", source) {
-		t.Errorf("--source %q not found in args: %v", source, capturedArgs)
-	}
-	if !containsFlag("--state", "working") {
-		t.Errorf("--state working not found in args: %v", capturedArgs)
-	}
-	if idx := indexOf(capturedArgs, "--agent"); idx < 0 || idx+1 >= len(capturedArgs) {
-		t.Errorf("--agent flag missing in args: %v", capturedArgs)
-	}
-}
-
-func indexOf(ss []string, s string) int {
-	for i, v := range ss {
-		if v == s {
-			return i
-		}
-	}
-	return -1
 }
 
 // TestClaudeReadyMatch_NeverMatchesAWizard pins that the readiness token is
@@ -487,5 +440,319 @@ func TestSpaceAgentSubcommand_NoFocusFlagParsed(t *testing.T) {
 	}
 	if ue, ok := err.(*UsageError); ok && strings.Contains(ue.Msg, "--no-focus") {
 		t.Errorf("--no-focus was not parsed; got usage error: %v", ue)
+	}
+}
+
+// fastSleepOpt returns a zero-delay WithSleep option for tests.
+func fastSleepOpt() herdragent.Option {
+	return herdragent.WithSleep(func(ctx context.Context, _ time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	})
+}
+
+// idleClientSeq0 returns a Client always reporting idle seq=0 (Ready never succeeds).
+func idleClientSeq0() *herdragent.Client {
+	return herdragent.New(
+		func(_ context.Context, _ ...string) (string, error) {
+			return `{"result":{"agent":{"agent_status":"idle","state_change_seq":0}}}`, nil
+		},
+		herdragent.WithSettle(0),
+		fastSleepOpt(),
+	)
+}
+
+// unknownClient returns a Client where the runner always fails (herdr unavailable).
+func unknownClient() *herdragent.Client {
+	return herdragent.New(
+		func(_ context.Context, _ ...string) (string, error) {
+			return "", errors.New("herdr unavailable")
+		},
+		herdragent.WithSettle(0),
+		fastSleepOpt(),
+	)
+}
+
+// TestSpaceAgent_WaitsForHerdrReadyBeforeBrief: Observe baseline taken before launch command.
+func TestSpaceAgent_WaitsForHerdrReadyBeforeBrief(t *testing.T) {
+	var callOrder []string
+
+	oldExec := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) >= 2 && args[0] == "pane" && args[1] == "run" {
+			callOrder = append(callOrder, "pane-run")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+	t.Cleanup(func() { herdrExecCommandContext = oldExec })
+
+	var getCount int
+	wrappedRunner := func(ctx context.Context, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get" {
+			callOrder = append(callOrder, "agent-get")
+			getCount++
+		}
+		if getCount <= 1 {
+			return `{"result":{"agent":{"agent_status":"idle","state_change_seq":0}}}`, nil
+		}
+		return `{"result":{"agent":{"agent_status":"idle","state_change_seq":1}}}`, nil
+	}
+	wrappedClient := herdragent.New(wrappedRunner, herdragent.WithSettle(0), fastSleepOpt())
+
+	var w bytes.Buffer
+	if err := herdrWaitAgentReady(context.Background(), "herdr", "w1:p1",
+		"claude --auto", "auto mode on", wrappedClient, 200, &w); err != nil {
+		t.Fatalf("herdrWaitAgentReady: %v", err)
+	}
+
+	firstGetIdx, runIdx := -1, -1
+	for i, c := range callOrder {
+		if c == "agent-get" && firstGetIdx < 0 {
+			firstGetIdx = i
+		}
+		if c == "pane-run" && runIdx < 0 {
+			runIdx = i
+		}
+	}
+	if firstGetIdx < 0 {
+		t.Error("agent-get never called — baseline Observe was never taken")
+	}
+	if runIdx < 0 {
+		t.Error("pane-run never called — launch command was never sent")
+	}
+	if firstGetIdx >= 0 && runIdx >= 0 && firstGetIdx >= runIdx {
+		t.Errorf("baseline (agent-get at %d) came after or same as launch (pane-run at %d) — "+
+			"idle pane before launch could be mistaken for agent ready",
+			firstGetIdx, runIdx)
+	}
+}
+
+// TestSpaceAgent_IdleBeforeLaunchIsNotReady: idle seq=0 both sides → readyMatch fallback fires.
+func TestSpaceAgent_IdleBeforeLaunchIsNotReady(t *testing.T) {
+	client := idleClientSeq0()
+
+	var execCalls [][]string
+	oldExec := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		execCalls = append(execCalls, args)
+		return exec.CommandContext(ctx, "true")
+	}
+	t.Cleanup(func() { herdrExecCommandContext = oldExec })
+
+	var w bytes.Buffer
+	if err := herdrWaitAgentReady(context.Background(), "herdr", "w1:p1",
+		"claude --auto", "auto mode on", client, 50, &w); err != nil {
+		t.Fatalf("expected readyMatch fallback to succeed; got: %v", err)
+	}
+
+	waitOutputCalled := false
+	for _, args := range execCalls {
+		if len(args) >= 2 && args[0] == "pane" && args[1] == "wait-output" {
+			waitOutputCalled = true
+		}
+	}
+	if !waitOutputCalled {
+		t.Error("idle pre-launch state did not trigger readyMatch fallback (herdrPaneWaitOutput not called)")
+	}
+}
+
+// TestSpaceAgent_AgentUnknown_FallsBackToReadyMatch: Unknown herdr runner → readyMatch fallback.
+func TestSpaceAgent_AgentUnknown_FallsBackToReadyMatch(t *testing.T) {
+	client := unknownClient()
+
+	var execCalls [][]string
+	oldExec := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		execCalls = append(execCalls, args)
+		return exec.CommandContext(ctx, "true")
+	}
+	t.Cleanup(func() { herdrExecCommandContext = oldExec })
+
+	var w bytes.Buffer
+	if err := herdrWaitAgentReady(context.Background(), "herdr", "w1:p1",
+		"claude --auto", "auto mode on", client, 50, &w); err != nil {
+		t.Fatalf("unexpected error on Unknown state: %v", err)
+	}
+
+	waitOutputCalled := false
+	for _, args := range execCalls {
+		if len(args) >= 2 && args[0] == "pane" && args[1] == "wait-output" {
+			waitOutputCalled = true
+		}
+	}
+	if !waitOutputCalled {
+		t.Error("Unknown herdr state did not trigger readyMatch fallback (herdrPaneWaitOutput not called)")
+	}
+}
+
+// TestSpaceAgent_AcceptedBrief_NoStranded: classifier SUBMITTED → herdrConfirmDelivery returns nil.
+func TestSpaceAgent_AcceptedBrief_NoStranded(t *testing.T) {
+	var argv [][]string
+	stubHerdrExec(t, &argv)
+	calls := 0
+	stubPaneRead(t, []readStep{
+		{paneSubmitted, true},
+		{paneSubmittedTick, true},
+	}, &calls)
+
+	client := idleClientSeq0()
+
+	var w bytes.Buffer
+	preDelivery := herdragent.State{Status: herdragent.StatusIdle, Seq: 0}
+	if err := herdrConfirmDelivery(context.Background(), "herdr", "w7P:p2",
+		"brief text", client, preDelivery, &w); err != nil {
+		t.Fatalf("accepted brief was not confirmed: %v", err)
+	}
+	if strings.Contains(w.String(), "STRANDED") {
+		t.Errorf("accepted brief log contains STRANDED: %s", w.String())
+	}
+}
+
+// TestSpaceAgent_NeverWorking_FailsNotDelivered: idle herdr + UNKNOWN classifier → error naming the pane.
+func TestSpaceAgent_NeverWorking_FailsNotDelivered(t *testing.T) {
+	var argv [][]string
+	stubHerdrExec(t, &argv)
+	calls := 0
+	stubPaneRead(t, []readStep{{"", false}}, &calls)
+
+	client := idleClientSeq0()
+
+	var w bytes.Buffer
+	preDelivery := herdragent.State{Status: herdragent.StatusIdle, Seq: 0}
+	err := herdrConfirmDelivery(context.Background(), "herdr", "w7P:p2",
+		"brief text", client, preDelivery, &w)
+	if err == nil {
+		t.Fatal("idle agent should not confirm delivery — expected non-zero exit")
+	}
+	if !strings.Contains(err.Error(), "w7P:p2") {
+		t.Errorf("error must name the pane for operator inspection; got: %v", err)
+	}
+}
+
+// TestSpaceAgent_DoesNotForceReportWorking: herdrPluginSpaceAgent must not issue report-agent --state working.
+func TestSpaceAgent_DoesNotForceReportWorking(t *testing.T) {
+	src, err := os.ReadFile("cmd_herdr_plugin.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := spaceAgentFuncBody(t, string(src))
+	if strings.Contains(body, "report-agent") {
+		t.Error("herdrPluginSpaceAgent references report-agent — forced --state working " +
+			"takes lifecycle authority from herdr native detection; remove the call")
+	}
+}
+
+// TestSpaceAgent_ReleasesReportedAgent: herdrPaneReleaseAgent called; no report-agent in body.
+func TestSpaceAgent_ReleasesReportedAgent(t *testing.T) {
+	src, err := os.ReadFile("cmd_herdr_plugin.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := spaceAgentFuncBody(t, string(src))
+	if !strings.Contains(body, "herdrPaneReleaseAgent(") {
+		t.Error("herdrPluginSpaceAgent does not call herdrPaneReleaseAgent — " +
+			"stale lifecycle claims from older binaries block herdr native detection")
+	}
+	if strings.Contains(body, "report-agent") {
+		t.Error("herdrPluginSpaceAgent references report-agent — forced report-agent " +
+			"masks native herdr detection; remove the call")
+	}
+}
+
+// TestConfirmDelivery_HerdrWorking_NoExtraEnter: herdr working → 1 Enter only, classifier skipped.
+func TestConfirmDelivery_HerdrWorking_NoExtraEnter(t *testing.T) {
+	var argv [][]string
+	stubHerdrExec(t, &argv)
+	calls := 0
+	stubPaneRead(t, []readStep{{paneSubmitted, true}}, &calls)
+
+	client := herdragent.New(
+		func(_ context.Context, _ ...string) (string, error) {
+			return `{"result":{"agent":{"agent_status":"working","state_change_seq":1}}}`, nil
+		},
+		herdragent.WithSettle(0),
+		fastSleepOpt(),
+	)
+
+	var w bytes.Buffer
+	pre := herdragent.State{Status: herdragent.StatusIdle, Seq: 0}
+	if err := herdrConfirmDelivery(context.Background(), "herdr", "w1:p1",
+		"brief", client, pre, &w); err != nil {
+		t.Fatalf("working herdr state should confirm delivery; got: %v", err)
+	}
+
+	var enterCount int
+	for _, args := range argv {
+		if len(args) >= 2 && args[1] == "send-keys" && args[len(args)-1] == "Enter" {
+			enterCount++
+		}
+	}
+	if enterCount != 1 {
+		t.Errorf("expected exactly 1 Enter (initial submit), got %d; extra Enters must not be sent after herdr confirms working", enterCount)
+	}
+	if strings.Contains(w.String(), "classifier") || strings.Contains(w.String(), "STRANDED") {
+		t.Errorf("screen classifier must not be consulted when herdr state is working; log: %s", w.String())
+	}
+}
+
+// TestConfirmDelivery_HerdrUnknown_UsesScreenClassifier: Unknown runner → screen classifier confirms.
+func TestConfirmDelivery_HerdrUnknown_UsesScreenClassifier(t *testing.T) {
+	var argv [][]string
+	stubHerdrExec(t, &argv)
+	calls := 0
+	stubPaneRead(t, []readStep{
+		{paneSubmitted, true},
+		{paneSubmittedTick, true},
+	}, &calls)
+
+	var w bytes.Buffer
+	pre := herdragent.State{Status: herdragent.StatusUnknown, Seq: 0}
+	if err := herdrConfirmDelivery(context.Background(), "herdr", "w1:p1",
+		"brief", unknownClient(), pre, &w); err != nil {
+		t.Fatalf("screen classifier should confirm delivery when herdr Unknown; got: %v", err)
+	}
+}
+
+// TestConfirmDelivery_NoEnterAfterWorking: herdr working before retry → no 2nd Enter sent.
+func TestConfirmDelivery_NoEnterAfterWorking(t *testing.T) {
+	var argv [][]string
+	stubHerdrExec(t, &argv)
+	calls := 0
+	stubPaneRead(t, []readStep{{"", false}}, &calls)
+
+	observeCount := 0
+	client := herdragent.New(
+		func(_ context.Context, argv ...string) (string, error) {
+			if len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get" {
+				observeCount++
+			}
+			if observeCount <= 1 {
+				return `{"result":{"agent":{"agent_status":"idle","state_change_seq":0}}}`, nil
+			}
+			return `{"result":{"agent":{"agent_status":"working","state_change_seq":1}}}`, nil
+		},
+		herdragent.WithSettle(0),
+		fastSleepOpt(),
+	)
+
+	var w bytes.Buffer
+	pre := herdragent.State{Status: herdragent.StatusIdle, Seq: 0}
+	if err := herdrConfirmDelivery(context.Background(), "herdr", "w1:p1",
+		"brief", client, pre, &w); err != nil {
+		t.Fatalf("herdr working before retry should confirm delivery; got: %v", err)
+	}
+
+	var enterCount int
+	for _, args := range argv {
+		if len(args) >= 2 && args[1] == "send-keys" && args[len(args)-1] == "Enter" {
+			enterCount++
+		}
+	}
+	if enterCount != 1 {
+		t.Errorf("expected exactly 1 Enter (initial submit only), got %d; herdr working must block retry Enter", enterCount)
 	}
 }

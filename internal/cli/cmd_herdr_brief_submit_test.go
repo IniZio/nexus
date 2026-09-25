@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/IniZio/nexus/internal/herdragent"
 )
 
 /**
@@ -442,9 +444,7 @@ func stubPaneRead(t *testing.T, reads []readStep, calls *int) {
 	})
 }
 
-// TestDeliverBriefConfirmed_StrandedFailsLoudly is the regression test for the
-// reported defect: a pane whose brief never left the input box must NOT be
-// reported as a running agent.
+// TestDeliverBriefConfirmed_StrandedFailsLoudly: stranded pane must fail loudly, not report success.
 func TestDeliverBriefConfirmed_StrandedFailsLoudly(t *testing.T) {
 	var argv [][]string
 	stubHerdrExec(t, &argv)
@@ -452,7 +452,8 @@ func TestDeliverBriefConfirmed_StrandedFailsLoudly(t *testing.T) {
 	stubPaneRead(t, []readStep{{paneStranded, true}}, &calls)
 
 	var w bytes.Buffer
-	err := herdrDeliverBriefConfirmed(context.Background(), "herdr", "w7P:p2", "the brief", &w)
+	err := herdrConfirmDelivery(context.Background(), "herdr", "w7P:p2", "the brief",
+		unknownClient(), herdragent.State{}, &w)
 	if err == nil {
 		t.Fatal("stranded brief reported success — this is the defect")
 	}
@@ -488,8 +489,7 @@ func TestDeliverBriefConfirmed_StrandedFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestDeliverBriefConfirmed_UnreadablePaneRefuses is the fail-closed rail. A
-// pane that cannot be read is not a pane that passes.
+// TestDeliverBriefConfirmed_UnreadablePaneRefuses: unreadable pane → fail-closed, not a pass.
 func TestDeliverBriefConfirmed_UnreadablePaneRefuses(t *testing.T) {
 	var argv [][]string
 	stubHerdrExec(t, &argv)
@@ -497,7 +497,8 @@ func TestDeliverBriefConfirmed_UnreadablePaneRefuses(t *testing.T) {
 	stubPaneRead(t, []readStep{{"", false}}, &calls)
 
 	var w bytes.Buffer
-	err := herdrDeliverBriefConfirmed(context.Background(), "herdr", "w7P:p2", "the brief", &w)
+	err := herdrConfirmDelivery(context.Background(), "herdr", "w7P:p2", "the brief",
+		unknownClient(), herdragent.State{}, &w)
 	if err == nil {
 		t.Fatal("unreadable pane reported success — a check that cannot decide must refuse")
 	}
@@ -506,8 +507,7 @@ func TestDeliverBriefConfirmed_UnreadablePaneRefuses(t *testing.T) {
 	}
 }
 
-// TestDeliverBriefConfirmed_SubmittedPasses proves the guard is not simply
-// stuck on "fail" — the mirror of the always-WORKING trap.
+// TestDeliverBriefConfirmed_SubmittedPasses: SUBMITTED classifier result → success on attempt 1.
 func TestDeliverBriefConfirmed_SubmittedPasses(t *testing.T) {
 	var argv [][]string
 	stubHerdrExec(t, &argv)
@@ -518,7 +518,8 @@ func TestDeliverBriefConfirmed_SubmittedPasses(t *testing.T) {
 	}, &calls)
 
 	var w bytes.Buffer
-	if err := herdrDeliverBriefConfirmed(context.Background(), "herdr", "w7P:p2", "the brief", &w); err != nil {
+	if err := herdrConfirmDelivery(context.Background(), "herdr", "w7P:p2", "the brief",
+		unknownClient(), herdragent.State{}, &w); err != nil {
 		t.Fatalf("submitted brief rejected: %v", err)
 	}
 	if !strings.Contains(w.String(), "confirmed on attempt 1") {
@@ -535,8 +536,7 @@ func TestDeliverBriefConfirmed_SubmittedPasses(t *testing.T) {
 	}
 }
 
-// TestDeliverBriefConfirmed_RetryRecovers covers the middle case: the first
-// Enter stranded, the retry took. The dispatch should succeed and say so.
+// TestDeliverBriefConfirmed_RetryRecovers: STRANDED on attempt 1, SUBMITTED on attempt 2 → success.
 func TestDeliverBriefConfirmed_RetryRecovers(t *testing.T) {
 	var argv [][]string
 	stubHerdrExec(t, &argv)
@@ -549,7 +549,8 @@ func TestDeliverBriefConfirmed_RetryRecovers(t *testing.T) {
 	}, &calls)
 
 	var w bytes.Buffer
-	if err := herdrDeliverBriefConfirmed(context.Background(), "herdr", "w7P:p2", "the brief", &w); err != nil {
+	if err := herdrConfirmDelivery(context.Background(), "herdr", "w7P:p2", "the brief",
+		unknownClient(), herdragent.State{}, &w); err != nil {
 		t.Fatalf("retry did not recover: %v", err)
 	}
 	if !strings.Contains(w.String(), "confirmed on attempt 2") {
@@ -557,20 +558,7 @@ func TestDeliverBriefConfirmed_RetryRecovers(t *testing.T) {
 	}
 }
 
-/**
- * TestSpaceAgentDispatch_UsesConfirmedDelivery pins the CALL SITE.
- *
- * The classifier and the retry loop can both be perfect and the defect still
- * ship, if herdrPluginSpaceAgent goes on calling the unconfirmed
- * herdrPaneSubmitToAgent directly. That function is reachable only through a
- * real *service.Service and a real store, so this is asserted against the
- * source: step 8 of the dispatch must delegate to herdrDeliverBriefConfirmed,
- * and must not paste-and-hope.
- *
- * herdrPaneSubmitToAgent is NOT banned outright — herdrDeliverBriefConfirmed
- * calls it, which is the one legitimate call site. The guard is scoped to the
- * body of herdrPluginSpaceAgent.
- */
+// TestSpaceAgentDispatch_UsesConfirmedDelivery: dispatch must call herdrConfirmDelivery, not bare submit.
 func TestSpaceAgentDispatch_UsesConfirmedDelivery(t *testing.T) {
 	src, err := os.ReadFile("cmd_herdr_plugin.go")
 	if err != nil {
@@ -578,9 +566,9 @@ func TestSpaceAgentDispatch_UsesConfirmedDelivery(t *testing.T) {
 	}
 	body := spaceAgentFuncBody(t, string(src))
 
-	if !strings.Contains(body, "herdrDeliverBriefConfirmed(") {
-		t.Error("herdrPluginSpaceAgent does not call herdrDeliverBriefConfirmed — " +
-			"the brief is delivered without confirming it was submitted")
+	if !strings.Contains(body, "herdrConfirmDelivery(") {
+		t.Error("herdrPluginSpaceAgent does not call herdrConfirmDelivery — " +
+			"the brief is delivered without screen-classifier or herdr-state confirmation")
 	}
 	if strings.Contains(body, "herdrPaneSubmitToAgent(") {
 		t.Error("herdrPluginSpaceAgent calls herdrPaneSubmitToAgent directly — " +
@@ -668,6 +656,26 @@ func TestBriefInputBoxRegion(t *testing.T) {
 				t.Errorf("briefInputBoxRegion:\ngot:  %q\nwant: %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestClassifyBriefSubmission_FooterChipNotStranded verifies that a
+// [Pasted text #N chip-lookalike in the footer (below the bottom box border)
+// does NOT cause a STRANDED verdict. AC-T3.3.
+func TestClassifyBriefSubmission_FooterChipNotStranded(t *testing.T) {
+	// New-style box with empty interior; footer carries a chip-lookalike.
+	const footerChip = "" +
+		"● Done. Previous task.\n" +
+		"\n" +
+		"──────────────────────────────────────────────────────\n" +
+		"❯ \n" +
+		"──────────────────────────────────────────────────────\n" +
+		"  ⏵⏵ auto mode on · paste again to expand [Pasted text #1 +5 lines]\n"
+
+	got, reason := classifyBriefSubmission(footerChip, footerChip, footerChip, true, true, true)
+	if got == briefSubmissionStranded {
+		t.Errorf("chip in footer incorrectly classified as STRANDED (%s) — "+
+			"footer chips are below the box border and must not trigger stranded detection", reason)
 	}
 }
 

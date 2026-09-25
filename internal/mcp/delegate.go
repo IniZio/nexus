@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/herdrout"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -70,6 +71,9 @@ var runGitCLI = func(ctx context.Context, argv ...string) (string, error) {
 var teardownPollInterval = 500 * time.Millisecond
 var teardownPollTimeout = 15 * time.Second
 
+// agentClientOpts overrides herdragent.New options in tests (e.g. zero settle sleep).
+var agentClientOpts []herdragent.Option
+
 func runBinary(ctx context.Context, bin string, argv ...string) (string, error) {
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, bin, argv...)
@@ -95,15 +99,21 @@ type delegateAgentDispatchArgs struct {
 }
 
 type delegateAgentPollArgs struct {
-	Ref string `json:"ref" jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	Ref    string `json:"ref"               jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	WaitMs int    `json:"wait_ms,omitempty"  jsonschema:"milliseconds to wait for the in-guest agent to reach a stable state via herdr (0 = instantaneous; max 600000)"`
 }
 
 type delegateAgentPollResult struct {
-	GitLog        string `json:"git_log,omitempty"`
-	GitStatus     string `json:"git_status,omitempty"`
-	BranchName    string `json:"branch_name,omitempty"`
-	DoneVia       string `json:"done_via,omitempty"`
-	MarkerContent string `json:"marker_content,omitempty"`
+	GitLog           string `json:"git_log,omitempty"`
+	GitStatus        string `json:"git_status,omitempty"`
+	BranchName       string `json:"branch_name,omitempty"`
+	DoneVia          string `json:"done_via,omitempty"`
+	MarkerContent    string `json:"marker_content,omitempty"`
+	AgentStatus      string `json:"agent_status,omitempty"`
+	StateChangeSeq   uint64 `json:"state_change_seq,omitempty"`
+	Settled          bool   `json:"settled"`
+	Question         string `json:"question,omitempty"`
+	AgentStateReason string `json:"agent_state_reason,omitempty"`
 }
 
 type delegateTeardownArgs struct {
@@ -234,12 +244,12 @@ func parseHerdrListBinding(out, workspaceID string) (handle, sandboxID string, o
 }
 
 // parseHerdrListBindingByRef matches ref against handle= or a sandbox_id= prefix.
-func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID string, ok bool) {
+func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID, paneID string, ok bool) {
 	if ref == "" {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	for _, line := range strings.Split(out, "\n") {
-		var ws, h, sb string
+		var ws, h, sb, pi string
 		for _, f := range strings.Split(strings.TrimSpace(line), "\t") {
 			if v, found := strings.CutPrefix(f, "workspace_id="); found {
 				ws = v
@@ -247,16 +257,18 @@ func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID
 				h = v
 			} else if v, found := strings.CutPrefix(f, "sandbox_id="); found {
 				sb = v
+			} else if v, found := strings.CutPrefix(f, "pane_id="); found {
+				pi = v
 			}
 		}
 		if ws == "" {
 			continue
 		}
 		if h == ref || (sb != "" && strings.HasPrefix(sb, ref)) {
-			return ws, h, sb, true
+			return ws, h, sb, pi, true
 		}
 	}
-	return "", "", "", false
+	return "", "", "", "", false
 }
 
 func isSandboxNotFound(err error, output string) bool {
@@ -274,6 +286,44 @@ func sandboxListed(psOut, handle, sandboxID string) bool {
 		}
 	}
 	return false
+}
+
+const maxAgentWaitMs = 10 * 60 * 1000 // 10 minutes
+
+// observeAgentState returns the herdragent state for ref, or unknown with a reason on any failure.
+func observeAgentState(ctx context.Context, ref string, waitMs int) herdragent.State {
+	herdrBin, err := resolveHerdrBin()
+	if err != nil {
+		return herdragent.State{Status: herdragent.StatusUnknown, Reason: "herdr_unavailable"}
+	}
+	listOut, err := runHostCLI(ctx, "herdr", "list")
+	if err != nil {
+		return herdragent.State{Status: herdragent.StatusUnknown, Reason: "herdr_list_error"}
+	}
+	_, _, _, paneID, bound := parseHerdrListBindingByRef(listOut, ref)
+	if !bound {
+		return herdragent.State{Status: herdragent.StatusUnknown, Reason: "no_herdr_binding"}
+	}
+	if paneID == "" {
+		return herdragent.State{Status: herdragent.StatusUnknown, Reason: "no_pane_id"}
+	}
+	runner := func(ctx context.Context, argv ...string) (string, error) {
+		return runHerdrCLI(ctx, herdrBin, argv...)
+	}
+	client := herdragent.New(runner, agentClientOpts...)
+	wait := time.Duration(0)
+	if waitMs > 0 {
+		capped := waitMs
+		if capped > maxAgentWaitMs {
+			capped = maxAgentWaitMs
+		}
+		wait = time.Duration(capped) * time.Millisecond
+	}
+	st := client.Observe(ctx, paneID, wait)
+	if st.Agent == "nexus-slice-agent" {
+		return herdragent.State{Status: herdragent.StatusUnknown, Reason: "reported_override"}
+	}
+	return st
 }
 
 func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
@@ -353,7 +403,8 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Description: "Deliver a task brief to the claude agent running inside a worktree sandbox " +
 			"via `nexus herdr space-agent --autonomous --no-focus`. " +
 			"The in-guest claude runs in auto permission mode (--permission-mode auto). " +
-			"Returns the dispatch log.",
+			"Returns {delivered, output}: delivered=true iff herdr agent exits 0 (brief accepted); " +
+			"delivered=false with output on non-zero exit (not IsError — caller decides how to react).",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentDispatchArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
 			return errorResult(fmt.Errorf("ref is required")), nil, nil
@@ -364,26 +415,40 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		_, _, _, _ = svc.Exec(ctx, args.Ref, []string{"rm", "-f", delegateDoneMarker}, nil, "/", "")
 		brief := standingOrders + args.Brief
 		out, runErr := runHostCLI(ctx, "herdr", "agent", "--autonomous", "--no-focus", args.Ref, brief)
-		if runErr != nil {
-			return errorResult(fmt.Errorf("delegate_agent_dispatch: %w\n%s", runErr, out)), nil, nil
+		delivered := runErr == nil
+		const maxOut = 4000
+		if len(out) > maxOut {
+			out = "...(truncated)\n" + out[len(out)-maxOut:]
 		}
-		return successResult(map[string]string{"output": out}), nil, nil
+		return successResult(map[string]any{"delivered": delivered, "output": out}), nil, nil
 	})
 
 	gosdk.AddTool(srv, &gosdk.Tool{
 		Name: "delegate_agent_poll",
-		Description: "Poll the in-guest agent's progress. Checks " + delegateDoneMarker + " first " +
-			"(done_via:marker); falls back to git log/status heuristic (done_via:git). " +
-			"Returns {git_log, git_status, branch_name, done_via, marker_content}.",
+		Description: "Poll the in-guest agent's progress. Reports herdr native agent state " +
+			"(agent_status: idle|working|blocked|done|unknown; state_change_seq; settled; " +
+			"question when blocked; agent_state_reason when unknown). " +
+			"Checks " + delegateDoneMarker + " first (done_via:marker); falls back to git log/status heuristic (done_via:git). " +
+			"Marker and git are the completion proof; herdr agent state is informational only. " +
+			"herdr unavailable or sandbox unbound → agent_status:unknown, marker/git unchanged. " +
+			"Optional wait_ms>0 passes a bounded herdr agent wait before sampling. " +
+			"Returns {git_log, git_status, branch_name, done_via, marker_content, agent_status, state_change_seq, settled, question, agent_state_reason}.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentPollArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
 			return errorResult(fmt.Errorf("ref is required")), nil, nil
 		}
+		agentSt := observeAgentState(ctx, args.Ref, args.WaitMs)
+
 		markerCode, markerOut, _, markerExecErr := svc.Exec(ctx, args.Ref, []string{"cat", delegateDoneMarker}, nil, "/", "")
 		if markerExecErr == nil && markerCode == 0 {
 			return successResult(delegateAgentPollResult{
-				DoneVia:       "marker",
-				MarkerContent: strings.TrimSpace(markerOut),
+				DoneVia:          "marker",
+				MarkerContent:    strings.TrimSpace(markerOut),
+				AgentStatus:      string(agentSt.Status),
+				StateChangeSeq:   agentSt.Seq,
+				Settled:          agentSt.Settled,
+				Question:         agentSt.Question,
+				AgentStateReason: agentSt.Reason,
 			}), nil, nil
 		}
 		runGit := func(gitArgv []string) (string, error) {
@@ -409,10 +474,15 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			return errorResult(err), nil, nil
 		}
 		return successResult(delegateAgentPollResult{
-			GitLog:     gitLog,
-			GitStatus:  gitStatus,
-			BranchName: branchName,
-			DoneVia:    "git",
+			GitLog:           gitLog,
+			GitStatus:        gitStatus,
+			BranchName:       branchName,
+			DoneVia:          "git",
+			AgentStatus:      string(agentSt.Status),
+			StateChangeSeq:   agentSt.Seq,
+			Settled:          agentSt.Settled,
+			Question:         agentSt.Question,
+			AgentStateReason: agentSt.Reason,
 		}), nil, nil
 	})
 
@@ -432,7 +502,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if err != nil {
 			return errorResult(fmt.Errorf("delegate_teardown: nexus herdr list: %w\n%s", err, listOut)), nil, nil
 		}
-		ws, handle, sandboxID, bound := parseHerdrListBindingByRef(listOut, args.Ref)
+		ws, handle, sandboxID, _, bound := parseHerdrListBindingByRef(listOut, args.Ref)
 		if !bound {
 			out, runErr := runHostCLI(ctx, "sandbox", "rm", args.Ref)
 			if runErr != nil {

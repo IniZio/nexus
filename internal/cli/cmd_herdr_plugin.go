@@ -29,6 +29,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/supervisor"
 	ociname "github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -664,6 +665,14 @@ var herdrDefaultImageTag = "latest"
 var herdrDefaultImage = herdrDefaultImageRepo + ":" + herdrDefaultImageTag
 
 var herdrExecCommandContext = exec.CommandContext
+
+// herdrNewAgentClient builds an agent client; tests replace to inject scripted responses.
+var herdrNewAgentClient = func(herdrBin string) *herdragent.Client {
+	return herdragent.New(func(ctx context.Context, argv ...string) (string, error) {
+		out, err := herdrExecCommandContext(ctx, herdrBin, argv...).Output()
+		return string(out), err
+	})
+}
 
 var herdrPaneExistsFn = herdrPaneExists
 
@@ -2965,8 +2974,7 @@ type briefSubmissionVerdict int
 const (
 	/**
 	 * briefSubmissionUnknown — the pane could not be read, or it could be read
-	 * and carries no evidence either way. This is a REFUSAL, never a pass. See
-	 * herdrDeliverBriefConfirmed.
+	 * and carries no evidence either way. This is a REFUSAL, never a pass.
 	 */
 	briefSubmissionUnknown briefSubmissionVerdict = iota
 	/**
@@ -3114,6 +3122,35 @@ func briefInputBoxInteriorHasContent(visible string) bool {
 	return false
 }
 
+// briefInputBoxContentOnly returns box interior lines only, excluding footer.
+func briefInputBoxContentOnly(visible string) string {
+	lines := strings.Split(visible, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "╰─") {
+			for j := i - 1; j >= 0; j-- {
+				if strings.Contains(lines[j], "╭─") {
+					return strings.Join(lines[j+1:i], "\n")
+				}
+			}
+			break
+		}
+	}
+	// New-style rule-delimited box.
+	var ruleIdxs []int
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if len(t) >= 20 && strings.TrimLeft(t, "─") == "" {
+			ruleIdxs = append(ruleIdxs, i)
+		}
+	}
+	if len(ruleIdxs) >= 2 {
+		top := ruleIdxs[len(ruleIdxs)-2]
+		bot := ruleIdxs[len(ruleIdxs)-1]
+		return strings.Join(lines[top+1:bot], "\n")
+	}
+	return ""
+}
+
 /**
  * briefWorkingMarkers are working-agent affordances. FAST PATH ONLY.
  *
@@ -3172,8 +3209,9 @@ func classifyBriefSubmission(before, after, afterVisible string, beforeOK, after
 		return briefSubmissionUnknown, "visible viewport contains no input box; cannot determine state"
 	}
 	transcript := afterVisible[:len(afterVisible)-len(inputBox)]
+	inputBoxContent := briefInputBoxContentOnly(afterVisible)
 	for _, re := range briefStrandedMarkers {
-		if re.MatchString(inputBox) {
+		if re.MatchString(inputBoxContent) {
 			return briefSubmissionStranded, "input box still holds the pasted brief (matched " + re.String() + ")"
 		}
 	}
@@ -3214,75 +3252,6 @@ var briefConfirmSettle = 1500 * time.Millisecond
 const briefSubmitAttempts = 3
 
 /**
- * herdrDeliverBriefConfirmed pastes the brief, submits it, and then CONFIRMS it
- * was submitted — retrying Enter and finally failing loudly rather than
- * reporting a success it did not observe.
- *
- * Reporting success at the point the system stopped looking is the defect this
- * closes. The old path waited for claude's prompt to APPEAR (which happens
- * before submission, and stays true after it), pressed Enter, and returned nil.
- * Observed rate: one stranded brief in three dispatches.
- *
- * FAIL-CLOSED: both non-success verdicts — STRANDED and UNKNOWN — exhaust the
- * retries and then return an error. An unreadable pane does not "skip the
- * check"; it fails the dispatch. The operator can then look at the pane, which
- * is cheap, instead of discovering an hour later that a slice never started.
- */
-func herdrDeliverBriefConfirmed(ctx context.Context, herdrBin, paneID, brief string, w io.Writer) error {
-	if err := herdrPaneSubmitToAgent(ctx, herdrBin, paneID, brief); err != nil {
-		return &CodedError{Code: ErrCodeInternalError,
-			Msg: "space-agent: deliver brief: " + err.Error(), Err: err}
-	}
-
-	var lastVerdict briefSubmissionVerdict
-	var lastReason string
-	var lastAfterVisible string
-	for attempt := 1; attempt <= briefSubmitAttempts; attempt++ {
-		before, beforeOK := herdrPaneReadFn(ctx, herdrBin, paneID)
-		select {
-		case <-ctx.Done():
-			return &CodedError{Code: ErrCodeInternalError,
-				Msg: "space-agent: confirm brief submitted: " + ctx.Err().Error(), Err: ctx.Err()}
-		case <-time.After(briefConfirmSettle):
-		}
-		after, afterOK := herdrPaneReadFn(ctx, herdrBin, paneID)
-		afterVisible, afterVisibleOK := herdrPaneReadVisibleFn(ctx, herdrBin, paneID)
-		lastAfterVisible = afterVisible
-
-		lastVerdict, lastReason = classifyBriefSubmission(before, after, afterVisible, beforeOK, afterOK, afterVisibleOK)
-		if lastVerdict == briefSubmissionSubmitted {
-			fmt.Fprintf(w, "space-agent: brief submitted (confirmed on attempt %d/%d: %s)\n",
-				attempt, briefSubmitAttempts, lastReason)
-			return nil
-		}
-		if attempt == briefSubmitAttempts {
-			break
-		}
-		fmt.Fprintf(w, "space-agent: brief not confirmed submitted (%s: %s); pressing Enter again (attempt %d/%d)\n",
-			lastVerdict, lastReason, attempt+1, briefSubmitAttempts)
-		for _, vl := range strings.Split(afterVisible, "\n") {
-			fmt.Fprintf(w, "    | %s\n", vl)
-		}
-		if err := herdrPaneSendEnter(ctx, herdrBin, paneID); err != nil {
-			return &CodedError{Code: ErrCodeInternalError,
-				Msg: "space-agent: re-submit brief: " + err.Error(), Err: err}
-		}
-	}
-
-	viewportDump := new(strings.Builder)
-	for _, vl := range strings.Split(lastAfterVisible, "\n") {
-		fmt.Fprintf(viewportDump, "    | %s\n", vl)
-	}
-	return &CodedError{
-		Code: ErrCodeInternalError,
-		Msg: fmt.Sprintf("space-agent: brief was NOT confirmed submitted in pane %s after %d Enter presses "+
-			"(final verdict %s: %s); the agent is running but its brief may still be sitting unsent in the "+
-			"input box — inspect with: herdr pane read %s --source visible\nvisible viewport at final attempt:\n%s",
-			paneID, briefSubmitAttempts, lastVerdict, lastReason, paneID, viewportDump.String()),
-	}
-}
-
-/**
  * herdrPaneRun sends text to a herdr pane and simulates Enter, equivalent to
  * the operator typing the text at the pane's prompt.
  *
@@ -3307,17 +3276,102 @@ func herdrPaneWaitOutput(ctx context.Context, herdrBin, paneID, match string, ti
 	return cmd.Run()
 }
 
-/**
- * herdrPaneReportAgent registers the claude process running in paneID with
- * herdr's agent tracker so it shows in `herdr agent list`. Non-fatal; call
- * sites log and continue on error.
- */
-func herdrPaneReportAgent(ctx context.Context, herdrBin, paneID, source string) error {
-	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "report-agent", paneID,
-		"--source", source, "--agent", "nexus-slice-agent", "--state", "working")
+// herdrPaneReleaseAgent surrenders a prior lifecycle claim so herdr native detection resumes.
+func herdrPaneReleaseAgent(ctx context.Context, herdrBin, paneID, source string) error {
+	cmd := herdrExecCommandContext(ctx, herdrBin, "pane", "release-agent", paneID,
+		"--source", source, "--agent", "nexus-slice-agent")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// herdrWaitAgentReady launches launchCmd with a pre-launch baseline; falls back to readyMatch on Unknown or timeout.
+func herdrWaitAgentReady(ctx context.Context, herdrBin, paneID, launchCmd, readyMatch string,
+	agentClient *herdragent.Client, timeoutMS int, w io.Writer) error {
+	baseline := agentClient.Observe(ctx, paneID, 0)
+	if err := herdrPaneRun(ctx, herdrBin, paneID, launchCmd); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: launch agent: " + err.Error(), Err: err}
+	}
+	_, ok := agentClient.Ready(ctx, paneID, baseline, time.Duration(timeoutMS)*time.Millisecond)
+	if ok {
+		return nil
+	}
+	fmt.Fprintf(w, "space-agent: waiting for agent prompt (match=%q, timeout=%ds) ...\n",
+		readyMatch, timeoutMS/1000)
+	if err := herdrPaneWaitOutput(ctx, herdrBin, paneID, readyMatch, timeoutMS); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: fmt.Sprintf("space-agent: agent did not reach its prompt within %ds: %v",
+				timeoutMS/1000, err), Err: err}
+	}
+	return nil
+}
+
+func herdrStateDelivered(st, pre herdragent.State) bool {
+	return st.Status == herdragent.StatusWorking ||
+		st.Status == herdragent.StatusBlocked ||
+		(st.Seq > pre.Seq && st.Status != herdragent.StatusIdle && st.Status != herdragent.StatusUnknown)
+}
+
+// herdrConfirmDelivery sends the brief and confirms delivery; herdr state is primary, screen classifier secondary.
+func herdrConfirmDelivery(ctx context.Context, herdrBin, paneID, brief string,
+	agentClient *herdragent.Client, preDelivery herdragent.State, w io.Writer) error {
+	if err := herdrPaneSubmitToAgent(ctx, herdrBin, paneID, brief); err != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: deliver brief: " + err.Error(), Err: err}
+	}
+	var lastVerdict briefSubmissionVerdict
+	var lastReason, lastAfterVisible string
+	for attempt := 1; attempt <= briefSubmitAttempts; attempt++ {
+		before, beforeOK := herdrPaneReadFn(ctx, herdrBin, paneID)
+		select {
+		case <-ctx.Done():
+			return &CodedError{Code: ErrCodeInternalError,
+				Msg: "space-agent: confirm delivery: " + ctx.Err().Error(), Err: ctx.Err()}
+		case <-time.After(briefConfirmSettle):
+		}
+		if st := agentClient.Observe(ctx, paneID, 0); herdrStateDelivered(st, preDelivery) {
+			fmt.Fprintf(w, "space-agent: brief delivered (herdr %s seq=%d attempt %d/%d)\n",
+				st.Status, st.Seq, attempt, briefSubmitAttempts)
+			return nil
+		}
+		after, afterOK := herdrPaneReadFn(ctx, herdrBin, paneID)
+		afterVisible, afterVisibleOK := herdrPaneReadVisibleFn(ctx, herdrBin, paneID)
+		lastAfterVisible = afterVisible
+		lastVerdict, lastReason = classifyBriefSubmission(before, after, afterVisible, beforeOK, afterOK, afterVisibleOK)
+		if lastVerdict == briefSubmissionSubmitted {
+			fmt.Fprintf(w, "space-agent: brief submitted (confirmed on attempt %d/%d: %s)\n",
+				attempt, briefSubmitAttempts, lastReason)
+			return nil
+		}
+		if attempt == briefSubmitAttempts {
+			break
+		}
+		fmt.Fprintf(w, "space-agent: brief not confirmed submitted (%s: %s); checking herdr before retry (attempt %d/%d)\n",
+			lastVerdict, lastReason, attempt+1, briefSubmitAttempts)
+		for _, vl := range strings.Split(lastAfterVisible, "\n") {
+			fmt.Fprintf(w, "    | %s\n", vl)
+		}
+		if st := agentClient.Observe(ctx, paneID, 0); herdrStateDelivered(st, preDelivery) {
+			fmt.Fprintf(w, "space-agent: brief delivered (herdr %s before retry)\n", st.Status)
+			return nil
+		}
+		if err := herdrPaneSendEnter(ctx, herdrBin, paneID); err != nil {
+			return &CodedError{Code: ErrCodeInternalError,
+				Msg: "space-agent: re-submit brief: " + err.Error(), Err: err}
+		}
+	}
+	viewportDump := new(strings.Builder)
+	for _, vl := range strings.Split(lastAfterVisible, "\n") {
+		fmt.Fprintf(viewportDump, "    | %s\n", vl)
+	}
+	return &CodedError{
+		Code: ErrCodeInternalError,
+		Msg: fmt.Sprintf("space-agent: brief was NOT confirmed submitted in pane %s after %d Enter presses "+
+			"(final verdict %s: %s); the agent is running but its brief may still be sitting unsent in the "+
+			"input box — inspect with: herdr pane read %s --source visible\nvisible viewport at final attempt:\n%s",
+			paneID, briefSubmitAttempts, lastVerdict, lastReason, paneID, viewportDump.String()),
+	}
 }
 
 /**
@@ -3496,42 +3550,24 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	}
 	launchDesc := resolveAgentLaunchDescriptor(sb.AgentName)
 	launchCmd := launchDesc.command(autonomous)
+	readyMatch := launchDesc.readyMatch(autonomous)
+
+	if err := herdrPaneReleaseAgent(ctx, herdrBin, paneID, ref); err != nil {
+		fmt.Fprintf(w, "space-agent: release-agent (non-fatal): %v\n", err)
+	}
+
+	agentClient := herdrNewAgentClient(herdrBin)
 
 	fmt.Fprintf(w, "space-agent: launching %s in pane %s ...\n", launchCmd, paneID)
-	if err := herdrPaneRun(ctx, herdrBin, paneID, launchCmd); err != nil {
-		return &CodedError{Code: ErrCodeInternalError,
-			Msg: "space-agent: launch agent: " + err.Error(), Err: err}
-	}
-
-	/**
-	 * 7. Wait for the agent's prompt. See claudeReadyMatch/cursorReadyMatch for
-	 *    why each agent's token is what it is.
-	 */
-	readyMatch := launchDesc.readyMatch(autonomous)
-	fmt.Fprintf(w, "space-agent: waiting for agent prompt (match=%q, timeout=%ds) ...\n",
-		readyMatch, claudeReadyTimeoutMS/1000)
-	if err := herdrPaneWaitOutput(ctx, herdrBin, paneID, readyMatch, claudeReadyTimeoutMS); err != nil {
-		return &CodedError{Code: ErrCodeInternalError,
-			Msg: fmt.Sprintf("space-agent: agent did not reach its prompt within %ds: %v",
-				claudeReadyTimeoutMS/1000, err), Err: err}
-	}
-
-	/**
-	 * 8. Deliver the slice brief AND confirm it was actually submitted.
-	 *
-	 *    Step 7's wait is not evidence of delivery. claudeReadyMatch's token is
-	 *    a permission-mode footer that is present before the brief is pasted and
-	 *    still present after it strands in the input box — it cannot distinguish
-	 *    the two states, so a dispatch that stopped looking here reported success
-	 *    on a brief that was never sent. See herdrDeliverBriefConfirmed.
-	 */
-	fmt.Fprintf(w, "space-agent: delivering brief ...\n")
-	if err := herdrDeliverBriefConfirmed(ctx, herdrBin, paneID, brief, w); err != nil {
+	if err := herdrWaitAgentReady(ctx, herdrBin, paneID, launchCmd, readyMatch,
+		agentClient, claudeReadyTimeoutMS, w); err != nil {
 		return err
 	}
 
-	if err := herdrPaneReportAgent(ctx, herdrBin, paneID, ref); err != nil {
-		fmt.Fprintf(w, "space-agent: warning: report-agent failed: %v (continuing)\n", err)
+	fmt.Fprintf(w, "space-agent: delivering brief ...\n")
+	preDelivery := agentClient.Observe(ctx, paneID, 0)
+	if err := herdrConfirmDelivery(ctx, herdrBin, paneID, brief, agentClient, preDelivery, w); err != nil {
+		return err
 	}
 
 	fmt.Fprintf(w, "space-agent: agent running in pane %s for %q\n", paneID, ref)

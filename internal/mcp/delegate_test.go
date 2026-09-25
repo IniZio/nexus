@@ -12,8 +12,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IniZio/nexus/internal/herdragent"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// init stubs runHostCLI/runHerdrCLI so tests without a recorder don't invoke
+// os.Executable() (the test binary), which would recursively re-run the suite.
+func init() {
+	runHostCLI = func(_ context.Context, argv ...string) (string, error) {
+		return "", fmt.Errorf("runHostCLI: no recorder installed (call installHostCLIRecorder); argv=%v", argv)
+	}
+	runHerdrCLI = func(_ context.Context, _ string, argv ...string) (string, error) {
+		return "", fmt.Errorf("runHerdrCLI: no recorder installed (call installHostCLIRecorder); argv=%v", argv)
+	}
+}
 
 // ── exec seam fake ────────────────────────────────────────────────────────────
 
@@ -951,6 +963,357 @@ type dispatchErrExecSvc struct {
 
 func (s *dispatchErrExecSvc) Exec(_ context.Context, _ string, _ []string, _ map[string]string, _, _ string) (int32, string, string, error) {
 	return 1, "", "no such container", fmt.Errorf("exec: sandbox not reachable")
+}
+
+// ── agent state helpers ───────────────────────────────────────────────────────
+
+// setAgentClientZeroSleep injects zero settle sleep into herdragent.New for the test.
+func setAgentClientZeroSleep(t *testing.T) {
+	t.Helper()
+	orig := agentClientOpts
+	agentClientOpts = []herdragent.Option{
+		herdragent.WithSleep(func(_ context.Context, _ time.Duration) error { return nil }),
+		herdragent.WithSettle(0),
+	}
+	t.Cleanup(func() { agentClientOpts = orig })
+}
+
+// herdrListLine builds a tab-separated herdr list line for tests.
+func herdrListLine(wsID, handle, sandboxID, paneID string) string {
+	return "label=x\tworkspace_id=" + wsID + "\thandle=" + handle + "\tsandbox_id=" + sandboxID + "\tpane_id=" + paneID + "\n"
+}
+
+const (
+	agentWorkingJSON = `{"id":"cli:agent:get","result":{"agent":{"agent":"claude","agent_status":"working","pane_id":"w9Z:p1M","revision":5,"state_change_seq":2041,"workspace_id":"w9Z"},"type":"agent_info"}}`
+	agentDoneJSON10  = `{"id":"cli:agent:get","result":{"agent":{"agent":"claude","agent_status":"done","pane_id":"w9Z:p1M","revision":5,"state_change_seq":10,"workspace_id":"w9Z"},"type":"agent_info"}}`
+	agentDoneJSON11  = `{"id":"cli:agent:get","result":{"agent":{"agent":"claude","agent_status":"done","pane_id":"w9Z:p1M","revision":5,"state_change_seq":11,"workspace_id":"w9Z"},"type":"agent_info"}}`
+	agentIdleJSON5   = `{"id":"cli:agent:get","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w9Z:p1M","revision":5,"state_change_seq":5,"workspace_id":"w9Z"},"type":"agent_info"}}`
+	agentBlockedJSON = `{"id":"cli:agent:get","result":{"agent":{"agent":"claude","agent_status":"blocked","pane_id":"w9Z:p1M","revision":5,"state_change_seq":11,"workspace_id":"w9Z"},"type":"agent_info"}}`
+)
+
+// gitFallbackResponses returns exec responses for marker-absent + 3 git commands.
+func gitFallbackResponses() []execResponse {
+	return []execResponse{
+		{code: 1, stderr: "No such file"},     // marker absent
+		{code: 0, stdout: "abc1234 fix: x\n"}, // git log
+		{code: 0, stdout: ""},                 // git status
+		{code: 0, stdout: "feat/work\n"},      // git branch
+	}
+}
+
+// ── new agent-state tests ─────────────────────────────────────────────────────
+
+func TestDelegateAgentPoll_ReportsHerdrAgentState(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	setAgentClientZeroSleep(t)
+	installHostCLIRecorder(t, map[string]string{
+		"herdr list": herdrListLine("wWS", "proj/branch", "sb-1", "w9Z:p1M"),
+		"agent get":  agentWorkingJSON,
+	})
+	svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := data["agent_status"]; got != "working" {
+		t.Errorf("agent_status = %q, want %q", got, "working")
+	}
+	if got, _ := data["state_change_seq"].(float64); got != 2041 {
+		t.Errorf("state_change_seq = %v, want 2041", got)
+	}
+}
+
+func TestDelegateAgentPoll_BlockedIncludesQuestion(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	setAgentClientZeroSleep(t)
+	installHostCLIRecorder(t, map[string]string{
+		"herdr list": herdrListLine("wWS", "proj/branch", "sb-1", "w9Z:p1M"),
+		"agent get":  agentBlockedJSON,
+		"agent read": "What library should I use?\n",
+	})
+	svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := data["agent_status"]; got != "blocked" {
+		t.Errorf("agent_status = %q, want blocked", got)
+	}
+	q, _ := data["question"].(string)
+	if !strings.Contains(q, "What library") {
+		t.Errorf("question = %q, want to contain question text", q)
+	}
+}
+
+func TestDelegateAgentPoll_DoneThenBlocked_Race(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	setAgentClientZeroSleep(t)
+
+	origHost := runHostCLI
+	origHerdr := runHerdrCLI
+	t.Cleanup(func() { runHostCLI = origHost; runHerdrCLI = origHerdr })
+
+	runHostCLI = func(_ context.Context, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list" {
+			return herdrListLine("wWS", "proj/branch", "sb-1", "w9Z:p1M"), nil
+		}
+		return "", fmt.Errorf("unexpected host call: %v", argv)
+	}
+	getCount := 0
+	runHerdrCLI = func(_ context.Context, _ string, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get" {
+			getCount++
+			if getCount == 1 {
+				return agentDoneJSON10, nil
+			}
+			return agentBlockedJSON, nil
+		}
+		if len(argv) >= 2 && argv[0] == "agent" && argv[1] == "read" {
+			return "Shall I proceed?\n", nil
+		}
+		return "", fmt.Errorf("unexpected herdr call: %v", argv)
+	}
+
+	svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := data["agent_status"]; got != "blocked" {
+		t.Errorf("agent_status = %q after done→blocked race, want blocked", got)
+	}
+	q, _ := data["question"].(string)
+	if !strings.Contains(q, "Shall I proceed") {
+		t.Errorf("question = %q, want race question text", q)
+	}
+	if got, _ := data["settled"].(bool); !got {
+		t.Errorf("settled = %v, want true after settle poll", got)
+	}
+}
+
+func TestDelegateAgentPoll_HerdrDoneWithoutMarker_NotComplete(t *testing.T) {
+	cases := []struct {
+		name      string
+		agentJSON string
+		wantAgent string
+	}{
+		{"done", agentDoneJSON11, "done"},
+		{"idle", agentIdleJSON5, "idle"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+			setAgentClientZeroSleep(t)
+			installHostCLIRecorder(t, map[string]string{
+				"herdr list": herdrListLine("wWS", "proj/branch", "sb-1", "w9Z:p1M"),
+				"agent get":  tc.agentJSON,
+			})
+			svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
+			cs, closeFn := connectPairSvc(t, svc)
+			defer closeFn()
+
+			res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch"})
+			if res.IsError {
+				t.Fatalf("unexpected error: %s", resultText(t, res))
+			}
+			var data map[string]any
+			if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := data["done_via"]; got != "git" {
+				t.Errorf("done_via = %q, want git; herdr %s alone must not short-circuit the git path", got, tc.name)
+			}
+			if got, _ := data["git_log"].(string); got != "abc1234 fix: x\n" {
+				t.Errorf("git_log = %q, want canned git log (proves git path ran)", got)
+			}
+			if got, _ := data["branch_name"].(string); got != "feat/work\n" {
+				t.Errorf("branch_name = %q, want canned branch name", got)
+			}
+			if got := data["agent_status"]; got != tc.wantAgent {
+				t.Errorf("agent_status = %q, want %q", got, tc.wantAgent)
+			}
+		})
+	}
+}
+
+func TestDelegateAgentPoll_HerdrUnavailable_DegradesToGit(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "")
+	t.Setenv("PATH", t.TempDir()) // herdr not on PATH
+	svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := data["agent_status"]; got != "unknown" {
+		t.Errorf("agent_status = %q, want unknown when herdr unavailable", got)
+	}
+	reason, _ := data["agent_state_reason"].(string)
+	if reason == "" {
+		t.Errorf("agent_state_reason must be set when herdr unavailable")
+	}
+	if got := data["done_via"]; got != "git" {
+		t.Errorf("done_via = %q, want git (degraded path)", got)
+	}
+}
+
+func TestDelegateAgentPoll_Unbound_Unknown(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	installHostCLIRecorder(t, map[string]string{
+		"herdr list": herdrListLine("wWS", "proj/other", "sb-9", "w9Z:p1M"),
+	})
+	svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/loose"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := data["agent_status"]; got != "unknown" {
+		t.Errorf("agent_status = %q, want unknown for unbound ref", got)
+	}
+	if got := data["agent_state_reason"]; got != "no_herdr_binding" {
+		t.Errorf("agent_state_reason = %q, want no_herdr_binding", got)
+	}
+}
+
+func TestDelegateAgentPoll_WaitMs_UsesAgentWait(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	setAgentClientZeroSleep(t)
+	rec := installHostCLIRecorder(t, map[string]string{
+		"herdr list": herdrListLine("wWS", "proj/branch", "sb-1", "w9Z:p1M"),
+		"agent wait": "",
+		"agent get":  agentWorkingJSON,
+	})
+	svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch", "wait_ms": 500})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	waitCall, found := rec.find("agent wait")
+	if !found {
+		t.Fatalf("agent wait not called; calls=%+v", rec.calls)
+	}
+	if !containsToken(waitCall.args, "--timeout") {
+		t.Errorf("agent wait args missing --timeout: %v", waitCall.args)
+	}
+	// find the value after --timeout
+	for i, a := range waitCall.args {
+		if a == "--timeout" && i+1 < len(waitCall.args) {
+			if waitCall.args[i+1] != "500" {
+				t.Errorf("--timeout value = %q, want 500", waitCall.args[i+1])
+			}
+			break
+		}
+	}
+}
+
+func TestDelegateAgentPoll_ReportedOverride_Unknown(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	setAgentClientZeroSleep(t)
+	const reportedOverrideJSON = `{"id":"cli:agent:get","result":{"agent":{"agent":"nexus-slice-agent","agent_status":"working","pane_id":"w9Z:p1M","revision":5,"state_change_seq":9999,"workspace_id":"w9Z"},"type":"agent_info"}}`
+	installHostCLIRecorder(t, map[string]string{
+		"herdr list": herdrListLine("wWS", "proj/branch", "sb-1", "w9Z:p1M"),
+		"agent get":  reportedOverrideJSON,
+	})
+	svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
+	cs, closeFn := connectPairSvc(t, svc)
+	defer closeFn()
+
+	res := callTool(t, cs, "delegate_agent_poll", map[string]any{"ref": "proj/branch"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, res))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := data["agent_status"]; got != "unknown" {
+		t.Errorf("agent_status = %q, want unknown for reported_override agent", got)
+	}
+	if got := data["agent_state_reason"]; got != "reported_override" {
+		t.Errorf("agent_state_reason = %q, want reported_override", got)
+	}
+}
+
+func TestDelegateAgentDispatch_DeliveredFlag(t *testing.T) {
+	t.Run("exit0_delivered_true", func(t *testing.T) {
+		orig := runHostCLI
+		t.Cleanup(func() { runHostCLI = orig })
+		runHostCLI = func(_ context.Context, argv ...string) (string, error) {
+			return "dispatched", nil
+		}
+		svc := &dispatchRecordSvc{stubService: &stubService{}}
+		cs, closeFn := connectPairSvc(t, svc)
+		defer closeFn()
+		res := callTool(t, cs, "delegate_agent_dispatch", map[string]any{"ref": "p/b", "brief": "do it"})
+		if res.IsError {
+			t.Fatalf("dispatch returned IsError: %s", resultText(t, res))
+		}
+		var data map[string]any
+		if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got, _ := data["delivered"].(bool); !got {
+			t.Errorf("delivered = %v, want true on exit 0", got)
+		}
+	})
+	t.Run("exit1_delivered_false_not_iserror", func(t *testing.T) {
+		orig := runHostCLI
+		t.Cleanup(func() { runHostCLI = orig })
+		runHostCLI = func(_ context.Context, argv ...string) (string, error) {
+			return "agent not found\n", fmt.Errorf("exit status 1")
+		}
+		svc := &dispatchErrExecSvc{stubService: &stubService{}}
+		cs, closeFn := connectPairSvc(t, svc)
+		defer closeFn()
+		res := callTool(t, cs, "delegate_agent_dispatch", map[string]any{"ref": "p/b", "brief": "do it"})
+		if res.IsError {
+			t.Fatalf("dispatch must not set IsError when herdr exits non-0; got: %s", resultText(t, res))
+		}
+		var data map[string]any
+		if err := json.Unmarshal(resultData(t, res), &data); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got, _ := data["delivered"].(bool); got {
+			t.Errorf("delivered = %v, want false on exit non-0", got)
+		}
+	})
 }
 
 func TestDelegateTeardown_FallbackRmRealError_ReturnsError(t *testing.T) {
