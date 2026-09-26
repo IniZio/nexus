@@ -19,6 +19,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/clientagent"
 	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/audit"
 	"github.com/IniZio/nexus/internal/core/config"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
@@ -1540,6 +1541,7 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 		HerdrWorkspaceID: workspaceID,
 		SandboxHandle:    ref,
 		SandboxID:        sb.ID.String(),
+		HerdrSession:     herdrCurrentSession(),
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: store binding: " + err.Error(), Err: err}
@@ -2018,9 +2020,10 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 		if bindingsErr != nil {
 			return fmt.Errorf("space-prune: read bindings: %w", bindingsErr)
 		}
+		cur := herdrCurrentSession()
 		var scoped []HerdrSpaceBinding
 		for _, b := range bindingsBefore {
-			if b.HerdrWorkspaceID == *workspace {
+			if b.HerdrWorkspaceID == *workspace && b.OwnedByHerdrSession(cur) {
 				scoped = append(scoped, b)
 			}
 		}
@@ -2111,7 +2114,11 @@ func herdrSpacePruneBindings(
 		sbPresent := sandboxExists(b)
 		wsPresent := workspaceExists(b)
 		if b.IsWorktreeManaged() && sbPresent && !wsPresent {
-			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (worktree VM would be reaped)\n", b.SandboxHandle, b.HerdrWorkspaceID)
+			if herdrPruneWorktreeAbsentFn(b.WorktreePath) {
+				fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (worktree VM would be reaped)\n", b.SandboxHandle, b.HerdrWorkspaceID)
+			} else {
+				fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (worktree present; workspace-id would be cleared)\n", b.SandboxHandle, b.HerdrWorkspaceID)
+			}
 		} else if sbPresent && !wsPresent {
 			fmt.Fprintf(w, "  STALE  sandbox=%s  workspace=%s  (workspace-id would be cleared)\n", b.SandboxHandle, b.HerdrWorkspaceID)
 		} else {
@@ -2147,28 +2154,32 @@ func herdrSpacePruneBindings(
 			continue
 		}
 
-		/** Case: worktree sandbox running, workspace gone → reap VM then delete binding. */
+		/** Case: worktree sandbox running, workspace gone → reap only when checkout is absent.
+		 * See doc/design/destructive-op-safety.md for the reversible-first rule. */
 		if b.IsWorktreeManaged() && sbPresent && !wsPresent {
-			if err := removeSandbox(ctx, b.SandboxHandle); err != nil {
+			if !herdrPruneWorktreeAbsentFn(b.WorktreePath) {
+				// Checkout exists (or path is unverifiable): treat as alive.
+				if err := herdrSpaceBindingClearWorkspaceID(ctx, storeRoot, b.SpaceLabel); err != nil {
+					slog.Warn("space-prune: clear stale workspace-id failed; binding retained",
+						"label", b.SpaceLabel, "err", err)
+					continue
+				}
+				fmt.Fprintf(w, "  KEPT sandbox=%s (worktree checkout present or unverifiable: %s)\n", b.SandboxHandle, b.WorktreePath)
+				deleted++
+				continue
+			}
+			auditCtx := audit.WithReason(ctx, fmt.Sprintf("herdr prune: workspace %s gone in session %s, worktree %s absent", b.HerdrWorkspaceID, b.HerdrSession, b.WorktreePath))
+			if err := removeSandbox(auditCtx, b.SandboxHandle); err != nil {
 				slog.Warn("space-prune: reap worktree sandbox failed; binding retained for next run",
 					"handle", b.SandboxHandle, "err", err)
 				continue
 			}
 			fmt.Fprintf(w, "  REAPED sandbox=%s (workspace gone)\n", b.SandboxHandle)
 		}
-		/**
-		 * A worktree sandbox's named volumes (docker, agentcfg, go caches,
-		 * nested state) exist to survive re-creation of the SAME worktree;
-		 * Service.Remove only detaches them, by design. Here the worktree's
-		 * workspace is gone, so nothing will ever reattach them, and each set
-		 * is ~42 GiB of sparse allocation that host disk admission charges in
-		 * full: 17 such orphans were found on 2026-09-19 after routine
-		 * "remove worktree checkout" actions. Best-effort — Rm refuses a
-		 * volume that is still attached, and a failure never retains the
-		 * binding (the binding is not what leaks).
-		 */
-		if b.IsWorktreeManaged() && !wsPresent {
-			for _, name := range herdrWtRemoveVolumesFn(ctx, storeRoot, b.SandboxHandle) {
+		// Remove orphaned worktree volumes only when checkout is confirmed absent.
+		if b.IsWorktreeManaged() && !wsPresent && herdrPruneWorktreeAbsentFn(b.WorktreePath) {
+			auditCtx := audit.WithReason(ctx, fmt.Sprintf("herdr prune: workspace %s gone in session %s, worktree %s absent", b.HerdrWorkspaceID, b.HerdrSession, b.WorktreePath))
+			for _, name := range herdrWtRemoveVolumesFn(auditCtx, storeRoot, b.SandboxHandle) {
 				fmt.Fprintf(w, "  REMOVED volume=%s (worktree gone)\n", name)
 			}
 		}
@@ -4211,6 +4222,17 @@ func herdrVolumeSeedEnabled(cfg config.Config) bool {
 	return cfg.Volumes.SeedEnabled()
 }
 
+// herdrPruneWorktreeAbsentFn is a seam for tests. It returns true only when
+// path is a non-empty absolute path and os.Stat reports fs.ErrNotExist.
+// See doc/design/destructive-op-safety.md.
+var herdrPruneWorktreeAbsentFn = func(path string) bool {
+	if path == "" || !filepath.IsAbs(path) {
+		return false
+	}
+	_, err := os.Stat(path)
+	return os.IsNotExist(err)
+}
+
 /**
  * herdrWtRemoveVolumes deletes the detached named volumes of a worktree
  * sandbox whose worktree is gone and returns the names it removed. Volumes
@@ -5169,6 +5191,8 @@ func herdrWorktreeSandbox(
 		SandboxID:        sb.ID.String(),
 		RepoRoot:         repoRoot,
 		WorktreeManaged:  true,
+		HerdrSession:     herdrCurrentSession(),
+		WorktreePath:     info.Path,
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: write binding: %v\n", err)

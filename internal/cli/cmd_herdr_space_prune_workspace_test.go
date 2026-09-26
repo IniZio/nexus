@@ -5,11 +5,21 @@ package cli
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 )
+
+const testHerdrSession = "/tmp/herdr-prune-test-session.sock"
+
+func stubWorktreeAbsent(t *testing.T) {
+	t.Helper()
+	old := herdrPruneWorktreeAbsentFn
+	herdrPruneWorktreeAbsentFn = func(path string) bool { return path != "" }
+	t.Cleanup(func() { herdrPruneWorktreeAbsentFn = old })
+}
 
 // fakePruneSvc is a herdrSpacePruneLister that also implements
 // HerdrSpaceSandboxService, so herdrPluginSpacePrune wires the real
@@ -38,12 +48,15 @@ func stubWtRemoveVolumes(t *testing.T) *[]string {
 
 func TestHerdrSpacePrune_WorkspaceScoped_ReapsOnlyNamedBinding(t *testing.T) {
 	stubWtRemoveVolumes(t)
+	stubWorktreeAbsent(t)
+	t.Setenv("HERDR_SOCKET_PATH", testHerdrSession)
 	ctx := context.Background()
 	root := t.TempDir()
 
 	closed := HerdrSpaceBinding{
 		SpaceLabel: "nexus:repo/closed", HerdrWorkspaceID: "wCLOSED",
 		SandboxHandle: "repo/closed", SandboxID: "sb-closed", WorktreeManaged: true,
+		HerdrSession: testHerdrSession, WorktreePath: filepath.Join(t.TempDir(), "gone"),
 	}
 	other := HerdrSpaceBinding{
 		SpaceLabel: "nexus:repo/other", HerdrWorkspaceID: "wOTHER",
@@ -85,6 +98,8 @@ func TestHerdrSpacePrune_WorkspaceScoped_ReapsOnlyNamedBinding(t *testing.T) {
 
 func TestHerdrSpacePrune_WorkspaceScoped_DryRunTouchesNothing(t *testing.T) {
 	swept := stubWtRemoveVolumes(t)
+	stubWorktreeAbsent(t)
+	t.Setenv("HERDR_SOCKET_PATH", testHerdrSession)
 	defer func() {
 		if len(*swept) != 0 {
 			t.Errorf("dry-run must not remove volumes; swept %v", *swept)
@@ -95,6 +110,7 @@ func TestHerdrSpacePrune_WorkspaceScoped_DryRunTouchesNothing(t *testing.T) {
 	b := HerdrSpaceBinding{
 		SpaceLabel: "nexus:repo/dry", HerdrWorkspaceID: "wDRY",
 		SandboxHandle: "repo/dry", SandboxID: "sb-dry", WorktreeManaged: true,
+		HerdrSession: testHerdrSession, WorktreePath: filepath.Join(t.TempDir(), "gone"),
 	}
 	if err := HerdrSpacePut(ctx, root, b); err != nil {
 		t.Fatalf("HerdrSpacePut: %v", err)
@@ -141,22 +157,20 @@ func TestHerdrSpacePrune_WorkspaceScoped_UnknownWorkspaceIsNoop(t *testing.T) {
 }
 
 func TestHerdrSpacePrune_WorkspaceScoped_RemovesWorktreeVolumes(t *testing.T) {
-	// Removing a worktree checkout in herdr fires prune --workspace. The
-	// sandbox's named volumes (docker/go caches, agentcfg, nested state) are
-	// only detached by Service.Remove; with the worktree gone they must be
-	// deleted too, whether the VM was still running or already absent.
-	// Otherwise every removed worktree leaves ~42 GiB of sparse volumes that
-	// disk admission charges in full (17 orphan sets found 2026-09-19).
 	swept := stubWtRemoveVolumes(t)
+	stubWorktreeAbsent(t)
+	t.Setenv("HERDR_SOCKET_PATH", testHerdrSession)
 	ctx := context.Background()
 	root := t.TempDir()
 	running := HerdrSpaceBinding{
 		SpaceLabel: "nexus:repo/running", HerdrWorkspaceID: "wGONE",
 		SandboxHandle: "repo/running", SandboxID: "sb-running", WorktreeManaged: true,
+		HerdrSession: testHerdrSession, WorktreePath: filepath.Join(t.TempDir(), "gone"),
 	}
 	absent := HerdrSpaceBinding{
 		SpaceLabel: "nexus:repo/absent", HerdrWorkspaceID: "wGONE",
 		SandboxHandle: "repo/absent", SandboxID: "sb-absent", WorktreeManaged: true,
+		HerdrSession: testHerdrSession, WorktreePath: filepath.Join(t.TempDir(), "gone"),
 	}
 	for _, b := range []HerdrSpaceBinding{running, absent} {
 		if err := HerdrSpacePut(ctx, root, b); err != nil {
