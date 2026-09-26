@@ -306,6 +306,59 @@ func TestPruneDualSourceMetaLiveBlocks(t *testing.T) {
 
 // ── Live volume never touched ─────────────────────────────────────────────────
 
+// TestPruneSkipsDotPrefixedEntries verifies that dot-prefixed directories such
+// as .warm are never treated as volume candidates, stubs, or orphans.
+func TestPruneSkipsDotPrefixedEntries(t *testing.T) {
+	root := t.TempDir()
+	vs := volumestore.New(root)
+
+	// Simulate a warm-template tree: .warm/proj-abc/docker/{disk.ext4,meta.json}
+	warmDir := filepath.Join(root, ".warm", "proj-abc", "docker")
+	if err := os.MkdirAll(warmDir, 0o755); err != nil {
+		t.Fatalf("mkdir warm tree: %v", err)
+	}
+	warmDisk := filepath.Join(warmDir, "disk.ext4")
+	if err := os.WriteFile(warmDisk, []byte("warm-disk"), 0o644); err != nil {
+		t.Fatalf("write warm disk: %v", err)
+	}
+	warmMeta := filepath.Join(warmDir, "meta.json")
+	if err := os.WriteFile(warmMeta, []byte(`{"name":"docker"}`), 0o644); err != nil {
+		t.Fatalf("write warm meta: %v", err)
+	}
+
+	// Normal orphan alongside the .warm tree.
+	writeDiskOnly(t, root, "vol-orphan-beside-warm")
+	orphanDisk := filepath.Join(root, "vol-orphan-beside-warm", "disk.ext4")
+
+	res, err := vs.Prune(context.Background(), &mockSandboxLister{}, volumestore.PruneOptions{
+		Apply:           true,
+		IncludeDetached: true,
+	})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	if _, err := os.Stat(warmDisk); err != nil {
+		t.Errorf(".warm disk.ext4 must survive prune: %v", err)
+	}
+	if _, err := os.Stat(warmMeta); err != nil {
+		t.Errorf(".warm meta.json must survive prune: %v", err)
+	}
+
+	for _, name := range append(append(append(res.StubsDeleted, res.DetachedDeleted...), res.DetachedCandidates...), res.OrphanedFilesDeleted...) {
+		if len(name) > 0 && name[0] == '.' {
+			t.Errorf("dot-prefixed entry appeared in prune results: %q", name)
+		}
+	}
+
+	if len(res.OrphanedFilesDeleted) == 0 {
+		t.Errorf("OrphanedFilesDeleted is empty; expected %s", orphanDisk)
+	}
+	if _, err := os.Stat(orphanDisk); !os.IsNotExist(err) {
+		t.Errorf("normal orphan disk.ext4 should be deleted; stat err = %v", err)
+	}
+}
+
 // TestPruneLiveVolumeUntouched verifies that a volume attached to a live sandbox
 // (both sources agree) is never reported or deleted.
 func TestPruneLiveVolumeUntouched(t *testing.T) {

@@ -106,6 +106,9 @@ func (s *VolumeStore) Prune(ctx context.Context, sandboxes SandboxLister, opts P
 			continue
 		}
 		name := e.Name()
+		if name[0] == '.' {
+			continue
+		}
 		if err := s.pruneEntry(name, liveIDs, recordRefs, opts, result); err != nil {
 			return nil, err
 		}

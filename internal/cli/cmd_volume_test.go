@@ -214,6 +214,111 @@ func TestCliPruneDualSourceRecordsWin(t *testing.T) {
 	}
 }
 
+// ── warm prune ────────────────────────────────────────────────────────────────
+
+// writeWarmFixture creates <root>/.warm/<key>/<kind>/{disk.ext4,meta.json}.
+func writeWarmFixture(t *testing.T, root, projectKey, kind string) {
+	t.Helper()
+	dir := filepath.Join(root, ".warm", projectKey, kind)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir warm fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "disk.ext4"), []byte("fake"), 0o644); err != nil {
+		t.Fatalf("write disk.ext4: %v", err)
+	}
+	meta := struct {
+		SourceVolume string    `json:"source_volume"`
+		PromotedAt   time.Time `json:"promoted_at"`
+		SizeBytes    int64     `json:"size_bytes"`
+	}{SourceVolume: "vol-" + kind, PromotedAt: time.Now().UTC(), SizeBytes: 4096}
+	data, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), data, 0o644); err != nil {
+		t.Fatalf("write meta.json: %v", err)
+	}
+}
+
+// TestWarmPruneDryRun verifies dry-run lists entries but does not remove them.
+func TestWarmPruneDryRun(t *testing.T) {
+	vs, root := newVolTestVolumeStore(t)
+	writeWarmFixture(t, root, "proj-a", "docker")
+	writeWarmFixture(t, root, "proj-a", "gocache")
+
+	out, buf := newVolTestOutput()
+	if err := runVolumePruneWarmWith(out, vs, false, ""); err != nil {
+		t.Fatalf("runVolumePruneWarmWith: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "dry-run") {
+		t.Errorf("want dry-run notice; got: %s", got)
+	}
+	if !strings.Contains(got, "proj-a") {
+		t.Errorf("want proj-a in output; got: %s", got)
+	}
+	// Files must still exist.
+	if _, err := os.Stat(filepath.Join(root, ".warm", "proj-a", "docker", "meta.json")); err != nil {
+		t.Errorf("dry-run must not delete files: %v", err)
+	}
+}
+
+// TestWarmPruneApplyRemovesAll verifies --apply removes all warm entries.
+func TestWarmPruneApplyRemovesAll(t *testing.T) {
+	vs, root := newVolTestVolumeStore(t)
+	writeWarmFixture(t, root, "proj-b", "docker")
+	writeWarmFixture(t, root, "proj-c", "gopath")
+
+	out, _ := newVolTestOutput()
+	if err := runVolumePruneWarmWith(out, vs, true, ""); err != nil {
+		t.Fatalf("runVolumePruneWarmWith apply: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, ".warm", "proj-b", "docker")); !os.IsNotExist(err) {
+		t.Error("proj-b/docker must be removed after --apply")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".warm", "proj-c", "gopath")); !os.IsNotExist(err) {
+		t.Error("proj-c/gopath must be removed after --apply")
+	}
+}
+
+// TestWarmPruneProjectFilters verifies --project restricts to one project.
+func TestWarmPruneProjectFilters(t *testing.T) {
+	vs, root := newVolTestVolumeStore(t)
+	writeWarmFixture(t, root, "keep-proj", "docker")
+	writeWarmFixture(t, root, "drop-proj", "gocache")
+
+	out, buf := newVolTestOutput()
+	if err := runVolumePruneWarmWith(out, vs, true, "drop-proj"); err != nil {
+		t.Fatalf("runVolumePruneWarmWith project filter: %v", err)
+	}
+
+	got := buf.String()
+	if strings.Contains(got, "keep-proj") {
+		t.Errorf("keep-proj must not appear in scoped output; got: %s", got)
+	}
+	// keep-proj must survive.
+	if _, err := os.Stat(filepath.Join(root, ".warm", "keep-proj", "docker", "meta.json")); err != nil {
+		t.Errorf("keep-proj must not be deleted: %v", err)
+	}
+	// drop-proj must be gone.
+	if _, err := os.Stat(filepath.Join(root, ".warm", "drop-proj", "gocache")); !os.IsNotExist(err) {
+		t.Error("drop-proj/gocache must be removed")
+	}
+}
+
+// TestWarmProjectWithoutWarmErrors verifies --project without --warm is an error.
+func TestWarmProjectWithoutWarmErrors(t *testing.T) {
+	vs, root := newVolTestVolumeStore(t)
+	_ = root
+	out, _ := newVolTestOutput()
+	err := runVolumePrune(context.Background(), []string{"--project=proj-x"}, out, vs)
+	if err == nil {
+		t.Fatal("expected error for --project without --warm")
+	}
+	if !strings.Contains(err.Error(), "--project requires --warm") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
 // ── JSON output shape ─────────────────────────────────────────────────────────
 
 func TestCliPruneJSONOutput(t *testing.T) {

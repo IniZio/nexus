@@ -426,6 +426,14 @@ Subcommands and their flags:
 `volume prune`:
 - `--apply` — perform deletions (default: dry-run)
 - `--include-detached` — also delete detached volumes (requires --apply)
+- `--warm` — operate on per-project warm volume copies (`<volumes root>/.warm/<projectKey>/<kind>/`, kinds: `docker`, `gocache`, `gopath`) used to reflink-seed new herdr worktree sandbox volumes; follows the same dry-run/`--apply` convention (dry-run lists, `--apply` drops)
+- `--project string` — restrict `--warm` to one project key; error if used without `--warm`
+
+Environment variables affecting volume seeding:
+- `NEXUS_NO_VOLUME_SEED=1` — disable warm seeding and promotion entirely; equivalent to `volumes.seed: false` in `.nexus/config.yaml`
+
+`.nexus/config.yaml` keys:
+- `volumes.seed` (bool, default `true`) — enable/disable warm volume seeding and promotion; set to `false` to suppress all seed/promote operations
 
 ---
 

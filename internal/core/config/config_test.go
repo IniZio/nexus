@@ -1222,3 +1222,46 @@ func TestEgressMCP_PathNoSlash_Error(t *testing.T) {
 		t.Errorf("want 'must start with /' in error, got %q", err.Error())
 	}
 }
+
+// ---- VolumesConfig tests ----
+
+func TestVolumes_SeedAbsent_DefaultsTrue(t *testing.T) {
+	data := []byte("version: 1\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Volumes.SeedEnabled() {
+		t.Fatal("want SeedEnabled() true when volumes absent, got false")
+	}
+}
+
+func TestVolumes_SeedFalse_ReturnsFalse(t *testing.T) {
+	data := []byte("version: 1\nvolumes:\n  seed: false\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Volumes.SeedEnabled() {
+		t.Fatal("want SeedEnabled() false when seed: false, got true")
+	}
+}
+
+func TestVolumes_SeedTrue_ReturnsTrue(t *testing.T) {
+	data := []byte("version: 1\nvolumes:\n  seed: true\n")
+	cfg, err := parseBytes(t, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Volumes.SeedEnabled() {
+		t.Fatal("want SeedEnabled() true when seed: true, got false")
+	}
+}
+
+func TestVolumes_UnknownKey_Error(t *testing.T) {
+	data := []byte("version: 1\nvolumes:\n  foo: bar\n")
+	_, err := parseBytes(t, data)
+	if err == nil {
+		t.Fatal("want error for unknown key volumes.foo, got nil")
+	}
+}

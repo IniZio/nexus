@@ -459,6 +459,16 @@ type BuilderConfig struct {
 	MemoryMiB int `yaml:"memory_mib"`
 }
 
+// VolumesConfig holds per-project volume seeding preferences.
+type VolumesConfig struct {
+	Seed *bool `yaml:"seed"`
+}
+
+// SeedEnabled reports whether volume seeding is enabled. Nil (absent) or true → true; false → false.
+func (v VolumesConfig) SeedEnabled() bool {
+	return v.Seed == nil || *v.Seed
+}
+
 // Config is the in-memory representation of a project config file.
 // A zero Config is valid and means "no project-level overrides".
 type Config struct {
@@ -466,6 +476,7 @@ type Config struct {
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	Image   ImageGCConfig `yaml:"image"`
 	Builder BuilderConfig `yaml:"builder"`
+	Volumes VolumesConfig `yaml:"volumes"`
 }
 
 // fileConfig is the on-disk YAML shape, including the required version field.
@@ -478,6 +489,7 @@ type fileConfig struct {
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	Image   ImageGCConfig `yaml:"image"`
 	Builder BuilderConfig `yaml:"builder"`
+	Volumes VolumesConfig `yaml:"volumes"`
 }
 
 // ConfigRelPath is the project config file location relative to the project
@@ -585,6 +597,7 @@ func parse(data []byte) (Config, error) {
 		Sandbox: fc.Sandbox,
 		Image:   fc.Image,
 		Builder: fc.Builder,
+		Volumes: fc.Volumes,
 	}, nil
 }
 

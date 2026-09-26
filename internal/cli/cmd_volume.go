@@ -230,11 +230,20 @@ func runVolumePrune(ctx context.Context, args []string, out *Output, vs *volumes
 	fs := flag.NewFlagSet("volume prune", flag.ContinueOnError)
 	applyFlag := fs.Bool("apply", false, "perform deletions (default: dry-run)")
 	includeDetachedFlag := fs.Bool("include-detached", false, "also delete detached volumes (requires --apply)")
+	warmFlag := fs.Bool("warm", false, "operate on warm reflink copies instead of volumes")
+	projectFlag := fs.String("project", "", "restrict --warm to one project key")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "volume prune: " + err.Error()}
 	}
 	if fs.NArg() > 0 {
 		return &UsageError{Msg: fmt.Sprintf("volume prune: unexpected argument %q", fs.Arg(0))}
+	}
+	if *projectFlag != "" && !*warmFlag {
+		return &UsageError{Msg: "volume prune: --project requires --warm"}
+	}
+
+	if *warmFlag {
+		return runVolumePruneWarmWith(out, vs, *applyFlag, *projectFlag)
 	}
 
 	root, err := store.DefaultRoot()
@@ -250,6 +259,75 @@ func runVolumePrune(ctx context.Context, args []string, out *Output, vs *volumes
 		Apply:           *applyFlag,
 		IncludeDetached: *includeDetachedFlag,
 	})
+}
+
+// runVolumePruneWarmWith is the testable core for warm-copy prune.
+func runVolumePruneWarmWith(out *Output, vs *volumestore.VolumeStore, apply bool, projectKey string) error {
+	entries, err := vs.ListWarm()
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: fmt.Sprintf("volume prune --warm: list: %v", err)}
+	}
+
+	// Filter by project if requested.
+	if projectKey != "" {
+		var filtered []volumestore.WarmEntry
+		for _, e := range entries {
+			if e.ProjectKey == projectKey {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+	}
+
+	type warmRow struct {
+		ProjectKey   string `json:"project_key"`
+		Kind         string `json:"kind"`
+		SourceVolume string `json:"source_volume"`
+		PromotedAt   string `json:"promoted_at"`
+		SizeBytes    int64  `json:"size_bytes"`
+	}
+	rows := make([]warmRow, len(entries))
+	for i, e := range entries {
+		rows[i] = warmRow{
+			ProjectKey:   e.ProjectKey,
+			Kind:         string(e.Kind),
+			SourceVolume: e.Meta.SourceVolume,
+			PromotedAt:   e.Meta.PromotedAt.Format(time.RFC3339),
+			SizeBytes:    e.Meta.SizeBytes,
+		}
+	}
+
+	if apply {
+		key := projectKey // "" = all
+		if _, err := vs.RemoveWarm(key); err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: fmt.Sprintf("volume prune --warm --apply: %v", err)}
+		}
+	}
+
+	if out.IsJSON() {
+		type warmResult struct {
+			Apply      bool      `json:"apply"`
+			ProjectKey string    `json:"project_key,omitempty"`
+			Entries    []warmRow `json:"entries"`
+		}
+		out.EmitSuccess("volume.prune.warm", warmResult{Apply: apply, ProjectKey: projectKey, Entries: rows}, "")
+		return nil
+	}
+
+	if !apply {
+		fmt.Fprintln(out.Stdout(), "(dry-run — pass --apply to delete)")
+	}
+	if len(rows) == 0 {
+		fmt.Fprintln(out.Stdout(), "no warm copies")
+		return nil
+	}
+	tw := tabwriter.NewWriter(out.Stdout(), 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "PROJECT\tKIND\tSOURCE VOLUME\tPROMOTED AT")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.ProjectKey, r.Kind, r.SourceVolume, r.PromotedAt)
+	}
+	tw.Flush()
+	return nil
 }
 
 // runVolumePruneWith is the testable core; tests inject vs and sandboxes.

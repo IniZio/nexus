@@ -172,6 +172,14 @@ reclaimed by:
 nexus herdr prune --apply
 ```
 
+## Worktree sandbox volumes
+
+Each worktree sandbox mounts three private disk volumes — `<slug>-docker` (backing `/var/lib/docker`, present when the repo has a `.nexus/Containerfile`), `<slug>-gocache` (backing `/root/.cache`), and `<slug>-gopath` (backing `/root/go`). Without seeding, every worktree starts with blank volumes and repeats the full image pull + build sequence from scratch (~120–150 s on a typical compose-stack project).
+
+**Warm volume seeding** eliminates this: when a worktree is torn down, its volumes are promoted into a project-scoped warm store and copied into the next worktree at create time. On filesystems that support reflink (XFS with `reflink=1`, btrfs) the copy is instant and copy-on-write, sharing unmodified blocks until the sandbox diverges. On other filesystems (including the common default of ext4) a sparse data copy is used instead — still far faster than a re-pull, but it does consume real disk space proportional to the warm volume's used bytes; `nexus volume prune --warm --apply` reclaims it. The seeded worktree inherits docker images, BuildKit cache, compose named volumes (including database state), and Go caches from the previous worktree.
+
+For the full mechanics — project key derivation, warm store location, what carries over, opt-out, and `nexus volume prune --warm` — see [Volume commands — Warm volume seeding](/cli/volume-commands#warm-volume-seeding).
+
 ## What the overlay shows <Badge type="tip" text="built" />
 
 Open it with the **`nexus: list sandboxes`** action. herdr has no built-in

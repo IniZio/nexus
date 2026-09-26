@@ -3998,7 +3998,7 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	 * Containerfile turns out not to use docker.
 	 */
 	if imageFlag == "--file" {
-		args = append(args, "--mount-named", herdrDockerDiskVolumeName(handle)+":/var/lib/docker:size=20g")
+		args = append(args, "--mount-named", fmt.Sprintf("%s:/var/lib/docker:size=%dg", herdrDockerDiskVolumeName(handle), herdrDockerDiskSizeBytes>>30))
 	}
 	/**
 	 * Go build-cache disks. Unconditional (unlike the docker disk above): every
@@ -4045,8 +4045,8 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	 * /dev/vda. That is an accepted, explicit gap — see the ticket's Decision
 	 * section — not a silent reproduction of the bug.
 	 */
-	args = append(args, "--mount-named", herdrGoCacheDiskVolumeName(handle)+":/root/.cache:size=10g")
-	args = append(args, "--mount-named", herdrGoPathDiskVolumeName(handle)+":/root/go:size=10g")
+	args = append(args, "--mount-named", fmt.Sprintf("%s:/root/.cache:size=%dg", herdrGoCacheDiskVolumeName(handle), herdrGoCacheDiskSizeBytes>>30))
+	args = append(args, "--mount-named", fmt.Sprintf("%s:/root/go:size=%dg", herdrGoPathDiskVolumeName(handle), herdrGoPathDiskSizeBytes>>30))
 	for _, s := range secrets {
 		args = append(args, "--secret", s)
 	}
@@ -4178,7 +4178,38 @@ func herdrWorktreeVolumeNames(handle string) []string {
 	}
 }
 
+const (
+	herdrDockerDiskSizeBytes  int64 = 20 << 30
+	herdrGoCacheDiskSizeBytes int64 = 10 << 30
+	herdrGoPathDiskSizeBytes  int64 = 10 << 30
+)
+
 var herdrWtRemoveVolumesFn = herdrWtRemoveVolumes
+
+var herdrWtSeedVolumeFn = func(ctx context.Context, vs *volumestore.VolumeStore, name, projectKey string, kind volumestore.WarmKind, sizeBytes int64) (bool, error) {
+	return vs.SeedFromWarm(ctx, name, projectKey, kind, sizeBytes)
+}
+
+func herdrProjectKey(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git common-dir: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(strings.TrimSpace(string(out))))
+	if err != nil {
+		return "", fmt.Errorf("eval symlinks: %w", err)
+	}
+	return volumestore.ProjectKey(resolved), nil
+}
+
+func herdrVolumeSeedEnabled(cfg config.Config) bool {
+	v := os.Getenv("NEXUS_NO_VOLUME_SEED")
+	if v == "1" || strings.EqualFold(v, "true") {
+		return false
+	}
+	return cfg.Volumes.SeedEnabled()
+}
 
 /**
  * herdrWtRemoveVolumes deletes the detached named volumes of a worktree
@@ -4191,10 +4222,40 @@ var herdrWtRemoveVolumesFn = herdrWtRemoveVolumes
  */
 func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string) []string {
 	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+
+	warmKinds := map[string]volumestore.WarmKind{
+		herdrDockerDiskVolumeName(handle):  volumestore.WarmKindDocker,
+		herdrGoCacheDiskVolumeName(handle): volumestore.WarmKindGoCache,
+		herdrGoPathDiskVolumeName(handle):  volumestore.WarmKindGoPath,
+	}
+
+	var projectKey string
+	var seedEnabled bool
+	if b, err := HerdrSpaceGetByHandle(ctx, storeRoot, handle); err == nil && b.RepoRoot != "" {
+		rootCfg, _, cfgErr := config.Load(b.RepoRoot)
+		if cfgErr == nil && herdrVolumeSeedEnabled(rootCfg) {
+			if pk, pkErr := herdrProjectKey(ctx, b.RepoRoot); pkErr == nil {
+				projectKey = pk
+				seedEnabled = true
+			} else {
+				slog.Warn("space-prune: promote: resolve project key", "err", pkErr)
+			}
+		}
+	}
+
 	var removed []string
 	for _, name := range herdrWorktreeVolumeNames(handle) {
 		if _, getErr := vs.Get(name); getErr != nil {
 			continue
+		}
+		if seedEnabled {
+			if kind, ok := warmKinds[name]; ok {
+				promCtx, promCancel := context.WithTimeout(ctx, 2*time.Minute)
+				if promErr := vs.PromoteToWarm(promCtx, name, projectKey, kind); promErr != nil {
+					slog.Warn("space-prune: promote volume to warm", "volume", name, "err", promErr)
+				}
+				promCancel()
+			}
 		}
 		rmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		rmErr := vs.Rm(rmCtx, name)
@@ -4941,6 +5002,37 @@ func herdrWorktreeSandbox(
 	 * handle. Feeding a sentinel error into the reconcile branch reuses its
 	 * adopt checks (/workspace mount, state, removal marker) unchanged.
 	 */
+	if !rebindStale && herdrVolumeSeedEnabled(checkoutCfg) {
+		if projectKey, pkErr := herdrProjectKey(ctx, info.Path); pkErr != nil {
+			slog.Warn("worktree-sandbox: seed: resolve project key", "err", pkErr)
+		} else {
+			seedEntries := []struct {
+				name      string
+				kind      volumestore.WarmKind
+				sizeBytes int64
+				skip      bool
+			}{
+				{herdrDockerDiskVolumeName(handle), volumestore.WarmKindDocker, herdrDockerDiskSizeBytes, imageFlag != "--file"},
+				{herdrGoCacheDiskVolumeName(handle), volumestore.WarmKindGoCache, herdrGoCacheDiskSizeBytes, false},
+				{herdrGoPathDiskVolumeName(handle), volumestore.WarmKindGoPath, herdrGoPathDiskSizeBytes, false},
+			}
+			svs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+			for _, e := range seedEntries {
+				if e.skip {
+					continue
+				}
+				seeded, seedErr := herdrWtSeedVolumeFn(ctx, svs, e.name, projectKey, e.kind, e.sizeBytes)
+				if seedErr != nil {
+					slog.Warn("worktree-sandbox: seed: volume", "volume", e.name, "err", seedErr)
+					continue
+				}
+				if seeded {
+					fmt.Fprintf(w, "worktree-sandbox: seeded volume %s from warm copy\n", e.name)
+				}
+			}
+		}
+	}
+
 	var createErr error
 	if rebindStale {
 		createErr = errHerdrWorktreeRebindStale
