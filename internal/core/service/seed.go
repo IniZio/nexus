@@ -738,10 +738,9 @@ func buildUserMountScript(manifest UserMountManifest) string {
 		qStaging := shSingleQuote(m.StagingGuestPath)
 		qGuest := shSingleQuote(m.GuestPath)
 		fmt.Fprintf(&b, "# 1. Rebind: %s\n", m.GuestPath)
-		fmt.Fprintf(&b, "if [ -d %s ] && ! mountpoint -q %s 2>/dev/null; then\n", qStaging, qGuest)
-		fmt.Fprintf(&b, "  mkdir -p %s\n", qGuest)
-		fmt.Fprintf(&b, "  mount --bind %s %s\n", qStaging, qGuest)
-		fmt.Fprintf(&b, "  mount -o remount,ro,bind %s\n", qGuest)
+		fmt.Fprintf(&b, "if [ -d %s ] && [ \"$(stat -c %%d:%%i %s)\" != \"$(stat -c %%d:%%i %s 2>/dev/null || true)\" ]; then\n", qStaging, qStaging, qGuest)
+		fmt.Fprintf(&b, "  { mkdir -p %s && mount --bind %s %s && mount -o remount,ro,bind %s; } || echo 'nexus: rebind failed:' %s >&2\n",
+			qGuest, qStaging, qGuest, qGuest, qGuest)
 		fmt.Fprintf(&b, "fi\n\n")
 	}
 
