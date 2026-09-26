@@ -3,12 +3,22 @@
 package volumestore
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
+
+func allocatedFileBytes(f *os.File) (int64, error) {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		return 0, err
+	}
+	return st.Blocks * 512, nil
+}
 
 func reflinkFile(dst, src *os.File) error {
 	err := unix.IoctlFileClone(int(dst.Fd()), int(src.Fd()))
@@ -22,7 +32,7 @@ func reflinkFile(dst, src *os.File) error {
 	return fmt.Errorf("volumestore: IoctlFileClone: %w", err)
 }
 
-func sparseCopyFile(dst, src *os.File) error {
+func sparseCopyFile(ctx context.Context, dst, src *os.File) error {
 	srcInfo, err := src.Stat()
 	if err != nil {
 		return fmt.Errorf("volumestore: sparseCopy stat: %w", err)
@@ -36,14 +46,15 @@ func sparseCopyFile(dst, src *os.File) error {
 	seekDataSupported := true
 
 	for {
-		// Find next data region.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		dataStart, err := unix.Seek(srcFd, off, unix.SEEK_DATA)
 		if err != nil {
 			if err == unix.ENXIO {
-				break // no more data extents
+				break
 			}
 			if err == unix.EINVAL {
-				// SEEK_DATA not supported; treat whole file as one extent.
 				seekDataSupported = false
 				dataStart = 0
 			} else {
@@ -74,7 +85,7 @@ func sparseCopyFile(dst, src *os.File) error {
 			continue
 		}
 
-		if err := copyExtent(dst, src, dstFd, srcFd, dataStart, extentLen); err != nil {
+		if err := copyExtent(ctx, dst, src, dstFd, srcFd, dataStart, extentLen); err != nil {
 			return err
 		}
 
@@ -87,14 +98,17 @@ func sparseCopyFile(dst, src *os.File) error {
 	return dst.Truncate(srcSize)
 }
 
-const copyBufSize = 1 << 20 // 1 MiB
+const copyBufSize = 64 << 20 // 64 MiB per copy_file_range call
 
-func copyExtent(dst, src *os.File, dstFd, srcFd int, start, length int64) error {
+func copyExtent(ctx context.Context, dst, src *os.File, dstFd, srcFd int, start, length int64) error {
 	roff := start
 	woff := start
 	rem := length
 
 	for rem > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		n := rem
 		if n > copyBufSize {
 			n = copyBufSize
@@ -103,7 +117,7 @@ func copyExtent(dst, src *os.File, dstFd, srcFd int, start, length int64) error 
 		if err != nil {
 			switch err {
 			case unix.EXDEV, unix.ENOSYS, unix.EOPNOTSUPP, unix.EINVAL:
-				return copyExtentPreadPwrite(dst, src, woff, rem)
+				return copyExtentPreadPwrite(ctx, dst, src, woff, rem)
 			}
 			return fmt.Errorf("volumestore: CopyFileRange: %w", err)
 		}
@@ -115,11 +129,16 @@ func copyExtent(dst, src *os.File, dstFd, srcFd int, start, length int64) error 
 	return nil
 }
 
-func copyExtentPreadPwrite(dst, src *os.File, start, length int64) error {
-	buf := make([]byte, copyBufSize)
+const preadBufSize = 1 << 20 // 1 MiB for pread/pwrite fallback
+
+func copyExtentPreadPwrite(ctx context.Context, dst, src *os.File, start, length int64) error {
+	buf := make([]byte, preadBufSize)
 	off := start
 	rem := length
 	for rem > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		n := int64(len(buf))
 		if n > rem {
 			n = rem

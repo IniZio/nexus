@@ -252,7 +252,7 @@ func TestSeedFromWarm_CloneFailure_NoPartialFiles(t *testing.T) {
 	oldR := reflinkFileFn
 	oldS := sparseCopyFileFn
 	reflinkFileFn = func(dst, src *os.File) error { return errors.New("injected clone failure") }
-	sparseCopyFileFn = func(dst, src *os.File) error { return errors.New("injected sparse failure") }
+	sparseCopyFileFn = func(_ context.Context, dst, src *os.File) error { return errors.New("injected sparse failure") }
 	defer func() { reflinkFileFn = oldR; sparseCopyFileFn = oldS }()
 
 	seeded, err := s.SeedFromWarm(context.Background(), "vol-fail", key, WarmKindGoPath, 0)
@@ -367,7 +367,7 @@ func TestSeedFromWarm_SparseCopyFailure_NoPartialFiles(t *testing.T) {
 	reflinkFileFn = func(dst, src *os.File) error {
 		return fmt.Errorf("%w: injected", ErrReflinkUnsupported)
 	}
-	sparseCopyFileFn = func(dst, src *os.File) error {
+	sparseCopyFileFn = func(_ context.Context, dst, src *os.File) error {
 		return errors.New("injected sparse copy failure")
 	}
 	defer func() { reflinkFileFn = oldR; sparseCopyFileFn = oldS }()
@@ -542,7 +542,7 @@ func TestPromoteToWarm_SparseCopyFailureLeavesOldCopyIntact(t *testing.T) {
 	reflinkFileFn = func(dst, src *os.File) error {
 		return fmt.Errorf("%w: injected", ErrReflinkUnsupported)
 	}
-	sparseCopyFileFn = func(dst, src *os.File) error {
+	sparseCopyFileFn = func(_ context.Context, dst, src *os.File) error {
 		return errors.New("injected sparse failure")
 	}
 	defer func() { reflinkFileFn = oldR; sparseCopyFileFn = oldS }()
@@ -664,6 +664,149 @@ func TestPromoteToWarm_RealReflink(t *testing.T) {
 	}
 	if _, err := os.Stat(s.WarmDiskPath(key, WarmKindDocker)); err != nil {
 		t.Errorf("warm disk not found after real promote: %v", err)
+	}
+}
+
+func TestSeedFromWarm_InsufficientSpace(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-aabbccddeeff"
+	makeTinyWarm(t, s, key, WarmKindDocker, 4096)
+
+	orig := DiskStatfs
+	t.Cleanup(func() { DiskStatfs = orig })
+	DiskStatfs = func(string) (int64, error) { return 0, nil }
+
+	seeded, err := s.SeedFromWarm(context.Background(), "vol-nospace", key, WarmKindDocker, 4096)
+	if err == nil {
+		t.Fatal("expected error for insufficient space")
+	}
+	if seeded {
+		t.Error("expected seeded=false on insufficient space")
+	}
+}
+
+func TestPromoteToWarm_InsufficientSpace(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-aabbccddeeff"
+	makeVolumeWithDisk(t, s, "vol-nospace", 4096)
+
+	orig := DiskStatfs
+	t.Cleanup(func() { DiskStatfs = orig })
+	DiskStatfs = func(string) (int64, error) { return 0, nil }
+
+	if err := s.PromoteToWarm(context.Background(), "vol-nospace", key, WarmKindDocker); err == nil {
+		t.Fatal("expected error for insufficient space")
+	}
+}
+
+func TestSeedFromWarm_GrowPath(t *testing.T) {
+	if !ShrinkToolsAvailable() || !Mke2fsAvailable() {
+		t.Skip("e2fsprogs not on PATH")
+	}
+	s := newWarmStore(t)
+	key := "proj-aabbccddeeff"
+	const smallSize int64 = 8 * 1024 * 1024
+	const bigSize int64 = 16 * 1024 * 1024
+
+	wDir := s.warmKindDir(key, WarmKindDocker)
+	if err := os.MkdirAll(wDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	diskPath := filepath.Join(wDir, diskFile)
+	if err := preallocateFile(diskPath, smallSize); err != nil {
+		t.Fatalf("preallocate: %v", err)
+	}
+	if err := formatExt4(context.Background(), diskPath); err != nil {
+		t.Fatalf("formatExt4: %v", err)
+	}
+	meta := WarmMeta{SourceVolume: "source-vol", PromotedAt: time.Now().UTC(), SizeBytes: smallSize}
+	raw, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(wDir, metaFile), raw, 0o644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	seeded, err := s.SeedFromWarm(context.Background(), "vol-grow", key, WarmKindDocker, bigSize)
+	if err != nil {
+		t.Fatalf("SeedFromWarm grow: %v", err)
+	}
+	if !seeded {
+		t.Fatal("expected seeded=true")
+	}
+	fi, err := os.Stat(s.DiskPath("vol-grow"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Size() != bigSize {
+		t.Errorf("expected size %d, got %d", bigSize, fi.Size())
+	}
+}
+
+func TestPromoteToWarm_StaleCleanup(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-aabbccddeeff"
+	makeVolumeWithDisk(t, s, "vol-stale", 4096)
+
+	wDir := s.warmKindDir(key, WarmKindDocker)
+	if err := os.MkdirAll(wDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	staleDisk := filepath.Join(wDir, "disk.ext4.tmp-1-1")
+	staleMeta := filepath.Join(wDir, "meta.json.tmp-1-2")
+	for _, f := range []string{staleDisk, staleMeta} {
+		if err := os.WriteFile(f, []byte("stale"), 0o644); err != nil {
+			t.Fatalf("write stale tmp: %v", err)
+		}
+		old2h := time.Now().Add(-2 * time.Hour)
+		_ = os.Chtimes(f, old2h, old2h)
+	}
+	recentTmp := filepath.Join(wDir, "disk.ext4.tmp-2-2")
+	if err := os.WriteFile(recentTmp, []byte("recent"), 0o644); err != nil {
+		t.Fatalf("write recent tmp: %v", err)
+	}
+
+	oldR := reflinkFileFn
+	oldSp := sparseCopyFileFn
+	reflinkFileFn = func(dst, src *os.File) error {
+		return fmt.Errorf("%w: injected", ErrReflinkUnsupported)
+	}
+	sparseCopyFileFn = func(_ context.Context, dst, src *os.File) error { return fmt.Errorf("injected") }
+	defer func() { reflinkFileFn = oldR; sparseCopyFileFn = oldSp }()
+
+	_ = s.PromoteToWarm(context.Background(), "vol-stale", key, WarmKindDocker)
+
+	for _, f := range []string{staleDisk, staleMeta} {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("stale tmp file should be removed: %s", f)
+		}
+	}
+	if _, err := os.Stat(recentTmp); err != nil {
+		t.Errorf("recent tmp file should survive: %v", err)
+	}
+}
+
+func TestSeedFromWarm_CancelledCtx(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-aabbccddeeff"
+	makeTinyWarm(t, s, key, WarmKindDocker, 4096)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	oldR := reflinkFileFn
+	reflinkFileFn = func(dst, src *os.File) error {
+		return fmt.Errorf("%w: injected", ErrReflinkUnsupported)
+	}
+	defer func() { reflinkFileFn = oldR }()
+
+	seeded, err := s.SeedFromWarm(ctx, "vol-cancel", key, WarmKindDocker, 4096)
+	if err == nil {
+		t.Fatal("expected error from cancelled ctx")
+	}
+	if seeded {
+		t.Error("expected seeded=false on cancelled ctx")
+	}
+	if _, statErr := os.Stat(s.DiskPath("vol-cancel")); statErr == nil {
+		t.Error("partial disk.ext4 must not exist after ctx cancel")
 	}
 }
 

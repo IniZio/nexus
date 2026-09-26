@@ -101,16 +101,41 @@ var sparseCopyFileFn = sparseCopyFile
 
 // copyDiskFile copies src into dst, preferring reflink (FICLONE) and falling
 // back to sparse copy when reflink is unsupported. Returns the method used.
-func copyDiskFile(dst, src *os.File) (method string, err error) {
+// ctx is checked between copy chunks by the sparse-copy path.
+func copyDiskFile(ctx context.Context, dst, src *os.File) (method string, err error) {
 	if err := reflinkFileFn(dst, src); err == nil {
 		return "reflink", nil
 	} else if !errors.Is(err, ErrReflinkUnsupported) {
 		return "", err
 	}
-	if err := sparseCopyFileFn(dst, src); err != nil {
+	if err := sparseCopyFileFn(ctx, dst, src); err != nil {
 		return "", err
 	}
 	return "sparse-copy", nil
+}
+
+// cleanupStaleTmpFiles removes disk.ext4.tmp-* and meta.json.tmp-* files in
+// dir that are older than 1 hour (left by a killed PromoteToWarm).
+func cleanupStaleTmpFiles(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if !strings.HasPrefix(n, "disk.ext4.tmp-") && !strings.HasPrefix(n, "meta.json.tmp-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, n))
+	}
 }
 
 // SeedFromWarm seeds a new volume from the warm store for (projectKey, kind).
@@ -157,12 +182,19 @@ func (s *VolumeStore) SeedFromWarm(ctx context.Context, name, projectKey string,
 		return false, fmt.Errorf("volumestore: seed open warm disk: %w", err)
 	}
 	defer srcF.Close() //nolint:errcheck
+	allocBytes, statErr := allocatedFileBytes(srcF)
+	if statErr != nil {
+		return false, fmt.Errorf("volumestore: seed stat warm disk: %w", statErr)
+	}
+	if err := s.checkFreeSpace(dir, allocBytes); err != nil {
+		return false, err
+	}
 	dstF, err := os.OpenFile(dstDisk, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return false, fmt.Errorf("volumestore: seed create dst disk: %w", err)
 	}
 	t0 := time.Now()
-	method, copyErr := copyDiskFile(dstF, srcF)
+	method, copyErr := copyDiskFile(ctx, dstF, srcF)
 	if copyErr != nil {
 		dstF.Close()
 		_ = os.Remove(dstDisk)
@@ -248,6 +280,7 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 	if err := os.MkdirAll(wDir, 0o755); err != nil {
 		return fmt.Errorf("volumestore: promote mkdir warm: %w", err)
 	}
+	cleanupStaleTmpFiles(wDir)
 	pid := os.Getpid()
 	tmpDisk := filepath.Join(wDir, fmt.Sprintf("disk.ext4.tmp-%d-%d", pid, rand.Int63()))
 	tmpMeta := filepath.Join(wDir, fmt.Sprintf("meta.json.tmp-%d-%d", pid, rand.Int63()))
@@ -256,12 +289,19 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 		return fmt.Errorf("volumestore: promote open src disk: %w", err)
 	}
 	defer srcF.Close() //nolint:errcheck
+	allocBytes, statErr := allocatedFileBytes(srcF)
+	if statErr != nil {
+		return fmt.Errorf("volumestore: promote stat src disk: %w", statErr)
+	}
+	if err := s.checkFreeSpace(wDir, allocBytes); err != nil {
+		return err
+	}
 	dstF, err := os.OpenFile(tmpDisk, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return fmt.Errorf("volumestore: promote create tmp disk: %w", err)
 	}
 	t0 := time.Now()
-	method, copyErr := copyDiskFile(dstF, srcF)
+	method, copyErr := copyDiskFile(ctx, dstF, srcF)
 	if copyErr != nil {
 		dstF.Close()
 		_ = os.Remove(tmpDisk)

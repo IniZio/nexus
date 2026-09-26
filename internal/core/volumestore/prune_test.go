@@ -308,11 +308,15 @@ func TestPruneDualSourceMetaLiveBlocks(t *testing.T) {
 
 // TestPruneSkipsDotPrefixedEntries verifies that dot-prefixed directories such
 // as .warm are never treated as volume candidates, stubs, or orphans.
+//
+// Mutation guard: removing the name[0]=='.' skip in prune.go causes pruneEntry
+// to see the disk.ext4 placed directly under .warm/ as an orphaned backing file
+// and delete it, failing the survival assertion below.
 func TestPruneSkipsDotPrefixedEntries(t *testing.T) {
 	root := t.TempDir()
 	vs := volumestore.New(root)
 
-	// Simulate a warm-template tree: .warm/proj-abc/docker/{disk.ext4,meta.json}
+	// Warm tree: .warm/proj-abc/docker/{disk.ext4,meta.json}
 	warmDir := filepath.Join(root, ".warm", "proj-abc", "docker")
 	if err := os.MkdirAll(warmDir, 0o755); err != nil {
 		t.Fatalf("mkdir warm tree: %v", err)
@@ -324,6 +328,13 @@ func TestPruneSkipsDotPrefixedEntries(t *testing.T) {
 	warmMeta := filepath.Join(warmDir, "meta.json")
 	if err := os.WriteFile(warmMeta, []byte(`{"name":"docker"}`), 0o644); err != nil {
 		t.Fatalf("write warm meta: %v", err)
+	}
+
+	// Place disk.ext4 directly under .warm/ so that without the dot-prefix skip,
+	// pruneEntry classifies .warm/ as an orphan and would remove this file.
+	shallowDisk := filepath.Join(root, ".warm", "disk.ext4")
+	if err := os.WriteFile(shallowDisk, []byte("shallow"), 0o644); err != nil {
+		t.Fatalf("write shallow disk: %v", err)
 	}
 
 	// Normal orphan alongside the .warm tree.
@@ -339,10 +350,13 @@ func TestPruneSkipsDotPrefixedEntries(t *testing.T) {
 	}
 
 	if _, err := os.Stat(warmDisk); err != nil {
-		t.Errorf(".warm disk.ext4 must survive prune: %v", err)
+		t.Errorf(".warm/proj-abc/docker/disk.ext4 must survive prune: %v", err)
 	}
 	if _, err := os.Stat(warmMeta); err != nil {
-		t.Errorf(".warm meta.json must survive prune: %v", err)
+		t.Errorf(".warm/proj-abc/docker/meta.json must survive prune: %v", err)
+	}
+	if _, err := os.Stat(shallowDisk); err != nil {
+		t.Errorf(".warm/disk.ext4 must survive prune (dot-prefix skip missing?): %v", err)
 	}
 
 	for _, name := range append(append(append(res.StubsDeleted, res.DetachedDeleted...), res.DetachedCandidates...), res.OrphanedFilesDeleted...) {

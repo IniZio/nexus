@@ -3,17 +3,26 @@
 package volumestore
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 )
+
+func allocatedFileBytes(f *os.File) (int64, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
 
 func reflinkFile(dst, src *os.File) error {
 	// Darwin clonefile operates on paths, not fds; out of scope here.
 	return fmt.Errorf("%w: not implemented on this platform", ErrReflinkUnsupported)
 }
 
-func sparseCopyFile(dst, src *os.File) error {
+func sparseCopyFile(ctx context.Context, dst, src *os.File) error {
 	srcInfo, err := src.Stat()
 	if err != nil {
 		return fmt.Errorf("volumestore: sparseCopy stat: %w", err)
@@ -23,6 +32,9 @@ func sparseCopyFile(dst, src *os.File) error {
 	buf := make([]byte, 1<<20)
 	var off int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		nr, err := src.ReadAt(buf, off)
 		if nr > 0 {
 			chunk := buf[:nr]
