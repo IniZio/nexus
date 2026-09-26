@@ -534,6 +534,14 @@ func RunDetached(cfg Config) error {
 	broker := cred.NewBroker()
 	svc = svc.WithBroker(broker)
 
+	hostVault, vaultErr := openSupervisorVaultFn()
+	if vaultErr != nil {
+		slog.Info("supervisor.vault_open_failed", "err", vaultErr)
+		hostVault = nil
+	} else {
+		svc = svc.WithVault(hostVault)
+	}
+
 	refreshers := buildClaudeRefreshers(cfg.CredsFile, broker)
 
 	// ── 3b. Resolve sandbox ID for agent client ───────────────────────────────
@@ -690,6 +698,8 @@ func RunDetached(cfg Config) error {
 		perimSupPtr.Store(sup)
 	}
 
+	resolveGitHubFromVault(ctx, hostVault, broker, sb)
+
 	// ── 5a-gitssh. Start git SSH relay ───────────────────────────────────────
 	// Accepts guest-initiated vsock connections on GitSSHRelayPort (1026) and
 	// relays git-upload-pack / git-receive-pack sessions to the host ssh binary.
@@ -762,19 +772,7 @@ func RunDetached(cfg Config) error {
 	// registered MCP OAuth scope. It is consumed in step 5d to seed the guest
 	// env so the MCP client header expands to "Bearer <placeholder>".
 	var mcpOAuthSeedMap map[string]string
-	if len(cfg.MCPOAuthRefreshConfigs) > 0 {
-		mcpOAuthSeedMap = registerMCPOAuthPlaceholders(broker, sb.ID, cfg.MCPOAuthRefreshConfigs)
-		mcpStoreRoot := service.DefaultMCPOAuthStoreRoot()
-		mcpRefreshers, mcpErr := service.StartMCPOAuthRefreshers(ctx, broker, mcpStoreRoot, cfg.MCPOAuthRefreshConfigs)
-		if mcpErr != nil {
-			slog.Warn("supervisor.mcp_oauth_refreshers_failed", "err", mcpErr)
-		} else {
-			for _, r := range mcpRefreshers {
-				slog.Info("supervisor.mcp_oauth_refresher_ready", "host", r.Host())
-			}
-			refreshers = append(refreshers, mcpRefreshers...)
-		}
-	}
+	mcpOAuthSeedMap = resolveVaultMCPBindsForBroker(ctx, hostVault, broker, sb.ID, sb.Principal, sb.Project)
 
 	// ── 5b. Wire Refreshers to the running sandbox ───────────────────────────
 	// Register each Refresher with the sandbox so its Token() call can invoke

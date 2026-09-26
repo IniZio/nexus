@@ -31,6 +31,8 @@ import (
 	"github.com/IniZio/nexus/internal/core/resize"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vault"
+	"github.com/IniZio/nexus/internal/core/vaulthost"
 	"github.com/IniZio/nexus/internal/core/vmcfg"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 	"github.com/IniZio/nexus/internal/supervisor"
@@ -107,7 +109,15 @@ func newSandboxService() (*service.Service, error) {
 
 	svc := service.New(st, drv, lifecycle.New())
 	svc.WithVolumes(volumestore.New(filepath.Join(root, "volumes")))
+	if v, vErr := openHostVaultFn(); vErr == nil {
+		svc.WithVault(v)
+	}
 	return svc, nil
+}
+
+// openHostVaultFn is the production vault opener. Tests override it to inject a fake.
+var openHostVaultFn = func() (vault.Vault, error) {
+	return vaulthost.Open()
 }
 
 func sandboxCodeFor(err error) string {
@@ -1614,11 +1624,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 	var mcpOAuthRefreshConfigs []service.MCPOAuthRefreshConfig
 	if agentProfile.MCPConfigFormat == cred.MCPConfigFormatClaudeJSON {
-		_, oauthRefreshCfgs, oauthErr := service.BuildMCPOAuthBinds("")
-		if oauthErr != nil {
-			slog.Warn("sandbox create: BuildMCPOAuthBinds failed; MCP OAuth token refresh will not be active", "err", oauthErr)
-		} else {
-			mcpOAuthRefreshConfigs = oauthRefreshCfgs
+		if v, vErr := openHostVaultFn(); vErr == nil {
+			if iErr := service.ImportMCPOAuthIntoVault(ctx, v, sb.Principal, ""); iErr != nil {
+				slog.Warn("sandbox create: ImportMCPOAuthIntoVault failed", "err", iErr)
+			}
 		}
 	}
 

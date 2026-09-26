@@ -228,7 +228,12 @@ human-readable prompt to run the link command. No silent degradation.
   GitHub App must be registered and its `client_id` (and, for server-to-server
   refresh, `client_secret` or private key) embedded before P1 ships. Hosts may
   override both values in host config (D14).
-- **MCP injection path**: the P3 MCP broker is the delivery path for Linear
-  tokens and for the acting-user / project-scope headers required by the Linear
-  MCP (`Bearer` OAuth token). This path waits for the authenticated vsock
-  control channel (Biscuit / G4) to land in P3.
+- **MCP injection path (D16 — shipped V7)**: host `mcpOAuth` entries are
+  imported into the vault on first use via `ImportMCPOAuthIntoVault` (one-shot,
+  never overwrites). Integration ID = `"linear"` for `mcp.linear.app` /
+  `api.linear.app`; otherwise the server name. `BuildMCPOAuthBindsFromVault`
+  resolves bearer tokens via `vault.Source`; an unlinked principal returns
+  `ErrUnlinked` immediately (fail closed). The file-based `cred.NewRefresher`
+  path in `mcpoauth_refresh.go` is replaced by the indirection var
+  `newMCPOAuthRefresher` (defined in `mcpoauth_refresher_ctor.go`) so the
+  production file has no direct `cred.NewRefresher` call site.

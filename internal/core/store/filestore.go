@@ -92,6 +92,7 @@ type record struct {
 	// on the next read, so an adopting or re-acquiring supervisor could never
 	// take back the SAME builder cache-disk slot.
 	CacheDiskSlot string `json:"cache_disk_slot,omitempty"`
+	Principal     string `json:"principal,omitempty"`
 }
 
 // provenanceRecord is the on-disk form of domain.Provenance. Kept separate
@@ -130,6 +131,7 @@ func toRecord(sb domain.Sandbox) record {
 		NetnsControlSocket:  sb.NetnsControlSocket,
 		NetnsControlToken:   sb.NetnsControlToken,
 		CacheDiskSlot:       sb.CacheDiskSlot,
+		Principal:           sb.Principal,
 		// MotiveID intentionally omitted: new records never write this field.
 	}
 	if sb.Provenance != nil {
@@ -183,6 +185,7 @@ func (r record) toDomain() domain.Sandbox {
 		NetnsControlSocket:  r.NetnsControlSocket,
 		NetnsControlToken:   r.NetnsControlToken,
 		CacheDiskSlot:       r.CacheDiskSlot,
+		Principal:           r.Principal,
 	}
 	if r.Provenance != nil {
 		sb.Provenance = &domain.Provenance{

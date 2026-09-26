@@ -3,13 +3,14 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/vault"
 )
 
 // BuiltinGitHubEnv is the guest env var that receives the GitHub placeholder.
@@ -63,29 +64,18 @@ func ParseSecretSpec(spec string) (SecretBind, error) {
 	return SecretBind{Env: env, Hosts: hosts}, nil
 }
 
-// LookupGitHubToken returns the host's `gh auth token`. Empty token + nil
-// error means gh is missing or not logged in — callers treat that as "no builtin".
-var lookupGitHubToken = lookupGitHubTokenImpl
-
-func lookupGitHubTokenImpl(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", nil
+// GitHubSecretFromVault resolves the GitHub token from the vault for the given
+// principal and project. Returns ErrUnlinked when the principal has no linked
+// GitHub credential (D13: no gh auth token fallback).
+func GitHubSecretFromVault(ctx context.Context, v vault.Vault, principal, project string) (bind SecretBind, ok bool, err error) {
+	src, err := v.Source(vault.Key{Principal: principal, Integration: "github"}, project)
+	if err != nil {
+		if errors.Is(err, vault.ErrUnlinked) || errors.Is(err, vault.ErrProjectNotAllowed) {
+			return SecretBind{}, false, err
+		}
+		return SecretBind{}, false, err
 	}
-	tok := strings.TrimSpace(stdout.String())
-	if tok == "" {
-		return "", nil
-	}
-	return tok, nil
-}
-
-// BuiltinGitHubSecret binds GH_TOKEN to GitHubSecretHosts using the host
-// `gh auth token`. ok is false when gh is absent or not logged in.
-func BuiltinGitHubSecret(ctx context.Context) (bind SecretBind, ok bool, err error) {
-	tok, err := lookupGitHubToken(ctx)
+	tok, _, err := src.Token(ctx)
 	if err != nil {
 		return SecretBind{}, false, err
 	}
@@ -183,17 +173,11 @@ func allGitHubHosts(hosts []string) bool {
 }
 
 // ResolveEnvelopeSecrets rebuilds SecretBinds from frozen ENV@hosts specs.
-// Tokens are re-resolved at call time: GH_TOKEN from host `gh auth token`,
-// every other env from the process environment. The store never holds tokens.
+// GH_TOKEN/GITHUB_TOKEN are NOT auto-sourced (D13: no gh auth token fallback).
+// All other env vars are sourced from the process environment.
 //
 // Host-gate invariant (D-PDE-12): a github-named token (GH_TOKEN/GITHUB_TOKEN)
-// is sourced from `gh auth token` ONLY when ALL declared hosts are GitHub hosts.
-// A bind with any non-GitHub host (e.g. GH_TOKEN@evil.com) is VOIDED — the bind
-// is skipped and no credential is emitted — rather than returning an error.
-// Rationale: voiding is consistent with the "no token → skip" convention already
-// used here, and fail-closed from the exfil perspective. The upstream
-// ErrMixedGitHubSecret gate (CreateAndBoot) prevents mixed binds from reaching
-// this path via the CLI; this gate is defense-in-depth for non-CLI callers.
+// with any non-GitHub host in the list is VOIDED — the bind is skipped.
 func ResolveEnvelopeSecrets(ctx context.Context, specs []string) ([]SecretBind, error) {
 	var binds []SecretBind
 	for _, spec := range specs {
@@ -202,17 +186,10 @@ func ResolveEnvelopeSecrets(ctx context.Context, specs []string) ([]SecretBind, 
 			return nil, err
 		}
 		if b.Env == BuiltinGitHubEnv || b.Env == "GITHUB_TOKEN" {
-			// Host-gate: only source the operator's gh token when every declared
-			// host is a GitHub host. A non-GitHub host in the list voids the bind
-			// (fail closed — no token emitted, no exfil path opened).
 			if !allGitHubHosts(b.Hosts) {
-				continue // void: skip this bind entirely
+				continue
 			}
-			tok, lerr := lookupGitHubToken(ctx)
-			if lerr != nil {
-				return nil, lerr
-			}
-			b.Token = tok
+			// D13: no gh auth token fallback; token must come from vault at create time.
 		} else if b.Token == "" {
 			b.Token = strings.TrimSpace(os.Getenv(b.Env))
 		}
@@ -222,6 +199,13 @@ func ResolveEnvelopeSecrets(ctx context.Context, specs []string) ([]SecretBind, 
 		binds = append(binds, b)
 	}
 	return binds, nil
+}
+
+// ApplyVaultSecretsToBroker registers vault-resolved SecretBinds with the broker.
+// Returns (credPayload, hosts, error) where credPayload is KEY=placeholder lines
+// for guest seeding. Intended for vault-resolved tokens (GitHub, MCP OAuth).
+func ApplyVaultSecretsToBroker(broker *cred.Broker, id domain.SandboxID, binds []SecretBind) ([]byte, []string, error) {
+	return applySecrets(broker, id, binds)
 }
 
 // SeedGuestSecrets re-resolves frozen ENV@hosts specs, mints placeholders

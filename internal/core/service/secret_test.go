@@ -11,6 +11,8 @@ import (
 	"github.com/IniZio/nexus/internal/core/driver/fake"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/vault"
+	"github.com/IniZio/nexus/internal/core/vault/vaulttest"
 )
 
 func TestParseSecretSpec(t *testing.T) {
@@ -217,13 +219,14 @@ func TestCreateAndBoot_AgentSeed_GitHubSecret_NoRepo_Refused(t *testing.T) {
 	}
 }
 
-func TestBuiltinGitHubSecret_MissingGh(t *testing.T) {
-	orig := lookupGitHubToken
-	t.Cleanup(func() { lookupGitHubToken = orig })
-	lookupGitHubToken = func(context.Context) (string, error) { return "", nil }
-	_, ok, err := BuiltinGitHubSecret(context.Background())
-	if err != nil || ok {
-		t.Fatalf("ok=%v err=%v, want no builtin", ok, err)
+// TestGitHubFromVault_UnlinkedPrincipalNoBuiltin verifies that an unlinked
+// principal returns an error rather than falling back to any local credential.
+func TestGitHubFromVault_UnlinkedPrincipalNoBuiltin(t *testing.T) {
+	t.Parallel()
+	v := vaulttest.NewFake()
+	_, ok, err := GitHubSecretFromVault(context.Background(), v, "local:nobody", "proj")
+	if ok || !errors.Is(err, vault.ErrUnlinked) {
+		t.Fatalf("ok=%v err=%v, want ok=false and ErrUnlinked", ok, err)
 	}
 }
 
@@ -260,16 +263,17 @@ func TestCreateAndBoot_MixedHostSecretRefused(t *testing.T) {
 	}
 }
 
-func TestResolveEnvelopeSecrets_GitHubFromGh(t *testing.T) {
-	orig := lookupGitHubToken
-	t.Cleanup(func() { lookupGitHubToken = orig })
-	lookupGitHubToken = func(context.Context) (string, error) { return "ghs_resolved", nil }
+// TestResolveEnvelopeSecrets_GHTokenSkippedWithoutVault verifies D13: with no
+// vault in ResolveEnvelopeSecrets, GH_TOKEN@github.com produces 0 binds
+// (fail closed — no gh auth token fallback).
+func TestResolveEnvelopeSecrets_GHTokenSkippedWithoutVault(t *testing.T) {
+	t.Parallel()
 	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GH_TOKEN@github.com,api.github.com"})
 	if err != nil {
 		t.Fatalf("ResolveEnvelopeSecrets: %v", err)
 	}
-	if len(binds) != 1 || binds[0].Token != "ghs_resolved" {
-		t.Fatalf("binds = %+v", binds)
+	if len(binds) != 0 {
+		t.Fatalf("D13: want 0 binds (no gh fallback), got %d: %+v", len(binds), binds)
 	}
 }
 
@@ -281,11 +285,7 @@ func TestResolveEnvelopeSecrets_GitHubFromGh(t *testing.T) {
 // causes this test to return a non-empty bind with the faked gh token instead of
 // an empty slice, breaking the assertion. The test FAILS if the gate is removed.
 func TestResolveEnvelopeSecrets_HostGate_GHTokenNonGitHubVoided(t *testing.T) {
-	orig := lookupGitHubToken
-	t.Cleanup(func() { lookupGitHubToken = orig })
-	lookupGitHubToken = func(context.Context) (string, error) { return "ghs_operator_full_scope", nil }
-
-	// T9-AC2: GH_TOKEN@evil.com must produce NO bind (exfil path closed).
+	t.Parallel()
 	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GH_TOKEN@evil.com"})
 	if err != nil {
 		t.Fatalf("ResolveEnvelopeSecrets: unexpected error: %v", err)
@@ -295,36 +295,21 @@ func TestResolveEnvelopeSecrets_HostGate_GHTokenNonGitHubVoided(t *testing.T) {
 	}
 }
 
-// TestResolveEnvelopeSecrets_HostGate_GHTokenAllGitHubSourced verifies the
-// legitimate flow: GH_TOKEN bound exclusively to GitHub hosts still sources
-// the gh token.
-func TestResolveEnvelopeSecrets_HostGate_GHTokenAllGitHubSourced(t *testing.T) {
-	orig := lookupGitHubToken
-	t.Cleanup(func() { lookupGitHubToken = orig })
-	const want = "ghs_legit_token"
-	lookupGitHubToken = func(context.Context) (string, error) { return want, nil }
-
+// TestResolveEnvelopeSecrets_HostGate_GHTokenAllGitHubFailsClosedD13 verifies
+// that GH_TOKEN bound exclusively to GitHub hosts is NOT auto-sourced (D13).
+func TestResolveEnvelopeSecrets_HostGate_GHTokenAllGitHubFailsClosedD13(t *testing.T) {
+	t.Parallel()
 	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GH_TOKEN@github.com,api.github.com"})
 	if err != nil {
 		t.Fatalf("ResolveEnvelopeSecrets: %v", err)
 	}
-	if len(binds) != 1 || binds[0].Token != want {
-		t.Fatalf("GH_TOKEN@github.com,api.github.com: want 1 bind with token %q, got %+v", want, binds)
+	if len(binds) != 0 {
+		t.Fatalf("D13: want 0 binds (no gh fallback), got %d: %+v", len(binds), binds)
 	}
 }
 
-// TestResolveEnvelopeSecrets_HostGate_NonGitHubEnvFromProcessEnv verifies that
-// a non-GitHub env var (e.g. GITLAB_TOKEN) is still sourced from the process
-// environment, not from gh auth token.
 func TestResolveEnvelopeSecrets_HostGate_NonGitHubEnvFromProcessEnv(t *testing.T) {
-	orig := lookupGitHubToken
-	t.Cleanup(func() { lookupGitHubToken = orig })
-	lookupGitHubToken = func(context.Context) (string, error) {
-		t.Error("lookupGitHubToken must not be called for non-GitHub env var")
-		return "", nil
-	}
 	t.Setenv("GITLAB_TOKEN", "glpat_test_value")
-
 	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GITLAB_TOKEN@gitlab.com"})
 	if err != nil {
 		t.Fatalf("ResolveEnvelopeSecrets: %v", err)
@@ -334,13 +319,8 @@ func TestResolveEnvelopeSecrets_HostGate_NonGitHubEnvFromProcessEnv(t *testing.T
 	}
 }
 
-// TestResolveEnvelopeSecrets_HostGate_MixedGHHostVoided verifies that a
-// GH_TOKEN bind with a mix of GitHub and non-GitHub hosts is voided (not sourced).
 func TestResolveEnvelopeSecrets_HostGate_MixedGHHostVoided(t *testing.T) {
-	orig := lookupGitHubToken
-	t.Cleanup(func() { lookupGitHubToken = orig })
-	lookupGitHubToken = func(context.Context) (string, error) { return "ghs_should_not_appear", nil }
-
+	t.Parallel()
 	binds, err := ResolveEnvelopeSecrets(context.Background(), []string{"GH_TOKEN@github.com,evil.com"})
 	if err != nil {
 		t.Fatalf("ResolveEnvelopeSecrets: unexpected error: %v", err)
@@ -350,11 +330,11 @@ func TestResolveEnvelopeSecrets_HostGate_MixedGHHostVoided(t *testing.T) {
 	}
 }
 
-func TestSeedGuestSecrets_NoTokenLeak(t *testing.T) {
-	orig := lookupGitHubToken
-	t.Cleanup(func() { lookupGitHubToken = orig })
-	const real = "ghs_supervisor_rebind"
-	lookupGitHubToken = func(context.Context) (string, error) { return real, nil }
+// TestSeedGuestSecrets_NoTokenLeakD13 verifies D13: with no vault,
+// GH_TOKEN@github.com specs produce no payload (fail closed, no token leak).
+func TestSeedGuestSecrets_NoTokenLeakD13(t *testing.T) {
+	t.Parallel()
+	const fake = "ghs_should_never_appear"
 	broker := cred.NewBroker()
 	id := seedTestID(0x26)
 	var payload []byte
@@ -365,10 +345,10 @@ func TestSeedGuestSecrets_NoTokenLeak(t *testing.T) {
 	if err := SeedGuestSecrets(context.Background(), broker, id, []string{"GH_TOKEN@github.com,api.github.com"}, seeder); err != nil {
 		t.Fatalf("SeedGuestSecrets: %v", err)
 	}
-	if bytes.Contains(payload, []byte(real)) {
+	if bytes.Contains(payload, []byte(fake)) {
 		t.Fatalf("leaked token: %s", payload)
 	}
-	if !bytes.Contains(payload, []byte("GH_TOKEN=")) {
-		t.Fatalf("missing GH_TOKEN: %s", payload)
+	if bytes.Contains(payload, []byte("GH_TOKEN=")) {
+		t.Fatalf("D13: GH_TOKEN must not be seeded without vault: %s", payload)
 	}
 }

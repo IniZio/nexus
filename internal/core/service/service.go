@@ -52,6 +52,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
 	"github.com/IniZio/nexus/internal/core/statedir"
 	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
@@ -77,6 +78,7 @@ type sandboxDeregistrar interface {
 	Deregister(domain.SandboxID)
 }
 
+
 // Service coordinates sandbox operations across the store, driver, and
 // lifecycle machine. It has no CLI or presentation concerns and is safe to
 // call from any context.
@@ -92,6 +94,7 @@ type Service struct {
 	broker    *cred.Broker // host-side credential store for MITM token swap
 	caSeeder  GuestSeeder  // delivers the MITM CA cert into the guest trust store
 	sshSeeder GuestSeeder  // injects SSH authorized_keys into the guest (ORCA-S1)
+	vault     vault.Vault
 
 	supervisorsMu sync.Mutex
 	supervisors   map[domain.SandboxID]*perimeter.PerimeterSupervisor
@@ -1067,6 +1070,7 @@ func (s *Service) startSupervisor(ctx context.Context, hook driver.NetworkHook, 
 			AllowedBranches:    sb.Envelope.ResolvedAllowedBranches(),           // TBD-1: worktree-derived branch, or default/sentinel
 			OnEgress:           mitmOnEgress,                                    // shared egress-decisions sink
 			MCPPolicies:        buildMCPPolicies(sb.Envelope.MCPPolicies),
+			ForceRefreshFns:    buildVaultForceRefreshFns(s.vault, sb.ID, sb.Principal, sb.Project, s.broker),
 		})
 		if err != nil {
 			fd.Close()

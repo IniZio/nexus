@@ -21,6 +21,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
@@ -370,6 +371,10 @@ type CreateAndBootOptions struct {
 	// AllowedRepo is set; the pre-boot guard 6b enforces that combination.
 	// Without AllowedRepo the same guard still rejects any GitHub bind.
 	Secrets []SecretBind
+
+	// Vault is the credential vault for principal-scoped token resolution (V6).
+	// When set, the principal is derived from NEXUS_PRINCIPAL env or LocalPrincipal.
+	Vault vault.Vault
 
 	// Volumes is the volume store for named-volume operations. Required when
 	// NamedVolumeMounts is non-empty. If nil, NamedVolumeMounts is ignored.
@@ -883,12 +888,20 @@ func CreateAndBoot(
 		agentProfile = cred.MustProfileByName(cred.ClaudeCodeProfileName)
 	}
 
+	principal := os.Getenv(vault.PrincipalEnv)
+	if principal == "" {
+		if p, lpErr := vault.LocalPrincipal(); lpErr == nil {
+			principal = p
+		}
+	}
+
 	sb := domain.Sandbox{
-		ID:      id,
-		Name:    name,
-		Project: project,
-		Labels:  opts.Labels,
-		State:   domain.Created,
+		ID:        id,
+		Name:      name,
+		Project:   project,
+		Labels:    opts.Labels,
+		State:     domain.Created,
+		Principal: principal,
 		Envelope: domain.Envelope{
 			ImageDigest:        resolvedDigest,
 			AllowedHosts:       opts.AllowedHosts, // frozen at creation (P1-S6)

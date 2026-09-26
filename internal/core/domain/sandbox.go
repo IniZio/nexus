@@ -225,6 +225,12 @@ type Sandbox struct {
 	//
 	// Empty or nil means no extra agents were configured at creation time.
 	ExtraAgentNames []string `json:"extra_agent_names,omitempty"`
+
+	// Principal is the vault principal that owns the credential records for this
+	// sandbox (e.g. "local:newman" or "slack:T123:U456"). Set at creation time
+	// from the NEXUS_PRINCIPAL environment variable or vault.LocalPrincipal().
+	// Empty on records written before this field was introduced.
+	Principal string `json:"principal,omitempty"`
 }
 
 // LiveMount describes a single live host-directory virtiofs share attached to

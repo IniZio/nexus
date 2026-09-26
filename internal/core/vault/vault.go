@@ -65,4 +65,6 @@ type Vault interface {
 	// It returns ErrUnlinked when no record exists for key, and
 	// ErrProjectNotAllowed when project is not in AllowedProjects.
 	Source(key Key, project string) (cred.CredentialSource, error)
+	// ForceRefresh evicts cached state and forces a connector Refresh for key.
+	ForceRefresh(ctx context.Context, key Key) (Record, error)
 }

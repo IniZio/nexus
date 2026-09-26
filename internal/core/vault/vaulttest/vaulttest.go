@@ -112,6 +112,16 @@ func (f *Fake) Source(key vault.Key, project string) (cred.CredentialSource, err
 	return &fakeSource{rec: rec}, nil
 }
 
+func (f *Fake) ForceRefresh(ctx context.Context, key vault.Key) (vault.Record, error) {
+	rec, err := f.store.Get(ctx, key)
+	if err != nil {
+		return vault.Record{}, err
+	}
+	rec.AccessToken = "refreshed-" + rec.AccessToken
+	_ = f.store.Put(ctx, key, rec)
+	return rec, nil
+}
+
 // FakeConnector is a test double for vault.Connector using the device flow.
 type FakeConnector struct {
 	id string

@@ -172,6 +172,10 @@ type Config struct {
 	// be set or both left empty; New returns an error for a partial pair.
 	SeedCACertPEM []byte
 	SeedCAKeyPEM  []byte
+
+	// ForceRefreshFns maps lowercase hostnames to vault-backed force-refresh
+	// functions invoked by Handle401Once on a 401 upstream response.
+	ForceRefreshFns map[string]cred.ForceRefreshFn
 }
 
 // GitHubPolicy pins all requests to one GitHub repository.
@@ -295,7 +299,7 @@ func New(cfg Config) (*Proxy, error) {
 	// ConnectMitm only speaks HTTP/1.1 and causes SSL alert 120. ConnectHijack
 	// gives us the raw TCP connection so we can do the TLS handshake ourselves,
 	// advertise h2, and serve via an http2-configured http.Server.
-	h2HijackFn := makeH2SuffixHijack(tlsCfgFn, sandboxID, broker, log)
+	h2HijackFn := makeH2SuffixHijack(tlsCfgFn, sandboxID, broker, log, cfg.ForceRefreshFns)
 	h2HijackAction := &goproxy.ConnectAction{
 		Action: goproxy.ConnectHijack,
 		Hijack: h2HijackFn,
@@ -653,6 +657,28 @@ func New(cfg Config) (*Proxy, error) {
 		log.Info("mitm: credential swapped", "sandbox", sandboxID, "host", host)
 		return req2, nil
 	})
+
+	if len(cfg.ForceRefreshFns) > 0 {
+		forceRefreshFns := cfg.ForceRefreshFns
+		inner.OnResponse().DoFunc(func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+			if resp == nil || resp.StatusCode != http.StatusUnauthorized || ctx.Req == nil {
+				return resp
+			}
+			host := strings.ToLower(reqHost(ctx.Req))
+			rfn, ok := forceRefreshFns[host]
+			if !ok {
+				return resp
+			}
+			doReq := func(r *http.Request) (*http.Response, error) {
+				return ctx.RoundTrip(r)
+			}
+			newResp, err := cred.Handle401Once(ctx.Req.Context(), ctx.Req, resp, rfn, doReq)
+			if err != nil {
+				return resp
+			}
+			return newResp
+		})
+	}
 
 	return &Proxy{ca: ca, inner: inner, allowSet: allowSet}, nil
 }
@@ -1496,6 +1522,7 @@ func makeH2SuffixHijack(
 	sandboxID domain.SandboxID,
 	broker *cred.Broker,
 	log *slog.Logger,
+	forceRefreshFns map[string]cred.ForceRefreshFn,
 ) func(req *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
 	// Shared h2-capable outbound transport. http.Transport is goroutine-safe.
 	outTransport := &http.Transport{
@@ -1605,6 +1632,11 @@ func makeH2SuffixHijack(
 					"method", r.Method, "path", r.URL.Path, "err", err)
 				http.Error(w, "proxy: upstream: "+err.Error(), http.StatusBadGateway)
 				return
+			}
+			if rfn, ok := forceRefreshFns[lhostname]; ok {
+				if replayed, rerr := cred.Handle401Once(r.Context(), outReq, resp, rfn, outTransport.RoundTrip); rerr == nil {
+					resp = replayed
+				}
 			}
 			defer resp.Body.Close()
 
