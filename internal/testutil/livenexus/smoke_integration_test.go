@@ -26,6 +26,4 @@ func TestLiveSmoke(t *testing.T) {
 		t.Fatalf("nexus run: %v\n%s", err, out)
 	}
 	t.Logf("nexus run output: %s", strings.TrimSpace(out))
-	// Prod isolation is verified exhaustively in t.Cleanup by the harness
-	// (nexus ps, herdr sessions, herdr worktrees/nexus, git branches,
 }
