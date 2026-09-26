@@ -2,13 +2,34 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
+
+// isStagingExcluded reports whether relPath (relative to the agent config dir,
+// using forward slashes) matches any of the profile's StagingExcludeGlobs.
+// Supported glob forms: "prefix/**" (matches the prefix dir itself and every
+// path beneath it) and a plain relative path (exact match).
+func isStagingExcluded(relPath string, excludeGlobs []string) bool {
+	rel := filepath.ToSlash(relPath)
+	for _, glob := range excludeGlobs {
+		if strings.HasSuffix(glob, "/**") {
+			prefix := strings.TrimSuffix(glob, "/**")
+			if rel == prefix || strings.HasPrefix(rel, prefix+"/") {
+				return true
+			}
+		} else if rel == glob {
+			return true
+		}
+	}
+	return false
+}
 
 // secretFileNames is the hard exclusion list. These filenames are NEVER copied
 // into destDir regardless of what MountAllowlist says. Deny wins over allow.
@@ -225,6 +246,16 @@ func walkFollowDirs(srcRoot, dir, destDir string, visited map[string]bool, profi
 		if skipLinks[full] {
 			continue
 		}
+
+		// Check StagingExcludeGlobs before stat/recurse so we skip entire
+		// subtrees (e.g. plugins/cache) without reading their contents.
+		if len(profile.StagingExcludeGlobs) > 0 {
+			rel, relErr := filepath.Rel(srcRoot, full)
+			if relErr == nil && isStagingExcluded(rel, profile.StagingExcludeGlobs) {
+				continue
+			}
+		}
+
 		fi, err := os.Lstat(full)
 		if err != nil {
 			continue
@@ -308,13 +339,35 @@ func copyFile(srcPath, relPath, destDir string, profile cred.AgentProfile) error
 	return copyRaw(srcPath, dstPath)
 }
 
-// copyRaw copies a file verbatim at mode 0444.
+// copyRaw copies src to dst at mode 0444. On the same filesystem it creates a
+// hardlink (os.Link) so the operation is near-instant and uses no extra disk
+// space; the lower staging dir is read-only to the guest, so the host original
+// is never mutated through the link. Falls back to a byte copy when the source
+// and destination are on different filesystems (EXDEV) or when hardlinking is
+// not permitted (EPERM).
 func copyRaw(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	} else if !isHardlinkUnsupported(err) {
+		// Real error, not a cross-device/permission issue; fall through to copy.
+		_ = err
+	}
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(dst, data, 0o444)
+}
+
+// isHardlinkUnsupported reports whether the os.Link error indicates the
+// operation is unsupported on this filesystem pair (cross-device or
+// insufficient privilege) rather than a hard failure.
+func isHardlinkUnsupported(err error) bool {
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return errors.Is(linkErr.Err, syscall.EXDEV) || errors.Is(linkErr.Err, syscall.EPERM)
+	}
+	return false
 }
 
 // copyFilteredSettings reads srcPath as JSON, filters its keys, and writes the

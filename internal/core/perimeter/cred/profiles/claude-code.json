@@ -19,6 +19,7 @@
   "SkillsPath": "~/.claude/skills",
   "MCPConfigFormat": "claude-json",
   "MountAllowlist": ["CLAUDE.md", "skills/**", "settings.json", "plugins/**"],
+  "StagingExcludeGlobs": ["plugins/cache/**"],
   "SymlinkPreservePrefixes": ["plugins"],
   "SettingsDenylist": {
     "apiKeyHelper": true,

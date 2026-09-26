@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
@@ -495,4 +496,115 @@ func TestAgentSettingsDir(t *testing.T) {
 			t.Errorf("AgentSettingsDir for zero profile = %q, want empty", got)
 		}
 	})
+}
+
+// TestAssembleCuratedConfig_StagingExcludeGlobs verifies that paths matching
+// StagingExcludeGlobs are omitted from the staging dir while sibling paths
+// outside the excluded subtree are still staged.
+func TestAssembleCuratedConfig_StagingExcludeGlobs(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path, content string) {
+		t.Helper()
+		full := filepath.Join(srcDir, path)
+		must(os.MkdirAll(filepath.Dir(full), 0o755))
+		must(os.WriteFile(full, []byte(content), 0o644))
+	}
+
+	write("plugins/installed_plugins.json", `{"plugins":{}}`)
+	write("plugins/known_marketplaces.json", `{}`)
+	write("plugins/marketplaces/foo/manifest.json", `{"name":"foo"}`)
+	write("plugins/cache/groundwork/2.8.1/node_modules/heavy/index.js", `huge`)
+	write("plugins/cache/context-mode/index.js", `big`)
+
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
+
+	if err := service.AssembleCuratedConfig(profile, srcDir, destDir); err != nil {
+		t.Fatalf("AssembleCuratedConfig: %v", err)
+	}
+
+	wantPresent := []string{
+		filepath.Join("plugins", "installed_plugins.json"),
+		filepath.Join("plugins", "known_marketplaces.json"),
+		filepath.Join("plugins", "marketplaces", "foo", "manifest.json"),
+	}
+	for _, rel := range wantPresent {
+		if _, err := os.Stat(filepath.Join(destDir, rel)); os.IsNotExist(err) {
+			t.Errorf("expected file missing from staging: %s", rel)
+		}
+	}
+
+	wantAbsent := []string{
+		filepath.Join("plugins", "cache", "groundwork", "2.8.1", "node_modules", "heavy", "index.js"),
+		filepath.Join("plugins", "cache", "context-mode", "index.js"),
+		filepath.Join("plugins", "cache"),
+	}
+	for _, rel := range wantAbsent {
+		if _, err := os.Stat(filepath.Join(destDir, rel)); err == nil {
+			t.Errorf("excluded path present in staging (should be absent): %s", rel)
+		}
+	}
+}
+
+// TestAssembleCuratedConfig_HardlinkFallback verifies that copyRaw hardlinks
+// when source and dest are on the same filesystem, and that the staged file
+// shares an inode with the original.
+func TestAssembleCuratedConfig_HardlinkFallback(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srcFile := filepath.Join(srcDir, "CLAUDE.md")
+	must(os.WriteFile(srcFile, []byte("# test\n"), 0o644))
+
+	profile := cred.AgentProfile{
+		MountAllowlist: []string{"CLAUDE.md"},
+	}
+	if err := service.AssembleCuratedConfig(profile, srcDir, destDir); err != nil {
+		t.Fatalf("AssembleCuratedConfig: %v", err)
+	}
+
+	dstFile := filepath.Join(destDir, "CLAUDE.md")
+	srcInfo, err := os.Stat(srcFile)
+	if err != nil {
+		t.Fatalf("stat src: %v", err)
+	}
+	dstInfo, err := os.Stat(dstFile)
+	if err != nil {
+		t.Fatalf("stat dst: %v", err)
+	}
+
+	// On the same tmpfs/ext4 the files should share an inode (hardlink).
+	// If the test host uses a cross-device tmpdir the Link call falls back to
+	// copy; in that case the file still exists and content is correct.
+	srcSys, ok1 := srcInfo.Sys().(*syscall.Stat_t)
+	dstSys, ok2 := dstInfo.Sys().(*syscall.Stat_t)
+	if ok1 && ok2 {
+		if srcSys.Dev == dstSys.Dev {
+			if srcSys.Ino != dstSys.Ino {
+				t.Errorf("same-device files should share inode (hardlink); src ino=%d dst ino=%d", srcSys.Ino, dstSys.Ino)
+			}
+		}
+	}
+
+	data, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("read staged file: %v", err)
+	}
+	if string(data) != "# test\n" {
+		t.Errorf("staged content mismatch: %q", data)
+	}
 }

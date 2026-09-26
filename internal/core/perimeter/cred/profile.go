@@ -69,6 +69,13 @@ type AgentProfile struct {
 
 	MountAllowlist []string
 
+	// StagingExcludeGlobs lists paths (relative to the agent config dir) to
+	// skip during curated staging even when they match MountAllowlist. Supported
+	// form: "prefix/**" (exclude the entire subtree rooted at prefix) or an
+	// exact relative path. Use this for subtrees already delivered to the guest
+	// via a live virtiofs mount so the staged copy is not duplicated.
+	StagingExcludeGlobs []string
+
 	SymlinkPreservePrefixes []string
 
 	// SettingsAllowlist: only these settings keys are staged into the guest.
