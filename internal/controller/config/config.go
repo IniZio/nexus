@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/IniZio/nexus/internal/controller"
 )
 
 type DeploymentMode string
@@ -44,8 +42,9 @@ type Config struct {
 }
 
 var (
-	ErrInlineSecret    = errors.New("config: inline secrets are not allowed; use env or file references")
-	ErrMissingRepo     = errors.New("config: channel has no repo configured")
+	ErrInlineSecret = errors.New("config: inline secrets are not allowed; use env or file references")
+	ErrMissingRepo  = errors.New("config: channel has no repo configured")
+	ErrNoProject    = errors.New("controller: channel has no project")
 )
 
 func (t TokenRef) Validate(name string) error {
@@ -53,6 +52,27 @@ func (t TokenRef) Validate(name string) error {
 		return fmt.Errorf("%w: field %q", ErrInlineSecret, name)
 	}
 	return nil
+}
+
+// Resolve returns the token value by reading the env var or file.
+// It returns an error when the env var is unset/empty or the file cannot be read.
+// Inline values are rejected by Validate() and are never returned here.
+func (t TokenRef) Resolve() (string, error) {
+	if t.EnvVar != "" {
+		v := os.Getenv(t.EnvVar)
+		if v == "" {
+			return "", fmt.Errorf("config: env var %q is not set or empty", t.EnvVar)
+		}
+		return v, nil
+	}
+	if t.FilePath != "" {
+		data, err := os.ReadFile(t.FilePath)
+		if err != nil {
+			return "", fmt.Errorf("config: token file %q: %w", t.FilePath, err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return "", fmt.Errorf("config: token ref has no source configured (set env or file)")
 }
 
 func Parse(data []byte) (*Config, error) {
@@ -97,9 +117,7 @@ func NewResolver(cfg *Config) *Resolver { return &Resolver{cfg: cfg} }
 func (r *Resolver) Resolve(_ context.Context, channel string) (string, error) {
 	ch, ok := r.cfg.Channels[channel]
 	if !ok {
-		return "", fmt.Errorf("%w: channel %q", controller.ErrNoProject, channel)
+		return "", fmt.Errorf("%w: channel %q", ErrNoProject, channel)
 	}
 	return ch.Repo, nil
 }
-
-var _ controller.ProjectResolver = (*Resolver)(nil)

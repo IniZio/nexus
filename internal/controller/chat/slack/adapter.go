@@ -82,6 +82,9 @@ func NewAdapterWithFakeSource(api *goslack.Client, ch <-chan socketmode.Event, b
 
 var reMention = regexp.MustCompile(`<@[^>]+>`)
 
+// TeamID returns the Slack team ID reported by auth.test at construction time.
+func (a *Adapter) TeamID() string { return a.teamID }
+
 // StripBotMention removes all <@…> mentions from text and trims whitespace.
 func StripBotMention(text string) string {
 	return strings.TrimSpace(reMention.ReplaceAllString(text, ""))

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	"github.com/IniZio/nexus/internal/herdragent"
 )
 
@@ -109,7 +110,7 @@ var (
 	ErrConflict          = errors.New("controller: status compare-and-set conflict")
 	ErrInvalidTransition = errors.New("controller: invalid status transition")
 	ErrNotLinked         = errors.New("controller: user has not linked the integration")
-	ErrNoProject         = errors.New("controller: channel has no project")
+	ErrNoProject         = controllerconfig.ErrNoProject
 	ErrNotImplemented    = errors.New("controller: not implemented")
 )
 
