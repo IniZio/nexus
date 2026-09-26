@@ -470,7 +470,7 @@ func TestSandboxRm_HerdrWarm_PromotesVolumes(t *testing.T) {
 	var calls []volumeCall
 
 	orig := herdrWtRemoveVolumesFn
-	herdrWtRemoveVolumesFn = func(innerCtx context.Context, sr, h string, _ ...string) []string {
+	herdrWtRemoveVolumesFn = func(innerCtx context.Context, sr, h string, _ ...string) []wtVolumeResult {
 		_, getErr := svc.Get(innerCtx, h)
 		_, bindErr := HerdrSpaceGetByHandle(innerCtx, sr, h)
 		calls = append(calls, volumeCall{

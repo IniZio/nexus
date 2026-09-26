@@ -38,9 +38,9 @@ func stubWtRemoveVolumes(t *testing.T) *[]string {
 	t.Helper()
 	var handles []string
 	old := herdrWtRemoveVolumesFn
-	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, handle string, _ ...string) []string {
+	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, handle string, _ ...string) []wtVolumeResult {
 		handles = append(handles, handle)
-		return []string{herdrDockerDiskVolumeName(handle)}
+		return []wtVolumeResult{{Name: herdrDockerDiskVolumeName(handle)}}
 	}
 	t.Cleanup(func() { herdrWtRemoveVolumesFn = old })
 	return &handles

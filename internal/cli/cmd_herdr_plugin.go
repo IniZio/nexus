@@ -1962,11 +1962,12 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 	fs := flag.NewFlagSet("space-prune", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "delete stale bindings (default: dry-run)")
 	workspace := fs.String("workspace", "", "only the binding for this herdr workspace id (the worktree.removed hook path); the workspace is taken as gone")
+	allowForeign := fs.Bool("allow-foreign-sessions", false, "with --apply and no --workspace: proceed even if a non-default herdr session is selected or bindings from other herdr sessions exist")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "__herdr-plugin space-prune: " + err.Error()}
 	}
 	if fs.NArg() > 0 {
-		return &UsageError{Msg: fmt.Sprintf("__herdr-plugin space-prune: unexpected argument %q; usage: space-prune [--apply] [--workspace <id>]", fs.Arg(0))}
+		return &UsageError{Msg: fmt.Sprintf("__herdr-plugin space-prune: unexpected argument %q; usage: space-prune [--apply] [--workspace <id>] [--allow-foreign-sessions]", fs.Arg(0))}
 	}
 	/**
 	 * Refuse --apply when herdr is unavailable: the workspace-exists predicate
@@ -2030,6 +2031,16 @@ func herdrPluginSpacePrune(ctx context.Context, args []string, w io.Writer, svc 
 		}
 		gone := func(HerdrSpaceBinding) bool { return false }
 		return herdrSpacePruneBindings(ctx, w, storeRoot, herdrBin, scoped, sandboxExists, gone, closer, removeSandbox, *apply, false)
+	}
+
+	// Global mode with --apply: guard against cross-session reaping.
+	if *apply {
+		if bindingsErr != nil {
+			return fmt.Errorf("space-prune: --apply refused: could not read bindings: %w", bindingsErr)
+		}
+		if err := herdrGlobalPruneGuard(herdrCurrentSession(), herdrDefaultSession(), bindingsBefore, *allowForeign); err != nil {
+			return err
+		}
 	}
 
 	if err := herdrSpacePruneFull(ctx, w, storeRoot, herdrBin, sandboxExists, workspaceExists, closer, removeSandbox, *apply); err != nil {
@@ -2180,8 +2191,12 @@ func herdrSpacePruneBindings(
 		// Remove orphaned worktree volumes only when checkout is confirmed absent.
 		if b.IsWorktreeManaged() && !wsPresent && herdrPruneWorktreeAbsentFn(b.WorktreePath) {
 			auditCtx := audit.WithReason(ctx, fmt.Sprintf("herdr prune: workspace %s gone in session %s, worktree %s absent", b.HerdrWorkspaceID, b.HerdrSession, b.WorktreePath))
-			for _, name := range herdrWtRemoveVolumesFn(auditCtx, storeRoot, b.SandboxHandle) {
-				fmt.Fprintf(w, "  REMOVED volume=%s (worktree gone)\n", name)
+			for _, r := range herdrWtRemoveVolumesFn(auditCtx, storeRoot, b.SandboxHandle) {
+				if r.Trashed {
+					fmt.Fprintf(w, "  TRASHED volume=%s as=%s (restore: nexus volume restore %s)\n", r.Name, r.Entry, r.Entry)
+				} else {
+					fmt.Fprintf(w, "  REMOVED volume=%s (worktree gone)\n", r.Name)
+				}
 			}
 		}
 
@@ -4196,6 +4211,13 @@ const (
 	herdrGoPathDiskSizeBytes  int64 = 10 << 30
 )
 
+// wtVolumeResult describes one volume touched during worktree prune.
+type wtVolumeResult struct {
+	Name    string
+	Trashed bool
+	Entry   string
+}
+
 var herdrWtRemoveVolumesFn = herdrWtRemoveVolumes
 
 var herdrWtSeedVolumeFn = func(ctx context.Context, vs *volumestore.VolumeStore, name, projectKey string, kind volumestore.WarmKind, sizeBytes int64) (bool, error) {
@@ -4236,14 +4258,15 @@ var herdrPruneWorktreeAbsentFn = func(path string) bool {
 
 /**
  * herdrWtRemoveVolumes deletes the detached named volumes of a worktree
- * sandbox whose worktree is gone and returns the names it removed. Volumes
+ * sandbox whose worktree is gone and returns what it did per volume. agentcfg and nexusstate go to the
+ * volume trash (restorable); cache volumes are promoted to warm and removed. Volumes
  * that do not exist are skipped silently (the docker disk is only created
  * for Containerfile sandboxes, nexusstate only for nested ones); any other
  * failure — still attached, lock contention — is logged and skipped.
  * storeRoot is the sandbox store root; volumes live in its volumes/ subdir,
  * exactly as cmd_sandbox wires them. keep lists volume names to leave intact.
  */
-func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string, keep ...string) []string {
+func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string, keep ...string) []wtVolumeResult {
 	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
 
 	warmKinds := map[string]volumestore.WarmKind{
@@ -4266,7 +4289,7 @@ func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string, keep ..
 		}
 	}
 
-	var removed []string
+	var results []wtVolumeResult
 	for _, name := range herdrWorktreeVolumeNames(handle) {
 		skipped := false
 		for _, k := range keep {
@@ -4279,6 +4302,17 @@ func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string, keep ..
 			continue
 		}
 		if _, getErr := vs.Get(name); getErr != nil {
+			continue
+		}
+		if name == herdrAgentCfgDiskVolumeName(handle) || name == herdrNexusStateDiskVolumeName(handle) {
+			tCtx, tCancel := context.WithTimeout(ctx, 10*time.Second)
+			entry, tErr := vs.Trash(tCtx, name)
+			tCancel()
+			if tErr != nil {
+				slog.Warn("space-prune: trash worktree volume", "volume", name, "err", tErr)
+				continue
+			}
+			results = append(results, wtVolumeResult{Name: name, Trashed: true, Entry: entry})
 			continue
 		}
 		if seedEnabled {
@@ -4297,9 +4331,19 @@ func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string, keep ..
 			slog.Warn("space-prune: remove worktree volume", "volume", name, "err", rmErr)
 			continue
 		}
-		removed = append(removed, name)
+		results = append(results, wtVolumeResult{Name: name})
 	}
-	return removed
+
+	expCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	expired, expErr := vs.ExpireTrash(expCtx, volumestore.TrashGrace, time.Now())
+	cancel()
+	if expErr != nil {
+		slog.Warn("space-prune: expire trash", "err", expErr)
+	} else if len(expired) > 0 {
+		slog.Info("space-prune: expired trash entries", "entries", expired)
+	}
+
+	return results
 }
 
 /**

@@ -183,7 +183,7 @@ func TestHerdrWarmTeardown_promoteThenRm(t *testing.T) {
 	} {
 		found := false
 		for _, r := range removed {
-			if r == expected {
+			if r.Name == expected && !r.Trashed {
 				found = true
 				break
 			}

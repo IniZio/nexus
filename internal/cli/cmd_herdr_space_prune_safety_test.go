@@ -58,7 +58,7 @@ func TestHerdrSpacePruneSafety_ForeignSession_NoReap(t *testing.T) {
 	volumesCalled := false
 
 	old := herdrWtRemoveVolumesFn
-	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, _ string) []string {
+	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, _ string, _ ...string) []wtVolumeResult {
 		volumesCalled = true
 		return nil
 	}
@@ -117,7 +117,7 @@ func TestHerdrSpacePruneSafety_SameSession_WorktreePresent_NoReap(t *testing.T) 
 	volumesCalled := false
 
 	oldVol := herdrWtRemoveVolumesFn
-	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, _ string) []string {
+	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, _ string, _ ...string) []wtVolumeResult {
 		volumesCalled = true
 		return nil
 	}
@@ -175,7 +175,7 @@ func TestHerdrSpacePruneSafety_SameSession_EmptyWorktreePath_NoReap(t *testing.T
 	volumesCalled := false
 
 	oldVol := herdrWtRemoveVolumesFn
-	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, _ string) []string {
+	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, _ string, _ ...string) []wtVolumeResult {
 		volumesCalled = true
 		return nil
 	}
@@ -231,7 +231,7 @@ func TestHerdrSpacePruneSafety_SameSession_WorktreeAbsent_Reaps(t *testing.T) {
 	var auditReasonSeen string
 
 	oldVol := herdrWtRemoveVolumesFn
-	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, _ string) []string {
+	herdrWtRemoveVolumesFn = func(_ context.Context, _ string, _ string, _ ...string) []wtVolumeResult {
 		volumesCalled = true
 		return nil
 	}

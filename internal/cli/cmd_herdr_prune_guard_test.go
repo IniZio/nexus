@@ -88,11 +88,11 @@ func TestHerdrGlobalPruneGuard(t *testing.T) {
 			wantErr:      false,
 		},
 		{
-			name:         "legacy-only bindings → nil (not foreign)",
-			cur:          def,
-			def:          def,
-			bindings:     []HerdrSpaceBinding{legacy, legacy},
-			wantErr:      false,
+			name:     "legacy-only bindings → nil (not foreign)",
+			cur:      def,
+			def:      def,
+			bindings: []HerdrSpaceBinding{legacy, legacy},
+			wantErr:  false,
 		},
 		{
 			name:         "error has required prefix",
