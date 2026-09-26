@@ -74,6 +74,15 @@ type HerdrSpaceBinding struct {
 	// existed are identified by the herdrWorktreeHandlePrefix fallback inside
 	// IsWorktreeManaged.
 	WorktreeManaged bool `json:"worktree_managed,omitempty"`
+	// HerdrSession is the cleaned absolute path of the herdr socket for the
+	// server session that owns HerdrWorkspaceID.  Used by prune to skip
+	// bindings that belong to a different herdr session.  Empty on legacy
+	// bindings; absence is treated as "foreign" (never pruned by another session).
+	HerdrSession string `json:"herdr_session,omitempty"`
+	// WorktreePath is the absolute path of the worktree checkout backing a
+	// worktree-managed binding.  Populated by the worktree-sandbox flow; empty
+	// on other bindings.
+	WorktreePath string `json:"worktree_path,omitempty"`
 }
 
 // IsWorktreeManaged reports whether this binding was created by the
@@ -90,6 +99,34 @@ func (b HerdrSpaceBinding) IsWorktreeManaged() bool {
 	// Legacy fallback: bindings written before WorktreeManaged was introduced
 	// used the "wt/" handle prefix as the sole reap marker.
 	return strings.HasPrefix(b.SandboxHandle, herdrWorktreeHandlePrefix)
+}
+
+// herdrCurrentSession returns the cleaned absolute socket path for the current
+// herdr session.  If HERDR_SOCKET_PATH is set it is used directly (debug
+// override); otherwise HERDR_SESSION names a named session; empty falls back
+// to the default socket path.
+func herdrCurrentSession() string {
+	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return filepath.Clean(p)
+		}
+		return filepath.Clean(abs)
+	}
+	return herdrSocketPath(os.Getenv("HERDR_SESSION"))
+}
+
+// herdrDefaultSession returns the socket path for the default (unnamed) herdr
+// session.
+func herdrDefaultSession() string {
+	return herdrSocketPath("")
+}
+
+// OwnedByHerdrSession reports whether this binding's HerdrWorkspaceID belongs
+// to the given herdr session socket path.  A binding with an empty HerdrSession
+// (legacy) is never owned by any specific session.
+func (b HerdrSpaceBinding) OwnedByHerdrSession(s string) bool {
+	return b.HerdrSession != "" && b.HerdrSession == s
 }
 
 // ErrHerdrSpaceNotFound is returned when no matching binding exists.
@@ -435,6 +472,7 @@ func herdrSpacePruneSandboxExistsFn(ctx context.Context, svc herdrSpacePruneList
 // treated as "response not understood" → all bindings alive, so a malformed
 // response never causes mass deletion.
 func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func(HerdrSpaceBinding) bool {
+	cur := herdrCurrentSession()
 	out, err := herdrExecCommandContext(ctx, herdrBin, "workspace", "list").Output()
 	if err != nil {
 		slog.Warn("space-prune: workspace list", "err", err)
@@ -474,6 +512,11 @@ func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func
 	// the known binding count. Verified from herdr's workspace list command
 	// source: no next-page token is present; the list is returned in one call.
 	return func(b HerdrSpaceBinding) bool {
+		// Bindings owned by a different herdr session (or legacy bindings with no
+		// session recorded) are never judged by this session's workspace list — they
+		if !b.OwnedByHerdrSession(cur) {
+			return true
+		}
 		if b.HerdrWorkspaceID == "" {
 			// Empty workspace ID — cannot determine existence; treat as alive.
 			// Adopted bindings (herdrSpaceAdopt) intentionally omit the workspace

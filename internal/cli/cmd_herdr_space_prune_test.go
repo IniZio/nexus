@@ -369,8 +369,9 @@ func TestHerdrSpacePruneWorkspaceExistsFn(t *testing.T) {
 
 			pred := herdrSpacePruneWorkspaceExistsFn(context.Background(), "fake-herdr")
 
-			b6 := HerdrSpaceBinding{HerdrWorkspaceID: "w6"}
-			b999 := HerdrSpaceBinding{HerdrWorkspaceID: "w999"}
+			sess := herdrDefaultSession()
+			b6 := HerdrSpaceBinding{HerdrWorkspaceID: "w6", HerdrSession: sess}
+			b999 := HerdrSpaceBinding{HerdrWorkspaceID: "w999", HerdrSession: sess}
 
 			if got := pred(b6); got != tc.wantW6 {
 				t.Errorf("pred(w6): got %v, want %v", got, tc.wantW6)
