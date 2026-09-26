@@ -49,12 +49,16 @@ type probes struct {
 	listImages        func(context.Context) ([]domain.Image, error)
 	registryReachable func(string) error
 	listHerdrProcs    func(context.Context) ([]HerdrProc, error)
+	getenv            func(string) string
+	executable        func() (string, error)
 }
 
 func defaultProbes() probes {
 	return probes{
-		goos:     runtime.GOOS,
-		lookPath: exec.LookPath,
+		goos:       runtime.GOOS,
+		lookPath:   exec.LookPath,
+		getenv:     os.Getenv,
+		executable: os.Executable,
 		openKVM: func() error {
 			f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 			if err != nil {
@@ -118,6 +122,10 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 	if !platOK {
 		binCheck.OK = false
 		binCheck.Detail = "skipped (platform is not Linux)"
+	} else if envPath := chBinaryFromEnv(p.getenv); envPath != "" {
+		binaryPath = envPath
+		binCheck.OK = true
+		binCheck.Detail = envPath
 	} else {
 		path, err := p.lookPath("cloud-hypervisor")
 		if err == nil {
@@ -125,9 +133,15 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 			binCheck.OK = true
 			binCheck.Detail = path
 		} else {
-			binCheck.OK = false
-			binCheck.Detail = "cloud-hypervisor not found in PATH"
-			binCheck.Remediation = "Install cloud-hypervisor (https://github.com/cloud-hypervisor/cloud-hypervisor/releases) and ensure it is on your PATH."
+			binaryPath = chBinaryFallback(p.executable, p.getenv)
+			if binaryPath != "" {
+				binCheck.OK = true
+				binCheck.Detail = binaryPath
+			} else {
+				binCheck.OK = false
+				binCheck.Detail = "cloud-hypervisor not found in PATH"
+				binCheck.Remediation = "Install cloud-hypervisor (https://github.com/cloud-hypervisor/cloud-hypervisor/releases) and ensure it is on your PATH."
+			}
 		}
 	}
 	checks = append(checks, binCheck)
@@ -251,6 +265,36 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 	}
 
 	return checks, drv
+}
+
+// chBinaryFromEnv returns the cloud-hypervisor path set via NEXUS_CLOUD_HYPERVISOR_PATH.
+func chBinaryFromEnv(getenv func(string) string) string {
+	if getenv == nil {
+		return ""
+	}
+	return getenv("NEXUS_CLOUD_HYPERVISOR_PATH")
+}
+
+// chBinaryFallback searches for cloud-hypervisor next to the current executable
+// and in $HOME/.local/bin when the PATH lookup already failed.
+func chBinaryFallback(executable func() (string, error), getenv func(string) string) string {
+	if executable != nil {
+		if exe, err := executable(); err == nil {
+			candidate := filepath.Join(filepath.Dir(exe), "cloud-hypervisor")
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				return candidate
+			}
+		}
+	}
+	if getenv != nil {
+		if home := getenv("HOME"); home != "" {
+			candidate := filepath.Join(home, ".local", "bin", "cloud-hypervisor")
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				return candidate
+			}
+		}
+	}
+	return ""
 }
 
 // selectWith is the testable substrate selection logic.

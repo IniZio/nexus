@@ -68,6 +68,17 @@ No flags. Args: `<sandbox-ref>`
 
 ---
 
+### ## controller
+
+Summary: Run the chat controller (execs nexus-controller)
+
+Execs the separate `nexus-controller` binary found next to the `nexus` executable, falling back to PATH; all args are passed through; exit code is propagated; not-found is an error.
+
+Subcommands:
+- `serve` — run the controller server (currently wired to in-memory fakes; the Slack adapter, SQLite task store, and agent backend arrive in later slices)
+
+---
+
 ### ## cp
 
 Summary: Copy files between host and guest (guest:\<path\> prefix marks the guest side)
@@ -350,6 +361,18 @@ Flags:
 - `--force` — upgrade even when the running supervisor already reports the current binary
 
 Args: `<sandbox-ref>`
+
+---
+
+### ## vault
+
+Summary: Manage linked integration credentials
+
+Subcommands:
+
+- `vault link <integration>` — Link an integration. Supported: `github` (device flow), `linear` (PKCE via loopback).
+- `vault ls` — List linked integrations (never prints tokens).
+- `vault rm <integration>` — Remove a linked integration credential.
 
 ---
 

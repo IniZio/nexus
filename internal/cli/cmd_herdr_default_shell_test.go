@@ -1481,3 +1481,37 @@ func TestHerdrSidecarPath_usesArgv0NotResolvedExecutable(t *testing.T) {
 		t.Fatalf("relative argv0 must fall back to the executable; got %q", got)
 	}
 }
+
+func TestGuestShellFallbackPrintsMarker(t *testing.T) {
+	root := t.TempDir()
+	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
+
+	dialErr := errors.New("dial: connection refused")
+	svc := &fakeDialableGetter{
+		fakeDefaultShellGetter: fakeDefaultShellGetter{
+			sb: domain.Sandbox{State: domain.Running},
+		},
+		dialErr: dialErr,
+	}
+
+	var buf strings.Builder
+	old := herdrFallbackStderrFn
+	herdrFallbackStderrFn = func() io.Writer { return &buf }
+	defer func() { herdrFallbackStderrFn = old }()
+
+	getenv := func(k string) string {
+		if k == "HERDR_WORKSPACE_ID" {
+			return testBinding.HerdrWorkspaceID
+		}
+		return ""
+	}
+	cap := &capturedExec{}
+	_ = runCore(context.Background(), getenv, root, svc, cap.fn)
+
+	if !strings.Contains(buf.String(), guestShellFallbackMarker) {
+		t.Errorf("stderr does not contain fallback marker %q; got: %q", guestShellFallbackMarker, buf.String())
+	}
+	if !strings.Contains(buf.String(), dialErr.Error()) {
+		t.Errorf("stderr does not contain dial error %q; got: %q", dialErr.Error(), buf.String())
+	}
+}

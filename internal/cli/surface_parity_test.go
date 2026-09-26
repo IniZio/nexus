@@ -48,6 +48,8 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "ssh", CanonicalMethods: []string{"service.SSHConn"}, MCPTools: nil},
 	{CLIVerb: "supervisor-upgrade", CanonicalMethods: []string{"service.ResolveRef", "service.SetSupervisor"}, MCPTools: nil},
 	{CLIVerb: "supervisor-backfill-netns-identity", CanonicalMethods: []string{"service.ResolveRef", "service.SetNetnsIdentity"}, MCPTools: nil},
+	{CLIVerb: "controller", CLIOnly: true},
+	{CLIVerb: "vault", CLIOnly: true},
 	{CLIVerb: "version", CLIOnly: true},
 	{CLIVerb: "volume", CanonicalMethods: []string{"volumestore.Create", "volumestore.List", "volumestore.Rm", "volumestore.Prune"}, MCPTools: nil},
 	{CLIVerb: "sandbox agent-upgrade", CanonicalMethods: []string{"agent.AgentUpgrade", "agent.AgentInfo"}, MCPTools: nil},

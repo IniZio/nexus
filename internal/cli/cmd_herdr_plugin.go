@@ -677,6 +677,8 @@ var herdrNewAgentClient = func(herdrBin string) *herdragent.Client {
 
 var herdrPaneExistsFn = herdrPaneExists
 
+var herdrOpenGuestShellPaneFn = herdrOpenGuestShellPane
+
 var herdrBaseImageListFn = func(ctx context.Context) ([]domain.Image, error) {
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {
@@ -3489,6 +3491,31 @@ func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGette
 	return projectDir, nil
 }
 
+// herdrSpaceAgentCheckFallbackPane replaces a reused fallback host-shell pane
+// with a fresh guest pane. Returns an error if the fresh pane is also a fallback.
+func herdrSpaceAgentCheckFallbackPane(
+	ctx context.Context, herdrBin, ref string,
+	binding *HerdrSpaceBinding, storeRoot string, w io.Writer,
+) (string, error) {
+	paneID := binding.GuestPaneID
+	content, ok := herdrPaneReadFn(ctx, herdrBin, paneID)
+	if !ok || !strings.Contains(content, guestShellFallbackMarker) {
+		return paneID, nil
+	}
+	fmt.Fprintf(w, "space-agent: pane %s is a fallback host shell; opening a fresh guest pane\n", paneID)
+	freshID, freshErr := herdrOpenGuestShellPaneFn(ctx, herdrBin, ref, binding.HerdrWorkspaceID, "", false)
+	if freshErr != nil {
+		return paneID, freshErr
+	}
+	binding.GuestPaneID = freshID
+	_ = HerdrSpacePut(ctx, storeRoot, *binding)
+	if content2, ok2 := herdrPaneReadFn(ctx, herdrBin, freshID); ok2 && strings.Contains(content2, guestShellFallbackMarker) {
+		return freshID, &CodedError{Code: ErrCodeInternalError,
+			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor installation (NEXUS_CLOUD_HYPERVISOR_PATH)", freshID)}
+	}
+	return freshID, nil
+}
+
 func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, focus bool, w io.Writer, svc *service.Service, storeRoot string) error {
 	/**
 	 * 0. Ensure the sandbox exists. If it has never been created, build it now
@@ -3542,6 +3569,11 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-agent: " + err.Error(), Err: err}
 	}
 
+	paneID, err = herdrSpaceAgentCheckFallbackPane(ctx, herdrBin, ref, &binding, storeRoot, w)
+	if err != nil {
+		return err
+	}
+
 	/**
 	 * 4. (No bypass-permissions consent step: guest claude launches in auto
 	 *    permission mode via --permission-mode auto; no consent prompt appears.)
@@ -3556,6 +3588,10 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	 *    prompt is what distinguishes the guest shell from the host pane the
 	 *    plugin was opened from.
 	 */
+	if content, ok := herdrPaneReadFn(ctx, herdrBin, paneID); ok && strings.Contains(content, guestShellFallbackMarker) {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor installation (NEXUS_CLOUD_HYPERVISOR_PATH)", paneID)}
+	}
 	guestPrompt := sandboxHandleHostname(ref)
 	fmt.Fprintf(w, "space-agent: waiting for the guest shell (match=%q) ...\n", guestPrompt)
 	if err := herdrPaneWaitOutput(ctx, herdrBin, paneID, guestPrompt, guestShellTimeoutMS); err != nil {

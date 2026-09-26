@@ -3,6 +3,7 @@ attach
 auth
 config validate
 config-ssh
+controller
 cp
 create
 disk
@@ -30,5 +31,6 @@ start
 stop
 supervisor-backfill-netns-identity
 supervisor-upgrade
+vault
 version
 volume

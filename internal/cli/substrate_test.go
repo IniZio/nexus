@@ -413,3 +413,43 @@ func TestRunAllChecks_AllFail_DriverNil(t *testing.T) {
 		t.Errorf("expected at least 3 checks, got %d", len(checks))
 	}
 }
+
+func TestSubstrateFindsCloudHypervisorOutsidePATH(t *testing.T) {
+	dir := t.TempDir()
+	chBin := dir + "/cloud-hypervisor"
+	if err := os.WriteFile(chBin, []byte(""), 0755); err != nil {
+		t.Fatal(err)
+	}
+	kernelFile := dir + "/vmlinux"
+	if err := os.WriteFile(kernelFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS_KERNEL_PATH", kernelFile)
+
+	nexusBin := dir + "/nexus"
+	p := probes{
+		goos:       "linux",
+		lookPath:   func(string) (string, error) { return "", os.ErrNotExist },
+		openKVM:    func() error { return nil },
+		executable: func() (string, error) { return nexusBin, nil },
+		getenv:     func(key string) string { return "" },
+	}
+	checks, _ := runAllChecks(p)
+
+	var binCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "binary" {
+			binCheck = &checks[i]
+			break
+		}
+	}
+	if binCheck == nil {
+		t.Fatal("expected binary check in results")
+	}
+	if !binCheck.OK {
+		t.Errorf("binary check should be OK when cloud-hypervisor is next to the executable; detail: %s", binCheck.Detail)
+	}
+	if binCheck.Detail != chBin {
+		t.Errorf("binary path = %q, want %q", binCheck.Detail, chBin)
+	}
+}

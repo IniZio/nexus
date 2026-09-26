@@ -26,6 +26,12 @@ import (
 // binary path to form the companion sidecar. A single source-of-truth constant
 const herdrSidecarSuffix = ".nexusbin"
 
+// guestShellFallbackMarker is written to stderr when nexus-guest-shell falls
+// back to a host shell. space-agent matches this prefix to detect a broken pane.
+const guestShellFallbackMarker = "nexus-guest-shell: FALLBACK host shell:"
+
+var herdrFallbackStderrFn = func() io.Writer { return os.Stderr }
+
 type herdrExecFn func(argv0 string, argv []string, envv []string) error
 
 type sandboxDialer interface {
@@ -369,6 +375,7 @@ func herdrDefaultShellCore(
 			}
 		}
 		if sb.State != domain.Running {
+			fmt.Fprintf(herdrFallbackStderrFn(), "%s sandbox not running (state=%v)\n", guestShellFallbackMarker, sb.State)
 			return execHostShell()
 		}
 		if d, ok := svc.(sandboxDialer); ok {
@@ -377,6 +384,7 @@ func herdrDefaultShellCore(
 			cancel()
 			if dialErr != nil {
 				slog.Warn("nexus-guest-shell: guest not dialable; falling back to host shell", "err", dialErr)
+				fmt.Fprintf(herdrFallbackStderrFn(), "%s %v\n", guestShellFallbackMarker, dialErr)
 				return execHostShell()
 			}
 			conn.Close()

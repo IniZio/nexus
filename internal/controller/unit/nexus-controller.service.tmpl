@@ -1,0 +1,19 @@
+[Unit]
+Description=Nexus Controller (Slack agent front door)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{.NexusBinDir}}/nexus controller serve --config {{.ConfigPath}}
+
+Environment=PATH={{.NexusBinDir}}:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TMPDIR=/var/tmp
+
+LoadCredentialEncrypted=nexus-vault-key
+
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
