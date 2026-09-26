@@ -1481,14 +1481,14 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 	 * stranding the sandbox until someone pruned the binding by hand. When the
 	 * workspace is gone we mint a fresh one instead.
 	 *
-	 * The predicate is shared with space-prune and fails SAFE for both callers:
-	 * when herdr is unreachable or answers in an unexpected shape it reports
-	 * every workspace alive, so prune deletes nothing and we reuse rather than
-	 * minting a duplicate during a transient herdr outage.
+	 * Uses herdrWorkspaceListedFn (no session guard) — the workspace may have
+	 * been created in a prior session; the binding should still be refreshed.
+	 * Fails SAFE: when herdr is unreachable it reports every workspace alive,
+	 * so we reuse rather than minting a duplicate during a transient herdr outage.
 	 */
 	existing, existingErr := HerdrSpaceGetByLabel(ctx, storeRoot, label)
 	reusable := existingErr == nil
-	if reusable && !herdrSpacePruneWorkspaceExistsFn(ctx, herdrBin)(existing) {
+	if reusable && !herdrWorkspaceListedFn(ctx, herdrBin)(existing) {
 		slog.Warn("space-create: bound herdr workspace no longer exists; minting a new one",
 			"label", existing.SpaceLabel, "stale_workspace_id", existing.HerdrWorkspaceID)
 		fmt.Fprintf(w, "space-create: workspace %s for %s is gone; creating a new one\n",
@@ -1518,6 +1518,7 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 			return err
 		}
 		existing.GuestPaneID = paneID
+		existing.HerdrSession = herdrCurrentSession()
 		if err := HerdrSpacePut(ctx, storeRoot, existing); err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: store binding: " + err.Error(), Err: err}
 		}
@@ -4928,7 +4929,7 @@ func herdrWorktreeSandbox(
 			 * probe fails open (all alive) when herdr cannot be listed, so an
 			 * unreachable herdr keeps today's reuse behaviour.
 			 */
-			if bound.HerdrWorkspaceID == workspaceID || herdrSpacePruneWorkspaceExistsFn(ctx, herdrBin)(bound) {
+			if bound.HerdrWorkspaceID == workspaceID || herdrWorkspaceListedFn(ctx, herdrBin)(bound) {
 				fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
 				return nil
 			}

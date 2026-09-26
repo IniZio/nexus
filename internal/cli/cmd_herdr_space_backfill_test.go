@@ -358,6 +358,10 @@ func TestHerdrDefaultShellCore_UnboundNonWorktreeWorkspace_NoSpawn(t *testing.T)
 		RepoRoot:         "/some/repo",
 	})
 
+	oldPred := herdrAutoCreatePredicateFn
+	herdrAutoCreatePredicateFn = func(_ []HerdrSpaceBinding) bool { return false }
+	t.Cleanup(func() { herdrAutoCreatePredicateFn = oldPred })
+
 	// Inject auto-create seam: if called, fail the test.
 	autoCreateCalled := false
 	old := herdrDefaultShellAutoCreateFn

@@ -464,18 +464,16 @@ func herdrSpacePruneSandboxExistsFn(ctx context.Context, svc herdrSpacePruneList
 	}
 }
 
-// herdrSpacePruneWorkspaceExistsFn returns a predicate that reports whether
-// the herdr workspace recorded in a binding still exists in herdr. The list
-// is fetched once; on fetch or parse failure every workspace is considered
-// alive so no binding is pruned due to herdr being unreachable.  An empty
-// response or a response where no entry carries a non-empty workspace_id is
-// treated as "response not understood" → all bindings alive, so a malformed
-// response never causes mass deletion.
-func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func(HerdrSpaceBinding) bool {
-	cur := herdrCurrentSession()
+// herdrWorkspaceListedFn returns a predicate that reports whether the herdr
+// workspace recorded in a binding appears in the current session's workspace
+// list.  The list is fetched once; on fetch or parse failure every workspace
+// is considered alive (fail-safe).  An empty response is treated as
+// "response not understood" → all alive.  Use this at non-destructive call
+// sites (rebind/staleness checks).  Prune uses herdrSpacePruneWorkspaceExistsFn.
+func herdrWorkspaceListedFn(ctx context.Context, herdrBin string) func(HerdrSpaceBinding) bool {
 	out, err := herdrExecCommandContext(ctx, herdrBin, "workspace", "list").Output()
 	if err != nil {
-		slog.Warn("space-prune: workspace list", "err", err)
+		slog.Warn("space: workspace list", "err", err)
 		return func(HerdrSpaceBinding) bool { return true }
 	}
 	var resp struct {
@@ -486,7 +484,7 @@ func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func
 		} `json:"result"`
 	}
 	if jsonErr := json.Unmarshal(out, &resp); jsonErr != nil {
-		slog.Warn("space-prune: parse workspace list; treating all as alive", "err", jsonErr)
+		slog.Warn("space: parse workspace list; treating all as alive", "err", jsonErr)
 		return func(HerdrSpaceBinding) bool { return true }
 	}
 	// Count entries with a non-empty workspace_id. A list where every entry has
@@ -499,24 +497,14 @@ func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func
 		}
 	}
 	if len(alive) == 0 {
-		slog.Warn("space-prune: workspace list returned no entries with a non-empty workspace_id; treating all as alive (likely unexpected response shape)")
+		slog.Warn("space: workspace list returned no entries with a non-empty workspace_id; treating all as alive (likely unexpected response shape)")
 		return func(HerdrSpaceBinding) bool { return true }
 	}
 	// Stated assumption (F5): herdr's workspace list API is unpaginated — a
 	// single response contains ALL workspaces for the account. If herdr ever
-	// adds pagination, a partial response would be indistinguishable from a
-	// complete one and bindings absent from the page would be incorrectly
-	// pruned (blast radius: binding record only; prune does not close a live
-	// workspace in this path). If herdr gains pagination, adopt option (b):
-	// block --apply when the returned workspace count is implausibly below
-	// the known binding count. Verified from herdr's workspace list command
-	// source: no next-page token is present; the list is returned in one call.
+	// adds pagination, adopt option (b): block --apply when the returned
+	// workspace count is implausibly below the known binding count.
 	return func(b HerdrSpaceBinding) bool {
-		// Bindings owned by a different herdr session (or legacy bindings with no
-		// session recorded) are never judged by this session's workspace list — they
-		if !b.OwnedByHerdrSession(cur) {
-			return true
-		}
 		if b.HerdrWorkspaceID == "" {
 			// Empty workspace ID — cannot determine existence; treat as alive.
 			// Adopted bindings (herdrSpaceAdopt) intentionally omit the workspace
@@ -524,5 +512,22 @@ func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func
 			return true
 		}
 		return alive[b.HerdrWorkspaceID]
+	}
+}
+
+// herdrSpacePruneWorkspaceExistsFn returns a predicate for use by prune only.
+// It wraps herdrWorkspaceListedFn with a session guard: bindings owned by a
+// different herdr session (or legacy bindings with no session recorded) are
+// always reported alive — this session's workspace list cannot authoritatively
+// say they are gone.  Non-destructive rebind/staleness call sites use
+// herdrWorkspaceListedFn directly, which has no session guard.
+func herdrSpacePruneWorkspaceExistsFn(ctx context.Context, herdrBin string) func(HerdrSpaceBinding) bool {
+	cur := herdrCurrentSession()
+	listed := herdrWorkspaceListedFn(ctx, herdrBin)
+	return func(b HerdrSpaceBinding) bool {
+		if !b.OwnedByHerdrSession(cur) {
+			return true
+		}
+		return listed(b)
 	}
 }

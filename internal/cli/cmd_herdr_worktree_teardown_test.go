@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -184,6 +185,7 @@ func TestPruneFull_wtSandboxPresentWorkspaceGone_reapsVM(t *testing.T) {
 		SandboxHandle:    handle,
 		SandboxID:        "sb-abc",
 		WorktreeManaged:  true,
+		WorktreePath:     filepath.Join(t.TempDir(), "gone"),
 	}
 	h.addBinding(t, b)
 
@@ -283,6 +285,8 @@ func TestPruneFull_dryRun_neverCallsRemove(t *testing.T) {
 		HerdrWorkspaceID: "wTEST-dry",
 		SandboxHandle:    handle,
 		SandboxID:        "sb-dry",
+		WorktreeManaged:  true,
+		WorktreePath:     filepath.Join(t.TempDir(), "gone"),
 	}
 	h.addBinding(t, b)
 
