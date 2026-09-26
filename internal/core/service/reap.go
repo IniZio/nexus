@@ -292,6 +292,18 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 		}
 	}
 
+	inFlightAgentCfg := make(map[domain.SandboxID]string)
+	for _, res := range resources {
+		if res.Kind != KindAgentCfgStage {
+			continue
+		}
+		switch probeIntentLease(res.Path) {
+		case leaseHeld:
+			inFlightAgentCfg[res.OwnerID] = "create in flight: agentcfg stage lease held"
+		case leaseUnknown:
+			inFlightAgentCfg[res.OwnerID] = "agentcfg stage dir unreadable — cannot rule out a live creator, keeping"
+		}
+	}
 	all, err := st.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reap: list store records: %w", err)
@@ -335,6 +347,8 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 			// Shadow disks and their intents use handle-based correlation,
 			// not ULID/liveness.
 			entry = classifyShadowDisk(res, shadowHandleMap, recordMap, inFlightShadow)
+		} else if res.Kind == KindAgentCfgStage {
+			entry = classifyAgentCfgStage(ctx, res, recordMap, inFlight, inFlightAgentCfg, socketDir, opt.ProcDir)
 		} else if res.Kind == KindSupervisorState {
 			entry = classifySupervisorState(ctx, res, recordMap, inFlight, socketDir, opt.ProcDir, storeRoot)
 		} else {
@@ -550,6 +564,22 @@ func forkChildShadowOwner(safeHandle string) (domain.SandboxID, bool) {
 		}
 	}
 	return domain.SandboxID{}, false
+}
+
+// classifyAgentCfgStage classifies a KindAgentCfgStage dir; leases are pre-probed into inFlightAgentCfg before st.List.
+func classifyAgentCfgStage(
+	ctx context.Context,
+	res HostResource,
+	recordMap map[domain.SandboxID]domain.Sandbox,
+	inFlight map[domain.SandboxID]string,
+	inFlightAgentCfg map[domain.SandboxID]string,
+	socketDir string,
+	procDir string,
+) ReapEntry {
+	if reason, ok := inFlightAgentCfg[res.OwnerID]; ok {
+		return ReapEntry{Resource: res, Status: ReapStatusLive, Reason: reason}
+	}
+	return classifyResource(ctx, res, recordMap, inFlight, socketDir, procDir)
 }
 
 // supervisorSockFile is the name of the supervisor's own control socket inside
@@ -780,7 +810,7 @@ var deleteResourceFn = deleteResource
 // deleteResource removes a resource from disk.
 func deleteResource(res HostResource) error {
 	switch res.Kind {
-	case KindBuilderSupervisor, KindSupervisorState:
+	case KindBuilderSupervisor, KindSupervisorState, KindAgentCfgStage:
 		// Directories with contents; os.Remove would fail with ENOTEMPTY.
 		return os.RemoveAll(res.Path)
 	}

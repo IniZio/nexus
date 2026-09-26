@@ -45,6 +45,12 @@ const (
 	// through exactly the same classify-then-apply rail as every other kind.
 	KindSupervisorState ResourceKind = "supervisor_state"
 
+	// KindAgentCfgStage identifies a per-sandbox agent-config staging directory,
+	// <diskDir>/<ULID>-agentcfg-lower/, created before service.CreateAndBoot.
+	// A surviving directory after a SIGKILL is an orphan; the creator holds an
+	// exclusive flock on the directory fd for the whole create window.
+	KindAgentCfgStage ResourceKind = "agentcfg_stage"
+
 	// KindNetnsProcess identifies a LIVE netns-runtime child process
 	// discovered by an independent /proc sweep (see reap.go:
 	// sweepOrphanNetnsProcesses), not by ResourceIndex.List(). Unlike every
@@ -134,11 +140,17 @@ func (x *ResourceIndex) List() ([]HostResource, error) {
 		return nil, fmt.Errorf("resource index: read disks dir %s: %w", disksDir, err)
 	}
 	for _, e := range diskEntries {
-		if e.IsDir() {
-			continue
-		}
 		name := e.Name()
 		path := filepath.Join(disksDir, name)
+		if e.IsDir() {
+			if strings.HasSuffix(name, "-agentcfg-lower") {
+				stem := strings.TrimSuffix(name, "-agentcfg-lower")
+				if id, err := domain.ParseSandboxID(stem); err == nil {
+					resources = append(resources, HostResource{Kind: KindAgentCfgStage, Path: path, OwnerID: id})
+				}
+			}
+			continue
+		}
 
 		switch {
 		case strings.HasSuffix(name, ".raw"):
