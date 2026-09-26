@@ -134,8 +134,11 @@ func (s *VolumeStore) Trash(ctx context.Context, name string) (string, error) {
 
 	src := s.volDir(name)
 	if err := os.Rename(src, dst); err != nil {
-		return "", fmt.Errorf("volume %s: rename to trash: %w", name, err)
+		renameErr := fmt.Errorf("volume %s: rename to trash: %w", name, err)
+		s.audit(ctx, "volume.trash", []string{name, entryName}, renameErr)
+		return "", renameErr
 	}
+	s.audit(ctx, "volume.trash", []string{name, entryName}, nil)
 	return entryName, nil
 }
 
@@ -172,8 +175,11 @@ func (s *VolumeStore) Restore(ctx context.Context, entry, as string) (string, er
 
 	dst := s.volDir(destName)
 	if err := os.Rename(src, dst); err != nil {
-		return "", fmt.Errorf("trash entry %s: restore: %w", entry, err)
+		restoreErr := fmt.Errorf("trash entry %s: restore: %w", entry, err)
+		s.audit(ctx, "volume.restore", []string{entry, destName}, restoreErr)
+		return "", restoreErr
 	}
+	s.audit(ctx, "volume.restore", []string{entry, destName}, nil)
 
 	// When restoring under a different name, update meta.json to reflect it.
 	if destName != original {
@@ -238,6 +244,9 @@ func (s *VolumeStore) ExpireTrash(ctx context.Context, grace time.Duration, now 
 			}
 			deleted = append(deleted, e.Name)
 		}
+	}
+	if len(deleted) > 0 {
+		s.audit(ctx, "volume.trash_expire", deleted, nil)
 	}
 	return deleted, nil
 }

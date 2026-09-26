@@ -449,6 +449,8 @@ func (s *VolumeStore) Rm(ctx context.Context, name string) error {
 		}
 	}
 
+	s.audit(ctx, "volume.rm", []string{name}, nil)
+
 	dir := s.volDir(name)
 
 	// Remove backing resources.
