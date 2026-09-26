@@ -1550,17 +1550,23 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 			// Live-mount staging-excluded subtrees (e.g. plugins/cache) independent of noUserMounts.
 			if agentCfgDir, dirErr := service.AgentSettingsDir(agentProfile); dirErr == nil {
-				guestPaths := make(map[string]bool, len(bootLiveMounts))
-				for _, m := range bootLiveMounts {
-					guestPaths[m.GuestPath] = true
+				stagingExclude := service.StagingExcludeLiveMounts(agentProfile, agentCfgDir)
+				for _, m := range stagingExclude {
+					bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
+						HostPath:  m.HostPath,
+						GuestPath: m.StagingGuestPath,
+						ReadOnly:  true,
+					})
 				}
-				for _, spec := range service.StagingExcludeLiveMounts(agentProfile, agentCfgDir, guestPaths) {
-					lm, mountErr := parseMountLive(spec)
-					if mountErr != nil {
-						slog.Warn("sandbox create: staging-exclude live mount skipped", "spec", spec, "err", mountErr)
-						continue
+				if len(stagingExclude) > 0 {
+					var manifest service.UserMountManifest
+					if data, readErr := os.ReadFile(filepath.Join(stageDir, "usermounts.json")); readErr == nil {
+						_ = json.Unmarshal(data, &manifest)
 					}
-					bootLiveMounts = append(bootLiveMounts, lm)
+					manifest.Mounts = append(manifest.Mounts, stagingExclude...)
+					if writeErr := service.WriteUserMountManifest(stageDir, manifest); writeErr != nil {
+						slog.Warn("sandbox create: failed to write staging-exclude mounts to usermounts.json", "err", writeErr)
+					}
 				}
 			}
 		}

@@ -730,6 +730,21 @@ func buildUserMountScript(manifest UserMountManifest) string {
 	var b strings.Builder
 	b.WriteString("set -eu\n\n")
 
+	// Step 1: Rebind product mounts. These virtiofs shares are staged outside
+	for _, m := range manifest.Mounts {
+		if !m.Rebind {
+			continue
+		}
+		qStaging := shSingleQuote(m.StagingGuestPath)
+		qGuest := shSingleQuote(m.GuestPath)
+		fmt.Fprintf(&b, "# 1. Rebind: %s\n", m.GuestPath)
+		fmt.Fprintf(&b, "if [ -d %s ] && ! mountpoint -q %s 2>/dev/null; then\n", qStaging, qGuest)
+		fmt.Fprintf(&b, "  mkdir -p %s\n", qGuest)
+		fmt.Fprintf(&b, "  mount --bind %s %s\n", qStaging, qGuest)
+		fmt.Fprintf(&b, "  mount -o remount,ro,bind %s\n", qGuest)
+		fmt.Fprintf(&b, "fi\n\n")
+	}
+
 	// Step 2: PATH drop-in.
 	qProfile := shSingleQuote(GuestUserMountsProfilePath)
 	fmt.Fprintf(&b, "# 2. PATH drop-in\n")

@@ -202,56 +202,73 @@ func TestResolvePluginSymlinkMounts(t *testing.T) {
 	})
 }
 
-// TestStagingExcludeLiveMounts verifies that StagingExcludeLiveMounts returns
-// specs for excluded subtrees that exist on disk, skips absent dirs, and
-// deduplicates against already-mounted guest paths.
 func TestStagingExcludeLiveMounts(t *testing.T) {
 	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
 
-	t.Run("returns spec when cache dir exists", func(t *testing.T) {
+	t.Run("returns entry when cache dir exists", func(t *testing.T) {
 		agentDir := t.TempDir()
 		cacheDir := filepath.Join(agentDir, "plugins", "cache")
 		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		specs := StagingExcludeLiveMounts(profile, agentDir, nil)
-		wantSpec := cacheDir + ":" + cacheDir + ":ro"
-		if len(specs) != 1 || specs[0] != wantSpec {
-			t.Errorf("specs = %v, want [%q]", specs, wantSpec)
+		entries := StagingExcludeLiveMounts(profile, agentDir)
+		if len(entries) != 1 {
+			t.Fatalf("want 1 entry, got %d", len(entries))
+		}
+		e := entries[0]
+		if e.HostPath != cacheDir {
+			t.Errorf("HostPath = %q, want %q", e.HostPath, cacheDir)
+		}
+		if e.GuestPath != cacheDir {
+			t.Errorf("GuestPath = %q, want %q", e.GuestPath, cacheDir)
+		}
+		if !strings.HasPrefix(e.StagingGuestPath, "/run/nexus/usermount/stagex-") {
+			t.Errorf("StagingGuestPath = %q, want prefix /run/nexus/usermount/stagex-", e.StagingGuestPath)
+		}
+		if strings.HasPrefix(e.StagingGuestPath, agentDir) {
+			t.Errorf("StagingGuestPath %q must not be inside agentDir (would be shadowed by overlay)", e.StagingGuestPath)
+		}
+		if !e.Rebind {
+			t.Error("Rebind must be true so the seed script bind-mounts after the agentcfg overlay")
 		}
 	})
 
 	t.Run("skips when cache dir absent", func(t *testing.T) {
 		agentDir := t.TempDir()
-		specs := StagingExcludeLiveMounts(profile, agentDir, nil)
-		if len(specs) != 0 {
-			t.Errorf("expected no specs, got %v", specs)
+		entries := StagingExcludeLiveMounts(profile, agentDir)
+		if len(entries) != 0 {
+			t.Errorf("expected no entries, got %v", entries)
 		}
 	})
 
-	t.Run("deduplicates when user config already mounts the path", func(t *testing.T) {
-		agentDir := t.TempDir()
-		cacheDir := filepath.Join(agentDir, "plugins", "cache")
-		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		existing := map[string]bool{cacheDir: true}
-		specs := StagingExcludeLiveMounts(profile, agentDir, existing)
-		if len(specs) != 0 {
-			t.Errorf("expected no specs (dedup), got %v", specs)
-		}
-	})
+}
 
-	t.Run("returns spec with noUserMounts equivalent (empty existing)", func(t *testing.T) {
-		agentDir := t.TempDir()
-		cacheDir := filepath.Join(agentDir, "plugins", "cache")
-		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		specs := StagingExcludeLiveMounts(profile, agentDir, map[string]bool{})
-		wantSpec := cacheDir + ":" + cacheDir + ":ro"
-		if len(specs) != 1 || specs[0] != wantSpec {
-			t.Errorf("specs = %v, want [%q]", specs, wantSpec)
-		}
-	})
+func TestStagingExcludeLiveMounts_OrderingAfterOverlay(t *testing.T) {
+	agentDir := t.TempDir()
+	cacheDir := filepath.Join(agentDir, "plugins", "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
+	entries := StagingExcludeLiveMounts(profile, agentDir)
+	if len(entries) == 0 {
+		t.Fatal("no entries returned")
+	}
+	manifest := UserMountManifest{Mounts: entries}
+	script := buildUserMountScript(manifest)
+
+	stagingPath := entries[0].StagingGuestPath
+	guestPath := entries[0].GuestPath
+
+	if !strings.Contains(script, "mount --bind '"+stagingPath+"' '"+guestPath+"'") {
+		t.Errorf("seed script missing bind mount of staging path %q to guest path %q\nscript:\n%s", stagingPath, guestPath, script)
+	}
+	if !strings.Contains(script, "mount -o remount,ro,bind '"+guestPath+"'") {
+		t.Errorf("seed script missing ro remount of %q\nscript:\n%s", guestPath, script)
+	}
+	step1Pos := strings.Index(script, "mount --bind")
+	step2Pos := strings.Index(script, "PATH drop-in")
+	if step1Pos < 0 || step2Pos < 0 || step1Pos > step2Pos {
+		t.Errorf("rebind step must appear before PATH drop-in: bind at %d, path at %d\nscript:\n%s", step1Pos, step2Pos, script)
+	}
 }

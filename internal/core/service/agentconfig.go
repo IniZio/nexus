@@ -339,12 +339,14 @@ func copyFile(srcPath, relPath, destDir string, profile cred.AgentProfile) error
 	return copyRaw(srcPath, dstPath)
 }
 
+var osLinkFn = os.Link
+
 // copyRaw copies src to dst at mode 0444. On the same filesystem it creates a
 // hardlink so the operation is near-instant and uses no extra disk space.
 // Falls back to a safe temp-then-rename copy for cross-device/permission cases
 // so no existing inode is ever truncated in place.
 func copyRaw(src, dst string) error {
-	err := os.Link(src, dst)
+	err := osLinkFn(src, dst)
 	if err == nil {
 		return nil
 	}
@@ -352,7 +354,7 @@ func copyRaw(src, dst string) error {
 		if rmErr := os.Remove(dst); rmErr != nil {
 			return rmErr
 		}
-		if err2 := os.Link(src, dst); err2 == nil {
+		if err2 := osLinkFn(src, dst); err2 == nil {
 			return nil
 		} else if !isHardlinkUnsupported(err2) && !isLinkEMLINK(err2) {
 			return err2

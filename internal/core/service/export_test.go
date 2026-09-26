@@ -91,3 +91,10 @@ func SetRemoveDetachTimeout(d time.Duration) (restore func()) {
 // CopyRaw is exported for testing only. It wraps the internal copyRaw so that
 // tests can verify EEXIST handling without triggering a full staging run.
 func CopyRaw(src, dst string) error { return copyRaw(src, dst) }
+
+// SetOsLinkFn replaces the link syscall used by copyRaw and returns a restore func.
+func SetOsLinkFn(fn func(oldname, newname string) error) (restore func()) {
+	old := osLinkFn
+	osLinkFn = fn
+	return func() { osLinkFn = old }
+}

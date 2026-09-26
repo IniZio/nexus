@@ -26,6 +26,10 @@ type ResolvedUserMount struct {
 	CuratedSubPath   string `json:"curated_sub_path,omitempty"`
 	StagingGuestPath string `json:"staging_guest_path"`
 	IsFile           bool   `json:"is_file,omitempty"`
+	// Rebind marks product mounts whose virtiofs is staged outside the
+	// agentcfg overlay path. SeedGuestUserMounts bind-mounts StagingGuestPath
+	// onto GuestPath after the /root/.claude overlay is in place.
+	Rebind bool `json:"rebind,omitempty"`
 }
 
 // UserMountManifest is the schema of usermounts.json for the guest seed.

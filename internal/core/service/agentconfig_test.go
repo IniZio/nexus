@@ -609,40 +609,86 @@ func TestAssembleCuratedConfig_HardlinkFallback(t *testing.T) {
 	}
 }
 
-// TestCopyRaw_PreexistingHardlink verifies that when dst already exists as a
-// hardlink to src, CopyRaw replaces it without truncating the source inode.
+// TestCopyRaw_PreexistingHardlink verifies that when dst is a hardlink to a
+// DIFFERENT file (hostOrig), CopyRaw writes src content to dst without
+// truncating hostOrig's inode.
 func TestCopyRaw_PreexistingHardlink(t *testing.T) {
 	dir := t.TempDir()
+	hostOrig := filepath.Join(dir, "host-orig.txt")
 	src := filepath.Join(dir, "src.txt")
 	dst := filepath.Join(dir, "dst.txt")
-	const original = "original content"
-	if err := os.WriteFile(src, []byte(original), 0o644); err != nil {
+
+	if err := os.WriteFile(hostOrig, []byte("HOST-ORIGINAL"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Pre-create dst as a hardlink to src (simulates EEXIST on a re-stage).
-	if err := os.Link(src, dst); err != nil {
-		t.Skipf("os.Link not supported on this filesystem: %v", err)
+	if err := os.WriteFile(src, []byte("NEW-CONTENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(hostOrig, dst); err != nil {
+		t.Skipf("os.Link not supported: %v", err)
 	}
 
 	if err := service.CopyRaw(src, dst); err != nil {
 		t.Fatalf("CopyRaw: %v", err)
 	}
 
-	// Source must be intact.
-	got, err := os.ReadFile(src)
+	orig, err := os.ReadFile(hostOrig)
 	if err != nil {
-		t.Fatalf("read src: %v", err)
+		t.Fatalf("read hostOrig: %v", err)
 	}
-	if string(got) != original {
-		t.Errorf("source content modified: got %q, want %q", got, original)
+	if string(orig) != "HOST-ORIGINAL" {
+		t.Errorf("hostOrig inode truncated: got %q, want HOST-ORIGINAL", orig)
 	}
 
-	// Destination must also have correct content.
-	got2, err := os.ReadFile(dst)
+	got, err := os.ReadFile(dst)
 	if err != nil {
 		t.Fatalf("read dst: %v", err)
 	}
-	if string(got2) != original {
-		t.Errorf("dst content wrong: got %q, want %q", got2, original)
+	if string(got) != "NEW-CONTENT" {
+		t.Errorf("dst = %q, want NEW-CONTENT", got)
+	}
+}
+
+// TestCopyRaw_PreexistingHardlink_EXDEVFallback covers the temp+rename path
+// when osLinkFn returns EXDEV on every call.
+func TestCopyRaw_PreexistingHardlink_EXDEVFallback(t *testing.T) {
+	dir := t.TempDir()
+	hostOrig := filepath.Join(dir, "host-orig.txt")
+	src := filepath.Join(dir, "src.txt")
+	dst := filepath.Join(dir, "dst.txt")
+
+	if err := os.WriteFile(hostOrig, []byte("HOST-ORIGINAL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("NEW-CONTENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(hostOrig, dst); err != nil {
+		t.Skipf("os.Link not supported: %v", err)
+	}
+
+	restore := service.SetOsLinkFn(func(_, _ string) error {
+		return &os.LinkError{Op: "link", Err: syscall.EXDEV}
+	})
+	defer restore()
+
+	if err := service.CopyRaw(src, dst); err != nil {
+		t.Fatalf("CopyRaw (EXDEV fallback): %v", err)
+	}
+
+	orig, err := os.ReadFile(hostOrig)
+	if err != nil {
+		t.Fatalf("read hostOrig: %v", err)
+	}
+	if string(orig) != "HOST-ORIGINAL" {
+		t.Errorf("hostOrig inode truncated: got %q, want HOST-ORIGINAL", orig)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "NEW-CONTENT" {
+		t.Errorf("dst = %q, want NEW-CONTENT", got)
 	}
 }

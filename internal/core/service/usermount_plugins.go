@@ -203,14 +203,17 @@ func readMarketplacePaths(pluginsDir string) (paths []string, warnings []string)
 	return paths, warnings
 }
 
-// StagingExcludeLiveMounts returns "host:guest:ro" bind-mount specs for
-// subtrees excluded from agent-config staging via profile.StagingExcludeGlobs.
+// StagingExcludeLiveMounts returns ResolvedUserMount entries for subtrees
+// excluded from agent-config staging via profile.StagingExcludeGlobs.
 // Each "prefix/**" glob maps to agentConfigDir/prefix; if that directory
-// exists and its absolute path is not in existingGuestPaths, a spec is
-// returned so the subtree is delivered via a live virtiofs mount instead.
+// exists, an entry with Rebind=true is returned. The StagingGuestPath is
+// outside the agentcfg overlay path so the virtiofs survives the overlay;
+// SeedGuestUserMounts bind-mounts it onto GuestPath after /root/.claude is
+// overlaid. A user-configured mount of the same path is no substitute: it
+// lands under /root/.claude at boot and the overlay shadows it.
 // agentConfigDir must already be tilde-expanded by the caller.
-func StagingExcludeLiveMounts(profile cred.AgentProfile, agentConfigDir string, existingGuestPaths map[string]bool) []string {
-	var out []string
+func StagingExcludeLiveMounts(profile cred.AgentProfile, agentConfigDir string) []ResolvedUserMount {
+	var out []ResolvedUserMount
 	for _, glob := range profile.StagingExcludeGlobs {
 		if !strings.HasSuffix(glob, "/**") {
 			continue
@@ -220,10 +223,13 @@ func StagingExcludeLiveMounts(profile cred.AgentProfile, agentConfigDir string, 
 		if _, err := os.Stat(hostPath); err != nil {
 			continue
 		}
-		if existingGuestPaths[hostPath] {
-			continue
-		}
-		out = append(out, hostPath+":"+hostPath+":ro")
+		stagingPath := "/run/nexus/usermount/stagex-" + filepath.Base(hostPath)
+		out = append(out, ResolvedUserMount{
+			HostPath:         hostPath,
+			GuestPath:        hostPath,
+			StagingGuestPath: stagingPath,
+			Rebind:           true,
+		})
 	}
 	return out
 }
