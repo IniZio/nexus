@@ -608,3 +608,41 @@ func TestAssembleCuratedConfig_HardlinkFallback(t *testing.T) {
 		t.Errorf("staged content mismatch: %q", data)
 	}
 }
+
+// TestCopyRaw_PreexistingHardlink verifies that when dst already exists as a
+// hardlink to src, CopyRaw replaces it without truncating the source inode.
+func TestCopyRaw_PreexistingHardlink(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	dst := filepath.Join(dir, "dst.txt")
+	const original = "original content"
+	if err := os.WriteFile(src, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create dst as a hardlink to src (simulates EEXIST on a re-stage).
+	if err := os.Link(src, dst); err != nil {
+		t.Skipf("os.Link not supported on this filesystem: %v", err)
+	}
+
+	if err := service.CopyRaw(src, dst); err != nil {
+		t.Fatalf("CopyRaw: %v", err)
+	}
+
+	// Source must be intact.
+	got, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read src: %v", err)
+	}
+	if string(got) != original {
+		t.Errorf("source content modified: got %q, want %q", got, original)
+	}
+
+	// Destination must also have correct content.
+	got2, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got2) != original {
+		t.Errorf("dst content wrong: got %q, want %q", got2, original)
+	}
+}

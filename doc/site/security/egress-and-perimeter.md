@@ -60,7 +60,7 @@ A curated, read-only overlay-projected subset of the host's `~/.claude` is deliv
 - `CLAUDE.md` — host-level instructions
 - `skills/**` — installed skills
 - `settings.json` — host Claude Code settings (permission mode, plugins)
-- `plugins/**` — installed plugins metadata and marketplaces. `plugins/cache/**` is excluded from the staged copy and delivered instead via a read-only virtiofs live mount of the host directory (see `usermounts.json`); hardlinks are used for the remaining plugin files when source and staging share a filesystem.
+- `plugins/**` — installed plugins metadata and marketplaces. `plugins/cache/**` is excluded from the staged copy and delivered instead via a product-added read-only virtiofs live mount of the host directory at the same absolute path (independent of user-configured mounts and deduplicated against them); hardlinks are used for the remaining plugin files when source and staging share a filesystem.
 
 No `.credentials.json`, no session history, no transcripts reach the guest filesystem. `CLAUDE_CODE_OAUTH_TOKEN` is set to a broker placeholder in the guest environment; the MITM proxy substitutes the real bearer token on every request to `api.anthropic.com` and `platform.claude.com`. Token freshness is maintained by the host-side refresher against `~/.config/nexus/creds.json`. Use `nexus auth login` to import a dedicated Claude session into that store.
 

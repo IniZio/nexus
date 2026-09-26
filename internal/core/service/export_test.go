@@ -87,3 +87,7 @@ func SetRemoveDetachTimeout(d time.Duration) (restore func()) {
 	removeDetachTimeout = d
 	return func() { removeDetachTimeout = old }
 }
+
+// CopyRaw is exported for testing only. It wraps the internal copyRaw so that
+// tests can verify EEXIST handling without triggering a full staging run.
+func CopyRaw(src, dst string) error { return copyRaw(src, dst) }

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 func TestResolvePluginSymlinkMounts(t *testing.T) {
@@ -200,3 +202,56 @@ func TestResolvePluginSymlinkMounts(t *testing.T) {
 	})
 }
 
+// TestStagingExcludeLiveMounts verifies that StagingExcludeLiveMounts returns
+// specs for excluded subtrees that exist on disk, skips absent dirs, and
+// deduplicates against already-mounted guest paths.
+func TestStagingExcludeLiveMounts(t *testing.T) {
+	profile := cred.MustProfileByName(cred.ClaudeCodeProfileName)
+
+	t.Run("returns spec when cache dir exists", func(t *testing.T) {
+		agentDir := t.TempDir()
+		cacheDir := filepath.Join(agentDir, "plugins", "cache")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		specs := StagingExcludeLiveMounts(profile, agentDir, nil)
+		wantSpec := cacheDir + ":" + cacheDir + ":ro"
+		if len(specs) != 1 || specs[0] != wantSpec {
+			t.Errorf("specs = %v, want [%q]", specs, wantSpec)
+		}
+	})
+
+	t.Run("skips when cache dir absent", func(t *testing.T) {
+		agentDir := t.TempDir()
+		specs := StagingExcludeLiveMounts(profile, agentDir, nil)
+		if len(specs) != 0 {
+			t.Errorf("expected no specs, got %v", specs)
+		}
+	})
+
+	t.Run("deduplicates when user config already mounts the path", func(t *testing.T) {
+		agentDir := t.TempDir()
+		cacheDir := filepath.Join(agentDir, "plugins", "cache")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		existing := map[string]bool{cacheDir: true}
+		specs := StagingExcludeLiveMounts(profile, agentDir, existing)
+		if len(specs) != 0 {
+			t.Errorf("expected no specs (dedup), got %v", specs)
+		}
+	})
+
+	t.Run("returns spec with noUserMounts equivalent (empty existing)", func(t *testing.T) {
+		agentDir := t.TempDir()
+		cacheDir := filepath.Join(agentDir, "plugins", "cache")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		specs := StagingExcludeLiveMounts(profile, agentDir, map[string]bool{})
+		wantSpec := cacheDir + ":" + cacheDir + ":ro"
+		if len(specs) != 1 || specs[0] != wantSpec {
+			t.Errorf("specs = %v, want [%q]", specs, wantSpec)
+		}
+	})
+}

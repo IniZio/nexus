@@ -1548,6 +1548,21 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 					slog.Warn("sandbox create: os.UserHomeDir failed; skipping user-mount table", "err", homeErr)
 				}
 			}
+			// Live-mount staging-excluded subtrees (e.g. plugins/cache) independent of noUserMounts.
+			if agentCfgDir, dirErr := service.AgentSettingsDir(agentProfile); dirErr == nil {
+				guestPaths := make(map[string]bool, len(bootLiveMounts))
+				for _, m := range bootLiveMounts {
+					guestPaths[m.GuestPath] = true
+				}
+				for _, spec := range service.StagingExcludeLiveMounts(agentProfile, agentCfgDir, guestPaths) {
+					lm, mountErr := parseMountLive(spec)
+					if mountErr != nil {
+						slog.Warn("sandbox create: staging-exclude live mount skipped", "spec", spec, "err", mountErr)
+						continue
+					}
+					bootLiveMounts = append(bootLiveMounts, lm)
+				}
+			}
 		}
 	}
 

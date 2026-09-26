@@ -340,23 +340,55 @@ func copyFile(srcPath, relPath, destDir string, profile cred.AgentProfile) error
 }
 
 // copyRaw copies src to dst at mode 0444. On the same filesystem it creates a
-// hardlink (os.Link) so the operation is near-instant and uses no extra disk
-// space; the lower staging dir is read-only to the guest, so the host original
-// is never mutated through the link. Falls back to a byte copy when the source
-// and destination are on different filesystems (EXDEV) or when hardlinking is
-// not permitted (EPERM).
+// hardlink so the operation is near-instant and uses no extra disk space.
+// Falls back to a safe temp-then-rename copy for cross-device/permission cases
+// so no existing inode is ever truncated in place.
 func copyRaw(src, dst string) error {
-	if err := os.Link(src, dst); err == nil {
+	err := os.Link(src, dst)
+	if err == nil {
 		return nil
-	} else if !isHardlinkUnsupported(err) {
-		// Real error, not a cross-device/permission issue; fall through to copy.
-		_ = err
 	}
+	if isLinkEEXIST(err) {
+		if rmErr := os.Remove(dst); rmErr != nil {
+			return rmErr
+		}
+		if err2 := os.Link(src, dst); err2 == nil {
+			return nil
+		} else if !isHardlinkUnsupported(err2) && !isLinkEMLINK(err2) {
+			return err2
+		}
+	} else if !isHardlinkUnsupported(err) && !isLinkEMLINK(err) {
+		return err
+	}
+	return copyRawViaTmp(src, dst)
+}
+
+// copyRawViaTmp writes src to a temp file in dst's directory then renames it
+// over dst, so no existing inode is truncated.
+func copyRawViaTmp(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o444)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".copyraw.*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	_, werr := tmp.Write(data)
+	cherr := tmp.Chmod(0o444)
+	cerr := tmp.Close()
+	for _, e := range []error{werr, cherr, cerr} {
+		if e != nil {
+			os.Remove(name)
+			return e
+		}
+	}
+	if err := os.Rename(name, dst); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 // isHardlinkUnsupported reports whether the os.Link error indicates the
@@ -368,6 +400,16 @@ func isHardlinkUnsupported(err error) bool {
 		return errors.Is(linkErr.Err, syscall.EXDEV) || errors.Is(linkErr.Err, syscall.EPERM)
 	}
 	return false
+}
+
+func isLinkEEXIST(err error) bool {
+	var linkErr *os.LinkError
+	return errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EEXIST)
+}
+
+func isLinkEMLINK(err error) bool {
+	var linkErr *os.LinkError
+	return errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EMLINK)
 }
 
 // copyFilteredSettings reads srcPath as JSON, filters its keys, and writes the

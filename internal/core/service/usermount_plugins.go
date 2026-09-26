@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
 // ResolvePluginSymlinkMounts returns "<host>:<guest>:ro" bind-mount specs for
@@ -199,6 +201,31 @@ func readMarketplacePaths(pluginsDir string) (paths []string, warnings []string)
 		}
 	}
 	return paths, warnings
+}
+
+// StagingExcludeLiveMounts returns "host:guest:ro" bind-mount specs for
+// subtrees excluded from agent-config staging via profile.StagingExcludeGlobs.
+// Each "prefix/**" glob maps to agentConfigDir/prefix; if that directory
+// exists and its absolute path is not in existingGuestPaths, a spec is
+// returned so the subtree is delivered via a live virtiofs mount instead.
+// agentConfigDir must already be tilde-expanded by the caller.
+func StagingExcludeLiveMounts(profile cred.AgentProfile, agentConfigDir string, existingGuestPaths map[string]bool) []string {
+	var out []string
+	for _, glob := range profile.StagingExcludeGlobs {
+		if !strings.HasSuffix(glob, "/**") {
+			continue
+		}
+		prefix := strings.TrimSuffix(glob, "/**")
+		hostPath := filepath.Join(agentConfigDir, filepath.FromSlash(prefix))
+		if _, err := os.Stat(hostPath); err != nil {
+			continue
+		}
+		if existingGuestPaths[hostPath] {
+			continue
+		}
+		out = append(out, hostPath+":"+hostPath+":ro")
+	}
+	return out
 }
 
 func readInstalledPluginPaths(pluginsDir string) (paths []string, warnings []string) {
