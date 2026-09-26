@@ -4218,9 +4218,9 @@ func herdrVolumeSeedEnabled(cfg config.Config) bool {
  * for Containerfile sandboxes, nexusstate only for nested ones); any other
  * failure — still attached, lock contention — is logged and skipped.
  * storeRoot is the sandbox store root; volumes live in its volumes/ subdir,
- * exactly as cmd_sandbox wires them.
+ * exactly as cmd_sandbox wires them. keep lists volume names to leave intact.
  */
-func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string) []string {
+func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string, keep ...string) []string {
 	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
 
 	warmKinds := map[string]volumestore.WarmKind{
@@ -4245,6 +4245,16 @@ func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string) []strin
 
 	var removed []string
 	for _, name := range herdrWorktreeVolumeNames(handle) {
+		skipped := false
+		for _, k := range keep {
+			if k == name {
+				skipped = true
+				break
+			}
+		}
+		if skipped {
+			continue
+		}
 		if _, getErr := vs.Get(name); getErr != nil {
 			continue
 		}

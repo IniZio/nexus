@@ -290,12 +290,12 @@ type sandboxCreateFlags struct {
 	extraAgentNames  []string
 	allowHosts       []string                  // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	allowedRepo      string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
-	pathPolicies     domain.EgressPathPolicies  // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
+	pathPolicies     domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
 	mcpPolicies      domain.EgressMCPPolicies
-	mountNamed       []string                  // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
-	mountLive        []string                  // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
-	noShareSettings  bool                      // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
-	noUserMounts     bool                      // --no-user-mounts: skip operator tool-dir live mounts (usermount-table-host)
+	mountNamed       []string // --mount-named <vol>:<guest-path>[:ro|kind=dir|size=Xg] (SD2-6-MOUNT)
+	mountLive        []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
+	noShareSettings  bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
+	noUserMounts     bool     // --no-user-mounts: skip operator tool-dir live mounts (usermount-table-host)
 	positionals      []string
 }
 
@@ -1475,16 +1475,21 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	var preMintedID domain.SandboxID // zero unless A-MOUNT staging pre-mints
-	var agentCfgStageDir string      // non-empty when staging succeeded; tracks cleanup
+	var agentCfgLease *agentCfgStage // nil unless staging succeeded; leased until CreateAndBoot returns
 	if !f.noShareSettings && len(agentProfile.MountAllowlist) > 0 {
 		id := domain.NewSandboxID()
-		stageDir := filepath.Join(storeRoot, "disks", id.String()+"-agentcfg-lower")
-		if stageErr := stageAgentCuratedConfig(agentProfile, stageDir); stageErr != nil {
-			_ = os.RemoveAll(stageDir)
+		stage, stageErr := beginAgentCfgStage(filepath.Join(storeRoot, "disks"), id)
+		if stageErr == nil {
+			stageErr = stageAgentCuratedConfig(agentProfile, stage.Dir)
+		}
+		if stageErr != nil {
+			stage.Finish(stageErr)
 			slog.Warn("sandbox create: failed to stage agent config; running without shared settings", "err", stageErr)
 		} else {
+			stageDir := stage.Dir
 			preMintedID = id
-			agentCfgStageDir = stageDir
+			agentCfgLease = stage
+			defer agentCfgLease.Finish(errAgentCfgStageAbandoned)
 			bootLiveMounts = append(bootLiveMounts, domain.LiveMount{
 				HostPath:  stageDir,
 				GuestPath: "/run/nexus/agentcfg-lower",
@@ -1559,13 +1564,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 					})
 				}
 				if len(stagingExclude) > 0 {
-					var manifest service.UserMountManifest
-					if data, readErr := os.ReadFile(filepath.Join(stageDir, "usermounts.json")); readErr == nil {
-						_ = json.Unmarshal(data, &manifest)
-					}
-					manifest.Mounts = append(manifest.Mounts, stagingExclude...)
-					if writeErr := service.WriteUserMountManifest(stageDir, manifest); writeErr != nil {
-						slog.Warn("sandbox create: failed to write staging-exclude mounts to usermounts.json", "err", writeErr)
+					if err := appendStagingExcludeMounts(stageDir, stagingExclude); err != nil {
+						slog.Warn("sandbox create: failed to record staging-exclude mounts in usermounts.json", "err", err)
 					}
 				}
 			}
@@ -1598,18 +1598,16 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			AllowedRepo:             f.allowedRepo,                                // D-PD-36: set by --repo; empty for open-egress sandboxes
 			PathPolicies:            f.pathPolicies,                               // conveyed via --egress-policy-json on the worktree subprocess path
 			MCPPolicies:             f.mcpPolicies,
-			Volumes:                 namedVS,                                      // SD2-6-MOUNT: nil when --mount-named not used
+			Volumes:                 namedVS, // SD2-6-MOUNT: nil when --mount-named not used
 			NamedVolumeMounts:       namedMounts,
 			LiveMounts:              bootLiveMounts, // D-PD-53: populated from --mount flags
 			AgentBytes:              agentBytes,
 		},
 	)
+	agentCfgLease.Finish(err)
 	if err != nil {
 		for _, p := range shadowDiskCleanups {
 			_ = os.Remove(p)
-		}
-		if agentCfgStageDir != "" {
-			_ = os.RemoveAll(agentCfgStageDir)
 		}
 		return errSandbox("sandbox create", err)
 	}
@@ -2117,6 +2115,7 @@ func runSandboxRmFull(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if target != nil && storeRoot != "" {
+		herdrWtRemoveVolumesFn(ctx, storeRoot, target.Handle(), herdrNexusStateDiskVolumeName(target.Handle()))
 		deps := txnDeps{
 			workspaceClose: func(ctx context.Context, wsID string) error {
 				return closeWorkspace(ctx, wsID)
@@ -2223,6 +2222,25 @@ func namedDiskGuestMounts(mounts []service.NamedVolumeMount) []agent.GuestMount 
 
 func sandboxAgentCfgVolumeName(project, name string) string {
 	return herdrHandleSlug(project+"/"+name) + "-agentcfg"
+}
+
+// appendStagingExcludeMounts merges extra into usermounts.json in stageDir.
+// ENOENT is treated as an empty manifest; any other read or parse error is
+// returned without writing, so existing content is never clobbered.
+func appendStagingExcludeMounts(stageDir string, extra []service.ResolvedUserMount) error {
+	var manifest service.UserMountManifest
+	data, readErr := os.ReadFile(filepath.Join(stageDir, "usermounts.json"))
+	if readErr != nil {
+		if !errors.Is(readErr, os.ErrNotExist) {
+			return fmt.Errorf("read usermounts.json: %w", readErr)
+		}
+	} else {
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return fmt.Errorf("parse usermounts.json: %w", err)
+		}
+	}
+	manifest.Mounts = append(manifest.Mounts, extra...)
+	return service.WriteUserMountManifest(stageDir, manifest)
 }
 
 func stageAgentCuratedConfig(profile cred.AgentProfile, stageDir string) error {

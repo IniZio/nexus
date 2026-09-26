@@ -16,9 +16,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // fakeWorkspaceCloser records calls and optionally returns an error.
@@ -436,5 +438,116 @@ func TestHerdrSpaceTeardownOnRm_MatchingSandboxID_WorkspaceClosed(t *testing.T) 
 	}
 	if _, err := HerdrSpaceGetByHandle(ctx, root, binding.SandboxHandle); !errors.Is(err, ErrHerdrSpaceNotFound) {
 		t.Errorf("binding must be deleted after matching teardown; got err=%v", err)
+	}
+}
+
+func TestSandboxRm_HerdrWarm_PromotesVolumes(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	sb, err := svc.Create(ctx, "proj", "warm-box", service.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	root := t.TempDir()
+	binding := HerdrSpaceBinding{
+		SpaceLabel:       "nexus:proj-warm-box",
+		HerdrWorkspaceID: "wWARM",
+		SandboxHandle:    sb.Handle(),
+		SandboxID:        sb.ID.String(),
+	}
+	if err := HerdrSpacePut(ctx, root, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	type volumeCall struct {
+		storeRoot      string
+		handle         string
+		sandboxGone    bool // svc.Remove already ran
+		bindingPresent bool // binding still exists
+	}
+	var calls []volumeCall
+
+	orig := herdrWtRemoveVolumesFn
+	herdrWtRemoveVolumesFn = func(innerCtx context.Context, sr, h string, _ ...string) []string {
+		_, getErr := svc.Get(innerCtx, h)
+		_, bindErr := HerdrSpaceGetByHandle(innerCtx, sr, h)
+		calls = append(calls, volumeCall{
+			storeRoot:      sr,
+			handle:         h,
+			sandboxGone:    getErr != nil,
+			bindingPresent: bindErr == nil,
+		})
+		return nil
+	}
+	t.Cleanup(func() { herdrWtRemoveVolumesFn = orig })
+
+	closer := &fakeWorkspaceCloser{}
+	out, _, _ := capture(true)
+	if err := runSandboxRmFull(ctx, []string{sb.Handle()}, out, svc, root, closer.close); err != nil {
+		t.Fatalf("runSandboxRmFull: %v", err)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("herdrWtRemoveVolumesFn call count: got %d, want 1", len(calls))
+	}
+	c := calls[0]
+	if c.storeRoot != root {
+		t.Errorf("storeRoot: got %q, want %q", c.storeRoot, root)
+	}
+	if c.handle != sb.Handle() {
+		t.Errorf("handle: got %q, want %q", c.handle, sb.Handle())
+	}
+	if !c.sandboxGone {
+		t.Error("herdrWtRemoveVolumesFn called BEFORE svc.Remove; sandbox still present")
+	}
+	if !c.bindingPresent {
+		t.Error("herdrWtRemoveVolumesFn called AFTER binding deleted; binding already gone")
+	}
+}
+
+func TestSandboxRm_KeepsNexusStateVolume(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	sb, err := svc.Create(ctx, "proj", "nested-box", service.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	storeRoot := t.TempDir()
+	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
+
+	nexusstateName := herdrNexusStateDiskVolumeName(sb.Handle())
+	gocacheName := herdrGoCacheDiskVolumeName(sb.Handle())
+	for _, name := range []string{nexusstateName, gocacheName} {
+		if _, err := vs.Create(ctx, name, volumestore.KindDir, 0, ""); err != nil {
+			t.Fatalf("vs.Create(%s): %v", name, err)
+		}
+	}
+
+	binding := HerdrSpaceBinding{
+		SpaceLabel:       "nexus:proj-nested-box",
+		HerdrWorkspaceID: "wNESTED",
+		SandboxHandle:    sb.Handle(),
+		SandboxID:        sb.ID.String(),
+		WorktreeManaged:  true,
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
+		t.Fatalf("HerdrSpacePut: %v", err)
+	}
+
+	closer := &fakeWorkspaceCloser{}
+	out, _, _ := capture(true)
+	if err := runSandboxRmFull(ctx, []string{sb.Handle()}, out, svc, storeRoot, closer.close); err != nil {
+		t.Fatalf("runSandboxRmFull: %v", err)
+	}
+
+	if _, err := vs.Get(nexusstateName); err != nil {
+		t.Errorf("nexusstate volume must survive rm; vs.Get: %v", err)
+	}
+	if _, err := vs.Get(gocacheName); err == nil {
+		t.Errorf("gocache volume must be removed after rm; still present")
 	}
 }
