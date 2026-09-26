@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/audit"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 )
@@ -16,14 +17,14 @@ import (
 func init() {
 	Register(Command{
 		Name:    "volume",
-		Summary: "Manage named volumes (create|ls|rm|prune)",
+		Summary: "Manage named volumes (create|ls|rm|prune|restore)",
 		Run:     runVolume,
 	})
 }
 
 func runVolume(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "volume: missing subcommand; usage: volume <create|ls|rm|prune>"}
+		return &UsageError{Msg: "volume: missing subcommand; usage: volume <create|ls|rm|prune|restore>"}
 	}
 
 	verb := args[0]
@@ -43,8 +44,10 @@ func runVolume(ctx context.Context, args []string, out *Output) error {
 		return runVolumeRm(ctx, verbArgs, out, vs)
 	case "prune":
 		return runVolumePrune(ctx, verbArgs, out, vs)
+	case "restore":
+		return runVolumeRestore(ctx, verbArgs, out, vs)
 	default:
-		return &UsageError{Msg: fmt.Sprintf("volume: unknown subcommand %q; valid: create ls rm prune", verb)}
+		return &UsageError{Msg: fmt.Sprintf("volume: unknown subcommand %q; valid: create ls rm prune restore", verb)}
 	}
 }
 
@@ -121,11 +124,16 @@ func runVolumeCreateWith(ctx context.Context, args []string, out *Output, vs *vo
 func runVolumeLs(ctx context.Context, args []string, out *Output, vs *volumestore.VolumeStore) error {
 	fs := flag.NewFlagSet("volume ls", flag.ContinueOnError)
 	sandboxFlag := fs.String("sandbox", "", "filter volumes attached to this sandbox ID")
+	trashFlag := fs.Bool("trash", false, "list trashed volumes instead of live volumes")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "volume ls: " + err.Error()}
 	}
 	if fs.NArg() > 0 {
 		return &UsageError{Msg: fmt.Sprintf("volume ls: unexpected argument %q", fs.Arg(0))}
+	}
+
+	if *trashFlag {
+		return runVolumeLsTrash(ctx, out, vs)
 	}
 
 	records, err := vs.List()
@@ -197,6 +205,54 @@ func runVolumeLs(ctx context.Context, args []string, out *Output, vs *volumestor
 	return nil
 }
 
+// runVolumeLsTrash lists trashed volume entries.
+func runVolumeLsTrash(ctx context.Context, out *Output, vs *volumestore.VolumeStore) error {
+	entries, err := vs.ListTrash(ctx)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: fmt.Sprintf("volume ls --trash: %v", err)}
+	}
+
+	type trashEntry struct {
+		Name      string `json:"name"`
+		Original  string `json:"original"`
+		TrashedAt string `json:"trashed_at"`
+		Expires   string `json:"expires"`
+	}
+	result := make([]trashEntry, len(entries))
+	for i, e := range entries {
+		result[i] = trashEntry{
+			Name:      e.Name,
+			Original:  e.Original,
+			TrashedAt: e.TrashedAt.Format("2006-01-02T15:04:05Z"),
+			Expires:   e.TrashedAt.Add(volumestore.TrashGrace).Format("2006-01-02T15:04:05Z"),
+		}
+	}
+
+	if out.IsJSON() {
+		out.EmitSuccess("volume.trash.list", result, "")
+		return nil
+	}
+
+	if len(entries) == 0 {
+		fmt.Fprintln(out.Stdout(), "no trashed volumes")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(out.Stdout(), 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tORIGINAL\tTRASHED\tEXPIRES")
+	for _, e := range entries {
+		expires := e.TrashedAt.Add(volumestore.TrashGrace).Format("2006-01-02")
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
+			e.Name,
+			e.Original,
+			e.TrashedAt.Format("2006-01-02"),
+			expires,
+		)
+	}
+	tw.Flush()
+	return nil
+}
+
 // rm
 
 func runVolumeRm(ctx context.Context, args []string, out *Output, vs *volumestore.VolumeStore) error {
@@ -214,7 +270,7 @@ func runVolumeRm(ctx context.Context, args []string, out *Output, vs *volumestor
 
 	// Bound the per-volume flock acquisition (RISK-SD2-1): the root CLI ctx
 	// carries no deadline, so a contended lock would spin forever without this.
-	rmCtx, rmCancel := context.WithTimeout(ctx, 10*time.Second)
+	rmCtx, rmCancel := context.WithTimeout(audit.WithReason(ctx, "cli: volume rm"), 10*time.Second)
 	defer rmCancel()
 	if err := vs.Rm(rmCtx, name); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: fmt.Sprintf("volume rm %s: %v", name, err)}
@@ -401,6 +457,38 @@ func runVolumePruneWith(ctx context.Context, out *Output, vs *volumestore.Volume
 	}
 
 	fmt.Fprint(out.Stdout(), sb.String())
+	return nil
+}
+
+// restore
+
+func runVolumeRestore(ctx context.Context, args []string, out *Output, vs *volumestore.VolumeStore) error {
+	return runVolumeRestoreWith(ctx, args, out, vs)
+}
+
+// runVolumeRestoreWith is the testable core; tests inject vs directly.
+func runVolumeRestoreWith(ctx context.Context, args []string, out *Output, vs *volumestore.VolumeStore) error {
+	fs := flag.NewFlagSet("volume restore", flag.ContinueOnError)
+	asFlag := fs.String("as", "", "restore under a different name instead of the original")
+	if err := fs.Parse(args); err != nil {
+		return &UsageError{Msg: "volume restore: " + err.Error()}
+	}
+	if fs.NArg() == 0 {
+		return &UsageError{Msg: "volume restore: missing <trash-entry>; usage: volume restore <trash-entry> [--as <name>]"}
+	}
+	if fs.NArg() > 1 {
+		return &UsageError{Msg: fmt.Sprintf("volume restore: unexpected argument %q", fs.Arg(1))}
+	}
+	entry := fs.Arg(0)
+
+	rCtx := audit.WithReason(ctx, "cli: volume restore")
+	name, err := vs.Restore(rCtx, entry, *asFlag)
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: fmt.Sprintf("volume restore %s: %v", entry, err)}
+	}
+
+	out.EmitSuccess("volume.restored", map[string]string{"name": name, "entry": entry},
+		fmt.Sprintf("volume %s restored from %s", name, entry))
 	return nil
 }
 
