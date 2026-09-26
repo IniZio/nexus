@@ -30,8 +30,10 @@ package livenexus
 import (
 	"context"
 	"crypto/rand"
+	sha256pkg "crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -149,13 +151,13 @@ func listDirEntries(dir string) string {
 	return strings.Join(names, "\n")
 }
 
-// hardLinkImagesDir hard-links every file under src into dst (creating
-// subdirectories as needed), skipping the locks/ subtree. Hard links share the
-// source inode so reads see prod images and new writes create new inodes in dst —
-// prod files are never modified or deleted by the test.
+// hardLinkImagesDir populates dst with the prod image cache, skipping locks/.
 //
-// Cross-device errors are returned so the caller can log-and-continue; all other
-// errors abort the walk.
+// Only files under sha256/ are hard-linked: those are content-addressed blobs
+// opened read-only by the OCI store, so sharing their inode is safe.
+// Everything else (*.ext4, *.img, and any other file a VM or builder may open
+// read-write) is copied sparse via `cp --sparse=always` so test writes never
+// mutate prod inodes.
 func hardLinkImagesDir(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -173,14 +175,75 @@ func hardLinkImagesDir(src, dst string) error {
 			return os.MkdirAll(filepath.Join(dst, rel), 0o700)
 		}
 		dstPath := filepath.Join(dst, rel)
-		if err := os.Link(path, dstPath); err != nil {
-			if os.IsExist(err) {
-				return nil
-			}
-			return err
+		// Skip if already present.
+		if _, existErr := os.Lstat(dstPath); existErr == nil {
+			return nil
 		}
+		// Only hard-link immutable content-addressed blobs under sha256/.
+		// The OCI content store opens these blobs read-only; sharing the inode
+		// is safe. All other files (disk images, ext4 volumes) may be opened
+		// read-write by test VMs or builders and must be copied.
+		parts := strings.SplitN(rel, string(filepath.Separator), 2)
+		if parts[0] == "sha256" {
+			if linkErr := os.Link(path, dstPath); linkErr != nil {
+				if os.IsExist(linkErr) {
+					return nil
+				}
+				return linkErr
+			}
+			return nil
+		}
+		return copyFileSparse(path, dstPath)
+	})
+}
+
+// copyFileSparse copies src to dst using cp --sparse=always, which preserves
+// holes in disk images without reading or writing unnecessary zero blocks.
+func copyFileSparse(src, dst string) error {
+	out, err := exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("cp --sparse %s -> %s: %w\n%s", src, dst, err, out)
+	}
+	return nil
+}
+
+// checksumLinkedProdFiles returns sha256 checksums for small files under
+// sha256Dir that hardLinkImagesDir hard-links. Large blobs (>maxChecksumSize)
+// are skipped to bound runtime; they are content-addressed so their names
+// already encode integrity.
+func checksumLinkedProdFiles(sha256Dir string) map[string]string {
+	const maxChecksumSize = 100 * 1024 * 1024
+	sums := make(map[string]string)
+	_ = filepath.WalkDir(sha256Dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, statErr := d.Info()
+		if statErr != nil || info.Size() > maxChecksumSize {
+			return nil
+		}
+		sum, checksumErr := fileChecksum(path)
+		if checksumErr != nil {
+			return nil
+		}
+		sums[path] = sum
 		return nil
 	})
+	return sums
+}
+
+// fileChecksum returns the hex-encoded SHA-256 digest of path.
+func fileChecksum(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256pkg.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // findProcsReferencingPath scans /proc for processes whose cmdline contains path.
@@ -232,7 +295,8 @@ type Harness struct {
 	mu      sync.Mutex
 	handles []string
 
-	preSnap envSnapshot // captured before harness starts; compared after cleanup
+	preSnap        envSnapshot       // captured before harness starts; compared after cleanup
+	linkedProdSums map[string]string
 }
 
 // New creates an isolated harness for t. It:
@@ -301,23 +365,26 @@ func New(t *testing.T) *Harness {
 			t.Fatalf("livenexus: mkdir test images: %v", mkErr)
 		}
 		if linkErr := hardLinkImagesDir(prodImagesDir, testImagesDir); linkErr != nil {
-			// Non-fatal: tests can still run, they will just re-pull images.
 			t.Logf("livenexus: hard-link prod images: %v (tests will re-pull/rebuild)", linkErr)
 		}
 	}
 
+	prodSha256Dir := filepath.Join(prodNexusState, "images", "sha256")
+	linkedSums := checksumLinkedProdFiles(prodSha256Dir)
+
 	h := &Harness{
-		t:           t,
-		stateRoot:   stateRoot,
-		configHome:  configHome,
-		dataHome:    dataHome,
-		kernelPath:  kernelPath,
-		sessionName: session,
-		socketPath:  socketPath,
-		nexusBin:    nexusBin,
-		base:        base,
-		worktreeDir: worktreeDir,
-		preSnap:     preSnap,
+		t:              t,
+		stateRoot:      stateRoot,
+		configHome:     configHome,
+		dataHome:       dataHome,
+		kernelPath:     kernelPath,
+		sessionName:    session,
+		socketPath:     socketPath,
+		nexusBin:       nexusBin,
+		base:           base,
+		worktreeDir:    worktreeDir,
+		preSnap:        preSnap,
+		linkedProdSums: linkedSums,
 	}
 
 	h.startHerdr(t, base)
@@ -383,9 +450,10 @@ func (h *Harness) sweepIsolatedSandboxes(ctx context.Context) {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] == "HANDLE" {
+		if len(fields) < 2 || fields[0] == "HANDLE" || strings.Contains(fields[1], "sandbox") {
 			continue
 		}
+		h.t.Errorf("livenexus: sweep found leaked sandbox %q — Teardown must remove it", fields[0])
 		h.teardownHandle(ctx, fields[0])
 	}
 }
@@ -442,6 +510,17 @@ func (h *Harness) cleanup(base string) {
 	after := captureEnvSnapshot(h.nexusBin)
 	for _, e := range h.checkSnapshot(after) {
 		h.t.Errorf("livenexus: prod isolation violation — %s", e)
+	}
+
+	for path, want := range h.linkedProdSums {
+		got, err := fileChecksum(path)
+		if err != nil {
+			h.t.Errorf("livenexus: prod integrity: checksum %s: %v", path, err)
+			continue
+		}
+		if got != want {
+			h.t.Errorf("livenexus: prod integrity violation — %s modified during test", path)
+		}
 	}
 }
 

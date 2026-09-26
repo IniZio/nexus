@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -200,17 +201,17 @@ func TestNoWritableProdLink(t *testing.T) {
 		t.Error(err)
 	}
 
-	// Builder ext4 should be hard-linked (same inode as src).
-	srcInfo, err := os.Stat(filepath.Join(src, "nexus-builder-test.ext4"))
+	// ext4 must be copied, not hard-linked — different inode from src.
+	srcExt4, err := os.Stat(filepath.Join(src, "nexus-builder-test.ext4"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	dstInfo, err := os.Stat(filepath.Join(dst, "nexus-builder-test.ext4"))
+	dstExt4, err := os.Stat(filepath.Join(dst, "nexus-builder-test.ext4"))
 	if err != nil {
-		t.Fatalf("expected hard-linked ext4 in dst: %v", err)
+		t.Fatalf("expected copied ext4 in dst: %v", err)
 	}
-	if !os.SameFile(srcInfo, dstInfo) {
-		t.Error("dst ext4 should share an inode with src (hard link), not a copy")
+	if os.SameFile(srcExt4, dstExt4) {
+		t.Error("dst ext4 must not share an inode with src — must be a copy, not a hard link")
 	}
 
 	// locks/ subtree must NOT appear in dst.
@@ -218,9 +219,45 @@ func TestNoWritableProdLink(t *testing.T) {
 		t.Error("locks/ dir must not be hard-linked into test root")
 	}
 
-	// sha256 content should be present.
-	if _, err := os.Stat(filepath.Join(dst, "sha256", "abc123", "artifact")); err != nil {
-		t.Errorf("sha256 content missing in dst: %v", err)
+	// sha256 content must be present and hard-linked (same inode as src).
+	srcBlob, err := os.Stat(filepath.Join(src, "sha256", "abc123", "artifact"))
+	if err != nil {
+		t.Fatalf("sha256 content missing in src: %v", err)
+	}
+	dstBlob, err := os.Stat(filepath.Join(dst, "sha256", "abc123", "artifact"))
+	if err != nil {
+		t.Fatalf("sha256 content missing in dst: %v", err)
+	}
+	if !os.SameFile(srcBlob, dstBlob) {
+		t.Error("sha256 blob must share inode with src (hard link)")
+	}
+
+	// No file outside sha256/ must share an inode with src.
+	err = filepath.WalkDir(dst, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(dst, path)
+		parts := strings.SplitN(rel, string(filepath.Separator), 2)
+		if parts[0] == "sha256" {
+			return nil
+		}
+		dstStat, statErr := os.Stat(path)
+		if statErr != nil {
+			return nil
+		}
+		srcPath := filepath.Join(src, rel)
+		srcStat, statErr := os.Stat(srcPath)
+		if statErr != nil {
+			return nil
+		}
+		if os.SameFile(srcStat, dstStat) {
+			t.Errorf("non-sha256 file %s shares inode with prod — must be a copy", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
 	}
 }
 

@@ -123,8 +123,8 @@ func TestBackendContractLive(t *testing.T) {
 		if err := b.Teardown(ctx, sb); err != nil {
 			t.Fatalf("second Teardown: %v", err)
 		}
-		if err := b.Teardown(ctx, "sb-unknown"); err != nil {
-			t.Fatalf("Teardown unknown: %v", err)
+		if err := b.Teardown(ctx, "sb-unknown"); err == nil {
+			t.Error("Teardown for unknown id must return error; no recorded sb- id means sandbox rm would be unsafe")
 		}
 		if err := b.Prompt(ctx, ag, "hi"); err == nil {
 			t.Error("Prompt after Teardown should error")

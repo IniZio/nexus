@@ -107,8 +107,14 @@ func min(a, b int) int {
 }
 
 // herdrListLine returns a `nexus herdr list` output line for the given workspace.
+// handle and sandbox_id use distinct realistic values so parsers can be tested independently.
 func herdrListLine(wsID, paneID string) string {
-	return fmt.Sprintf("label=test\tworkspace_id=%s\thandle=test-h\tsandbox_id=sb-test\tpane_id=%s\n", wsID, paneID)
+	return fmt.Sprintf("label=test\tworkspace_id=%s\thandle=test-handle\tsandbox_id=sb-abc123\tpane_id=%s\n", wsID, paneID)
+}
+
+// nexusPSLine returns a `nexus ps` output line as returned by parsePSLine.
+func nexusPSLine(handle, sbID string) string {
+	return fmt.Sprintf("HANDLE\tSTATE\tAGENT\tMOUNTS\tID\n%s\trunning\tclaude\t/workspace\t%s\n1 sandbox(es)\n", handle, sbID)
 }
 
 func TestBackendMapsHerdrState(t *testing.T) {
@@ -213,6 +219,127 @@ func TestStartAgentHandlesAutoTaggedPane(t *testing.T) {
 	}
 	if !h.calledWith("pane", "run") {
 		t.Error("expected herdr pane run call")
+	}
+}
+
+func TestTeardownAlwaysRemovesSandbox(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w6"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w6","agent_status":"idle","state_change_seq":1}}}`},
+		"worktree remove": {out: ""},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("w6", "w6:p1")},
+		"ps":                     {out: nexusPSLine("test-handle", "sb-abc123")},
+		"sandbox rm":             {out: ""},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "6"), "u:z")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	if err := b.Teardown(context.Background(), sandboxID); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	if !n.calledWith("sandbox", "rm", "sb-abc123") {
+		t.Errorf("expected nexus sandbox rm sb-abc123 (exact id); calls: %v", n.calls)
+	}
+	if !h.calledWith("worktree", "remove", "--workspace", sandboxID) {
+		t.Error("expected herdr worktree remove --workspace called")
+	}
+}
+
+func TestTeardownRemovesByExactSandboxID(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w7"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w7","agent_status":"idle","state_change_seq":1}}}`},
+		"worktree remove": {out: ""},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("w7", "w7:p1")},
+		"ps":                     {out: nexusPSLine("test-handle", "sb-abc123")},
+		"sandbox rm":             {out: ""},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "7"), "u:a")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if err := b.Teardown(context.Background(), sandboxID); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	n.mu.Lock()
+	var rmArgv []string
+	for _, c := range n.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "sandbox" && c.argv[1] == "rm" {
+			rmArgv = c.argv
+		}
+	}
+	n.mu.Unlock()
+
+	if len(rmArgv) != 3 || rmArgv[2] != "sb-abc123" {
+		t.Errorf("sandbox rm must be called with exact sb-abc123; got argv %v", rmArgv)
+	}
+}
+
+func TestTeardownRefusesWithoutRecordedID(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"worktree remove": {out: ""},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"sandbox rm": {out: ""},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+
+	err := b.Teardown(context.Background(), "ws-never-provisioned")
+	if err == nil {
+		t.Error("Teardown with unknown id must return error")
+	}
+	if n.calledWith("sandbox", "rm") {
+		t.Error("sandbox rm must NOT be called when no id is recorded")
+	}
+}
+
+func TestTeardownIdempotentWhenIDAbsent(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w8"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w8","agent_status":"idle","state_change_seq":1}}}`},
+		"worktree remove": {out: `{"error":{"code":"workspace_not_found"}}`, err: fmt.Errorf("exit status 1")},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("w8", "w8:p1")},
+		"ps":                     {out: "HANDLE\tSTATE\tID\n0 sandbox(es)\n"},
+		"sandbox rm":             {out: ""},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "8"), "u:b")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	if err := b.Teardown(context.Background(), sandboxID); err != nil {
+		t.Fatalf("Teardown (sandbox absent from ps) should return nil, got: %v", err)
+	}
+	if n.calledWith("sandbox", "rm") {
+		t.Error("sandbox rm must NOT be called when id is absent from nexus ps")
 	}
 }
 

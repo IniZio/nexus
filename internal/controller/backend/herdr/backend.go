@@ -36,8 +36,10 @@ type Config struct {
 }
 
 type entry struct {
-	paneID   string
-	tornDown bool
+	paneID         string
+	nexusHandle    string
+	nexusSandboxID string
+	tornDown       bool
 }
 
 // Backend implements controller.AgentBackend.
@@ -209,6 +211,8 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	if paneID == "" {
 		return "", "", fmt.Errorf("no pane_id for workspace %s; list output: %s", wsID, listOut)
 	}
+	nexusHandle := parseNexusHandle(listOut, wsID)
+	nexusSandboxID := parseSandboxID(listOut, wsID)
 
 	agentName := "ctrl-" + wsID
 	agentRef, err := b.startAgent(ctx, agentName, paneID)
@@ -217,7 +221,11 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	}
 
 	b.mu.Lock()
-	b.entries[agentRef] = &entry{paneID: paneID}
+	b.entries[agentRef] = &entry{
+		paneID:         paneID,
+		nexusHandle:    nexusHandle,
+		nexusSandboxID: nexusSandboxID,
+	}
 	b.sandboxes[wsID] = agentRef
 	b.mu.Unlock()
 
@@ -442,34 +450,86 @@ func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, erro
 	return paneOut, nil
 }
 
-// Teardown removes the worktree sandbox; sandboxID is the workspace ID from Provision.
+// Teardown removes the nexus sandbox and then the herdr worktree.
+// sandboxID is the workspace ID returned by Provision.
+//
+// Safety contract: sandbox rm is ONLY called with the exact sb-... id recorded
+// at provision time. Workspace ids, handle prefixes, or guessed ids are never
+// passed to rm, because nexus resolves by prefix and could remove the wrong VM.
+//
+// Idempotency is detected by the exact id being absent from nexus ps, not by
+// error-string matching. An unknown sandboxID (never provisioned by this backend)
+// returns an error; it is never silently ignored.
 func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 	b.mu.Lock()
 	agRef, known := b.sandboxes[sandboxID]
+	var nexusSandboxID, nexusHandle string
 	if known {
-		delete(b.sandboxes, sandboxID)
 		if e, ok := b.entries[agRef]; ok {
-			e.tornDown = true
+			if !e.tornDown {
+				e.tornDown = true
+			}
+			nexusSandboxID = e.nexusSandboxID
+			nexusHandle = e.nexusHandle
 		}
 	}
 	b.mu.Unlock()
 
-	out, err := b.herdrRun(ctx, nil, "worktree", "remove", "--workspace", sandboxID, "--force")
-	if err == nil {
+	if !known {
+		return fmt.Errorf("teardown %s: nexus sandbox id unknown — never provisioned by this backend; refusing sandbox rm", sandboxID)
+	}
+
+	if nexusSandboxID != "" {
+		psOut, _ := b.nexusRun(ctx, nil, "ps")
+		psHandle, found := parsePSLine(psOut, nexusSandboxID)
+		if found {
+			if nexusHandle != "" && psHandle != nexusHandle {
+				return fmt.Errorf("teardown %s: id %s found with handle %q, expected %q; refusing rm", sandboxID, nexusSandboxID, psHandle, nexusHandle)
+			}
+			rmOut, rmErr := b.nexusRun(ctx, nil, "sandbox", "rm", nexusSandboxID)
+			if rmErr != nil {
+				return fmt.Errorf("teardown %s: sandbox rm %s: %w\n%s", sandboxID, nexusSandboxID, rmErr, rmOut)
+			}
+		}
+	}
+
+	return b.removeWorktree(ctx, sandboxID)
+}
+
+// removeWorktree removes the herdr worktree for sandboxID. workspace_not_found
+// and worktree_not_found are treated as success (idempotent).
+func (b *Backend) removeWorktree(ctx context.Context, sandboxID string) error {
+	wtOut, wtErr := b.herdrRun(ctx, nil, "worktree", "remove", "--workspace", sandboxID, "--force")
+	if wtErr == nil {
 		return nil
 	}
-	code, _, parsed := herdrout.ParseHerdrErrorCode(out)
+	code, _, parsed := herdrout.ParseHerdrErrorCode(wtOut)
 	if parsed && (code == "workspace_not_found" || code == "worktree_not_found") {
 		return nil
 	}
-	if !known {
-		return nil // unknown + non-fatal error: already gone
+	return fmt.Errorf("teardown %s: herdr worktree remove: %w\n%s", sandboxID, wtErr, wtOut)
+}
+
+// parsePSLine scans nexus ps output for a line whose last field equals exactID.
+// Returns the handle (first field) and true when found.
+func parsePSLine(out, exactID string) (handle string, found bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[0] == "HANDLE" || strings.Contains(fields[1], "sandbox") {
+			continue
+		}
+		if fields[len(fields)-1] == exactID {
+			return fields[0], true
+		}
 	}
-	rmOut, rmErr := b.nexusRun(ctx, nil, "sandbox", "rm", sandboxID)
-	if rmErr != nil {
-		return fmt.Errorf("teardown %s: herdr: %w; sandbox rm: %v\n%s", sandboxID, err, rmErr, rmOut)
-	}
-	return nil
+	return "", false
 }
 
 func (b *Backend) checkAgent(agentRef string) error {
@@ -515,6 +575,32 @@ func parsePaneID(out, workspaceID string) string {
 		}
 		for _, f := range strings.Split(line, "\t") {
 			if v, ok := strings.CutPrefix(f, "pane_id="); ok {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// parseNexusHandle finds the nexus sandbox handle for workspaceID in `nexus herdr list` output.
+func parseNexusHandle(out, workspaceID string) string {
+	return parseListField(out, workspaceID, "handle=")
+}
+
+// parseSandboxID finds the exact sb-... nexus sandbox id for workspaceID in `nexus herdr list` output.
+func parseSandboxID(out, workspaceID string) string {
+	return parseListField(out, workspaceID, "sandbox_id=")
+}
+
+func parseListField(out, workspaceID, prefix string) string {
+	needle := "workspace_id=" + workspaceID
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		for _, f := range strings.Split(line, "\t") {
+			if v, ok := strings.CutPrefix(f, prefix); ok {
 				return v
 			}
 		}
