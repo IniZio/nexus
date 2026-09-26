@@ -391,6 +391,9 @@ func (s *VolumeStore) List() ([]*VolumeRecord, error) {
 		if !e.IsDir() {
 			continue
 		}
+		if e.Name() == TrashDir {
+			continue
+		}
 		rec, err := s.readRecord(e.Name())
 		if err != nil {
 			continue // skip stub / unreadable entries
