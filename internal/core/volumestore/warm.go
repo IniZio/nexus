@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,10 +31,23 @@ const (
 
 var ErrReflinkUnsupported = errors.New("volumestore: reflink (FICLONE) not supported on this filesystem")
 
+var (
+	ErrWarmNotReplaced = errors.New("volumestore: warm copy not replaced (candidate too small and existing too fresh)")
+	ErrWarmTooLarge    = errors.New("volumestore: warm copy too large")
+)
+
+var (
+	WarmShrinkRatio   = 0.5
+	WarmStaleAfter    = 7 * 24 * time.Hour
+	WarmMaxCopyBytes  = int64(16 << 30) // 16 GiB
+	WarmMaxTotalBytes = int64(64 << 30) // 64 GiB
+)
+
 type WarmMeta struct {
-	SourceVolume string    `json:"source_volume"`
-	PromotedAt   time.Time `json:"promoted_at"`
-	SizeBytes    int64     `json:"size_bytes"`
+	SourceVolume   string    `json:"source_volume"`
+	PromotedAt     time.Time `json:"promoted_at"`
+	SizeBytes      int64     `json:"size_bytes"`
+	AllocatedBytes int64     `json:"allocated_bytes"`
 }
 
 type WarmEntry struct {
@@ -293,6 +307,15 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 	if statErr != nil {
 		return fmt.Errorf("volumestore: promote stat src disk: %w", statErr)
 	}
+	if allocBytes > WarmMaxCopyBytes {
+		return fmt.Errorf("%w: candidate %d bytes > limit %d", ErrWarmTooLarge, allocBytes, WarmMaxCopyBytes)
+	}
+	if existAlloc, existAt, ok := s.readWarmMetaForGuard(projectKey, kind); ok && existAlloc > 0 {
+		threshold := int64(float64(existAlloc) * WarmShrinkRatio)
+		if allocBytes < threshold && time.Since(existAt) < WarmStaleAfter {
+			return fmt.Errorf("%w: candidate %d bytes < %.0f%% of existing %d bytes", ErrWarmNotReplaced, allocBytes, WarmShrinkRatio*100, existAlloc)
+		}
+	}
 	if err := s.checkFreeSpace(wDir, allocBytes); err != nil {
 		return err
 	}
@@ -315,9 +338,10 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 	dstF.Close()
 	slog.Info("volumestore: promoted to warm", "volume", name, "project_key", projectKey, "kind", kind, "method", method, "elapsed", time.Since(t0))
 	meta := WarmMeta{
-		SourceVolume: name,
-		PromotedAt:   time.Now().UTC(),
-		SizeBytes:    rec.SizeBytes,
+		SourceVolume:   name,
+		PromotedAt:     time.Now().UTC(),
+		SizeBytes:      rec.SizeBytes,
+		AllocatedBytes: allocBytes,
 	}
 	metaData, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -347,6 +371,7 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 		_ = dirF.Sync()
 		dirF.Close()
 	}
+	s.evictOverTotalCap(projectKey, kind)
 	return nil
 }
 
@@ -388,6 +413,83 @@ func (s *VolumeStore) ListWarm() ([]WarmEntry, error) {
 		}
 	}
 	return out, nil
+}
+
+// readWarmMetaForGuard returns the existing copy's allocated bytes, PromotedAt, and presence.
+func (s *VolumeStore) readWarmMetaForGuard(projectKey string, kind WarmKind) (allocBytes int64, promotedAt time.Time, ok bool) {
+	data, err := os.ReadFile(s.warmMetaPath(projectKey, kind))
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	var m WarmMeta
+	if err := json.Unmarshal(data, &m); err != nil {
+		return 0, time.Time{}, false
+	}
+	ab := m.AllocatedBytes
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(data, &raw)
+	if _, hasField := raw["allocated_bytes"]; !hasField {
+		f, err := os.Open(s.WarmDiskPath(projectKey, kind))
+		if err == nil {
+			ab, _ = allocatedFileBytes(f)
+			f.Close()
+		}
+	}
+	return ab, m.PromotedAt, true
+}
+
+// warmEntryAllocBytes returns an entry's allocated bytes, stat-ing disk.ext4 when meta lacks them.
+func (s *VolumeStore) warmEntryAllocBytes(e WarmEntry) int64 {
+	if e.Meta.AllocatedBytes > 0 {
+		return e.Meta.AllocatedBytes
+	}
+	f, err := os.Open(s.WarmDiskPath(e.ProjectKey, e.Kind))
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	b, _ := allocatedFileBytes(f)
+	return b
+}
+
+// evictOverTotalCap evicts oldest copies until under WarmMaxTotalBytes, sparing the skip entry.
+func (s *VolumeStore) evictOverTotalCap(skipProjectKey string, skipKind WarmKind) {
+	warmRoot := filepath.Join(s.root, WarmDirName)
+	entries, err := s.ListWarm()
+	if err != nil {
+		slog.Info("volumestore: eviction list error", "err", err)
+		return
+	}
+	var total int64
+	for _, e := range entries {
+		total += s.warmEntryAllocBytes(e)
+	}
+	if total <= WarmMaxTotalBytes {
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Meta.PromotedAt.Before(entries[j].Meta.PromotedAt)
+	})
+	for _, e := range entries {
+		if total <= WarmMaxTotalBytes {
+			break
+		}
+		if e.ProjectKey == skipProjectKey && e.Kind == skipKind {
+			continue
+		}
+		allocB := s.warmEntryAllocBytes(e)
+		kindDir := s.warmKindDir(e.ProjectKey, e.Kind)
+		if err := os.RemoveAll(kindDir); err != nil {
+			slog.Info("volumestore: eviction remove error", "dir", kindDir, "err", err)
+			continue
+		}
+		total -= allocB
+		slog.Info("volumestore: evicted warm copy", "project_key", e.ProjectKey, "kind", e.Kind, "allocated_bytes", allocB)
+		projDir := filepath.Join(warmRoot, e.ProjectKey)
+		if remaining, err := os.ReadDir(projDir); err == nil && len(remaining) == 0 {
+			_ = os.Remove(projDir)
+		}
+	}
 }
 
 // RemoveWarm removes warm entries for projectKey (or all if projectKey is "").

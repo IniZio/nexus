@@ -810,6 +810,279 @@ func TestSeedFromWarm_CancelledCtx(t *testing.T) {
 	}
 }
 
+// ── Policy: shrink guard, per-copy cap, total-cap eviction ───────────────────
+
+// writeDataBlocks writes nBlocks×4096 bytes of non-zero data starting at offset 0.
+func writeDataBlocks(t *testing.T, f *os.File, nBlocks int) {
+	t.Helper()
+	buf := make([]byte, 4096)
+	for i := range buf {
+		buf[i] = byte(i) | 0x01
+	}
+	for i := 0; i < nBlocks; i++ {
+		if _, err := f.WriteAt(buf, int64(i)*4096); err != nil {
+			t.Fatalf("writeDataBlocks: %v", err)
+		}
+	}
+}
+
+// makeTinyWarmFull creates a warm entry with explicit meta values and optional disk data.
+func makeTinyWarmFull(t *testing.T, s *VolumeStore, key string, kind WarmKind, allocBytes int64, promotedAt time.Time, diskDataBlocks int) {
+	t.Helper()
+	wDir := s.warmKindDir(key, kind)
+	if err := os.MkdirAll(wDir, 0o755); err != nil {
+		t.Fatalf("makeTinyWarmFull mkdir: %v", err)
+	}
+	diskPath := filepath.Join(wDir, diskFile)
+	f, err := os.Create(diskPath)
+	if err != nil {
+		t.Fatalf("makeTinyWarmFull create disk: %v", err)
+	}
+	if diskDataBlocks > 0 {
+		writeDataBlocks(t, f, diskDataBlocks)
+	} else {
+		_ = f.Truncate(4096)
+	}
+	f.Close()
+	meta := WarmMeta{
+		SourceVolume:   "source-vol",
+		PromotedAt:     promotedAt.UTC(),
+		SizeBytes:      4096,
+		AllocatedBytes: allocBytes,
+	}
+	raw, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(wDir, metaFile), raw, 0o644); err != nil {
+		t.Fatalf("makeTinyWarmFull write meta: %v", err)
+	}
+}
+
+// makeVolumeWithAllocatedDisk creates a volume with nDataBlocks×4096 bytes of real data.
+func makeVolumeWithAllocatedDisk(t *testing.T, s *VolumeStore, name string, nDataBlocks int) {
+	t.Helper()
+	dir := s.volDir(name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("makeVolumeWithAllocatedDisk mkdir: %v", err)
+	}
+	f, err := os.Create(s.DiskPath(name))
+	if err != nil {
+		t.Fatalf("makeVolumeWithAllocatedDisk create: %v", err)
+	}
+	writeDataBlocks(t, f, nDataBlocks)
+	f.Close()
+	sizeBytes := int64(nDataBlocks) * 4096
+	rec := &VolumeRecord{Name: name, Kind: KindDisk, SizeBytes: sizeBytes, CreatedAt: time.Now().UTC()}
+	if err := s.writeRecord(rec); err != nil {
+		t.Fatalf("makeVolumeWithAllocatedDisk writeRecord: %v", err)
+	}
+}
+
+// (a) 133 MB-vs-3.7 GB regression: sparse candidate must not replace large fresh copy.
+func TestPromoteToWarm_ShrinkGuard_SkipsSmallCandidate(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-shrinkguard-aabbccddeeff"
+
+	const existingAlloc int64 = 100 * 4096
+	makeTinyWarmFull(t, s, key, WarmKindDocker, existingAlloc, time.Now(), 0)
+	makeVolumeWithDisk(t, s, "vol-small", 4096)
+
+	oldRatio := WarmShrinkRatio
+	oldStale := WarmStaleAfter
+	WarmShrinkRatio = 0.5
+	WarmStaleAfter = 7 * 24 * time.Hour
+	t.Cleanup(func() { WarmShrinkRatio = oldRatio; WarmStaleAfter = oldStale })
+
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+
+	err := s.PromoteToWarm(context.Background(), "vol-small", key, WarmKindDocker)
+	if !errors.Is(err, ErrWarmNotReplaced) {
+		t.Errorf("expected ErrWarmNotReplaced, got %v", err)
+	}
+	entries, _ := s.ListWarm()
+	if len(entries) != 1 || entries[0].Meta.SourceVolume != "source-vol" {
+		t.Errorf("existing warm copy must survive: %+v", entries)
+	}
+}
+
+// (b) Stale existing: smaller candidate replaces when existing older than WarmStaleAfter.
+func TestPromoteToWarm_ShrinkGuard_StaleExistingAllowsReplace(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-shrinkstale-aabbccddeeff"
+
+	staleTime := time.Now().Add(-10 * 24 * time.Hour)
+	makeTinyWarmFull(t, s, key, WarmKindDocker, 100*4096, staleTime, 0)
+	makeVolumeWithDisk(t, s, "vol-stale-cand", 4096)
+
+	oldRatio := WarmShrinkRatio
+	oldStale := WarmStaleAfter
+	WarmShrinkRatio = 0.5
+	WarmStaleAfter = 7 * 24 * time.Hour
+	t.Cleanup(func() { WarmShrinkRatio = oldRatio; WarmStaleAfter = oldStale })
+
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+
+	err := s.PromoteToWarm(context.Background(), "vol-stale-cand", key, WarmKindDocker)
+	if err != nil {
+		t.Errorf("stale existing: expected promote success, got: %v", err)
+	}
+	entries, _ := s.ListWarm()
+	if len(entries) != 1 || entries[0].Meta.SourceVolume != "vol-stale-cand" {
+		t.Errorf("expected new warm copy after stale replace: %+v", entries)
+	}
+}
+
+// (c) Larger or comparable candidate replaces.
+func TestPromoteToWarm_ShrinkGuard_LargerCandidateReplaces(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-shrinkbig-aabbccddeeff"
+
+	makeTinyWarmFull(t, s, key, WarmKindDocker, 4*4096, time.Now(), 0)
+	makeVolumeWithAllocatedDisk(t, s, "vol-big", 10)
+
+	oldRatio := WarmShrinkRatio
+	oldStale := WarmStaleAfter
+	WarmShrinkRatio = 0.5
+	WarmStaleAfter = 7 * 24 * time.Hour
+	t.Cleanup(func() { WarmShrinkRatio = oldRatio; WarmStaleAfter = oldStale })
+
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+
+	err := s.PromoteToWarm(context.Background(), "vol-big", key, WarmKindDocker)
+	if err != nil {
+		t.Errorf("larger candidate: expected promote success, got: %v", err)
+	}
+	entries, _ := s.ListWarm()
+	if len(entries) != 1 || entries[0].Meta.SourceVolume != "vol-big" {
+		t.Errorf("expected new warm copy: %+v", entries)
+	}
+}
+
+// (d) Candidate over WarmMaxCopyBytes → ErrWarmTooLarge.
+func TestPromoteToWarm_TooLarge(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-toolarge-aabbccddeeff"
+
+	oldMax := WarmMaxCopyBytes
+	WarmMaxCopyBytes = 4 * 4096
+	t.Cleanup(func() { WarmMaxCopyBytes = oldMax })
+
+	makeVolumeWithAllocatedDisk(t, s, "vol-toolarge", 10)
+
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+
+	err := s.PromoteToWarm(context.Background(), "vol-toolarge", key, WarmKindDocker)
+	if !errors.Is(err, ErrWarmTooLarge) {
+		t.Errorf("expected ErrWarmTooLarge, got %v", err)
+	}
+	if _, statErr := os.Stat(s.WarmDiskPath(key, WarmKindDocker)); statErr == nil {
+		t.Error("warm disk must not exist after ErrWarmTooLarge")
+	}
+}
+
+// (e) Total-cap eviction: evicts oldest PromotedAt first, never evicts just-promoted.
+func TestPromoteToWarm_TotalCapEviction(t *testing.T) {
+	s := newWarmStore(t)
+	const pageBytes int64 = 4096
+
+	oldMax := WarmMaxTotalBytes
+	WarmMaxTotalBytes = 2 * pageBytes
+	t.Cleanup(func() { WarmMaxTotalBytes = oldMax })
+
+	now := time.Now()
+	k1 := "proj-old-aabbccddeeff"
+	k2 := "proj-mid-aabbccddeeff"
+	k3 := "proj-new-aabbccddeeff"
+
+	makeTinyWarmFull(t, s, k1, WarmKindDocker, pageBytes, now.Add(-2*time.Hour), 1)
+	makeTinyWarmFull(t, s, k2, WarmKindDocker, pageBytes, now.Add(-1*time.Hour), 1)
+
+	makeVolumeWithAllocatedDisk(t, s, "vol-evict-new", 1)
+
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+
+	err := s.PromoteToWarm(context.Background(), "vol-evict-new", k3, WarmKindDocker)
+	if err != nil {
+		t.Fatalf("PromoteToWarm: %v", err)
+	}
+
+	entries, _ := s.ListWarm()
+	foundK3, foundK1 := false, false
+	var total int64
+	for _, e := range entries {
+		if e.ProjectKey == k3 {
+			foundK3 = true
+		}
+		if e.ProjectKey == k1 {
+			foundK1 = true
+		}
+		total += e.Meta.AllocatedBytes
+	}
+	if !foundK3 {
+		t.Error("just-promoted k3 must survive eviction")
+	}
+	if foundK1 {
+		t.Error("oldest k1 must be evicted")
+	}
+	if total > WarmMaxTotalBytes {
+		t.Errorf("total allocated %d > cap %d after eviction", total, WarmMaxTotalBytes)
+	}
+}
+
+// (f) Legacy meta without AllocatedBytes: fall back to stat of existing disk.
+func TestPromoteToWarm_LegacyMetaNoAllocBytes(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-legacy-aabbccddeeff"
+
+	wDir := s.warmKindDir(key, WarmKindDocker)
+	if err := os.MkdirAll(wDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	diskPath := filepath.Join(wDir, diskFile)
+	f, err := os.Create(diskPath)
+	if err != nil {
+		t.Fatalf("create disk: %v", err)
+	}
+	writeDataBlocks(t, f, 100)
+	f.Close()
+
+	type legacyMeta struct {
+		SourceVolume string    `json:"source_volume"`
+		PromotedAt   time.Time `json:"promoted_at"`
+		SizeBytes    int64     `json:"size_bytes"`
+	}
+	lm := legacyMeta{SourceVolume: "legacy-vol", PromotedAt: time.Now().UTC(), SizeBytes: 100 * 4096}
+	raw, _ := json.Marshal(lm)
+	if err := os.WriteFile(filepath.Join(wDir, metaFile), raw, 0o644); err != nil {
+		t.Fatalf("write legacy meta: %v", err)
+	}
+
+	makeVolumeWithDisk(t, s, "vol-legacy-cand", 4096)
+
+	oldRatio := WarmShrinkRatio
+	oldStale := WarmStaleAfter
+	WarmShrinkRatio = 0.5
+	WarmStaleAfter = 7 * 24 * time.Hour
+	t.Cleanup(func() { WarmShrinkRatio = oldRatio; WarmStaleAfter = oldStale })
+
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+
+	err = s.PromoteToWarm(context.Background(), "vol-legacy-cand", key, WarmKindDocker)
+	if !errors.Is(err, ErrWarmNotReplaced) {
+		t.Errorf("legacy meta: expected ErrWarmNotReplaced (stat fallback), got: %v", err)
+	}
+}
+
 // ── Benchmark ─────────────────────────────────────────────────────────────────
 
 // TestWarmBench measures PromoteToWarm + SeedFromWarm on a 20 GiB sparse disk
@@ -872,7 +1145,6 @@ func TestWarmBench(t *testing.T) {
 	}
 	f.Close()
 	t.Log("disk written")
-
 
 	rec := &VolumeRecord{Name: volName, Kind: KindDisk, SizeBytes: totalSize, CreatedAt: time.Now().UTC()}
 	if err := s.writeRecord(rec); err != nil {

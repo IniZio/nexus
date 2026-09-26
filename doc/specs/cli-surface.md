@@ -435,6 +435,8 @@ Environment variables affecting volume seeding:
 `.nexus/config.yaml` keys:
 - `volumes.seed` (bool, default `true`) — enable/disable warm volume seeding and promotion; set to `false` to suppress all seed/promote operations
 
+See [doc/design/warm-volume-seeding.md](../design/warm-volume-seeding.md) for teardown-seam design, retention policy, and rejected alternatives.
+
 ---
 
 ## Integration test inventory
