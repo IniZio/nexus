@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ type Config struct {
 	HerdrSocketPath string
 	NexusBin        string
 	ExtraEnv        []string
+	WorktreeDir     string
 }
 
 type entry struct {
@@ -174,7 +176,13 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	}
 
 	branch := branchName(project, ref, time.Now().UnixMicro())
-	wtOut, err := b.herdrRun(ctx, nil, "worktree", "create", "--workspace", parentWS, "--branch", branch, "--no-focus")
+	wtArgs := []string{"worktree", "create", "--workspace", parentWS, "--branch", branch, "--no-focus"}
+	if b.cfg.WorktreeDir != "" {
+		_ = os.MkdirAll(b.cfg.WorktreeDir, 0o755)
+		safeBranch := strings.ReplaceAll(branch, "/", "-")
+		wtArgs = append(wtArgs, "--path", filepath.Join(b.cfg.WorktreeDir, safeBranch))
+	}
+	wtOut, err := b.herdrRun(ctx, nil, wtArgs...)
 	if err != nil {
 		return "", "", fmt.Errorf("herdr worktree create: %w\n%s", err, wtOut)
 	}

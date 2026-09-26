@@ -4,19 +4,16 @@ package livenexus
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
 
 // TestLiveSmoke creates one isolated sandbox, runs exec true, removes it, and
-// proves the prod nexus ps and herdr sessions are unchanged.
+// proves no prod state (nexus ps, herdr sessions, worktrees, git branches,
+// systemd units, live procs) was modified — verified by the harness t.Cleanup.
 func TestLiveSmoke(t *testing.T) {
-	// Capture prod state before.
-	prodPS := captureNexusPS(t)
-	prodSessions := captureHerdrSessions(t)
-
+	// New() captures a before-snapshot; t.Cleanup compares the after-snapshot.
 	h := New(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -29,31 +26,6 @@ func TestLiveSmoke(t *testing.T) {
 		t.Fatalf("nexus run: %v\n%s", err, out)
 	}
 	t.Logf("nexus run output: %s", strings.TrimSpace(out))
-
-	afterPS := captureNexusPS(t)
-	afterSessions := captureHerdrSessions(t)
-
-	if prodPS != afterPS {
-		t.Errorf("nexus ps changed:\nbefore: %s\nafter:  %s", prodPS, afterPS)
-	}
-	if prodSessions != afterSessions {
-		t.Errorf("herdr sessions changed:\nbefore: %s\nafter:  %s", prodSessions, afterSessions)
-	}
-	t.Logf("prod nexus ps diff: empty (good)")
-	t.Logf("prod herdr sessions diff: empty (good)")
+	// Prod isolation is verified exhaustively in t.Cleanup by the harness
+	// (nexus ps, herdr sessions, herdr worktrees/nexus, git branches,
 }
-
-func captureNexusPS(t *testing.T) string {
-	t.Helper()
-	cmd := exec.Command(resolveNexusBin(), "ps")
-	out, _ := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out))
-}
-
-func captureHerdrSessions(t *testing.T) string {
-	t.Helper()
-	cmd := exec.Command("herdr", "session", "list")
-	out, _ := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out))
-}
-

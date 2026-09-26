@@ -2,7 +2,13 @@ package livenexus
 
 import (
 	"context"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 // fakeT captures Fatal/Fatalf calls so we can assert refusals without killing
@@ -138,6 +144,162 @@ func TestRunnerRejectsPrune(t *testing.T) {
 		if err == nil {
 			t.Errorf("Run(%v): expected error refusing prune, got nil", args)
 		}
+	}
+}
+
+// TestNoWritableProdLink verifies that hardLinkImagesDir produces hard links
+// (not symlinks) and that the locks/ directory is excluded from the result.
+func TestNoWritableProdLink(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	// Populate src with a structure matching the prod images layout.
+	dirs := []string{
+		filepath.Join(src, "sha256", "abc123"),
+		filepath.Join(src, "locks", "sha256"),
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		filepath.Join(src, "nexus-builder-test.ext4"):          "fake-ext4-content",
+		filepath.Join(src, "sha256", "abc123", "artifact"):     "fake-artifact",
+		filepath.Join(src, "sha256", "abc123", "meta.json"):    `{"digest":"sha256:abc123"}`,
+		filepath.Join(src, "locks", "sha256", "abc123.lock"):   "lock",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := hardLinkImagesDir(src, dst); err != nil {
+		t.Fatalf("hardLinkImagesDir: %v", err)
+	}
+
+	// No symlinks should exist in dst.
+	err := filepath.WalkDir(dst, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if path == dst {
+			return nil
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("found symlink at %s — no writable prod symlinks allowed", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Builder ext4 should be hard-linked (same inode as src).
+	srcInfo, err := os.Stat(filepath.Join(src, "nexus-builder-test.ext4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dstInfo, err := os.Stat(filepath.Join(dst, "nexus-builder-test.ext4"))
+	if err != nil {
+		t.Fatalf("expected hard-linked ext4 in dst: %v", err)
+	}
+	if !os.SameFile(srcInfo, dstInfo) {
+		t.Error("dst ext4 should share an inode with src (hard link), not a copy")
+	}
+
+	// locks/ subtree must NOT appear in dst.
+	if _, err := os.Stat(filepath.Join(dst, "locks")); err == nil {
+		t.Error("locks/ dir must not be hard-linked into test root")
+	}
+
+	// sha256 content should be present.
+	if _, err := os.Stat(filepath.Join(dst, "sha256", "abc123", "artifact")); err != nil {
+		t.Errorf("sha256 content missing in dst: %v", err)
+	}
+}
+
+// TestCleanupOrderStopsSupervisorsFirst verifies that waitProcsExit and
+// findProcsReferencingPath correctly detect and report processes whose cmdline
+// references a given path, which underpins the supervisor-first cleanup order.
+func TestCleanupOrderStopsSupervisorsFirst(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/var/tmp", "nexus-live-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Start a process whose cmdline contains tmpDir.
+	// We execute a shell script whose path is inside tmpDir, so the process's
+	// /proc/<pid>/cmdline will contain tmpDir.
+	scriptPath := filepath.Join(tmpDir, "probe.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", scriptPath)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+
+	// Give the process time to appear in /proc.
+	var pids []int
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		pids = findProcsReferencingPath(tmpDir)
+		if len(pids) > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if len(pids) == 0 {
+		t.Fatal("findProcsReferencingPath: expected to find the probe process, found none")
+	}
+
+	// Killing the process should make waitProcsExit return quickly.
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
+	waitProcsExit(tmpDir, 3*time.Second)
+
+	remaining := findProcsReferencingPath(tmpDir)
+	if len(remaining) > 0 {
+		t.Errorf("processes still reference %s after kill: %v", tmpDir, remaining)
+	}
+}
+
+// TestSnapshotDetectsLeak verifies that checkSnapshot returns no errors when
+// before==after, and returns errors when they differ.
+func TestSnapshotDetectsLeak(t *testing.T) {
+	snap := captureEnvSnapshot(resolveNexusBin())
+
+	h := &Harness{t: t, nexusBin: resolveNexusBin(), preSnap: snap}
+
+	// Identical snapshot → no errors.
+	if errs := h.checkSnapshot(snap); len(errs) != 0 {
+		t.Errorf("identical snapshots should produce no errors, got %d:\n%s",
+			len(errs), fmt.Sprintf("%v", errs))
+	}
+
+	// Simulated branch leak → error on git branches.
+	modified := snap
+	modified.gitBranches = snap.gitBranches + "\n  ctrl/leaked-branch"
+	errs := h.checkSnapshot(modified)
+	if len(errs) == 0 {
+		t.Error("modified git branches should produce errors, got none")
+	}
+
+	// Simulated herdr session leak → error on herdr sessions.
+	modified2 := snap
+	modified2.herdrSessions = snap.herdrSessions + "\nnl-leaked-session"
+	errs2 := h.checkSnapshot(modified2)
+	if len(errs2) == 0 {
+		t.Error("modified herdr sessions should produce errors, got none")
 	}
 }
 

@@ -26,6 +26,7 @@ func TestBackendContractLive(t *testing.T) {
 		HerdrSocketPath: h.SocketPath(),
 		NexusBin:        h.NexusBin(),
 		ExtraEnv:        extraEnvFromHarness(h),
+		WorktreeDir:     h.WorktreeDir(),
 	}
 
 	b := New(cfg)
