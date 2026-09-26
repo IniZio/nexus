@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/artifact"
+	"github.com/IniZio/nexus/internal/core/audit"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
@@ -128,11 +129,55 @@ type Service struct {
 	// the one that installed it. A plain field would race for the same reason
 	// a plain package var did (observed 1 in 6 under whole-package -race).
 	testHookBeforeStoreCreate atomic.Pointer[func() error]
+
+	// auditRoot returns the state root used for audit log writes. Defaults to
+	// store.DefaultRoot; tests point it at t.TempDir().
+	auditRoot func() (string, error)
 }
 
 // New returns a Service backed by the given store, driver, and machine.
 func New(st store.Store, drv driver.Driver, m lifecycle.Machine) *Service {
 	return &Service{store: st, driver: drv, machine: m}
+}
+
+// WithAuditRoot overrides the state root used for audit log writes. Tests use
+// this to direct audit output to t.TempDir() without touching the real store.
+func (s *Service) WithAuditRoot(fn func() (string, error)) *Service {
+	s.auditRoot = fn
+	return s
+}
+
+// auditRemove records a sandbox.remove audit event. Failures are logged and
+// suppressed — a broken audit path must never block removal.
+func (s *Service) auditRemove(ctx context.Context, sb domain.Sandbox, removeErr error) {
+	root := ""
+	fn := s.auditRoot
+	if fn == nil {
+		fn = store.DefaultRoot
+	}
+	if r, err := fn(); err == nil {
+		root = r
+	}
+
+	volNames := make([]string, 0, len(sb.MountedVolumes))
+	for _, va := range sb.MountedVolumes {
+		volNames = append(volNames, va.Name)
+	}
+
+	errStr := ""
+	if removeErr != nil {
+		errStr = removeErr.Error()
+	}
+
+	if err := audit.Record(ctx, root, audit.Event{
+		Op:        "sandbox.remove",
+		SandboxID: sb.ID.String(),
+		Handle:    sb.Handle(),
+		Volumes:   volNames,
+		Err:       errStr,
+	}); err != nil {
+		slog.Warn("service: audit write failed", "op", "sandbox.remove", "sandbox_id", sb.ID, "err", err)
+	}
 }
 
 // WithArtifacts attaches an artifact store and returns the receiver so calls
@@ -761,6 +806,9 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
+
+	// Audit intent before any destructive step; a crash mid-remove still leaves a trace.
+	s.auditRemove(ctx, sb, nil)
 
 	// Write-ahead removal marker. Must precede all destructive work.
 	if err := s.store.SetRemovalMarker(ctx, sb.ID); err != nil {
