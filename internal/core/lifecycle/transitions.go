@@ -167,6 +167,7 @@ var table = []Edge{
 	{From: domain.Paused, To: domain.Running, Trigger: TriggerResume, Initiator: InitiatorUser}, // 3
 	{From: domain.Running, To: domain.Stopped, Trigger: TriggerStop, Initiator: InitiatorUser},  // 4
 	{From: domain.Stopped, To: domain.Running, Trigger: TriggerStart, Initiator: InitiatorUser}, // 5
+	{From: domain.Paused, To: domain.Stopped, Trigger: TriggerStop, Initiator: InitiatorUser},
 
 	// ── Snapshot self-edges ────────────────────────────────────────────────────
 	// Snapshot is a state-preserving self-edge: the sandbox remains in its

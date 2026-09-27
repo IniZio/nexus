@@ -425,6 +425,34 @@ func TestLifecycle_PauseResume(t *testing.T) {
 	}
 }
 
+func TestLifecycle_StopFromPaused(t *testing.T) {
+	svc := newSvc(t)
+	sb, _ := svc.Create(ctx(), "proj", "box", service.CreateOptions{})
+
+	if _, err := svc.Start(ctx(), sb.ID.String()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := svc.Pause(ctx(), sb.ID.String()); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	stopped, err := svc.Stop(ctx(), sb.ID.String())
+	if err != nil {
+		t.Fatalf("Stop from paused: %v", err)
+	}
+	if stopped.State != domain.Stopped {
+		t.Errorf("after Stop from paused: state = %q, want Stopped", stopped.State)
+	}
+
+	started, err := svc.Start(ctx(), sb.ID.String())
+	if err != nil {
+		t.Fatalf("Start after stop-from-paused: %v", err)
+	}
+	if started.State != domain.Running {
+		t.Errorf("after Start: state = %q, want Running", started.State)
+	}
+}
+
 func TestLifecycle_IllegalTransition_RejectsBeforeDriver(t *testing.T) {
 	// Attempting to resume a Stopped sandbox is illegal (no resume edge from Stopped).
 	// The machine must reject it BEFORE any driver call is made.

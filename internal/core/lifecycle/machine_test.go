@@ -517,13 +517,41 @@ func TestInitiatorMatchesTable(t *testing.T) {
 // added in P2W0 as state-preserving self-edges for snapshot operations. Fork
 // (TriggerFork) has no table entry — the parent has no transition (spec 06
 // edge 5: ∅→running for children).
-func TestTableHasExactly16Edges(t *testing.T) {
+func TestTableHasExactly17Edges(t *testing.T) {
 	t.Parallel()
 	m := lifecycle.New()
-	const want = 16
+	const want = 17
 	got := len(m.All())
 	if got != want {
 		t.Errorf("transition table has %d edges; want exactly %d", got, want)
+	}
+}
+
+func TestStopFromPaused(t *testing.T) {
+	t.Parallel()
+	m := lifecycle.New()
+
+	tr, err := m.Next(domain.Paused, lifecycle.TriggerStop)
+	if err != nil {
+		t.Fatalf("Next(paused, stop): %v", err)
+	}
+	if tr.Remove {
+		t.Error("Next(paused, stop).Remove = true; want false")
+	}
+	if tr.NextState != domain.Stopped {
+		t.Errorf("Next(paused, stop).NextState = %q; want stopped", tr.NextState)
+	}
+
+	init, err := m.Initiator(domain.Paused, lifecycle.TriggerStop)
+	if err != nil {
+		t.Fatalf("Initiator(paused, stop): %v", err)
+	}
+	if init != lifecycle.InitiatorUser {
+		t.Errorf("Initiator(paused, stop) = %q; want user", init)
+	}
+
+	if !m.Can(domain.Paused, lifecycle.TriggerStop) {
+		t.Error("Can(paused, stop) = false; want true")
 	}
 }
 
