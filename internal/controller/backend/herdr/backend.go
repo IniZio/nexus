@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -165,13 +166,37 @@ func (b *Backend) nexusStoreRoot() string {
 	return root
 }
 
+// filteredOSEnv returns os.Environ() with herdr/claude session vars removed so
+// child processes do not inherit the launching shell's pane/workspace context.
+func filteredOSEnv() []string {
+	skipPrefixes := []string{
+		"HERDR_PANE_ID=", "HERDR_TAB_ID=", "HERDR_WORKSPACE_ID=",
+		"HERDR_ENV=", "CLAUDECODE=", "CLAUDE_CODE_",
+	}
+	src := os.Environ()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		skip := false
+		for _, p := range skipPrefixes {
+			if strings.HasPrefix(kv, p) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 func runCmd(ctx context.Context, bin string, extraEnv []string, argv ...string) (string, error) {
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, bin, argv...)
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
+		cmd.Env = append(filteredOSEnv(), extraEnv...)
 	}
 	err := cmd.Run()
 	return buf.String(), err
@@ -180,7 +205,7 @@ func runCmd(ctx context.Context, bin string, extraEnv []string, argv ...string) 
 func runCmdPTY(ctx context.Context, bin string, extraEnv []string, argv ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, argv...)
 	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
+		cmd.Env = append(filteredOSEnv(), extraEnv...)
 	}
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -242,6 +267,26 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		return "", "", fmt.Errorf("herdr worktree create: no workspace_id in output: %s", wtOut)
 	}
 
+	// Rollback: on any error return after worktree creation, remove sandbox (if
+	// bound) then the worktree. committed is set to true only on success.
+	var rollbackSandboxID string
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cleanCancel()
+		if rollbackSandboxID != "" {
+			if _, rbErr := b.nexusRun(cleanCtx, nil, "sandbox", "rm", rollbackSandboxID); rbErr != nil {
+				slog.Error("provision rollback: sandbox rm", "sandbox", rollbackSandboxID, "err", rbErr)
+			}
+		}
+		if _, rbErr := b.herdrRun(cleanCtx, nil, "worktree", "remove", "--workspace", wsID, "--force"); rbErr != nil {
+			slog.Error("provision rollback: worktree remove", "workspace", wsID, "err", rbErr)
+		}
+	}()
+
 	bindOut, bindErr := b.nexusRun(ctx, []string{vault.PrincipalEnv + "=" + principal}, "herdr", "worktree-sandbox", wsID)
 	if bindErr != nil && !strings.Contains(bindOut, "only the pane failed") {
 		return "", "", fmt.Errorf("nexus herdr worktree-sandbox: %w\n%s", bindErr, bindOut)
@@ -273,6 +318,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	if nexusSandboxID == "" {
 		return "", "", fmt.Errorf("nexus herdr list: no sandbox_id for workspace %s", wsID)
 	}
+	rollbackSandboxID = nexusSandboxID // sandbox is now bound; rollback must rm it
 
 	boundPrincipal := parsePrincipal(listOut, wsID)
 	if boundPrincipal == "" || boundPrincipal != principal {
@@ -292,20 +338,12 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	}
 
 	if err := b.verifyClaudeInGuest(ctx, nexusSandboxID); err != nil {
-		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cleanCancel()
-		_, _ = b.nexusRun(cleanCtx, nil, "sandbox", "rm", nexusSandboxID)
-		_, _ = b.herdrRun(cleanCtx, nil, "worktree", "remove", wsID)
 		return "", "", err
 	}
 
 	agentName := agentNameFromWsID(wsID)
 	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID)
 	if err != nil {
-		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cleanCancel()
-		_, _ = b.nexusRun(cleanCtx, nil, "sandbox", "rm", nexusSandboxID)
-		_, _ = b.herdrRun(cleanCtx, nil, "worktree", "remove", wsID)
 		return "", "", fmt.Errorf("start agent: %w", err)
 	}
 
@@ -319,6 +357,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	b.sandboxes[nexusSandboxID] = agentRef
 	b.mu.Unlock()
 
+	committed = true
 	return nexusSandboxID, agentRef, nil
 }
 
@@ -466,9 +505,10 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 	}
 
 	out, err := b.herdrRun(ctx, nil, "agent", "start", name, "--kind", "claude", "--pane", paneID,
+		"--timeout", "300000",
 		"--", "--model", b.cfg.Model, "--permission-mode", b.permMode(), "--max-turns", "1")
 	if err == nil {
-		if err := b.waitForAgentReady(ctx, name, 90*time.Second); err != nil {
+		if err := b.waitForAgentReady(ctx, name, 5*time.Minute); err != nil {
 			return "", fmt.Errorf("agent not ready: %w", err)
 		}
 		return name, nil
@@ -478,10 +518,13 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 		// herdr could not confirm the agent is ready — verify the pane is still
 		// running claude (prompt absent) rather than silently succeeding when
 		// claude exited immediately (e.g. command not found).
-		time.Sleep(2 * time.Second)
+		b.sleepFn(2 * time.Second)
 		paneOut, _ := b.herdrRun(ctx, nil, "pane", "read", paneID, "--source", "recent-unwrapped", "--lines", "50")
 		if shellPromptVisible(paneOut) {
 			return "", fmt.Errorf("agent_not_ready and shell prompt visible: claude exited immediately (command not found, crash, or permission error)\npane tail:\n%s", paneOut)
+		}
+		if err := b.waitForAgentReady(ctx, name, 5*time.Minute); err != nil {
+			return "", fmt.Errorf("agent not ready: %w", err)
 		}
 		return name, nil
 	}
@@ -506,7 +549,7 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 		if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
 			return "", fmt.Errorf("herdr pane run: %w\n%s", runErr, runOut)
 		}
-		if err := b.waitForAgentReady(ctx, name, 90*time.Second); err != nil {
+		if err := b.waitForAgentReady(ctx, name, 5*time.Minute); err != nil {
 			return "", fmt.Errorf("agent not ready: %w", err)
 		}
 		return name, nil
@@ -514,7 +557,7 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 	if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
 		return "", fmt.Errorf("herdr pane run (fallback): %w\n%s", runErr, runOut)
 	}
-	agentName, detectErr := b.waitForAgentDetection(ctx, paneID, 30*time.Second)
+	agentName, detectErr := b.waitForAgentDetection(ctx, paneID, 5*time.Minute)
 	if detectErr != nil {
 		return "", fmt.Errorf("agent detection failed after pane run — pane may not be running claude: %w", detectErr)
 	}
@@ -524,7 +567,7 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 			agentName = name
 		}
 	}
-	if err := b.waitForAgentReady(ctx, agentName, 90*time.Second); err != nil {
+	if err := b.waitForAgentReady(ctx, agentName, 5*time.Minute); err != nil {
 		return "", fmt.Errorf("agent not ready: %w", err)
 	}
 	return agentName, nil
@@ -640,21 +683,20 @@ func (b *Backend) Observe(ctx context.Context, agentRef string, wait bool) (herd
 	}
 	client := herdragent.New(agentRunner, b.agentOpts...)
 
-	snap := func() herdragent.State {
+	if !wait {
 		st := client.Observe(ctx, agentRef, 0)
 		if st.Status == herdragent.StatusUnknown {
-			return herdragent.State{Status: herdragent.StatusDone, Settled: true}
+			return herdragent.State{}, fmt.Errorf("herdr agent %q: status unknown", agentRef)
 		}
-		return st
-	}
-
-	if !wait {
-		return snap(), nil
+		return st, nil
 	}
 
 	var last herdragent.State
 	for {
-		last = snap()
+		st := client.Observe(ctx, agentRef, 0)
+		if st.Status != herdragent.StatusUnknown {
+			last = st
+		}
 		if last.Status == herdragent.StatusDone || last.Status == herdragent.StatusBlocked {
 			return last, nil
 		}
@@ -1015,10 +1057,11 @@ func parsePaneID(out, workspaceID string) string {
 	needle := "workspace_id=" + workspaceID
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.Contains(line, needle) {
+		fields := strings.Split(line, "\t")
+		if !containsField(fields, needle) {
 			continue
 		}
-		for _, f := range strings.Split(line, "\t") {
+		for _, f := range fields {
 			if v, ok := strings.CutPrefix(f, "pane_id="); ok {
 				return v
 			}
@@ -1067,10 +1110,11 @@ func parseWorkspaceIDBySandboxID(out, sandboxID string) string {
 	needle := "sandbox_id=" + sandboxID
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.Contains(line, needle) {
+		fields := strings.Split(line, "\t")
+		if !containsField(fields, needle) {
 			continue
 		}
-		for _, f := range strings.Split(line, "\t") {
+		for _, f := range fields {
 			if v, ok := strings.CutPrefix(f, "workspace_id="); ok {
 				return v
 			}
@@ -1079,14 +1123,25 @@ func parseWorkspaceIDBySandboxID(out, sandboxID string) string {
 	return ""
 }
 
+// containsField reports whether fields contains exactly needle (not as a substring).
+func containsField(fields []string, needle string) bool {
+	for _, f := range fields {
+		if f == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func parseListField(out, workspaceID, prefix string) string {
 	needle := "workspace_id=" + workspaceID
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.Contains(line, needle) {
+		fields := strings.Split(line, "\t")
+		if !containsField(fields, needle) {
 			continue
 		}
-		for _, f := range strings.Split(line, "\t") {
+		for _, f := range fields {
 			if v, ok := strings.CutPrefix(f, prefix); ok {
 				return v
 			}

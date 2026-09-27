@@ -1291,3 +1291,118 @@ func TestProvisionPassesSanitizedAgentName(t *testing.T) {
 		t.Errorf("herdr agent start called with unexpected name; want %q; agent start calls: %v", want, got)
 	}
 }
+
+// ── Fix #2: Provision rollback tests ─────────────────────────────────────
+
+// TestProvisionRollbackOnAgentStartFailure verifies that when agent start fails,
+// the deferred rollback issues sandbox rm and worktree remove --workspace <wsID> --force.
+func TestProvisionRollbackOnAgentStartFailure(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+	agentStartErr := fmt.Errorf("exit status 1")
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wRB"}}}`},
+		"agent start":     {out: `{"error":{"code":"internal","message":"boom"}}`, err: agentStartErr},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+		"worktree remove": {out: ""},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wRB", "wRB:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+		"sandbox rm":             {out: ""},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "rb"), testPrincipal)
+	if err == nil {
+		t.Fatal("Provision: expected error from agent start failure, got nil")
+	}
+
+	if !n.calledWith("sandbox", "rm", "sb-abc123") {
+		t.Errorf("rollback: expected nexus sandbox rm sb-abc123; calls: %v", n.calls)
+	}
+	if !h.calledWith("worktree", "remove", "--workspace", "wRB", "--force") {
+		t.Errorf("rollback: expected herdr worktree remove --workspace wRB --force; calls: %v", h.calls)
+	}
+}
+
+// ── Fix #12: env filtering tests ─────────────────────────────────────────
+
+// TestFilteredOSEnv verifies that filteredOSEnv strips herdr/claude session vars.
+func TestFilteredOSEnv(t *testing.T) {
+	keys := []string{
+		"HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID",
+		"HERDR_ENV", "CLAUDECODE", "CLAUDE_CODE_SESSION", "CLAUDE_CODE_WHATEVER",
+	}
+	for _, k := range keys {
+		t.Setenv(k, "should-be-stripped")
+	}
+	got := filteredOSEnv()
+	for _, kv := range got {
+		for _, k := range keys {
+			if strings.HasPrefix(kv, k+"=") {
+				t.Errorf("filteredOSEnv: found %q in child env; should have been stripped", kv)
+			}
+		}
+	}
+}
+
+// ── Fix #13: unknown status tests ────────────────────────────────────────
+
+// TestObserveUnknownReturnsError verifies that Observe(wait=false) returns an
+// error when the agent status is unknown, rather than mapping it to Done.
+func TestObserveUnknownReturnsError(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent get": {out: `{"result":{"agent":{"agent":"ctrl-unk","agent_status":"unknown","state_change_seq":1}}}`},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, nil)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.mu.Lock()
+	b.entries["ctrl-unk"] = &entry{paneID: "unk:p1", nexusSandboxID: "sb-unk", wsID: "unk"}
+	b.sandboxes["sb-unk"] = "ctrl-unk"
+	b.mu.Unlock()
+
+	st, err := b.Observe(context.Background(), "ctrl-unk", false)
+	if err == nil {
+		t.Fatalf("Observe(wait=false) with unknown status: expected error, got state %+v", st)
+	}
+	if st.Status == herdragent.StatusDone {
+		t.Errorf("Observe(wait=false) with unknown status must not return Done")
+	}
+}
+
+// ── Fix #15: parse field exact-match tests ───────────────────────────────
+
+// TestParsePaneIDNoPrefixCollision verifies that parsePaneID for workspace "wDJ"
+// does not match a line whose workspace_id is "wDJ1".
+func TestParsePaneIDNoPrefixCollision(t *testing.T) {
+	// Two workspaces sharing the prefix "wDJ"; only wDJ should match.
+	listOut := "label=a\tworkspace_id=wDJ\tpane_id=p-correct\tsandbox_id=sb-1\tprincipal=u:x\n" +
+		"label=b\tworkspace_id=wDJ1\tpane_id=p-wrong\tsandbox_id=sb-2\tprincipal=u:y\n"
+
+	got := parsePaneID(listOut, "wDJ")
+	if got != "p-correct" {
+		t.Errorf("parsePaneID(\"wDJ\"): got %q, want %q", got, "p-correct")
+	}
+	got2 := parsePaneID(listOut, "wDJ1")
+	if got2 != "p-wrong" {
+		t.Errorf("parsePaneID(\"wDJ1\"): got %q, want %q", got2, "p-wrong")
+	}
+}
+
+// TestParseListFieldNoPrefixCollision verifies parseListField exact matching.
+func TestParseListFieldNoPrefixCollision(t *testing.T) {
+	listOut := "label=a\tworkspace_id=wDJ\thandle=h-correct\tsandbox_id=sb-1\n" +
+		"label=b\tworkspace_id=wDJ1\thandle=h-wrong\tsandbox_id=sb-2\n"
+
+	got := parseListField(listOut, "wDJ", "handle=")
+	if got != "h-correct" {
+		t.Errorf("parseListField(\"wDJ\"): got %q, want %q", got, "h-correct")
+	}
+	got2 := parseListField(listOut, "wDJ1", "handle=")
+	if got2 != "h-wrong" {
+		t.Errorf("parseListField(\"wDJ1\"): got %q, want %q", got2, "h-wrong")
+	}
+}
