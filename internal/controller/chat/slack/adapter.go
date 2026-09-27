@@ -34,6 +34,7 @@ type Adapter struct {
 	api    *goslack.Client
 	src    eventSource
 	botID  string
+	userID string // bot's user ID (U…) from auth.test; used to deduplicate app_mention + message events
 	teamID string
 }
 
@@ -51,16 +52,17 @@ func New(appToken, botToken string) (*Adapter, error) {
 		api:    api,
 		src:    &realSource{sm: sm},
 		botID:  authResp.BotID,
+		userID: authResp.UserID,
 		teamID: authResp.TeamID,
 	}, nil
 }
 
-func NewAdapterFromParts(api *goslack.Client, sm *socketmode.Client, botID, teamID string) *Adapter {
-	return &Adapter{api: api, src: &realSource{sm: sm}, botID: botID, teamID: teamID}
+func NewAdapterFromParts(api *goslack.Client, sm *socketmode.Client, botID, userID, teamID string) *Adapter {
+	return &Adapter{api: api, src: &realSource{sm: sm}, botID: botID, userID: userID, teamID: teamID}
 }
 
-func newWithSource(api *goslack.Client, src eventSource, botID, teamID string) *Adapter {
-	return &Adapter{api: api, src: src, botID: botID, teamID: teamID}
+func newWithSource(api *goslack.Client, src eventSource, botID, userID, teamID string) *Adapter {
+	return &Adapter{api: api, src: src, botID: botID, userID: userID, teamID: teamID}
 }
 
 type chanSource struct{ ch <-chan socketmode.Event }
@@ -70,8 +72,8 @@ func (c *chanSource) ack(_ *socketmode.Request)       {}
 func (c *chanSource) run(ctx context.Context) error   { <-ctx.Done(); return nil }
 
 // NewAdapterWithFakeSource constructs an Adapter whose inbound events come from ch.
-func NewAdapterWithFakeSource(api *goslack.Client, ch <-chan socketmode.Event, botID, teamID string) *Adapter {
-	return &Adapter{api: api, src: &chanSource{ch: ch}, botID: botID, teamID: teamID}
+func NewAdapterWithFakeSource(api *goslack.Client, ch <-chan socketmode.Event, botID, userID, teamID string) *Adapter {
+	return &Adapter{api: api, src: &chanSource{ch: ch}, botID: botID, userID: userID, teamID: teamID}
 }
 
 var reMention = regexp.MustCompile(`<@[^>]+>`)
@@ -244,6 +246,6 @@ func (a *Adapter) Mention(user string) string {
 }
 
 // NewTestAdapter returns an Adapter with no real connections for unit tests.
-func NewTestAdapter(botID, teamID string) *Adapter {
-	return &Adapter{botID: botID, teamID: teamID}
+func NewTestAdapter(botID, userID, teamID string) *Adapter {
+	return &Adapter{botID: botID, userID: userID, teamID: teamID}
 }

@@ -259,7 +259,7 @@ func buildTestAdapter(t *testing.T) (*slackadapter.Adapter, *slackDriver) {
 	t.Cleanup(srv.Close)
 
 	api := goslack.New("xoxb-fake", goslack.OptionAPIURL(srv.URL+"/api/"))
-	adapter := slackadapter.NewAdapterWithFakeSource(api, src.ch, botID, teamID)
+	adapter := slackadapter.NewAdapterWithFakeSource(api, src.ch, botID, botID, teamID)
 	drv := &slackDriver{src: src, teamID: teamID, recorder: rec}
 	return adapter, drv
 }
@@ -291,7 +291,7 @@ func TestSlackMentionStripsBotAndBuildsThreadRef(t *testing.T) {
 		t.Fatalf("Channel() = %q, want C_CHAN", ref.Channel())
 	}
 
-	adapter := slackadapter.NewTestAdapter("U_BOT", "T_TEAM")
+	adapter := slackadapter.NewTestAdapter("U_BOT", "U_BOT", "T_TEAM")
 	if mention := adapter.Mention("U123"); !strings.Contains(mention, "U123") {
 		t.Fatalf("Mention(U123) = %q, does not contain user id", mention)
 	}
@@ -338,7 +338,7 @@ func TestSlackLongAnswerUploadsFile(t *testing.T) {
 
 	api := goslack.New("xoxb-fake", goslack.OptionAPIURL(srv.URL+"/api/"))
 	src := newFakeSource()
-	adapter := slackadapter.NewAdapterWithFakeSource(api, src.ch, "U_BOT", "T_TEAM")
+	adapter := slackadapter.NewAdapterWithFakeSource(api, src.ch, "U_BOT", "U_BOT", "T_TEAM")
 
 	ref := controller.NewThreadRef("T_TEAM", "C_CHAN", "1000.0")
 	longText := strings.Repeat("x", slackadapter.LongAnswerThreshold+1)

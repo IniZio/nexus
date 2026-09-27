@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"strings"
 
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
@@ -35,7 +36,17 @@ func dispatchInnerEvent(ctx context.Context, ev socketmode.Event, a *Adapter, h 
 		})
 
 	case *slackevents.MessageEvent:
-		if inner.BotID != "" || inner.SubType != "" {
+		if inner.BotID != "" {
+			return nil
+		}
+		// Drop bot-mention replies: app_mention handles those to avoid double dispatch.
+		if a.userID != "" && strings.Contains(inner.Text, "<@"+a.userID+">") {
+			return nil
+		}
+		// Allow file_share and thread_broadcast; drop all other non-empty subtypes
+		// (bot_message, message_changed, message_deleted, etc.).
+		st := inner.SubType
+		if st != "" && st != "file_share" && st != "thread_broadcast" {
 			return nil
 		}
 		// Thread replies only: thread_ts set AND differs from ts.
