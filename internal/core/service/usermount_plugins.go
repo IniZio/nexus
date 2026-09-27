@@ -136,40 +136,12 @@ func ResolveClaudeCodeBindMounts(hostHome, worktreePath string) (specs []string,
 	pluginSpecs, pluginWarns := ResolvePluginSymlinkMounts(hostHome)
 	specs = append(specs, pluginSpecs...)
 	warnings = append(warnings, pluginWarns...)
-	if shareSpec := resolveClaudeShareMount(hostHome); shareSpec != "" {
-		specs = append(specs, shareSpec)
-	}
 	if worktreePath != "" {
 		if gwMount := resolveGroundworkMount(worktreePath); gwMount != "" {
 			specs = append(specs, gwMount)
 		}
 	}
 	return specs, warnings
-}
-
-// resolveClaudeShareMount returns a "<host>:<guest>:ro" spec for the claude
-// binary's real installation directory when ~/.local/bin/claude is a symlink
-// whose target lives outside ~/.local/bin (e.g. ~/.local/share/claude/…).
-// Without this mount the curated symlink farm marks claude as dangling and
-// /root/.local/bin/claude is never created in the guest.
-func resolveClaudeShareMount(hostHome string) string {
-	claudeLink := filepath.Join(hostHome, ".local", "bin", "claude")
-	target, err := filepath.EvalSymlinks(claudeLink)
-	if err != nil {
-		return ""
-	}
-	localBin := filepath.Join(hostHome, ".local", "bin")
-	if strings.HasPrefix(target, localBin+string(filepath.Separator)) || target == localBin {
-		return ""
-	}
-	localShare := filepath.Join(hostHome, ".local", "share", "claude")
-	if !strings.HasPrefix(target, localShare+string(filepath.Separator)) && target != localShare {
-		return ""
-	}
-	if _, err := os.Stat(localShare); err != nil {
-		return ""
-	}
-	return localShare + ":" + localShare + ":ro"
 }
 
 // resolveGroundworkMount returns "<mainRepo>/.groundwork:<mainRepo>/.groundwork" for a linked worktree, or "".
