@@ -229,6 +229,11 @@ type Deps struct {
 	// PermMode returns the claude permission mode for a channel, or "" for the
 	// backend default. Nil means always use the backend default.
 	PermMode func(channel string) string
+	// Model returns the claude model for a channel, or "" for the backend default.
+	// Nil means always use the backend default. Use this to override the default
+	// per channel (e.g. to use sonnet on channels where auto mode is required,
+	// since haiku silently falls back from auto to default).
+	Model func(channel string) string
 	// TurnTimeout bounds one observe loop; zero means DefaultTurnTimeout.
 	TurnTimeout time.Duration
 }
@@ -258,6 +263,19 @@ func WithPermMode(ctx context.Context, mode string) context.Context {
 // PermModeFromCtx returns the permission mode stored in ctx, or "" when not set.
 func PermModeFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(permModeKey{}).(string)
+	return v
+}
+
+type modelKey struct{}
+
+// WithModel returns a child context carrying a per-provision model override.
+func WithModel(ctx context.Context, model string) context.Context {
+	return context.WithValue(ctx, modelKey{}, model)
+}
+
+// ModelFromCtx returns the model override stored in ctx, or "" when not set.
+func ModelFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(modelKey{}).(string)
 	return v
 }
 

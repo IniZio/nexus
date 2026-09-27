@@ -36,6 +36,11 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 				ctx = WithPermMode(ctx, pm)
 			}
 		}
+		if c.deps.Model != nil {
+			if m := c.deps.Model(t.ThreadRef.Channel()); m != "" {
+				ctx = WithModel(ctx, m)
+			}
+		}
 		sbID, agRef, provErr := c.deps.Backend.Provision(ctx, project, t.ThreadRef, principal)
 		if provErr != nil {
 			if sbID != "" {
