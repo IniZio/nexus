@@ -28,6 +28,10 @@ func (f *fakeSvc) Stop(_ context.Context, ref string) (domain.Sandbox, error) {
 	return domain.Sandbox{}, nil
 }
 
+func (f *fakeSvc) Start(_ context.Context, ref string) (domain.Sandbox, error) {
+	return domain.Sandbox{}, nil
+}
+
 func TestServiceLifecycleDelegates(t *testing.T) {
 	ctx := context.Background()
 	svc := &fakeSvc{}

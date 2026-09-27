@@ -44,9 +44,11 @@ func newLinearWithEndpoint(clientID, clientSecret, redirectURL string, ep oauth2
 	return c
 }
 
-func (c *LinearConnector) ID() string              { return "linear" }
+func (c *LinearConnector) ID() string               { return "linear" }
 func (c *LinearConnector) LinkFlow() vault.LinkFlow { return vault.LinkFlowPKCE }
-func (c *LinearConnector) AllowedHosts() []string   { return append([]string(nil), linearAllowedHosts...) }
+func (c *LinearConnector) AllowedHosts() []string {
+	return append([]string(nil), linearAllowedHosts...)
+}
 
 func (c *LinearConnector) StartDevice(_ context.Context) (vault.DeviceAuth, error) {
 	return vault.DeviceAuth{}, fmt.Errorf("linear: PKCE connector does not support device flow")

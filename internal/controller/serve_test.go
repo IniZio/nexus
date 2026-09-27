@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/controller"
-	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	herdrbackend "github.com/IniZio/nexus/internal/controller/backend/herdr"
 	"github.com/IniZio/nexus/internal/controller/chattest"
+	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	"github.com/IniZio/nexus/internal/controller/store/sqlite"
 	"github.com/IniZio/nexus/internal/controller/storetest"
 	"github.com/IniZio/nexus/internal/core/vault"
@@ -58,6 +58,11 @@ type serveTestSandboxLC struct{}
 func (s *serveTestSandboxLC) Pause(_ context.Context, _ string) error  { return nil }
 func (s *serveTestSandboxLC) Resume(_ context.Context, _ string) error { return nil }
 func (s *serveTestSandboxLC) Stop(_ context.Context, _ string) error   { return nil }
+func (s *serveTestSandboxLC) Start(_ context.Context, _ string) error  { return nil }
+
+func (b *serveTestNopBackend) Restart(_ context.Context, _, _ string) (string, error) {
+	return "", controller.ErrNotImplemented
+}
 
 type serveTestNopBackend struct{}
 

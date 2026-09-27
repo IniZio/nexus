@@ -78,7 +78,6 @@ type sandboxDeregistrar interface {
 	Deregister(domain.SandboxID)
 }
 
-
 // Service coordinates sandbox operations across the store, driver, and
 // lifecycle machine. It has no CLI or presentation concerns and is safe to
 // call from any context.

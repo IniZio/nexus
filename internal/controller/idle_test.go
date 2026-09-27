@@ -23,8 +23,9 @@ func newIdleDeps(t *testing.T, lc controller.SandboxLifecycle) (controller.Deps,
 		Lifecycle: lc,
 		Linker:    &fakeLinker{},
 		Projects:  &fakeProjects{project: "myproject"},
-		IdlePause: 30 * time.Minute,
-		IdleStop:  2 * time.Hour,
+		IdleFor: func(string) controller.IdleThresholds {
+			return controller.IdleThresholds{Pause: 30 * time.Minute, Stop: 2 * time.Hour}
+		},
 	}
 	return d, ch, st, be
 }

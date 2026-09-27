@@ -26,8 +26,22 @@ type fakeLc struct {
 	paused  []string
 	resumed []string
 	stopped []string
+	started []string
 }
 
-func (f *fakeLc) Pause(_ context.Context, id string) error  { f.paused = append(f.paused, id); return nil }
-func (f *fakeLc) Resume(_ context.Context, id string) error { f.resumed = append(f.resumed, id); return nil }
-func (f *fakeLc) Stop(_ context.Context, id string) error   { f.stopped = append(f.stopped, id); return nil }
+func (f *fakeLc) Pause(_ context.Context, id string) error {
+	f.paused = append(f.paused, id)
+	return nil
+}
+func (f *fakeLc) Resume(_ context.Context, id string) error {
+	f.resumed = append(f.resumed, id)
+	return nil
+}
+func (f *fakeLc) Stop(_ context.Context, id string) error {
+	f.stopped = append(f.stopped, id)
+	return nil
+}
+func (f *fakeLc) Start(_ context.Context, id string) error {
+	f.started = append(f.started, id)
+	return nil
+}

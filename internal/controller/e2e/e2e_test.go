@@ -18,11 +18,11 @@ import (
 	"github.com/IniZio/nexus/internal/controller"
 	herdrbackend "github.com/IniZio/nexus/internal/controller/backend/herdr"
 	"github.com/IniZio/nexus/internal/controller/chattest"
-	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/controller/sandbox"
 	"github.com/IniZio/nexus/internal/controller/store/sqlite"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/vault/connectors"
+	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/testutil/livenexus"
 )
 
@@ -62,8 +62,9 @@ func TestControllerE2E(t *testing.T) {
 		Lifecycle: lc,
 		Linker:    linker,
 		Projects:  projects,
-		IdlePause: 15 * time.Second,
-		IdleStop:  60 * time.Second,
+		IdleFor: func(string) controller.IdleThresholds {
+			return controller.IdleThresholds{Pause: e2eIdlePause, Stop: e2eIdleStop}
+		},
 	}
 
 	ctrl := controller.New(deps)
@@ -119,7 +120,7 @@ func TestControllerE2E(t *testing.T) {
 		if sharedTask.SandboxID == "" {
 			t.Fatal("no sandbox from MentionProvisionsSandbox")
 		}
-		testIdleSweep(t, ctx, router, store, h, sharedTask, advanceClock, deps.IdlePause)
+		testIdleSweep(t, ctx, router, store, h, sharedTask, advanceClock, e2eIdlePause)
 	})
 
 	t.Run("GuestGHTokenIsBrokerPlaceholder", func(t *testing.T) {
@@ -639,6 +640,11 @@ func buildBackend(t *testing.T, h *livenexus.Harness, repoPath string) *herdrbac
 	return b
 }
 
+const (
+	e2eIdlePause = 15 * time.Second
+	e2eIdleStop  = 60 * time.Second
+)
+
 type cliLifecycle struct {
 	h *livenexus.Harness
 }
@@ -667,6 +673,14 @@ func (l *cliLifecycle) Stop(ctx context.Context, sandboxID string) error {
 	out, err := l.h.Run(ctx, "sandbox", "stop", sandboxID)
 	if err != nil {
 		return fmt.Errorf("nexus sandbox stop %s: %w\n%s", sandboxID, err, out)
+	}
+	return nil
+}
+
+func (l *cliLifecycle) Start(ctx context.Context, sandboxID string) error {
+	out, err := l.h.Run(ctx, "sandbox", "start", sandboxID)
+	if err != nil {
+		return fmt.Errorf("nexus sandbox start %s: %w\n%s", sandboxID, err, out)
 	}
 	return nil
 }
@@ -760,13 +774,13 @@ egress:
 func extraEnvFromHarness(h *livenexus.Harness) []string {
 	fullEnv := h.Env()
 	keys := map[string]bool{
-		"XDG_STATE_HOME":            true,
-		"XDG_DATA_HOME":             true,
-		"XDG_CONFIG_HOME":           true,
-		"CREDENTIALS_DIRECTORY":     true,
-		"NEXUS_KERNEL_PATH":         true,
-		"TMPDIR":                    true,
-		"NEXUS_DISK_FLOOR_GIB":      true,
+		"XDG_STATE_HOME":               true,
+		"XDG_DATA_HOME":                true,
+		"XDG_CONFIG_HOME":              true,
+		"CREDENTIALS_DIRECTORY":        true,
+		"NEXUS_KERNEL_PATH":            true,
+		"TMPDIR":                       true,
+		"NEXUS_DISK_FLOOR_GIB":         true,
 		"NEXUS_HERDR_DOCKER_DISK_GIB":  true,
 		"NEXUS_HERDR_GOCACHE_DISK_GIB": true,
 		"NEXUS_HERDR_GOPATH_DISK_GIB":  true,

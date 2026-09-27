@@ -170,6 +170,16 @@ func (f *Fake) ReadAnswer(_ context.Context, agentRef string) (string, error) {
 	return a.readAns, nil
 }
 
+// Restart returns agentRef unchanged; errors on unknown/torn-down agent.
+func (f *Fake) Restart(_ context.Context, _ string, agentRef string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, err := f.lookupAgent(agentRef); err != nil {
+		return "", err
+	}
+	return agentRef, nil
+}
+
 // Teardown marks the agent torn down; unknown sandboxID returns nil (idempotent).
 func (f *Fake) Teardown(_ context.Context, sandboxID string) error {
 	f.mu.Lock()

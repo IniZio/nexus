@@ -20,9 +20,9 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/builder"
-	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/builder/builderimage"
 	"github.com/IniZio/nexus/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"

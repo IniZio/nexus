@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/driver/fake"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/vault/connectors"
 	"github.com/IniZio/nexus/internal/core/vault/vaulttest"
-	"github.com/IniZio/nexus/internal/core/driver/fake"
 )
 
 // fakeVaultWithGitHub returns a Fake vault pre-seeded with a GitHub record.

@@ -736,7 +736,7 @@ func (h *Harness) Env() []string {
 	return env
 }
 
-func (h *Harness) CredsDir() string    { return h.credsDir }
+func (h *Harness) CredsDir() string     { return h.credsDir }
 func (h *Harness) VaultKeyPath() string { return filepath.Join(h.credsDir, "nexus-vault-key") }
 
 // Run executes nexusBin with args inside the isolated environment.

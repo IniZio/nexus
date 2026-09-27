@@ -11,9 +11,9 @@ import (
 
 	"github.com/IniZio/nexus/internal/cli"
 	"github.com/IniZio/nexus/internal/controller"
-	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	herdrbackend "github.com/IniZio/nexus/internal/controller/backend/herdr"
 	slackadapter "github.com/IniZio/nexus/internal/controller/chat/slack"
+	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	"github.com/IniZio/nexus/internal/controller/sandbox"
 	"github.com/IniZio/nexus/internal/controller/store/sqlite"
 	"github.com/IniZio/nexus/internal/core/lifecycle"

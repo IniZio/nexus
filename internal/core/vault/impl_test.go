@@ -184,8 +184,8 @@ type countingConnector struct {
 	count *atomic.Int64
 }
 
-func (c *countingConnector) ID() string                         { return c.id }
-func (c *countingConnector) LinkFlow() vault.LinkFlow           { return vault.LinkFlowDevice }
+func (c *countingConnector) ID() string               { return c.id }
+func (c *countingConnector) LinkFlow() vault.LinkFlow { return vault.LinkFlowDevice }
 func (c *countingConnector) StartDevice(_ context.Context) (vault.DeviceAuth, error) {
 	return vault.DeviceAuth{DeviceCode: "d", UserCode: "u", VerificationURI: "https://x"}, nil
 }

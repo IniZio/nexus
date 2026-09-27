@@ -19,14 +19,14 @@ type fakeT struct {
 	failed   bool
 }
 
-func (f *fakeT) Helper()                       {}
+func (f *fakeT) Helper() {}
 func (f *fakeT) Fatalf(format string, a ...any) {
 	f.failed = true
 	f.fatalMsg = format
 	panic("fakeT.Fatalf") // stop execution like the real t.Fatalf
 }
 func (f *fakeT) Logf(format string, a ...any) {}
-func (f *fakeT) Cleanup(fn func())             {}
+func (f *fakeT) Cleanup(fn func())            {}
 
 // recoverFatal runs fn, recovering from the fakeT panic.
 func recoverFatal(fn func()) (fataled bool) {
@@ -98,7 +98,7 @@ func TestEnvPinsIsolatedRootAndSocket(t *testing.T) {
 func TestCleanupOnlyRegisteredHandles(t *testing.T) {
 	var removed []string
 	h := &Harness{
-		t:    t,
+		t:        t,
 		nexusBin: "nexus",
 	}
 	h.Track("sb-tracked-1")
@@ -167,10 +167,10 @@ func TestNoWritableProdLink(t *testing.T) {
 		}
 	}
 	files := map[string]string{
-		filepath.Join(src, "nexus-builder-test.ext4"):          "fake-ext4-content",
-		filepath.Join(src, "sha256", "abc123", "artifact"):     "fake-artifact",
-		filepath.Join(src, "sha256", "abc123", "meta.json"):    `{"digest":"sha256:abc123"}`,
-		filepath.Join(src, "locks", "sha256", "abc123.lock"):   "lock",
+		filepath.Join(src, "nexus-builder-test.ext4"):        "fake-ext4-content",
+		filepath.Join(src, "sha256", "abc123", "artifact"):   "fake-artifact",
+		filepath.Join(src, "sha256", "abc123", "meta.json"):  `{"digest":"sha256:abc123"}`,
+		filepath.Join(src, "locks", "sha256", "abc123.lock"): "lock",
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -414,14 +414,14 @@ func TestHarnessIsolatesVaultAndKey(t *testing.T) {
 	}
 
 	h := &Harness{
-		t:          t,
-		stateRoot:  filepath.Join(base, "state"),
-		configHome: filepath.Join(base, "config"),
-		dataHome:   filepath.Join(base, "data"),
-		credsDir:   credsDir,
-		socketPath: filepath.Join(base, "config", "herdr", "sessions", "nl-test", "herdr.sock"),
+		t:           t,
+		stateRoot:   filepath.Join(base, "state"),
+		configHome:  filepath.Join(base, "config"),
+		dataHome:    filepath.Join(base, "data"),
+		credsDir:    credsDir,
+		socketPath:  filepath.Join(base, "config", "herdr", "sessions", "nl-test", "herdr.sock"),
 		sessionName: "nl-test",
-		nexusBin:   "nexus",
+		nexusBin:    "nexus",
 	}
 
 	env := h.Env()

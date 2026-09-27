@@ -7,11 +7,12 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 )
 
-// LifecycleService abstracts the Pause/Resume/Stop methods of service.Service.
+// LifecycleService abstracts the Pause/Resume/Stop/Start methods of service.Service.
 type LifecycleService interface {
 	Pause(ctx context.Context, ref string) (domain.Sandbox, error)
 	Resume(ctx context.Context, ref string) (domain.Sandbox, error)
 	Stop(ctx context.Context, ref string) (domain.Sandbox, error)
+	Start(ctx context.Context, ref string) (domain.Sandbox, error)
 }
 
 // ServiceLifecycle wraps a LifecycleService as a controller.SandboxLifecycle.
@@ -37,5 +38,10 @@ func (l *ServiceLifecycle) Resume(ctx context.Context, sandboxID string) error {
 
 func (l *ServiceLifecycle) Stop(ctx context.Context, sandboxID string) error {
 	_, err := l.svc.Stop(ctx, sandboxID)
+	return err
+}
+
+func (l *ServiceLifecycle) Start(ctx context.Context, sandboxID string) error {
+	_, err := l.svc.Start(ctx, sandboxID)
 	return err
 }

@@ -36,9 +36,9 @@ type ChannelConfig struct {
 }
 
 type Config struct {
-	Slack          SlackConfig               `yaml:"slack"`
-	Channels       map[string]ChannelConfig  `yaml:"channels"`
-	DeploymentMode DeploymentMode            `yaml:"deployment_mode"`
+	Slack          SlackConfig              `yaml:"slack"`
+	Channels       map[string]ChannelConfig `yaml:"channels"`
+	DeploymentMode DeploymentMode           `yaml:"deployment_mode"`
 }
 
 var (

@@ -20,12 +20,12 @@ type pkceState struct {
 
 // VaultLinker implements Linker backed by a vault.Vault.
 type VaultLinker struct {
-	v         vault.Vault
-	reg       *vault.Registry
-	chat      ChatAdapter
-	team      string
-	GenState  func() string
-	mu        sync.Mutex
+	v          vault.Vault
+	reg        *vault.Registry
+	chat       ChatAdapter
+	team       string
+	GenState   func() string
+	mu         sync.Mutex
 	pkceStates map[string]pkceState
 }
 

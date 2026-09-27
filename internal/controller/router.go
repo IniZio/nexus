@@ -219,4 +219,3 @@ func (r *Router) processEvent(ctx context.Context, ev Event) {
 		}
 	}
 }
-

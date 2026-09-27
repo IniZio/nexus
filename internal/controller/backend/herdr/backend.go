@@ -47,10 +47,10 @@ type entry struct {
 
 // Backend implements controller.AgentBackend.
 type Backend struct {
-	cfg              Config
-	herdrRun         runner
-	nexusRun         runner
-	agentOpts        []herdragent.Option
+	cfg               Config
+	herdrRun          runner
+	nexusRun          runner
+	agentOpts         []herdragent.Option
 	agentReadyTimeout time.Duration // 0 = skip idle-wait in waitForAgentReady (tests)
 
 	mu        sync.Mutex
@@ -61,9 +61,9 @@ type Backend struct {
 // New returns a Backend using real herdr and nexus binaries.
 func New(cfg Config) *Backend {
 	b := &Backend{
-		cfg:              cfg,
-		entries:          make(map[string]*entry),
-		sandboxes:        make(map[string]string),
+		cfg:               cfg,
+		entries:           make(map[string]*entry),
+		sandboxes:         make(map[string]string),
 		agentReadyTimeout: 90 * time.Second,
 	}
 	b.herdrRun = b.defaultHerdrRun
@@ -702,6 +702,11 @@ func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, erro
 // Idempotency is detected by the exact id being absent from nexus ps, not by
 // error-string matching. An unknown sandboxID (never provisioned by this backend)
 // returns an error; it is never silently ignored.
+// Restart re-launches the guest agent after a stop/start cycle.
+func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (string, error) {
+	return "", controller.ErrNotImplemented
+}
+
 func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 	b.mu.Lock()
 	agRef, known := b.sandboxes[sandboxID]

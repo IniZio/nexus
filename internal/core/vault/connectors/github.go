@@ -56,9 +56,11 @@ func newGitHubWithEndpoint(clientID string, ep oauth2.Endpoint, hc *http.Client)
 	return c
 }
 
-func (c *GitHubConnector) ID() string             { return "github" }
+func (c *GitHubConnector) ID() string               { return "github" }
 func (c *GitHubConnector) LinkFlow() vault.LinkFlow { return vault.LinkFlowDevice }
-func (c *GitHubConnector) AllowedHosts() []string  { return append([]string(nil), githubAllowedHosts...) }
+func (c *GitHubConnector) AllowedHosts() []string {
+	return append([]string(nil), githubAllowedHosts...)
+}
 
 func (c *GitHubConnector) StartDevice(ctx context.Context) (vault.DeviceAuth, error) {
 	resp, err := c.cfg.DeviceAuth(c.oauthCtx(ctx))

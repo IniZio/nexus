@@ -138,12 +138,12 @@ func TestBackendMapsHerdrState(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(string(tc.status), func(t *testing.T) {
 			h := newFakeCmd(map[string]fakeReply{
-				"workspace list": {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+				"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 				"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w2"}}}`},
-				"agent start":    {out: ""},
-				"agent get": {out: fmt.Sprintf(`{"result":{"agent":{"agent":"ctrl-w2","agent_status":%q,"state_change_seq":1}}}`, tc.status)},
-				"agent wait": {out: ""},
-				"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
+				"agent start":     {out: ""},
+				"agent get":       {out: fmt.Sprintf(`{"result":{"agent":{"agent":"ctrl-w2","agent_status":%q,"state_change_seq":1}}}`, tc.status)},
+				"agent wait":      {out: ""},
+				"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
 			})
 			n := newFakeCmd(map[string]fakeReply{
 				"herdr worktree-sandbox": {out: ""},
@@ -175,7 +175,7 @@ func TestProvisionSetsPrincipalEnv(t *testing.T) {
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w3","agent_status":"idle","state_change_seq":1}}}`},
 		"agent wait":      {out: ""},
 		"pane run":        {out: ""},
-		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
@@ -214,7 +214,7 @@ func TestStartAgentHandlesAutoTaggedPane(t *testing.T) {
 		"agent start":     {out: `{"error":{"code":"agent_pane_busy","message":"pane already detected as agent"}}`, err: busyErr},
 		"agent rename":    {out: ""},
 		"pane run":        {out: ""},
-		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w4","agent_status":"idle","state_change_seq":1}}}`},
 		"agent wait":      {out: ""},
 	})
@@ -246,7 +246,7 @@ func TestTeardownAlwaysRemovesSandbox(t *testing.T) {
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w6","agent_status":"idle","state_change_seq":1}}}`},
 		"worktree remove": {out: ""},
 		"pane run":        {out: ""},
-		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
@@ -283,7 +283,7 @@ func TestTeardownRemovesByExactSandboxID(t *testing.T) {
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w7","agent_status":"idle","state_change_seq":1}}}`},
 		"worktree remove": {out: ""},
 		"pane run":        {out: ""},
-		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
@@ -343,7 +343,7 @@ func TestTeardownIdempotentWhenIDAbsent(t *testing.T) {
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w8","agent_status":"idle","state_change_seq":1}}}`},
 		"worktree remove": {out: `{"error":{"code":"workspace_not_found"}}`, err: fmt.Errorf("exit status 1")},
 		"pane run":        {out: ""},
-		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
@@ -378,7 +378,7 @@ func TestAnswerDigitUsesSendKeys(t *testing.T) {
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w5","agent_status":"idle","state_change_seq":1}}}`},
 		"agent wait":      {out: ""},
 		"pane run":        {out: ""},
-		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
@@ -557,7 +557,7 @@ func TestProvisionWritesControllerMarker(t *testing.T) {
 
 	var markerExistedDuringCreate bool
 	h := newFakeCmd(map[string]fakeReply{
-		"workspace list": {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wM"}}}`},
 		"agent start":     {out: ""},
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wM","agent_status":"idle","state_change_seq":1}}}`},

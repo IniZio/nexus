@@ -43,6 +43,9 @@ const (
 	StatusClosed        Status = "closed"
 	StatusFailed        Status = "failed"
 	StatusPaused        Status = "paused"
+	// StatusStopped: sandbox stopped (not removed) after long idle; a reply
+	// starts it again. Distinct from StatusClosed, which is terminal.
+	StatusStopped Status = "stopped"
 )
 
 var validTransitions = map[Status]map[Status]bool{
@@ -71,6 +74,12 @@ var validTransitions = map[Status]map[Status]bool{
 		StatusClosed:  true,
 	},
 	StatusPaused: {
+		StatusWorking: true,
+		StatusStopped: true,
+		StatusFailed:  true,
+		StatusClosed:  true,
+	},
+	StatusStopped: {
 		StatusWorking: true,
 		StatusFailed:  true,
 		StatusClosed:  true,
@@ -112,6 +121,8 @@ var (
 	ErrNotLinked         = errors.New("controller: user has not linked the integration")
 	ErrNoProject         = controllerconfig.ErrNoProject
 	ErrNotImplemented    = errors.New("controller: not implemented")
+	ErrNotOwner          = errors.New("controller: thread belongs to another user")
+	ErrTurnTimeout       = errors.New("controller: turn deadline exceeded")
 )
 
 type EventKind string
@@ -161,14 +172,18 @@ type AgentBackend interface {
 	Observe(ctx context.Context, agentRef string, wait bool) (herdragent.State, error)
 	Answer(ctx context.Context, agentRef string, in AgentInput) error
 	ReadAnswer(ctx context.Context, agentRef string) (string, error)
+	// Restart re-launches the guest agent after its sandbox was stopped and
+	// started again, waits for readiness, and returns the (possibly new) agentRef.
+	Restart(ctx context.Context, sandboxID, agentRef string) (newAgentRef string, err error)
 	Teardown(ctx context.Context, sandboxID string) error
 }
 
-// SandboxLifecycle controls sandbox pause/resume/stop.
+// SandboxLifecycle controls sandbox pause/resume/stop/start.
 type SandboxLifecycle interface {
 	Pause(ctx context.Context, sandboxID string) error
 	Resume(ctx context.Context, sandboxID string) error
 	Stop(ctx context.Context, sandboxID string) error
+	Start(ctx context.Context, sandboxID string) error
 }
 
 // Linker maps user↔integration; Require returns ErrNotLinked if the user has not linked.
@@ -184,8 +199,8 @@ type ProjectResolver interface {
 
 // Flows is the seam the Router dispatches into.
 type Flows interface {
-	OnMention(ctx context.Context, t Task, ev Event) error  // turn.go
-	OnReply(ctx context.Context, t Task, ev Event) error    // blocked.go
+	OnMention(ctx context.Context, t Task, ev Event) error   // turn.go
+	OnReply(ctx context.Context, t Task, ev Event) error     // blocked.go
 	OnTick(ctx context.Context, t Task, now time.Time) error // idle.go
 }
 
@@ -196,8 +211,34 @@ type Deps struct {
 	Lifecycle SandboxLifecycle
 	Linker    Linker
 	Projects  ProjectResolver
-	IdlePause time.Duration
-	IdleStop  time.Duration
+	// IdleFor returns the idle thresholds for a channel; nil means DefaultIdle.
+	IdleFor func(channel string) IdleThresholds
+	// TurnTimeout bounds one observe loop; zero means DefaultTurnTimeout.
+	TurnTimeout time.Duration
+}
+
+// IdleThresholds: pause after Pause of inactivity, stop after Stop.
+type IdleThresholds struct {
+	Pause time.Duration
+	Stop  time.Duration
+}
+
+var DefaultIdle = IdleThresholds{Pause: 30 * time.Minute, Stop: 4 * time.Hour}
+
+const DefaultTurnTimeout = 30 * time.Minute
+
+func (c *Controller) idleFor(channel string) IdleThresholds {
+	if c.deps.IdleFor == nil {
+		return DefaultIdle
+	}
+	return c.deps.IdleFor(channel)
+}
+
+func (c *Controller) turnTimeout() time.Duration {
+	if c.deps.TurnTimeout <= 0 {
+		return DefaultTurnTimeout
+	}
+	return c.deps.TurnTimeout
 }
 
 type Controller struct{ deps Deps }
