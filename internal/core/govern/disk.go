@@ -64,7 +64,7 @@ const (
 	// Source: OLD disk_resize.go:35 (diskGrowIncrement = 16 GiB).
 	diskGrowStep = 16 * diskGiB
 
-	diskRootGrowStep = 2 * diskGiB // root disk only; 16 GiB overshoots a ~5 GiB root
+	diskRootGrowStep = 2 * diskGiB
 
 	// diskDefaultMax: hard ceiling when Bounds.DiskMaxBytes is zero.
 	// Source: OLD disk_resize.go:40 (diskMaxBytes = 100 GiB).

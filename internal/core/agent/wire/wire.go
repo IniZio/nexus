@@ -79,8 +79,8 @@ type Handshake struct {
 // at the requested offset.
 type HandshakeAck struct {
 	Status    AckStatus
-	ExitCode  int32  // meaningful only when Status == AckExited
-	BytesLost uint64 // bytes evicted before this reader attached (0 = no loss)
+	ExitCode  int32 // meaningful only when Status == AckExited
+	BytesLost uint64
 }
 
 // Data carries an incremental chunk of stdio bytes in one direction.

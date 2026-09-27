@@ -1293,7 +1293,6 @@ func resolveExt4(
 			return resolveExt4(ctx, ImageSpec{Digest: digest}, cache, cacheRoot, nil)
 		case 1:
 			m := matches[0]
-			// Stale bake: re-pull when agent changed (or entry predates tag tracking).
 			if len(agentBytes) > 0 && m.Kind == domain.KindBase && m.AgentTag != image.BuilderAgentTag(agentBytes) {
 				digest, pullErr := ociPullAndCacheFn(ctx, spec.Ref, cache, agentBytes)
 				if pullErr != nil {

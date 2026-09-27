@@ -11,25 +11,6 @@ import (
 	"runtime"
 )
 
-// Oh-my-pi (@oh-my-pi/pi-coding-agent, CLI binary omp as of 18.2.6) does not
-// read OpenCode's auth.json and does not keep a single JSON bearer file.
-//
-// Live resolution order (packages/coding-agent + @oh-my-pi/pi-ai 18.2.6):
-//  1. Optional auth-broker daemon when OMP_AUTH_BROKER_URL is set. The bearer
-//     is OMP_AUTH_BROKER_TOKEN, else auth.broker.token in
-//     <agentDir>/config.yml, else ~/.omp/auth-broker.token.
-//  2. Otherwise a local SQLite vault at <agentDir>/agent.db, table
-//     auth_credentials. Rows are per provider and are either
-//     {type:api_key,key} or OAuth {access,refresh,expires}. Login is
-//     `omp auth-broker login <provider>` or the in-TUI /login command.
-//  3. Env-var fallback per provider (ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY,
-//     OPENAI_API_KEY, …). `omp --api-key` overrides those for one run.
-//
-// A DedicatedCredStore is one access token. Picking a row out of the vault
-// would guess a provider, so import refuses. CredentialFormatOhMyPiVault
-// registers a nil ImportFn so CheckCred does not treat a missing vault as a
-// broken credential and block sandbox create. SourceFn returns no token.
-
 const (
 	ohMyPiConfigDirName = ".omp"
 	ohMyPiAgentDBName   = "agent.db"
@@ -39,15 +20,10 @@ const (
 // sqliteMagic is the 16-byte header of every SQLite 3 database.
 var sqliteMagic = []byte("SQLite format 3\x00")
 
-// ErrOhMyPiVaultNotImportable is returned when the on-disk credential store
-// exists and is a SQLite database. Nexus will not choose a provider row.
+// ErrOhMyPiVaultNotImportable is returned when the vault exists and is a SQLite database.
 var ErrOhMyPiVaultNotImportable = errors.New("oh-my-pi credential store is a multi-provider SQLite vault; refusing to select a provider row")
 
 func init() {
-	// ImportFn is intentionally nil: CheckCred treats a nil ImportFn as OK,
-	// so a missing vault does not block sandbox create. SourceFn returns no
-	// token because the vault is not one bearer. ImportFromPathFn refuses
-	// rather than sharing CredentialFormatNone's Claude importer.
 	agentRegistry[CredentialFormatOhMyPiVault] = AgentRegistration{
 		SourceFn: func(AgentProfile) (CredentialSource, error) {
 			return nil, nil
@@ -67,20 +43,7 @@ func init() {
 
 var ohMyPiProfileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
-// OhMyPiCredPath returns the absolute path of the SQLite vault omp reads.
-//
-// Resolution matches @oh-my-pi/pi-utils dirs.ts (18.2.6):
-//   - A named OMP_PROFILE / PI_PROFILE derives its own agent directory and
-//     ignores PI_CODING_AGENT_DIR. The override applies only to the default
-//     profile, and not when it is exactly a bypassed PI_PROFILE's derived
-//     agent directory. When it does apply, it disables the XDG redirect.
-//   - Otherwise the agent directory is $HOME/<PI_CONFIG_DIR or .omp>/agent,
-//     or $HOME/<config>/profiles/<profile>/agent when a profile is set
-//     (PI_PROFILE is the fallback only when OMP_PROFILE is unset).
-//   - On Linux and Darwin, if that default location is in use and
-//     $XDG_DATA_HOME/omp (or .../profiles/<profile>) already exists, the vault
-//     is $XDG_DATA_HOME/omp/agent.db. XDG is not used merely because the
-//     variable is set.
+// OhMyPiCredPath returns the absolute path of the SQLite vault omp reads; see doc/specs/cred/README.md.
 func OhMyPiCredPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -167,12 +130,7 @@ func normalizeOhMyPiProfile(profile string) (string, error) {
 	return profile, nil
 }
 
-// ImportOhMyPiCredentials locates the omp SQLite vault and refuses to import it.
-//
-// A missing file returns an error wrapping [os.ErrNotExist]. A present SQLite
-// file returns an error wrapping [ErrOhMyPiVaultNotImportable] and is not
-// modified. Anything else is an unreadable-store error. The function never
-// returns a [DedicatedCredStore]: there is no single bearer to extract.
+// ImportOhMyPiCredentials locates the omp SQLite vault and always refuses to import it; see doc/specs/cred/README.md.
 func ImportOhMyPiCredentials(profile AgentProfile) (*DedicatedCredStore, error) {
 	path, err := OhMyPiCredPath()
 	if err != nil {

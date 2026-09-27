@@ -353,9 +353,9 @@ func TestMirroredHostPathDirs(t *testing.T) {
 		"/home/a/.local/share/mise/installs/bun/latest/bin",
 		"/usr/bin",
 		"/home/a/.local/bin",
-		"/home/a/.local/bin/", // duplicate after Clean
+		"/home/a/.local/bin/",
 		"/home/a/.local/binx", // sibling prefix, not inside the mount
-		"/home/a/.gitconfig",  // file mount never contributes
+		"/home/a/.gitconfig",
 		"",
 	}, ":")
 

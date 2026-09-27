@@ -155,9 +155,7 @@ func (a *cpuAxis) Evaluate(ctx context.Context) {
 	// Drift detection: reconcile axis accounting to guest ground truth.
 	// VCPUOnline is measured by the guest agent (sysfs); VCPUCount is the boot
 	// ceiling. A partial CH failure (fewer CPUs onlined than requested) must not
-	// leave the governor's accounting silently wrong. Skipped while settling: the
-	// guest onlines hot-plugged CPUs on a ticker, so a sample taken just after a
-	// resize still shows the old count.
+	// leave the governor's accounting silently wrong.
 	// Source: OLD InitAdoptedCPUState (cpu_resize.go:325-358).
 	settling := !a.lastResizeTime.IsZero() && now.Sub(a.lastResizeTime) < cpuDriftSettle
 	if s.VCPUOnline != 0 && s.VCPUOnline != a.currentVCPUs && !settling {

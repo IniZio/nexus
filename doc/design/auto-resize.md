@@ -637,3 +637,13 @@ Memory, disk routing, vCPU, and /tmp auto-resize are all live-proven end-to-end:
   (`sendGrowToGuest`). The end-to-end disk grow + guest resize2fs path is wired.
 
 **Host state after all tests:** 0 stray cloud-hypervisor processes, 0 netns entries (verified).
+
+## Governor implementation notes
+
+- **CPU drift check skips while settling** (`internal/core/govern/cpu.go`). The
+  guest onlines hot-plugged CPUs on a ticker, so a vCPU sample taken just after
+  a resize still shows the old count. Checking drift in that window would
+  report false drift.
+- **Root-disk grow step is 2 GiB** (`diskRootGrowStep`, `internal/core/govern/disk.go`).
+  It applies to the root disk only: the general 16 GiB step overshoots a root
+  disk of roughly 5 GiB.

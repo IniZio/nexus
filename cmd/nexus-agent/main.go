@@ -74,7 +74,7 @@ func main() {
 	var scratchDev string            // set from --scratch-disk=<dev> on the kernel cmdline
 	var builderToolRecipeJSON string // set from --tool-recipe=<json>
 	var builderTargetArch string     // set from --target-arch=<arch>
-	var hostHome string              // set from --hosthome=<path> on the kernel cmdline
+	var hostHome string
 	{
 		for _, arg := range os.Args[1:] {
 			switch {
@@ -141,9 +141,6 @@ func main() {
 		}
 	}
 
-	// Create host-home symlink before any workspace mounts so that absolute host
-	// paths in config files (e.g. /home/alice/.claude/plugins/...) resolve inside
-	// the guest. Skip is a no-op when hostHome is empty, "/root", or invalid.
 	if err := agent.EnsureHostHomeSymlink(hostHome); err != nil {
 		consoleLog(con, "nexus-agent: WARN: hosthome symlink: %v (non-fatal)\n", err)
 	}

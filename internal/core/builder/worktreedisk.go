@@ -405,15 +405,9 @@ func filteredWorktreeDir(src string, combinedPM *patternmatcher.PatternMatcher, 
 	}
 	cleanup := func() { os.RemoveAll(tmpDir) }
 
-	// Guard: a staging directory on a different device than the source makes
-	// os.Link impossible, so every captured file is COPIED there. That is only
-	// a hazard when the staging device is memory-backed (a tmpfs /tmp), the
-	// host-OOM case this package exists to prevent. A disk-backed staging dir
-	// just costs disk, and it is the only option when the source cannot host
-	// a sibling at all: inside a nexus guest /workspace is a virtiofs share of
-	// the host checkout, so "a parent directory of the source" would mean
-	// staging into the operator's worktree over the wire (2026-09-19,
-	// nested `sandbox create --file` refused with /tmp on its own ext4 disk).
+	// Guard: cross-device staging falls back to copy; refused only when the
+	// staging device is memory-backed (tmpfs/ramfs) — the host-OOM hazard.
+	// See doc/architecture/README.md "Cross-device staging".
 	srcDev, err := deviceIDOf(src)
 	if err != nil {
 		cleanup()

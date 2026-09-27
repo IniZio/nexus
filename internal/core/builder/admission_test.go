@@ -65,8 +65,6 @@ func TestAdmitBuilderBoot(t *testing.T) {
 }
 
 func TestGuestMemCeiling(t *testing.T) {
-	// Parsed from the guest kernel cmdline the outer nexus writes; absent or
-	// malformed → not a nexus guest → plain host semantics.
 	cmd := []byte("root=/dev/vda rw init=/sbin/nexus-agent --workspace-mount=nxfs0:/workspace:virtiofs:false:false:false --mem-ceiling=4294967296 --sandbox-handle=x")
 	if c, ok := GuestMemCeiling(func() ([]byte, error) { return cmd, nil }); !ok || c != 4294967296 {
 		t.Fatalf("ceiling = %d, %v; want 4294967296, true", c, ok)
@@ -83,9 +81,6 @@ func TestGuestMemCeiling(t *testing.T) {
 }
 
 func TestAdmitBuilderBoot_hostStillRefusesWhenShort(t *testing.T) {
-	// Host semantics are unchanged: the live refusal figures (4036 MiB total,
-	// 1160 MiB available) still refuse a 2048 MiB builder. Only a nexus guest
-	// (cmdline --mem-ceiling, see InNexusGuest) skips admission.
 	const mib = 1024 * 1024
 	instant := func() (int64, int64, error) { return 1160 * mib, 4036 * mib, nil }
 	if err := AdmitBuilderBoot(2048, instant); err == nil {

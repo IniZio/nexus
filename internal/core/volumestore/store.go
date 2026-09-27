@@ -647,20 +647,14 @@ func (s *VolumeStore) Detach(ctx context.Context, name, sandboxID string) error 
 	}
 	rec.Attachments = filtered
 
-	// Reclaim only when this call caused full detachment, not on a no-op Detach.
 	shouldReclaim := removed && rec.Kind == KindDisk && len(rec.Attachments) == 0
 
-	// rec.SizeBytes stays unchanged — declared capacity must survive reclaim —
-	// so no writeRecord/UpdateSizeBytes call is needed after it runs.
+	// rec.SizeBytes stays unchanged: declared capacity must survive reclaim.
 	if err := s.writeRecord(rec); err != nil {
 		return fmt.Errorf("volume %s: detach: %w", name, err)
 	}
 
 	if shouldReclaim {
-		// Own generous budget, decoupled from the caller's short detach ctx, but
-		// run in-process (not backgrounded) so the flock stays held by this live
-		// process for the whole reclaim — a short-lived CLI caller that returns
-		// early would otherwise let e2fsck/resize2fs keep running unlocked.
 		reclaimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reclaimTimeout)
 		defer cancel()
 		if err := reclaimExt4(reclaimCtx, s.DiskPath(name), rec.SizeBytes); err != nil {

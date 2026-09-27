@@ -226,3 +226,66 @@ the resulting pane.
 | Pane rendering | none | human check |
 | Keybindings | none | human check |
 | herdr plugin API compatibility | none | human check |
+
+## Runtime behaviour the tests pin
+
+### Guest pane entry point (`plugins/herdr/bin/pane.sh`)
+
+The plugin pane prefers the installed guest-shell entry point (herdr's
+`default_shell`, a symlink to `nexus` dispatched on argv[0]) over a bare
+`nexus exec`. Both resolve the same binding from `HERDR_WORKSPACE_ID`, but only
+the entry point runs the supervised shell whose last-pane reaper STOPS the
+sandbox when the workspace closes. Without it, a workspace holding only the
+plugin pane left the VM running after close (2026-09-19). The raw exec remains
+the fallback when the entry point is not installed. The entry point is used only
+when `HERDR_WORKSPACE_ID` is set and the `.nexusbin` sidecar next to it confirms
+nexus installed it.
+
+### Sandbox handle follows the checkout dir, not the branch
+
+`TestHerdrWorktreeIdentity_followsCheckoutDirNotBranch`: an agent running
+`git checkout -b` inside the sandbox must not change the sandbox handle. The
+handle names the volumes (caches, sessions); a new handle orphans them all on
+the next re-provision (2026-09-19). Mutation: return `info.Branch` first →
+RED.
+
+herdr names the checkout dir after the branch at creation, so fixtures that
+exercise handle derivation (`cmd_herdr_worktree_race_test.go`) must use a path
+ending in the branch slug.
+
+### Stale rebind starts a stopped sandbox
+
+`TestHerdrWorktreeSandbox_staleRebind_startsStoppedSandbox`: re-opening a
+worktree adopts the sandbox the last-pane reaper stopped. The guest pane opened
+next needs a running guest, so adopt must start it; a Running sandbox must not
+be started again. Mutation: drop the Stopped→start block → `started=[]` → RED.
+
+### Last-pane reaper excludes the exiting pane
+
+`TestHerdrWtReapOwnPane_usesExitingPaneNotBindingPane`: with two guest tabs,
+p1 (recorded on the binding at create) and p7 (opened later), closing p7 must
+exclude p7 from the remaining count, not p1. herdr has already dropped p7 from
+the pane list, so excluding p7 leaves 1 remaining → no reap. The old bug
+excluded p1, left 0, and tore the space down on ctrl+d in the second tab. The
+exiting pane comes from `HERDR_PANE_ID`, falling back to the binding's
+`GuestPaneID` only outside a herdr pane.
+
+### Last-pane action only stops
+
+`TestHerdrWtTeardownFn_StopsInsteadOfRemoving`: the last-pane action must STOP
+the sandbox and touch nothing else — no Remove, no binding delete, no workspace
+close. Removal belongs to the `worktree.removed` hook; the surviving binding is
+what lets the next open adopt the stopped sandbox (stale rebind). A sandbox that is no
+longer the pane's (ID changed) or not Running is left alone. Mutation: call the
+remover instead of the stopper, or drop the ID guard → RED.
+
+### Agent-name fixtures
+
+`cmd_sandbox_agent_test.go` uses an unregistered agent name to prove typos are
+rejected; the fixture cannot be `codex`, which is now a registered profile.
+
+### Seam fields
+
+`seam` fields `PID1Args`, `SBHandle` and `HostHome` are optional: an empty
+string omits the corresponding kernel cmdline parameter (`HostHome` feeds
+`--hosthome=`). Orca tests pass `""` for `hostHome` deliberately.

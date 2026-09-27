@@ -1,15 +1,5 @@
 package cred
 
-// Automated regressions: nexus never writes to the operator's oh-my-pi
-// credential vault.
-//
-// The vault is ~/.omp/agent/agent.db (or PI_CODING_AGENT_DIR/agent.db). Import
-// may read the SQLite header and must then refuse — it must not write, rename,
-// truncate, or pick a provider row.
-//
-// Root-safety: mtime + content comparison (uid-independent). chmod fixtures
-// are vacuous under root (CAP_DAC_OVERRIDE).
-
 import (
 	"errors"
 	"os"

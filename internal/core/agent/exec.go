@@ -267,10 +267,7 @@ func runDataPump(ctx context.Context, c *Client, opts pumpOpts) (int32, error) {
 					}
 				}
 			default:
-				// StreamStdin (tag=0) or unknown tag in a guest→host Data frame
-				// is a protocol error: the guest sent garbled output (likely a
-				// misaligned ring read). Treat as fatal so rc is never fabricated
-				// as 0.
+				// Fatal: unexpected tag in guest→host direction (see doc/design/guest-agent.md).
 				return 0, fmt.Errorf("agent: pump: protocol error: unexpected data tag %d from guest", frame.Data.Tag)
 			}
 		case wire.FrameExit:

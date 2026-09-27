@@ -99,11 +99,7 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 		defer close(doneCh)
 		defer sess.ring.RemoveReader(readerID)
 		normal := streamRingToWriter(w, sess.ring, readerID, from, sess.tagged)
-		// Only send Exit when the streamer completed normally OR the session has
-		// truly exited. On abnormal completion (corrupt header, write error,
-		// overrun-with-loss) for a still-running session, close the conn without
-		// an Exit frame so the host observes a read error (non-zero rc) rather
-		// than a fabricated rc=0.
+		// No Exit on abnormal completion for a live session; see doc/design/guest-agent.md.
 		if normal || sess.exited.Load() {
 			_ = w.WriteExit(wire.Exit{Code: sess.exitCode.Load()})
 		}
@@ -164,14 +160,8 @@ func (a *Agent) handleDataConn(ctx context.Context, conn net.Conn) {
 	<-doneCh
 }
 
-// streamRingToWriter reads the ring until it is closed and writes wire Data
-// frames to w. tagged=true means the ring holds [tag(1)][len(4)][data] records;
-// false means raw bytes are streamed as StreamStdout.
-//
-// Returns true on normal completion (ring drained after Close). Returns false
-// on any abnormal condition: corrupt header, write error, or overrun with bytes
-// skipped. The caller must NOT send an Exit frame on false unless the session
-// has already exited (to avoid fabricating rc=0 for a live process).
+// streamRingToWriter reads from ring and writes Data frames to w.
+// Returns true on normal drain; false on any abnormal condition (see doc/design/guest-agent.md).
 func streamRingToWriter(w *wire.Writer, ring *Ring, readerID uint64, from uint64, tagged bool) (normal bool) {
 	off := from
 	var carry []byte
@@ -180,8 +170,6 @@ func streamRingToWriter(w *wire.Writer, ring *Ring, readerID uint64, from uint64
 		chunk, newOff, done, overrun := ring.WaitNextCursored(readerID, off)
 		off = newOff
 		if overrun {
-			// Eviction moved oldest past our cursor. carry is now misaligned;
-			// discard it — oldest is always a record boundary.
 			bytesSkipped += uint64(len(carry))
 			carry = nil
 		}
@@ -220,8 +208,6 @@ func streamRingToWriter(w *wire.Writer, ring *Ring, readerID uint64, from uint64
 		}
 		if done && len(chunk) == 0 {
 			if bytesSkipped > 0 {
-				// Surface overrun loss: emit a notice on stderr then signal
-				// abnormal completion so the caller can force non-zero exit.
 				msg := fmt.Sprintf("nexus-agent: %d bytes of output lost (ring overrun during stream)\n", bytesSkipped)
 				_ = w.WriteData(wire.StreamStderr, []byte(msg))
 				return false

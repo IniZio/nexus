@@ -557,10 +557,6 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 				}
 			}
 		}
-		// Bootability guard: when diskDir is explicitly set (always true in
-		// tests via WithDiskDir), check for the backing disk before calling
-		// the driver.  When diskDir is empty the driver's ErrNoRootDisk
-		// sentinel fires instead — both paths map to sandboxErrCodeNotBootable.
 		if s.diskDir != "" {
 			candidate := filepath.Join(s.diskDir, rec.ID.String()+".raw")
 			if _, serr := os.Stat(candidate); os.IsNotExist(serr) {

@@ -1,10 +1,5 @@
 package cred
 
-// ImportCodexCredentials refuses before touching the filesystem. A write
-// would mutate the operator's live Codex login (refresh tokens rotate).
-// The guard is "the directory we pointed at is unchanged", which holds
-// even when the function does not consult CODEX_HOME.
-
 import (
 	"os"
 	"path/filepath"

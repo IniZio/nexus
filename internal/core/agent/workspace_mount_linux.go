@@ -34,7 +34,7 @@ func EnsureHostHomeSymlink(hostHome string) error {
 	fi, err := os.Lstat(hostHome)
 	if err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return nil // already a symlink — leave it
+			return nil
 		}
 		// Exists as a real entry (dir or file).
 		entries, readErr := os.ReadDir(hostHome)
@@ -52,7 +52,6 @@ func EnsureHostHomeSymlink(hostHome string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("hosthome: lstat %s: %w", hostHome, err)
 	} else {
-		// Path does not exist — create parent directories.
 		if mkErr := os.MkdirAll(filepath.Dir(hostHome), 0o755); mkErr != nil {
 			return fmt.Errorf("hosthome: mkdir parent of %s: %w", hostHome, mkErr)
 		}

@@ -104,3 +104,84 @@ C4Container
    and waits for gRPC calls.
 7. **CLI** dials the agent over vsock (`internal/clientagent`), confirms readiness via `AgentInfo`,
    and returns the sandbox handle to the caller.
+
+## Lifecycle design notes
+
+### Store-only records and bootability
+
+A store-only record has neither a root disk nor an initramfs. Two guards refuse to boot it; both
+map to `sandboxErrCodeNotBootable`:
+
+1. **Service guard** (`internal/core/service/service.go`, Start): when `diskDir` is set (always
+   true in tests via `WithDiskDir`), the service checks for the backing disk before calling the
+   driver.
+2. **Driver guard** (`internal/core/driver/cloudhypervisor/driver.go`): when `diskDir` is empty,
+   the CH driver returns `ErrNoRootDisk` before the netns child spawns, so the caller gets an
+   immediate error instead of a ten-second boot timeout.
+
+Tests that Start a sandbox (e.g. `fork_preflight_test.go`) seed a root disk first for this reason.
+
+### Port forwarding host ports
+
+- The supervisor binds an ephemeral host port per bound guest port (`hostPorts` in
+  `internal/supervisor/portfwd.go`).
+- `HostPort` (`internal/core/portfwd/discovery.go`) is the host-side port on the engine. The
+  supervisor sets it after binding; the remote client uses it as the `ssh -W` target.
+- `RemotePort` (`internal/core/portfwd/local_forward.go`) is the engine host port to proxy to.
+  Zero falls back to `Port`, preserving the pre-HostPort behaviour.
+
+### Stale OCI bake detection
+
+`internal/core/service/create.go` re-pulls a cached base image when the guest agent changed since
+the bake, or when the cache entry predates agent-tag tracking. Tag mechanics:
+`doc/design/builder-and-storage.md`.
+
+### User mount prefixes
+
+`usermount_test.go` fixtures cover a path that duplicates another after `filepath.Clean`, and a
+single-file mount, which never contributes a directory prefix.
+
+## Builder and storage design notes
+
+### Cross-device staging (`internal/core/builder/worktreedisk.go`)
+
+When the staging directory is on a different device from the source, `os.Link` is impossible and
+every captured file is copied. That is refused only when the staging device is memory-backed
+(tmpfs/ramfs, e.g. a tmpfs `/tmp`) — the host-OOM case the package exists to prevent. A
+disk-backed staging dir only costs disk, and is the only option when the source cannot host a
+sibling: inside a nexus guest `/workspace` is a virtiofs share of the host checkout, so staging
+"next to the source" would mean writing into the operator's worktree over the wire (2026-09-19:
+nested `sandbox create --file` was refused with `/tmp` on its own ext4 disk).
+
+### Builder admission inside a nexus guest
+
+A nexus guest is detected from `--mem-ceiling` on the kernel cmdline the outer nexus writes
+(`InNexusGuest`); absent or malformed means plain host semantics. Only a nexus guest skips builder
+admission. Host semantics are unchanged: the recorded live refusal (4036 MiB total, 1160 MiB
+available) still refuses a 2048 MiB builder. `vmcfg` gives a nested guest a lower default memory
+ceiling than the 4096 MiB floor so it can admit its own 3072 MiB builder VM with the agent still
+resident; explicit ceilings win. `vmcfg_test.go` pins this: dropping the `c.Nested` branch yields
+4096 and fails the test.
+
+### OCI base image agent tag
+
+Cached OCI bakes record the guest agent's tag (`AgentTag`). `PullAndCacheOCI` re-pulls when the
+tag differs from the current agent, and also when it is empty (entry written before tag tracking):
+an empty tag is a miss, not a hit. A matching tag is served without a pull.
+
+### Volume reclaim (`internal/core/volumestore/store.go`)
+
+- Reclaim runs only when this Detach caused full detachment, not on a no-op Detach.
+- `rec.SizeBytes` is not changed by reclaim: declared capacity must survive it.
+- Reclaim gets its own generous timeout, decoupled from the caller's short detach context, but
+  runs in-process rather than in the background, so this process holds the flock for the whole
+  reclaim. Otherwise a short-lived CLI caller returning early would leave e2fsck/resize2fs running
+  unlocked.
+
+### Self-host Containerfile (`.nexus/Containerfile`)
+
+- `busybox-static` and `cpio`: `scripts/fetch-boot-artifacts.sh` builds the alpine initramfs with
+  cpio (`TestLiveVirtiofsE2E` skips without it), and a hand-rolled probe rootfs needs busybox.
+- `nodejs`: the operator's Claude Code hooks and the groundwork commit-msg hook shell out to
+  `node`. The claude binary stopped bundling node at the OCI recipe cutover, so without it every
+  prompt and commit in the guest logs a hook failure.

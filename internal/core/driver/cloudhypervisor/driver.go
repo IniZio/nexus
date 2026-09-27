@@ -691,8 +691,6 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		}
 	}
 
-	// A store-only record has neither disk nor initramfs; refuse before the
-	// netns child spawns so the caller gets ErrNoRootDisk, not a ten-second timeout.
 	if diskImagePath == "" && d.cfg.InitramfsPath == "" {
 		return "", fmt.Errorf("%w: %s", ErrNoRootDisk, id)
 	}

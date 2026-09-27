@@ -48,8 +48,7 @@ func TestPullAndCacheOCI_CacheHit(t *testing.T) {
 		t.Fatalf("NewCache: %v", err)
 	}
 
-	// Pre-seed the cache with an entry carrying the target ref and the correct
-	// agent tag so the hit path is taken (empty tag now counts as a miss).
+	// Pre-seed the cache with an entry carrying the target ref.
 	content := []byte("fake-ext4-content-for-hit-test")
 	h := sha256.Sum256(content)
 	existingDigest := domain.Digest("sha256:" + hex.EncodeToString(h[:]))

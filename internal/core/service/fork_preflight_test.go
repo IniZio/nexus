@@ -36,8 +36,6 @@ func forkPreflightHarness(t *testing.T) (*Service, domain.Sandbox, string) {
 	if err := st.Create(ctx, parent); err != nil {
 		t.Fatalf("seed parent: %v", err)
 	}
-	// Seed the root disk before Start (Start refuses a disk-less record) and
-	// give the parent a measurable footprint.
 	if err := os.WriteFile(filepath.Join(diskDir, parent.ID.String()+".raw"),
 		make([]byte, 128*1024), 0o600); err != nil {
 		t.Fatalf("seed parent disk: %v", err)
