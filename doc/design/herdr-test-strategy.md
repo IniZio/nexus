@@ -289,6 +289,7 @@ rejected; the fixture cannot be `codex`, which is now a registered profile.
 `seam` fields `PID1Args`, `SBHandle` and `HostHome` are optional: an empty
 string omits the corresponding kernel cmdline parameter (`HostHome` feeds
 `--hosthome=`). Orca tests pass `""` for `hostHome` deliberately.
+
 ---
 
 ## Disk-size env knobs (test/ops override)
