@@ -186,7 +186,7 @@ func (h *Harness) checkSnapshot(after envSnapshot) []string {
 	diff("herdr worktrees/nexus", h.preSnap.herdrWorktrees, after.herdrWorktrees)
 	diff("git branches in /home/newman/magic/nexus", h.preSnap.gitBranches, after.gitBranches)
 	diff("systemd nl-* units", h.preSnap.systemdUnits, after.systemdUnits)
-	diff("live procs /var/tmp/nexus-live-*", h.preSnap.liveProcs, after.liveProcs)
+	diff("live procs /var/tmp/nxl-*", h.preSnap.liveProcs, after.liveProcs)
 	diff("prod vault dir checksum", h.preSnap.prodVaultSum, after.prodVaultSum)
 	return errs
 }
@@ -351,7 +351,7 @@ type Harness struct {
 	sessionName    string
 	socketPath     string
 	nexusBin       string
-	base           string // /var/tmp/nexus-live-* root, for leak scanning
+	base           string // /var/tmp/nxl-* root, for leak scanning
 	worktreeDir    string // <base>/worktrees — herdr worktree checkouts go here
 	herdrPluginDir string
 
@@ -372,7 +372,7 @@ type Harness struct {
 func New(t *testing.T) *Harness {
 	t.Helper()
 
-	base, err := os.MkdirTemp("/var/tmp", "nexus-live-")
+	base, err := os.MkdirTemp("/var/tmp", "nxl-")
 	if err != nil {
 		t.Fatalf("livenexus: create base dir: %v", err)
 	}
@@ -494,8 +494,14 @@ func (h *Harness) startHerdr(t *testing.T, base string) {
 	// Build --setenv flags from the full isolated env (h.Env()) so the herdr
 	// server inherits XDG_STATE_HOME, XDG_DATA_HOME, CREDENTIALS_DIRECTORY,
 	// NEXUS_KERNEL_PATH, NEXUS_BIN, PATH, TMPDIR, etc. without duplicating the list.
-	setenvArgs := make([]string, 0, len(h.Env())+4)
-	setenvArgs = append(setenvArgs, "--user", "--unit="+h.sessionName, "-p", "StandardInput=null")
+	setenvArgs := make([]string, 0, len(h.Env())+10)
+	setenvArgs = append(setenvArgs,
+		"--user", "--unit="+h.sessionName,
+		"-p", "StandardInput=null",
+		"-p", "MemoryHigh=8G",
+		"-p", "MemoryMax=10G",
+		"-p", "OOMScoreAdjust=1000",
+	)
 	for _, kv := range h.Env() {
 		setenvArgs = append(setenvArgs, "--setenv="+kv)
 	}
@@ -544,6 +550,7 @@ func (h *Harness) sweepIsolatedSandboxes(ctx context.Context) {
 
 // cleanup is registered with t.Cleanup and runs even when the test fails or panics.
 // Order:
+//  0. Preserve logs (before any teardown so supervisor state dirs still exist).
 //  1. rm every tracked sandbox handle.
 //  2. safety sweep: rm any sandboxes in the isolated root not caught by step 1.
 //  3. wait for supervisor PIDs referencing this root to exit.
@@ -554,6 +561,15 @@ func (h *Harness) sweepIsolatedSandboxes(ctx context.Context) {
 func (h *Harness) cleanup(base string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+
+	// 0. Preserve logs before teardown: supervisor state dirs (and their logs)
+	// are deleted by service.Remove inside teardownHandle. Snapshotting here
+	// ensures per-workspace supervisor.log files are captured even on failure.
+	if h.t.Failed() || os.Getenv("NEXUS_LIVE_KEEP_LOGS") == "1" {
+		if dest := preserveLogs(base); dest != "" {
+			h.t.Logf("livenexus: logs preserved at %s", dest)
+		}
+	}
 
 	// 1. Remove all tracked sandbox handles.
 	h.mu.Lock()
@@ -566,15 +582,15 @@ func (h *Harness) cleanup(base string) {
 	// 2. Safety sweep: rm any nexus sandboxes in the isolated root that were not
 	h.sweepIsolatedSandboxes(ctx)
 
-	// nexus __supervisor processes hold a reference to the store root; they must
-	// exit before os.RemoveAll succeeds cleanly.
-	waitProcsExit(base, 60*time.Second)
-
-	// 3. Stop herdr unit and remove its session directory.
+	// 3. Stop herdr unit first so its nexus child processes release the store root.
 	_ = exec.Command("systemctl", "--user", "stop", h.sessionName+".service").Run()
 	_ = exec.Command("herdr", "--session", h.sessionName, "session", "delete", h.sessionName).Run()
 	sessionDir := filepath.Join(h.configHome, "herdr", "sessions", h.sessionName)
 	_ = os.RemoveAll(sessionDir)
+
+	// nexus __supervisor processes hold a reference to the store root; they must
+	// exit before os.RemoveAll succeeds cleanly.
+	waitProcsExit(base, 60*time.Second)
 
 	// 4. Capture after-snapshot before removing base: the nexus binary lives
 	// inside base, so it must still exist when we run `nexus ps`.
@@ -610,6 +626,54 @@ func (h *Harness) cleanup(base string) {
 	}
 }
 
+// preserveLogs copies all regular *.log files under base into
+// /var/tmp/nxl-logs/<basename-of-base>/ preserving relative paths.
+// Returns the destination directory on success, or "" on failure.
+// Never deletes anything.
+func preserveLogs(base string) string {
+	dest := filepath.Join("/var/tmp", "nxl-logs", filepath.Base(base))
+	var copied int
+	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".log") {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(base, path)
+		if relErr != nil {
+			return nil
+		}
+		dstPath := filepath.Join(dest, rel)
+		if mkErr := os.MkdirAll(filepath.Dir(dstPath), 0o755); mkErr != nil {
+			return nil
+		}
+		src, openErr := os.Open(path)
+		if openErr != nil {
+			return nil
+		}
+		defer src.Close()
+		dst, createErr := os.Create(dstPath)
+		if createErr != nil {
+			return nil
+		}
+		defer dst.Close()
+		if _, cpErr := io.Copy(dst, src); cpErr != nil {
+			return nil
+		}
+		copied++
+		return nil
+	})
+	if err != nil || copied == 0 {
+		return ""
+	}
+	return dest
+}
+
 func (h *Harness) teardownHandle(ctx context.Context, handle string) {
 	args := []string{"sandbox", "rm", handle}
 	cmd := exec.CommandContext(ctx, h.nexusBin, args...)
@@ -633,6 +697,11 @@ func (h *Harness) Env() []string {
 		"HERDR_SOCKET_PATH": true, "TMPDIR": true, "PATH": true,
 		"CREDENTIALS_DIRECTORY": true,
 		"NEXUS_BIN":             true,
+		// Volume size / disk-floor overrides: harness sets small values below.
+		"NEXUS_HERDR_DOCKER_DISK_GIB":  true,
+		"NEXUS_HERDR_GOCACHE_DISK_GIB": true,
+		"NEXUS_HERDR_GOPATH_DISK_GIB":  true,
+		"NEXUS_DISK_FLOOR_GIB":         true,
 	}
 	if h.kernelPath != "" {
 		skipKeys["NEXUS_KERNEL_PATH"] = true
@@ -653,6 +722,10 @@ func (h *Harness) Env() []string {
 		"TMPDIR=/var/tmp",
 		"PATH="+path,
 		"NEXUS_BIN="+h.nexusBin,
+		"NEXUS_HERDR_DOCKER_DISK_GIB=2",
+		"NEXUS_HERDR_GOCACHE_DISK_GIB=2",
+		"NEXUS_HERDR_GOPATH_DISK_GIB=2",
+		"NEXUS_DISK_FLOOR_GIB=2",
 	)
 	if h.credsDir != "" {
 		env = append(env, "CREDENTIALS_DIRECTORY="+h.credsDir)
@@ -721,6 +794,19 @@ func (h *Harness) SocketPath() string { return h.socketPath }
 func (h *Harness) StateRoot() string { return h.stateRoot }
 func (h *Harness) DataHome() string  { return h.dataHome }
 
+// SnapshotLogs copies all *.log files under the harness base directory to
+// /var/tmp/nxl-logs/<base-name>/ and logs the destination. Call this from
+// a test's t.Cleanup BEFORE any teardown that deletes supervisor state dirs,
+// so that per-workspace supervisor.log files are preserved on failure.
+func (h *Harness) SnapshotLogs() {
+	if !h.t.Failed() && os.Getenv("NEXUS_LIVE_KEEP_LOGS") != "1" {
+		return
+	}
+	if dest := preserveLogs(h.base); dest != "" {
+		h.t.Logf("livenexus: logs snapshot at %s", dest)
+	}
+}
+
 // NexusBin returns the nexus binary path.
 func (h *Harness) NexusBin() string { return h.nexusBin }
 
@@ -752,8 +838,15 @@ func worktreeRoot() (string, error) {
 }
 
 func probeVaultSupport(bin string) bool {
-	out, _ := exec.Command(bin, "vault", "ls").CombinedOutput()
-	return !strings.Contains(string(out), "unknown command") && !strings.Contains(string(out), "command not found")
+	out, err := exec.Command(bin, "vault", "ls").CombinedOutput()
+	s := string(out)
+	// If the exec itself failed (binary missing, not executable, crashed) and the
+	// output doesn't contain the "unknown command" strings, the binary can't be
+	// probed — treat as no vault support.
+	if err != nil && !strings.Contains(s, "unknown command") && !strings.Contains(s, "command not found") {
+		return false
+	}
+	return !strings.Contains(s, "unknown command") && !strings.Contains(s, "command not found")
 }
 
 // buildNexusBin builds the nexus binary into base (which is the per-test
@@ -776,17 +869,60 @@ func buildNexusBin(base string) (string, error) {
 	return out, nil
 }
 
-// resolveNexusBin returns the nexus binary path. When NEXUS_BIN is set it
-// is used directly (no build). Otherwise the binary is built into base so
-// it is cleaned up automatically with the per-test harness dir.
-func resolveNexusBin(base string) (string, error) {
+const nexusE2EBin = "/var/tmp/nexus-e2e-bin/nexus"
+
+// nexusBinOnce guards the single per-process build of the nexus binary.
+// It always runs go build (incremental — cheap when nothing changed) so that
+// code changes made between test runs are never missed.
+var (
+	nexusBinOnce sync.Once
+	nexusBinPath string
+	nexusBinErr  error
+)
+
+// resolveNexusBin returns the nexus binary path. When NEXUS_BIN is set it is
+// used directly. Otherwise the binary is built once per test process via
+// sync.Once: go build writes to a temp file then atomically renames it onto
+// nexusE2EBin so concurrent test packages already executing the old inode are
+// unaffected ("text file busy" avoided).
+func resolveNexusBin(_ string) (string, error) {
 	if p := os.Getenv("NEXUS_BIN"); p != "" {
 		if !probeVaultSupport(p) {
 			return "", fmt.Errorf("livenexus: NEXUS_BIN=%s lacks vault support", p)
 		}
 		return p, nil
 	}
-	return buildNexusBin(base)
+	nexusBinOnce.Do(func() {
+		dir := filepath.Dir(nexusE2EBin)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			nexusBinErr = fmt.Errorf("livenexus: mkdir nexus-e2e-bin: %w", err)
+			return
+		}
+		root, err := worktreeRoot()
+		if err != nil {
+			nexusBinErr = err
+			return
+		}
+		// Build into a temp file so the rename onto nexusE2EBin is atomic.
+		tmp := fmt.Sprintf("%s/nexus.tmp.%d", dir, os.Getpid())
+		cmd := exec.Command("go", "build", "-o", tmp, "./cmd/nexus")
+		cmd.Dir = root
+		if out, buildErr := cmd.CombinedOutput(); buildErr != nil {
+			nexusBinErr = fmt.Errorf("livenexus: go build nexus: %w\n%s", buildErr, out)
+			return
+		}
+		if err := os.Rename(tmp, nexusE2EBin); err != nil {
+			_ = os.Remove(tmp)
+			nexusBinErr = fmt.Errorf("livenexus: rename nexus bin: %w", err)
+			return
+		}
+		if !probeVaultSupport(nexusE2EBin) {
+			nexusBinErr = fmt.Errorf("livenexus: built nexus binary at %s lacks vault support", nexusE2EBin)
+			return
+		}
+		nexusBinPath = nexusE2EBin
+	})
+	return nexusBinPath, nexusBinErr
 }
 
 func resolveProdKernelPath() string {

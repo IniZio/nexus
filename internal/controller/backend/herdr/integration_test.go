@@ -4,6 +4,7 @@ package herdr
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,7 @@ func TestBackendContractLive(t *testing.T) {
 		NexusBin:        h.NexusBin(),
 		ExtraEnv:        extraEnvFromHarness(h),
 		WorktreeDir:     h.WorktreeDir(),
+		PermissionMode:  "default",
 	}
 
 	b := New(cfg)
@@ -91,12 +93,14 @@ func TestBackendContractLive(t *testing.T) {
 			}
 		}
 		if !reachedIdle {
-			t.Fatalf("timed out waiting for idle/done; last status: %s", lastStatus)
+			pane := captureAgentPaneViaBackend(t, b, ag)
+			t.Fatalf("timed out waiting for idle/done; last status: %s\npane tail:\n%s", lastStatus, pane)
 		}
 		if err := b.Prompt(ctx, ag, "echo hello"); err != nil {
 			t.Fatalf("Prompt: %v", err)
 		}
-		for time.Now().Before(deadline) {
+		postDeadline := time.Now().Add(90 * time.Second)
+		for time.Now().Before(postDeadline) {
 			st, err := b.Observe(ctx, ag, false)
 			if err != nil {
 				t.Fatalf("Observe: %v", err)
@@ -107,7 +111,8 @@ func TestBackendContractLive(t *testing.T) {
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		t.Error("timed out waiting for done/blocked")
+		pane := captureAgentPaneViaBackend(t, b, ag)
+		t.Errorf("timed out waiting for done/blocked\npane tail:\n%s", pane)
 	})
 
 	t.Run("ReadAnswer", func(t *testing.T) {
@@ -158,8 +163,15 @@ func initMinimalRepo(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("nexus ctrl test repo\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
+	nexusDir := filepath.Join(dir, ".nexus")
+	if err := os.MkdirAll(nexusDir, 0o755); err != nil {
+		t.Fatalf("mkdir .nexus: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nexusDir, "Containerfile"), []byte("FROM ghcr.io/inizio/nexus-base:latest\n"), 0o644); err != nil {
+		t.Fatalf("write .nexus/Containerfile: %v", err)
+	}
 	for _, args := range [][]string{
-		{"git", "-C", dir, "add", "README.md"},
+		{"git", "-C", dir, "add", "."},
 		{"git", "-C", dir, "commit", "-m", "init"},
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
@@ -167,6 +179,17 @@ func initMinimalRepo(t *testing.T) string {
 		}
 	}
 	return dir
+}
+
+func captureAgentPaneViaBackend(t *testing.T, b *Backend, ag string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := b.ReadAnswer(ctx, ag)
+	if err != nil {
+		return fmt.Sprintf("(pane read error: %v)", err)
+	}
+	return out
 }
 
 func captureNexusPS(t *testing.T) string {
@@ -189,7 +212,10 @@ func captureHerdrSessions(t *testing.T) string {
 
 func extraEnvFromHarness(h *livenexus.Harness) []string {
 	fullEnv := h.Env()
-	keys := []string{"XDG_STATE_HOME", "XDG_DATA_HOME", "NEXUS_KERNEL_PATH", "TMPDIR"}
+	keys := []string{
+		"XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "NEXUS_KERNEL_PATH", "TMPDIR",
+		"NEXUS_DISK_FLOOR_GIB", "NEXUS_HERDR_DOCKER_DISK_GIB", "NEXUS_HERDR_GOCACHE_DISK_GIB", "NEXUS_HERDR_GOPATH_DISK_GIB",
+	}
 	want := make(map[string]bool, len(keys))
 	for _, k := range keys {
 		want[k] = true

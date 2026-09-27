@@ -18,6 +18,7 @@ import (
 	"github.com/IniZio/nexus/internal/controller"
 	herdrbackend "github.com/IniZio/nexus/internal/controller/backend/herdr"
 	"github.com/IniZio/nexus/internal/controller/chattest"
+	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/controller/sandbox"
 	"github.com/IniZio/nexus/internal/controller/store/sqlite"
 	"github.com/IniZio/nexus/internal/core/vault"
@@ -38,7 +39,7 @@ func TestControllerE2E(t *testing.T) {
 	}
 
 	h := livenexus.New(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	t.Logf("isolated state root: %s", h.StateRoot())
@@ -85,6 +86,10 @@ func TestControllerE2E(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
+		// Snapshot logs BEFORE Teardown: service.Remove (called inside Teardown)
+		// deletes supervisor state dirs, which removes supervisor.log.
+		// SnapshotLogs must run first so per-workspace logs are preserved.
+		h.SnapshotLogs()
 		tearCtx, tearCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer tearCancel()
 		for _, id := range sandboxIDs {
@@ -210,13 +215,15 @@ func testMentionProvisions(t *testing.T, ctx context.Context, chat *chattest.Fak
 
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
-		for _, r := range chat.Reactions(ref) {
+		reactions := chat.Reactions(ref)
+		posts := chat.Posts(ref)
+		for _, r := range reactions {
 			if r == "white_check_mark" {
 				task, _ := store.Get(ctx, ref)
 				t.Logf("got check_mark; sandbox=%s status=%s", task.SandboxID, task.Status)
 				echoExpected := "hello from nexus e2e test"
 				found := false
-				for _, p := range chat.Posts(ref) {
+				for _, p := range posts {
 					if strings.Contains(p, echoExpected) {
 						found = true
 						t.Logf("echo output confirmed in agent response")
@@ -224,12 +231,20 @@ func testMentionProvisions(t *testing.T, ctx context.Context, chat *chattest.Fak
 					}
 				}
 				if !found {
-					t.Errorf("MentionProvisionsSandbox: agent response missing %q; posts: %v", echoExpected, chat.Posts(ref))
+					t.Errorf("MentionProvisionsSandbox: agent response missing %q; posts: %v", echoExpected, posts)
 				}
 				return task
 			}
+			if r == "warning" {
+				t.Fatalf("provision failed (warning reaction); posts=%v", posts)
+			}
 		}
-		time.Sleep(5 * time.Second)
+		for _, p := range posts {
+			if strings.HasPrefix(p, "provision error:") {
+				t.Fatalf("provision error: %s", p)
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("no check_mark within 5 min; posts=%v reactions=%v", chat.Posts(ref), chat.Reactions(ref))
 	return controller.Task{}
@@ -263,7 +278,17 @@ func testApprovalBlocked(t *testing.T, ctx context.Context, chat *chattest.Fake,
 			t.Logf("agent blocked; posts: %v", chat.Posts(ref))
 			break
 		}
-		time.Sleep(3 * time.Second)
+		for _, r := range chat.Reactions(ref) {
+			if r == "warning" {
+				t.Fatalf("testApprovalBlocked: provision failed (warning reaction); posts=%v", chat.Posts(ref))
+			}
+		}
+		for _, p := range chat.Posts(ref) {
+			if strings.HasPrefix(p, "provision error:") {
+				t.Fatalf("testApprovalBlocked: %s", p)
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	if task.Status != controller.StatusWaitingOnUser {
@@ -302,7 +327,7 @@ func testApprovalBlocked(t *testing.T, ctx context.Context, chat *chattest.Fake,
 				return
 			}
 		}
-		time.Sleep(3 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 	t.Errorf("approval unblock reached timeout without check_mark")
 }
@@ -317,7 +342,7 @@ func testIdleSweep(t *testing.T, ctx context.Context, router *controller.Router,
 		if err == nil && cur.Status == controller.StatusIdle {
 			break
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 	cur, getErr := store.Get(ctx, ref)
 	if getErr != nil || cur.Status != controller.StatusIdle {
@@ -340,7 +365,7 @@ func testIdleSweep(t *testing.T, ctx context.Context, router *controller.Router,
 			t.Logf("sandbox paused by idle sweep")
 			break
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 	if !paused {
 		t.Fatal("sandbox did not pause within 30s after idle sweep")
@@ -363,7 +388,7 @@ func testIdleSweep(t *testing.T, ctx context.Context, router *controller.Router,
 			t.Logf("sandbox resumed: status=%s", cur.Status)
 			return
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 	t.Errorf("sandbox did not resume after reply")
 }
@@ -373,15 +398,29 @@ func testGuestGHToken(t *testing.T, ctx context.Context, h *livenexus.Harness, h
 
 	repoURL := "https://github.com/" + privateRepo
 
+	// Assert GH_TOKEN placeholder is present in the guest before trying git.
+	// The cred.env write and the VM resume are synchronous (supervisor seeds
+	// before writing READY; CH VMResume completes before StatusWorking is set),
+	// so a single check is sufficient — no retry loop needed.
+	tokenCheckOut, _ := h.Run(ctx, "exec", sbID, "--", "sh", "-c", `printf '%s' "$GH_TOKEN"`)
+	if strings.TrimSpace(tokenCheckOut) == "" {
+		t.Fatal("identity check: GH_TOKEN is empty in guest — broker placeholder not injected")
+	}
+
+	// Use a credential helper so the token is passed as Basic auth (username +
+	// password), which the broker intercepts. This avoids the http.extraHeader
+	// approach which does not go through the credential broker path.
+	credHelper := `'!f(){ echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'`
 	posOut, posErr := h.Run(ctx, "exec", sbID, "--", "sh", "-c",
-		`git -c http.extraHeader="Authorization: bearer $GH_TOKEN" ls-remote `+repoURL+` HEAD`)
+		`git -c credential.helper= -c credential.helper=`+credHelper+` ls-remote `+repoURL+` HEAD`)
 	if posErr != nil {
 		t.Fatalf("identity check: git ls-remote with GH_TOKEN placeholder failed (broker substitution broken): %v\n%s", posErr, posOut)
 	}
 	t.Logf("identity verified: git ls-remote succeeded via broker for %s", privateRepo)
 
+	bogusHelper := `'!f(){ echo username=x-access-token; echo "password=bogus-invalid-token"; }; f'`
 	negOut, negErr := h.Run(ctx, "exec", sbID, "--", "sh", "-c",
-		`git -c http.extraHeader="Authorization: bearer bogus" ls-remote `+repoURL+` HEAD`)
+		`git -c credential.helper= -c credential.helper=`+bogusHelper+` ls-remote `+repoURL+` HEAD`)
 	if negErr == nil {
 		t.Errorf("identity check: git ls-remote with bogus token should have failed\n%s", negOut)
 	} else {
@@ -413,14 +452,24 @@ func testAgentRunsInGuest(t *testing.T, ctx context.Context, chat *chattest.Fake
 	deadline := time.Now().Add(5 * time.Minute)
 outer:
 	for time.Now().Before(deadline) {
-		for _, r := range chat.Reactions(ref) {
+		reactions := chat.Reactions(ref)
+		posts := chat.Posts(ref)
+		for _, r := range reactions {
 			if r == "white_check_mark" {
 				task, _ := store.Get(ctx, ref)
 				sbID = task.SandboxID
 				break outer
 			}
+			if r == "warning" {
+				t.Fatalf("AgentRunsInGuest provision failed; posts=%v", posts)
+			}
 		}
-		time.Sleep(5 * time.Second)
+		for _, p := range posts {
+			if strings.HasPrefix(p, "provision error:") {
+				t.Fatalf("AgentRunsInGuest provision error: %s", p)
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	if sbID == "" {
 		t.Fatalf("AgentRunsInGuest: no check_mark within 5 min; posts=%v reactions=%v", chat.Posts(ref), chat.Reactions(ref))
@@ -585,7 +634,9 @@ func buildBackend(t *testing.T, h *livenexus.Harness, repoPath string) *herdrbac
 		ExtraEnv:        extraEnvFromHarness(h),
 		WorktreeDir:     h.WorktreeDir(),
 	}
-	return herdrbackend.New(cfg)
+	b := herdrbackend.New(cfg)
+	b.SetAgentOpts(herdragent.WithSettle(200*time.Millisecond), herdragent.WithUnknownWindow(30*time.Second))
+	return b
 }
 
 type cliLifecycle struct {
@@ -690,6 +741,10 @@ egress:
 	if err := os.WriteFile(filepath.Join(nexusDir, "config.yaml"), []byte(nexusCfg), 0o644); err != nil {
 		t.Fatalf("write .nexus/config.yaml: %v", err)
 	}
+	containerfile := "FROM ghcr.io/inizio/nexus-base:latest\n"
+	if err := os.WriteFile(filepath.Join(nexusDir, "Containerfile"), []byte(containerfile), 0o644); err != nil {
+		t.Fatalf("write .nexus/Containerfile: %v", err)
+	}
 
 	for _, args := range [][]string{
 		{"git", "-C", dir, "add", "."},
@@ -705,11 +760,16 @@ egress:
 func extraEnvFromHarness(h *livenexus.Harness) []string {
 	fullEnv := h.Env()
 	keys := map[string]bool{
-		"XDG_STATE_HOME":        true,
-		"XDG_DATA_HOME":         true,
-		"CREDENTIALS_DIRECTORY": true,
-		"NEXUS_KERNEL_PATH":     true,
-		"TMPDIR":                true,
+		"XDG_STATE_HOME":            true,
+		"XDG_DATA_HOME":             true,
+		"XDG_CONFIG_HOME":           true,
+		"CREDENTIALS_DIRECTORY":     true,
+		"NEXUS_KERNEL_PATH":         true,
+		"TMPDIR":                    true,
+		"NEXUS_DISK_FLOOR_GIB":      true,
+		"NEXUS_HERDR_DOCKER_DISK_GIB":  true,
+		"NEXUS_HERDR_GOCACHE_DISK_GIB": true,
+		"NEXUS_HERDR_GOPATH_DISK_GIB":  true,
 	}
 	var out []string
 	for _, e := range fullEnv {
