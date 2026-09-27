@@ -93,19 +93,19 @@ func (f *Fake) lookupAgent(agentRef string) (*agentState, error) {
 	return a, nil
 }
 
-func (f *Fake) Prompt(_ context.Context, agentRef, text string) error {
+func (f *Fake) Prompt(_ context.Context, agentRef, text string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	a, err := f.lookupAgent(agentRef)
 	if err != nil {
-		return err
+		return "", err
 	}
 	a.promptText = text
 	if len(a.script) == 0 {
 		a.readAns = "echo: " + text
 		a.script = []herdragent.State{{Status: herdragent.StatusDone, Settled: true}}
 	}
-	return nil
+	return "", nil
 }
 
 // Script queues states to be returned by successive Observe calls.
@@ -160,7 +160,7 @@ func (f *Fake) Answered() []controller.AgentInput {
 }
 
 // ReadAnswer returns the canned answer set by Prompt; errors on unknown/torn-down agent.
-func (f *Fake) ReadAnswer(_ context.Context, agentRef string) (string, error) {
+func (f *Fake) ReadAnswer(_ context.Context, agentRef, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	a, err := f.lookupAgent(agentRef)
@@ -241,7 +241,7 @@ func RunBackendContract(t *testing.T, newBackend func(t *testing.T) controller.A
 		if err != nil {
 			t.Fatalf("Provision: %v", err)
 		}
-		if err := b.Prompt(context.Background(), ag, "hello"); err != nil {
+		if _, err := b.Prompt(context.Background(), ag, "hello"); err != nil {
 			t.Fatalf("Prompt: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -275,7 +275,7 @@ func RunBackendContract(t *testing.T, newBackend func(t *testing.T) controller.A
 		if err != nil {
 			t.Fatalf("Provision: %v", err)
 		}
-		if err := b.Prompt(context.Background(), ag, "hello"); err != nil {
+		if _, err := b.Prompt(context.Background(), ag, "hello"); err != nil {
 			t.Fatalf("Prompt: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -294,7 +294,7 @@ func RunBackendContract(t *testing.T, newBackend func(t *testing.T) controller.A
 			case <-time.After(50 * time.Millisecond):
 			}
 		}
-		if _, err := b.ReadAnswer(context.Background(), ag); err != nil {
+		if _, err := b.ReadAnswer(context.Background(), ag, ""); err != nil {
 			t.Fatalf("ReadAnswer after done: %v", err)
 		}
 	})
@@ -319,7 +319,7 @@ func RunBackendContract(t *testing.T, newBackend func(t *testing.T) controller.A
 		t.Helper()
 		b := newBackend(t)
 		const bogus = "agent-does-not-exist"
-		if err := b.Prompt(context.Background(), bogus, "hi"); err == nil {
+		if _, err := b.Prompt(context.Background(), bogus, "hi"); err == nil {
 			t.Fatal("Prompt on unknown agentRef should error")
 		}
 		if _, err := b.Observe(context.Background(), bogus, false); err == nil {
@@ -328,7 +328,7 @@ func RunBackendContract(t *testing.T, newBackend func(t *testing.T) controller.A
 		if err := b.Answer(context.Background(), bogus, controller.AgentInput{Text: "x"}); err == nil {
 			t.Fatal("Answer on unknown agentRef should error")
 		}
-		if _, err := b.ReadAnswer(context.Background(), bogus); err == nil {
+		if _, err := b.ReadAnswer(context.Background(), bogus, ""); err == nil {
 			t.Fatal("ReadAnswer on unknown agentRef should error")
 		}
 	})
@@ -350,7 +350,7 @@ func RunBackendContract(t *testing.T, newBackend func(t *testing.T) controller.A
 		if err := b.Teardown(context.Background(), "sb-unknown"); err != nil {
 			t.Fatalf("Teardown of unknown id should be nil: %v", err)
 		}
-		if err := b.Prompt(context.Background(), ag, "hi"); err == nil {
+		if _, err := b.Prompt(context.Background(), ag, "hi"); err == nil {
 			t.Fatal("Prompt after Teardown should error")
 		}
 	})

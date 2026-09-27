@@ -732,7 +732,7 @@ func TestRediscoverEntry_CanPromptPreExistingAgent(t *testing.T) {
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	// Empty maps — simulates a controller restart.
-	if err := b.Prompt(context.Background(), agentNameFromWsID("wR1"), "hello"); err != nil {
+	if _, err := b.Prompt(context.Background(), agentNameFromWsID("wR1"), "hello"); err != nil {
 		t.Fatalf("Prompt on rediscovered agent: %v", err)
 	}
 	if !n.calledWith("herdr", "list") {
@@ -777,7 +777,7 @@ func TestRediscoverEntry_UppercaseWsID(t *testing.T) {
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	// Empty maps — simulates a controller restart with an uppercase wsID.
-	if err := b.Prompt(context.Background(), agentRef, "hello"); err != nil {
+	if _, err := b.Prompt(context.Background(), agentRef, "hello"); err != nil {
 		t.Fatalf("Prompt on rediscovered uppercase wsID agent: %v", err)
 	}
 	b.mu.Lock()
@@ -809,6 +809,42 @@ func TestRediscoverBySandboxID_CanTeardown(t *testing.T) {
 	}
 	if !n.calledWith("sandbox", "rm", "sb-abc123") {
 		t.Error("expected nexus sandbox rm sb-abc123")
+	}
+}
+
+// TestReadAnswerAfterRestart verifies that ReadAnswer uses the transcript path
+// when the in-memory entry was reconstructed by rediscovery (controller restart).
+// agentSessionID must be deterministic from the sandbox ID so rediscoverEntry
+// can set it without any store access; the caller-supplied turnID stands in for
+// the persisted Task.TurnID column.
+func TestReadAnswerAfterRestart(t *testing.T) {
+	const knownTurnID = "testTurnRestart"
+	marker := turnMarker(knownTurnID)
+	// deterministicSessionID("sb-abc123") = sha256("sb-abc123")[:16] hex
+	// The transcript file is named <sessionID>.jsonl in the guest.
+	jsonl := `{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"text","text":"` +
+		marker + `\n\ndo the thing"}]}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"restarted answer"}]}}`
+
+	h := newFakeCmd(map[string]fakeReply{
+		"agent read": {out: ""}, // no pane content; transcript should win
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr list": {out: herdrListLine("wRS", "wRS:p1")},
+		"exec":       {out: jsonl},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	// Empty maps — simulates controller restart; no Provision was called.
+	agentRef := agentNameFromWsID("wRS")
+	answer, err := b.ReadAnswer(context.Background(), agentRef, knownTurnID)
+	if err != nil {
+		t.Fatalf("ReadAnswer after restart: %v", err)
+	}
+	if answer != "restarted answer" {
+		t.Errorf("answer = %q, want %q", answer, "restarted answer")
+	}
+	if h.calledWith("agent", "read") {
+		t.Error("pane fallback was called; transcript path should have won")
 	}
 }
 
@@ -1715,80 +1751,51 @@ func TestPermModeFromContextReachesAgentStart(t *testing.T) {
 	t.Error("no agent start call found")
 }
 
-func TestParseTranscriptAnswer(t *testing.T) {
-	entry := func(role, content string) string {
-		return `{"message":{"role":"` + role + `","content":` + content + `}}`
-	}
-	textBlock := func(s string) string { return `[{"type":"text","text":"` + s + `"}]` }
-	toolResultBlock := `[{"type":"tool_result","tool_use_id":"t1","content":"output"}]`
+// TestModelFromContextReachesAgentStart verifies that a model set in the context
+// via controller.WithModel is passed as --model to `herdr agent start` argv.
+func TestModelFromContextReachesAgentStart(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 
-	tests := []struct {
-		name  string
-		lines []string
-		want  string
-	}{
-		{
-			name: "text-only answer",
-			lines: []string{
-				entry("human", textBlock("what is 2+2?")),
-				entry("assistant", textBlock("4")),
-			},
-			want: "4",
-		},
-		{
-			name: "multi-block answer joined",
-			lines: []string{
-				entry("human", textBlock("hello")),
-				entry("assistant", `[{"type":"text","text":"part one"},{"type":"tool_use","id":"x","name":"Bash","input":{}},{"type":"text","text":"part two"}]`),
-			},
-			want: "part one\n\npart two",
-		},
-		{
-			name: "tool_use blocks in between are skipped (only text kept)",
-			lines: []string{
-				entry("human", textBlock("run something")),
-				entry("assistant", `[{"type":"tool_use","id":"x","name":"Bash","input":{}}]`),
-				entry("human", toolResultBlock),
-				entry("assistant", textBlock("done")),
-			},
-			want: "done",
-		},
-		{
-			name: "older turn text not included",
-			lines: []string{
-				entry("human", textBlock("first prompt")),
-				entry("assistant", textBlock("first answer")),
-				entry("human", textBlock("second prompt")),
-				entry("assistant", textBlock("second answer")),
-			},
-			want: "second answer",
-		},
-		{
-			name: "tool_result-only human entries not treated as real prompt boundary",
-			lines: []string{
-				entry("human", textBlock("prompt")),
-				entry("assistant", `[`+`{"type":"tool_use","id":"t1","name":"Bash","input":{}}]`),
-				entry("human", toolResultBlock),
-				entry("assistant", textBlock("final")),
-			},
-			want: "final",
-		},
-		{
-			name: "empty jsonl",
-			lines: nil,
-			want:  "",
-		},
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wMD"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wMD","agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wMD", "wMD:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	ctx := controller.WithModel(context.Background(), "claude-sonnet-4-5")
+	_, _, err := b.Provision(ctx, "/repo", controller.NewThreadRef("T", "C", "MD"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			data := strings.Join(tc.lines, "\n")
-			got := parseTranscriptAnswer(data)
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+			for i, arg := range c.argv {
+				if arg == "--model" && i+1 < len(c.argv) {
+					if c.argv[i+1] != "claude-sonnet-4-5" {
+						t.Errorf("agent start --model = %q, want claude-sonnet-4-5", c.argv[i+1])
+					}
+					return
+				}
 			}
-		})
+			t.Errorf("agent start call missing --model flag: %v", c.argv)
+			return
+		}
 	}
+	t.Error("no agent start call found")
 }
 
 func TestParseFinalAnswer(t *testing.T) {

@@ -181,10 +181,10 @@ type AgentInput struct {
 // AgentBackend manages agent lifecycle and communication.
 type AgentBackend interface {
 	Provision(ctx context.Context, project string, ref ThreadRef, principal string) (sandboxID, agentRef string, err error)
-	Prompt(ctx context.Context, agentRef, text string) error
+	Prompt(ctx context.Context, agentRef, text string) (turnID string, err error)
 	Observe(ctx context.Context, agentRef string, wait bool) (herdragent.State, error)
 	Answer(ctx context.Context, agentRef string, in AgentInput) error
-	ReadAnswer(ctx context.Context, agentRef string) (string, error)
+	ReadAnswer(ctx context.Context, agentRef, turnID string) (string, error)
 	// Restart re-launches the guest agent after its sandbox was stopped and
 	// started again, waits for readiness, and returns the (possibly new) agentRef.
 	Restart(ctx context.Context, sandboxID, agentRef string) (newAgentRef string, err error)

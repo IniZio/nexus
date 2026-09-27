@@ -42,8 +42,13 @@ func (c *Controller) handlePausedReply(ctx context.Context, t Task, ev Event) er
 	}
 	t.Status = StatusWorking
 	t.StateChangeSeq = nextSeq
-	if err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text); err != nil {
+	turnID, err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text)
+	if err != nil {
 		return err
+	}
+	if turnID != "" {
+		t.TurnID = turnID
+		_ = c.deps.Store.Upsert(ctx, t)
 	}
 	return c.runObserveLoop(ctx, t)
 }
@@ -74,8 +79,13 @@ func (c *Controller) handleStoppedReply(ctx context.Context, t Task, ev Event) e
 	}
 	t.Status = StatusWorking
 	t.StateChangeSeq = nextSeq
-	if err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text); err != nil {
+	turnID, err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text)
+	if err != nil {
 		return err
+	}
+	if turnID != "" {
+		t.TurnID = turnID
+		_ = c.deps.Store.Upsert(ctx, t)
 	}
 	return c.runObserveLoop(ctx, t)
 }

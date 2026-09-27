@@ -61,6 +61,14 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// deterministicSessionID derives a stable session ID from a sandbox ID via SHA-256.
+// Because the sandbox ID is stored in Task.SandboxID it is available after a restart,
+// so rediscovery can recompute the same value without touching the store.
+func deterministicSessionID(sandboxID string) string {
+	h := sha256.Sum256([]byte(sandboxID))
+	return hex.EncodeToString(h[:16])
+}
+
 // turnMarker returns the string embedded in a wrapped prompt for turn_id.
 func turnMarker(turnID string) string { return "hc-turn:" + turnID }
 
@@ -457,7 +465,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		return "", "", err
 	}
 
-	sessionID := newID()
+	sessionID := deterministicSessionID(nexusSandboxID)
 	permMode := controller.PermModeFromCtx(ctx)
 	model := controller.ModelFromCtx(ctx)
 	if model == "" {
@@ -823,9 +831,10 @@ func parseAgentGetName(out string) string {
 }
 
 // Prompt delivers text to the agent, wrapped with a per-turn marker.
-func (b *Backend) Prompt(ctx context.Context, agentRef, text string) error {
+// Returns the turn ID so callers can persist it for post-restart ReadAnswer.
+func (b *Backend) Prompt(ctx context.Context, agentRef, text string) (string, error) {
 	if err := b.checkAgent(ctx, agentRef); err != nil {
-		return err
+		return "", err
 	}
 	turnID := newID()
 	b.mu.Lock()
@@ -836,9 +845,9 @@ func (b *Backend) Prompt(ctx context.Context, agentRef, text string) error {
 	wrapped := wrapPromptText(text, turnID)
 	out, err := b.herdrRun(ctx, nil, "agent", "prompt", agentRef, wrapped)
 	if err != nil {
-		return fmt.Errorf("herdr agent prompt: %w\n%s", err, out)
+		return "", fmt.Errorf("herdr agent prompt: %w\n%s", err, out)
 	}
-	return nil
+	return turnID, nil
 }
 
 // Observe returns the current herdragent.State. wait=true polls until terminal or ctx done.
@@ -912,10 +921,12 @@ func (b *Backend) Answer(ctx context.Context, agentRef string, in controller.Age
 
 // ReadAnswer returns the agent's answer for agentRef.
 // Primary: reads the guest Claude transcript JSONL and parses the last assistant reply.
+// turnID is the persisted turn marker from Task.TurnID; used as fallback when the
+// in-memory entry lacks lastTurnID (e.g. after a controller restart).
 // Fallback: parses the pane scrollback to extract ● answer blocks.
 // Last resort: returns the raw pane dump prefixed with controller.RawAnswerPrefix so
 // postAnswer can upload it as a file rather than posting inline.
-func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, error) {
+func (b *Backend) ReadAnswer(ctx context.Context, agentRef, turnID string) (string, error) {
 	if err := b.checkAgent(ctx, agentRef); err != nil {
 		return "", err
 	}
@@ -925,8 +936,13 @@ func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, erro
 	b.mu.Unlock()
 
 	// Primary: guest transcript via session ID and turn marker.
-	if e != nil && e.agentSessionID != "" && e.lastTurnID != "" {
-		if answer, tErr := b.readTranscriptAnswer(ctx, e.nexusSandboxID, e.agentSessionID, e.lastTurnID); tErr == nil && answer != "" {
+	// Use in-memory lastTurnID when available; fall back to the caller-supplied turnID.
+	effectiveTurnID := turnID
+	if e != nil && e.lastTurnID != "" {
+		effectiveTurnID = e.lastTurnID
+	}
+	if e != nil && e.agentSessionID != "" && effectiveTurnID != "" {
+		if answer, tErr := b.readTranscriptAnswer(ctx, e.nexusSandboxID, e.agentSessionID, effectiveTurnID); tErr == nil && answer != "" {
 			return answer, nil
 		}
 	}
@@ -1080,67 +1096,6 @@ func parseFinalAnswer(lines []string, marker string) string {
 	return strings.TrimSpace(strings.Join(texts, "\n\n"))
 }
 
-// parseTranscriptAnswer extracts the last assistant reply from a Claude JSONL
-// transcript using the legacy format (message.role field). Kept for unit tests.
-func parseTranscriptAnswer(jsonlData string) string {
-	type contentBlock struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	type messageObj struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
-	}
-	type record struct {
-		Message messageObj `json:"message"`
-	}
-
-	lines := strings.Split(strings.TrimRight(jsonlData, "\n"), "\n")
-	var texts []string // collected in reverse order
-	done := false
-	for i := len(lines) - 1; i >= 0 && !done; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		var rec record
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			continue
-		}
-		switch rec.Message.Role {
-		case "assistant":
-			var blocks []contentBlock
-			if err := json.Unmarshal(rec.Message.Content, &blocks); err != nil {
-				continue
-			}
-			for j := len(blocks) - 1; j >= 0; j-- {
-				if blocks[j].Type == "text" && blocks[j].Text != "" {
-					texts = append(texts, blocks[j].Text)
-				}
-			}
-		case "human":
-			var blocks []contentBlock
-			if err := json.Unmarshal(rec.Message.Content, &blocks); err != nil {
-				done = true
-				break
-			}
-			for _, blk := range blocks {
-				if blk.Type != "tool_result" {
-					done = true
-					break
-				}
-			}
-		}
-	}
-	if len(texts) == 0 {
-		return ""
-	}
-	for i, j := 0, len(texts)-1; i < j; i, j = i+1, j-1 {
-		texts[i], texts[j] = texts[j], texts[i]
-	}
-	return strings.TrimSpace(strings.Join(texts, "\n\n"))
-}
-
 // parsePaneAnswer extracts the agent's answer from raw pane scrollback text.
 // It finds the last ❯ prompt line with content, then collects ● answer blocks
 // and their indented continuations while dropping hook errors, timing lines,
@@ -1245,10 +1200,7 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 	}
 
 	// Reuse existing session/settings; write settings again in case guest /tmp was wiped.
-	sessionID := e.agentSessionID
-	if sessionID == "" {
-		sessionID = newID()
-	}
+	sessionID := deterministicSessionID(e.nexusSandboxID)
 	permMode := b.permMode()
 	settingsJSON := controllerSettingsJSON(permMode)
 	settingsPath := "/tmp/ctrl-settings.json"
@@ -1396,11 +1348,13 @@ func (b *Backend) rediscoverEntry(ctx context.Context, agentRef string) (*entry,
 	if paneID == "" {
 		return nil, fmt.Errorf("herdr backend: agentRef %q (workspace %s) not found in nexus herdr list", agentRef, wsID)
 	}
+	sbID := parseSandboxID(listOut, wsID)
 	e := &entry{
 		paneID:         paneID,
 		nexusHandle:    parseNexusHandle(listOut, wsID),
-		nexusSandboxID: parseSandboxID(listOut, wsID),
+		nexusSandboxID: sbID,
 		wsID:           wsID,
+		agentSessionID: deterministicSessionID(sbID),
 	}
 	b.mu.Lock()
 	b.entries[agentRef] = e
@@ -1427,6 +1381,7 @@ func (b *Backend) rediscoverBySandboxID(ctx context.Context, sandboxID string) (
 		nexusHandle:    parseNexusHandle(listOut, wsID),
 		nexusSandboxID: sandboxID,
 		wsID:           wsID,
+		agentSessionID: deterministicSessionID(sandboxID),
 	}
 	b.mu.Lock()
 	b.entries[agRef] = e

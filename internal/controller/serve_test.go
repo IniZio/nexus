@@ -69,8 +69,8 @@ type serveTestNopBackend struct{}
 func (b *serveTestNopBackend) Provision(_ context.Context, _ string, _ controller.ThreadRef, _ string) (string, string, error) {
 	return "", "", controller.ErrNotImplemented
 }
-func (b *serveTestNopBackend) Prompt(_ context.Context, _, _ string) error {
-	return controller.ErrNotImplemented
+func (b *serveTestNopBackend) Prompt(_ context.Context, _, _ string) (string, error) {
+	return "", controller.ErrNotImplemented
 }
 func (b *serveTestNopBackend) Observe(_ context.Context, _ string, _ bool) (herdragent.State, error) {
 	return herdragent.State{}, controller.ErrNotImplemented
@@ -78,7 +78,7 @@ func (b *serveTestNopBackend) Observe(_ context.Context, _ string, _ bool) (herd
 func (b *serveTestNopBackend) Answer(_ context.Context, _ string, _ controller.AgentInput) error {
 	return controller.ErrNotImplemented
 }
-func (b *serveTestNopBackend) ReadAnswer(_ context.Context, _ string) (string, error) {
+func (b *serveTestNopBackend) ReadAnswer(_ context.Context, _, _ string) (string, error) {
 	return "", controller.ErrNotImplemented
 }
 func (b *serveTestNopBackend) Teardown(_ context.Context, _ string) error {

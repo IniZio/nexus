@@ -430,7 +430,9 @@ type promptErrBackend struct {
 	err error
 }
 
-func (b *promptErrBackend) Prompt(_ context.Context, _ string, _ string) error { return b.err }
+func (b *promptErrBackend) Prompt(_ context.Context, _ string, _ string) (string, error) {
+	return "", b.err
+}
 
 // TestProvisionAckPostsEyesAndMessage verifies that before provisioning, eyes
 // reaction and a provisioning message are posted.

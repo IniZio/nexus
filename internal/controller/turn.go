@@ -73,10 +73,15 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 		t.StateChangeSeq = nextSeq
 	}
 
-	if err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text); err != nil {
+	turnID, err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text)
+	if err != nil {
 		_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
 		c.postFailureReason(ctx, t.ThreadRef, err)
 		return err
+	}
+	if turnID != "" {
+		t.TurnID = turnID
+		_ = c.deps.Store.Upsert(ctx, t)
 	}
 
 	return c.runObserveLoop(ctx, t)
@@ -130,7 +135,7 @@ func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
 		switch st.Status {
 		case herdragent.StatusDone, herdragent.StatusIdle:
 			if st.Status == herdragent.StatusDone {
-				answer, rErr := c.deps.Backend.ReadAnswer(ctx, t.HerdrAgent)
+				answer, rErr := c.deps.Backend.ReadAnswer(ctx, t.HerdrAgent, t.TurnID)
 				if rErr != nil {
 					_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
 					c.postFailureReason(ctx, t.ThreadRef, rErr)

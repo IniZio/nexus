@@ -72,8 +72,13 @@ func (c *Controller) handleIdleReply(ctx context.Context, t Task, ev Event) erro
 	}
 	t.Status = StatusWorking
 	t.StateChangeSeq = nextSeq
-	if err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text); err != nil {
+	turnID, err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text)
+	if err != nil {
 		return err
+	}
+	if turnID != "" {
+		t.TurnID = turnID
+		_ = c.deps.Store.Upsert(ctx, t)
 	}
 	return c.runObserveLoop(ctx, t)
 }
@@ -128,10 +133,15 @@ func (c *Controller) handleBlockedReply(ctx context.Context, t Task, ev Event) e
 	}
 	t.Status = StatusWorking
 	t.StateChangeSeq = nextSeq
-	if err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text); err != nil {
+	turnID, pErr := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text)
+	if pErr != nil {
 		_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
-		c.postFailureReason(ctx, t.ThreadRef, err)
-		return err
+		c.postFailureReason(ctx, t.ThreadRef, pErr)
+		return pErr
+	}
+	if turnID != "" {
+		t.TurnID = turnID
+		_ = c.deps.Store.Upsert(ctx, t)
 	}
 	return c.runObserveLoop(ctx, t)
 }
