@@ -3,11 +3,13 @@ package slack_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	goslack "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -324,6 +326,63 @@ func TestSlackLongAnswerUploadsFile(t *testing.T) {
 	}
 	if !uploadStarted {
 		t.Error("file upload not started for long answer")
+	}
+}
+
+// TestSlackRunContinuesAfterHandlerError verifies that a handler error does not
+// kill the Run loop — subsequent events are still dispatched.
+func TestSlackRunContinuesAfterHandlerError(t *testing.T) {
+	adapter, drv := buildTestAdapter(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	callCount := 0
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	h := func(ctx context.Context, ev controller.Event) error {
+		mu.Lock()
+		callCount++
+		n := callCount
+		mu.Unlock()
+		if n == 1 {
+			return errors.New("transient handler error")
+		}
+		// Second call succeeds; signal done.
+		close(done)
+		return nil
+	}
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- adapter.Run(ctx, h) }()
+
+	ref := controller.NewThreadRef("T_TEAM", "C_CHAN", "1000.0")
+
+	// First event — handler returns error; Run must not terminate.
+	if err := drv.Inject(ctx, controller.Event{Kind: controller.EventSlashCommand, ThreadRef: ref, User: "U1", Text: "/link github"}); err != nil {
+		t.Fatalf("Inject 1: %v", err)
+	}
+	// Second event — should still be dispatched.
+	if err := drv.Inject(ctx, controller.Event{Kind: controller.EventSlashCommand, ThreadRef: ref, User: "U1", Text: "/link github"}); err != nil {
+		t.Fatalf("Inject 2: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-runDone:
+		t.Fatal("Run returned before second event was handled")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second event dispatch")
+	}
+
+	cancel()
+	<-runDone
+
+	mu.Lock()
+	n := callCount
+	mu.Unlock()
+	if n < 2 {
+		t.Fatalf("handler called %d times; want ≥2", n)
 	}
 }
 

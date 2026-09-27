@@ -4,6 +4,7 @@ package slack
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -82,12 +83,19 @@ func StripBotMention(text string) string {
 }
 
 // Run blocks until ctx is done, dispatching incoming Slack events to h.
+// Handler errors are logged and do not stop the loop; only ctx cancellation
+// or a closed event channel terminates Run.
 func (a *Adapter) Run(ctx context.Context, h controller.Handler) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	go func() { _ = a.src.run(runCtx) }()
+	go func() {
+		if err := a.src.run(runCtx); err != nil && runCtx.Err() == nil {
+			slog.Error("slack socketmode run error", "err", err)
+		}
+	}()
 
+	slog.Info("slack adapter starting")
 	for {
 		select {
 		case <-ctx.Done():
@@ -96,8 +104,20 @@ func (a *Adapter) Run(ctx context.Context, h controller.Handler) error {
 			if !ok {
 				return nil
 			}
+			switch ev.Type {
+			case socketmode.EventTypeConnecting:
+				slog.Info("slack connecting")
+			case socketmode.EventTypeConnected:
+				slog.Info("slack connected")
+			case socketmode.EventTypeConnectionError:
+				slog.Warn("slack connection error", "event", ev.Type)
+			case socketmode.EventTypeDisconnect:
+				slog.Info("slack disconnected")
+			default:
+				slog.Debug("slack event received", "type", ev.Type)
+			}
 			if err := a.dispatch(ctx, ev, h); err != nil {
-				return err
+				slog.Error("slack dispatch error", "type", ev.Type, "err", err)
 			}
 		}
 	}
