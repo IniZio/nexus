@@ -273,6 +273,31 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 		return 0, nil, fmt.Errorf("spawn supervisor: open log file %s: %w", logPath, logErr)
 	}
 
+	useScope := !cfg.Ephemeral && len(cfg.CacheDiskLeaseFiles) == 0 && systemdUserProbe()
+	if useScope {
+		if scopeErr := spawnViaSystemdScope(exe, args, logFile, cfg.Config.SandboxRef); scopeErr != nil {
+			_ = logFile.Close()
+			return 0, nil, fmt.Errorf("spawn supervisor: %w", scopeErr)
+		}
+		_ = logFile.Close()
+		pidfile := PidfilePath(cfg.StateDir)
+		deadline := time.Now().Add(readyTimeout)
+		for time.Now().Before(deadline) {
+			if reason, readErr := os.ReadFile(filepath.Join(cfg.StateDir, supervisorErrFile)); readErr == nil && len(reason) > 0 {
+				return 0, nil, fmt.Errorf("spawn supervisor: %s", string(reason))
+			}
+			data, readErr := os.ReadFile(pidfile)
+			if readErr == nil {
+				pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+				if parseErr == nil && pid > 0 {
+					return pid, nil, nil
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		return 0, nil, fmt.Errorf("spawn supervisor (systemd scope): timed out waiting for %s", pidfile)
+	}
+
 	cmd := exec.Command(exe, args...)
 	cmd.Stdin = nil
 	cmd.Stdout = logFile
