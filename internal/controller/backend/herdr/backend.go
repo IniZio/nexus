@@ -299,7 +299,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		return "", "", err
 	}
 
-	agentName := "ctrl-" + wsID
+	agentName := agentNameFromWsID(wsID)
 	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID)
 	if err != nil {
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -517,6 +517,12 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 	agentName, detectErr := b.waitForAgentDetection(ctx, paneID, 30*time.Second)
 	if detectErr != nil {
 		return "", fmt.Errorf("agent detection failed after pane run — pane may not be running claude: %w", detectErr)
+	}
+	// Rename auto-detected agent to the expected ctrl- name so rediscovery works.
+	if agentName != name {
+		if _, renameErr := b.herdrRun(ctx, nil, "agent", "rename", agentName, name); renameErr == nil {
+			agentName = name
+		}
 	}
 	if err := b.waitForAgentReady(ctx, agentName, 90*time.Second); err != nil {
 		return "", fmt.Errorf("agent not ready: %w", err)
@@ -756,7 +762,7 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 		}
 	}
 
-	newAgentName := "ctrl-" + e.wsID
+	newAgentName := agentNameFromWsID(e.wsID)
 	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID)
 	if err != nil {
 		return "", fmt.Errorf("restart %s: start agent: %w", sandboxID, err)
@@ -869,15 +875,18 @@ func parsePSLine(out, exactID string) (handle string, found bool) {
 	return "", false
 }
 
-// rediscoverEntry reconstructs an entry from live nexus herdr list; agentRef must be ctrl-<wsID>.
+// rediscoverEntry reconstructs an entry from live nexus herdr list; agentRef must be ctrl-<...>.
 func (b *Backend) rediscoverEntry(ctx context.Context, agentRef string) (*entry, error) {
 	if !strings.HasPrefix(agentRef, "ctrl-") {
 		return nil, fmt.Errorf("herdr backend: cannot rediscover agentRef %q: not a ctrl- reference", agentRef)
 	}
-	wsID := strings.TrimPrefix(agentRef, "ctrl-")
 	listOut, err := b.nexusRun(ctx, nil, "herdr", "list")
 	if err != nil {
 		return nil, fmt.Errorf("herdr backend: rediscover %q: nexus herdr list: %w", agentRef, err)
+	}
+	wsID := parseWorkspaceIDByAgentName(listOut, agentRef)
+	if wsID == "" {
+		return nil, fmt.Errorf("herdr backend: agentRef %q not found in nexus herdr list", agentRef)
 	}
 	paneID := parsePaneID(listOut, wsID)
 	if paneID == "" {
@@ -908,7 +917,7 @@ func (b *Backend) rediscoverBySandboxID(ctx context.Context, sandboxID string) (
 	if wsID == "" {
 		return "", nil, fmt.Errorf("herdr backend: sandbox %q not found in nexus herdr list; never provisioned or already torn down", sandboxID)
 	}
-	agRef = "ctrl-" + wsID
+	agRef = agentNameFromWsID(wsID)
 	e = &entry{
 		paneID:         parsePaneID(listOut, wsID),
 		nexusHandle:    parseNexusHandle(listOut, wsID),
@@ -958,6 +967,47 @@ func branchName(project string, ref controller.ThreadRef, unixMicro int64) strin
 		safe = "task"
 	}
 	return fmt.Sprintf("ctrl/%s-%s-%x", safe, slug, unixMicro&0xFFFFFF)
+}
+
+// agentNameFromWsID derives a herdr-valid agent name from a workspace ID.
+// Herdr requires ^[a-z][a-z0-9_-]{0,31}$ (max 32 chars). Workspace IDs are
+// case-sensitive, so a short stable hash of the original ID is appended to
+// prevent collisions after lowercasing (e.g. "wDR" vs "wdr").
+func agentNameFromWsID(wsID string) string {
+	const pfx = "ctrl-"
+	h := sha256.Sum256([]byte(wsID))
+	sfx := fmt.Sprintf("-%x", h[:2]) // 5 chars: "-XXXX"
+	var sb strings.Builder
+	sb.WriteString(pfx)
+	for _, r := range strings.ToLower(wsID) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			sb.WriteRune(r)
+		default:
+			sb.WriteRune('-')
+		}
+	}
+	body := sb.String()
+	if len(body)+len(sfx) > 32 {
+		body = body[:32-len(sfx)]
+	}
+	return body + sfx
+}
+
+// parseWorkspaceIDByAgentName returns the workspace_id from nexus herdr list
+// output whose agentNameFromWsID matches agentRef.
+func parseWorkspaceIDByAgentName(out, agentRef string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		for _, f := range strings.Split(line, "\t") {
+			if wsID, ok := strings.CutPrefix(f, "workspace_id="); ok {
+				if agentNameFromWsID(wsID) == agentRef {
+					return wsID
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // parsePaneID finds the pane_id for workspaceID in `nexus herdr list` output.

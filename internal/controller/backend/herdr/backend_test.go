@@ -731,7 +731,7 @@ func TestRediscoverEntry_CanPromptPreExistingAgent(t *testing.T) {
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	// Empty maps — simulates a controller restart.
-	if err := b.Prompt(context.Background(), "ctrl-wR1", "hello"); err != nil {
+	if err := b.Prompt(context.Background(), agentNameFromWsID("wR1"), "hello"); err != nil {
 		t.Fatalf("Prompt on rediscovered agent: %v", err)
 	}
 	if !n.calledWith("herdr", "list") {
@@ -753,12 +753,40 @@ func TestRediscoverEntry_CanObservePreExistingAgent(t *testing.T) {
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
-	st, err := b.Observe(context.Background(), "ctrl-wR2", false)
+	st, err := b.Observe(context.Background(), agentNameFromWsID("wR2"), false)
 	if err != nil {
 		t.Fatalf("Observe on rediscovered agent: %v", err)
 	}
 	if st.Status != herdragent.StatusIdle {
 		t.Errorf("status = %q, want idle", st.Status)
+	}
+}
+
+// TestRediscoverEntry_UppercaseWsID verifies that rediscoverEntry locates the
+// workspace when the workspace ID contains uppercase letters and the agentRef
+// was derived via agentNameFromWsID.
+func TestRediscoverEntry_UppercaseWsID(t *testing.T) {
+	const wsID = "wDR"
+	agentRef := agentNameFromWsID(wsID)
+	h := newFakeCmd(map[string]fakeReply{
+		"agent prompt": {out: ""},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr list": {out: herdrListLine(wsID, wsID+":p1")},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	// Empty maps — simulates a controller restart with an uppercase wsID.
+	if err := b.Prompt(context.Background(), agentRef, "hello"); err != nil {
+		t.Fatalf("Prompt on rediscovered uppercase wsID agent: %v", err)
+	}
+	b.mu.Lock()
+	e := b.entries[agentRef]
+	b.mu.Unlock()
+	if e == nil {
+		t.Fatalf("entry not found after rediscovery for agentRef %q", agentRef)
+	}
+	if e.wsID != wsID {
+		t.Errorf("rediscovered wsID = %q, want %q", e.wsID, wsID)
 	}
 }
 
@@ -1191,5 +1219,75 @@ func TestProvisionUsesChannelRepo(t *testing.T) {
 		if got[i] != repo {
 			t.Errorf("workspace create --cwd[%d] = %q, want %q", i, got[i], repo)
 		}
+	}
+}
+
+// ── agentNameFromWsID tests ───────────────────────────────────────────────
+
+func TestAgentNameFromWsID_ValidFormat(t *testing.T) {
+	cases := []string{"wDR", "wCZ", "wABCDEF", "w1", "wMixed-123", "w_under"}
+	re := "^[a-z][a-z0-9_-]{0,31}$"
+	for _, wsID := range cases {
+		got := agentNameFromWsID(wsID)
+		if len(got) > 32 {
+			t.Errorf("agentNameFromWsID(%q) len %d > 32: %q", wsID, len(got), got)
+		}
+		if len(got) == 0 || got[0] < 'a' || got[0] > 'z' {
+			t.Errorf("agentNameFromWsID(%q) does not start with lowercase letter: %q", wsID, got)
+		}
+		for _, r := range got {
+			if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+				t.Errorf("agentNameFromWsID(%q) contains invalid char %q: %q (want %s)", wsID, r, got, re)
+				break
+			}
+		}
+	}
+}
+
+func TestAgentNameFromWsID_CaseCollision(t *testing.T) {
+	a := agentNameFromWsID("wDR")
+	b := agentNameFromWsID("wdr")
+	if a == b {
+		t.Errorf("agentNameFromWsID(\"wDR\") == agentNameFromWsID(\"wdr\") = %q; want distinct names", a)
+	}
+}
+
+// TestProvisionPassesSanitizedAgentName verifies that Provision derives a
+// herdr-valid (all-lowercase) agent name from an uppercase workspace ID.
+func TestProvisionPassesSanitizedAgentName(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+	const wsID = "wUPPER"
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: fmt.Sprintf(`{"result":{"workspace":{"workspace_id":%q}}}`, wsID)},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine(wsID, wsID+":p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "up"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	want := agentNameFromWsID(wsID)
+	if !h.calledWith("agent", "start", want) {
+		h.mu.Lock()
+		var got []string
+		for _, c := range h.calls {
+			if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+				got = append(got, strings.Join(c.argv, " "))
+			}
+		}
+		h.mu.Unlock()
+		t.Errorf("herdr agent start called with unexpected name; want %q; agent start calls: %v", want, got)
 	}
 }
