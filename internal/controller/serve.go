@@ -95,6 +95,9 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 	if deps.PermMode == nil {
 		deps.PermMode = PermModeFromConfig(cfg)
 	}
+	if deps.Model == nil {
+		deps.Model = ModelFromConfig(cfg)
+	}
 
 	var routerOpts []RouterOption
 	if linkHandler != nil {
@@ -147,6 +150,18 @@ func PermModeFromConfig(cfg *controllerconfig.Config) func(string) string {
 			return ""
 		}
 		return ch.PermissionMode
+	}
+}
+
+// ModelFromConfig returns the model for a channel from cfg, or "" when the
+// channel is not configured or has no model set (callers treat "" as "use backend default").
+func ModelFromConfig(cfg *controllerconfig.Config) func(string) string {
+	return func(channel string) string {
+		ch, ok := cfg.Channels[channel]
+		if !ok {
+			return ""
+		}
+		return ch.Model
 	}
 }
 

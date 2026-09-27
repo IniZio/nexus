@@ -250,3 +250,33 @@ channels:
 		}
 	}
 }
+
+func TestModelParsedFromConfig(t *testing.T) {
+	const src = `
+slack:
+  app_token:
+    env: SLACK_APP_TOKEN
+  bot_token:
+    env: SLACK_BOT_TOKEN
+channels:
+  C_HAIKU:
+    repo: /home/example/app
+    model: claude-haiku-4-5
+  C_NONE:
+    repo: /home/example/app
+`
+	cfg, err := config.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	cases := []struct{ channel, want string }{
+		{"C_HAIKU", "claude-haiku-4-5"},
+		{"C_NONE", ""},
+	}
+	for _, tc := range cases {
+		ch := cfg.Channels[tc.channel]
+		if ch.Model != tc.want {
+			t.Errorf("channel %q: Model = %q, want %q", tc.channel, ch.Model, tc.want)
+		}
+	}
+}

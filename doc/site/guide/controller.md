@@ -25,6 +25,7 @@ channels:
     idle_pause: 10m          # pause sandbox after this idle time
     idle_stop:  1h           # stop sandbox after this idle time
     # permission_mode: auto  # auto (default), default, bypassPermissions, acceptEdits
+    # model: claude-haiku-4-5  # optional; omit to use the backend default
 
 deployment_mode: laptop      # or "shared" for a team host
 ```

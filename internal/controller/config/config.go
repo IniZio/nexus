@@ -35,6 +35,7 @@ type ChannelConfig struct {
 	IdlePause      time.Duration `yaml:"idle_pause"`
 	IdleStop       time.Duration `yaml:"idle_stop"`
 	PermissionMode string        `yaml:"permission_mode"`
+	Model          string        `yaml:"model"`
 }
 
 type Config struct {
