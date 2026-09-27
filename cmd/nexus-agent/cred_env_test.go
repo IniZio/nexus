@@ -6,6 +6,70 @@ import (
 	"testing"
 )
 
+func TestReadEnvFile(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		unquote bool
+		want    map[string]string
+	}{
+		{
+			name:    "raw no unquote",
+			content: "A=1\nB=2\n",
+			unquote: false,
+			want:    map[string]string{"A": "1", "B": "2"},
+		},
+		{
+			name:    "unquote strips quotes",
+			content: "A='val'\nB=\"dq\"\nC=plain\n",
+			unquote: true,
+			want:    map[string]string{"A": "val", "B": "dq", "C": "plain"},
+		},
+		{
+			name:    "raw preserves quotes",
+			content: "A='val'\n",
+			unquote: false,
+			want:    map[string]string{"A": "'val'"},
+		},
+		{
+			name:    "missing file returns nil",
+			content: "",
+			unquote: false,
+			want:    nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var path string
+			if tc.want == nil {
+				path = filepath.Join(t.TempDir(), "absent.env")
+			} else {
+				f, err := os.CreateTemp(t.TempDir(), "env-*")
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.WriteString(tc.content)
+				f.Close()
+				path = f.Name()
+			}
+			got := readEnvFile(path, tc.unquote)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("want nil, got %v", got)
+				}
+				return
+			}
+			for k, want := range tc.want {
+				if v, ok := got[k]; !ok {
+					t.Errorf("key %s missing", k)
+				} else if v != want {
+					t.Errorf("%s = %q; want %q", k, v, want)
+				}
+			}
+		})
+	}
+}
+
 func TestGuestBaselineEnvCredFile(t *testing.T) {
 	dir := t.TempDir()
 	credFile := filepath.Join(dir, "cred.env")

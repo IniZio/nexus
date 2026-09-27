@@ -68,8 +68,14 @@ func (s *Session) claimPendingReader() {
 	})
 }
 
+func (s *Session) armPendingReader() {
+	s.pendingRID = s.ring.AddReader(0)
+	s.hasPendingRID = true
+	time.AfterFunc(30*time.Second, s.claimPendingReader)
+}
+
 // setExited records the exit code, marks the session done, and closes the
-// ring so that all blocked WaitNext callers wake and send their Exit frames.
+// ring so that all blocked WaitNextCursored readers wake and send their Exit frames.
 // Must be called exactly once per session (after all ring feeders are done).
 func (s *Session) setExited(code int32) {
 	s.exitCode.Store(code)

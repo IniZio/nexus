@@ -305,6 +305,39 @@ func TestRing_WriteRecordMustNotEvictPastAttachedCursor(t *testing.T) {
 	}
 }
 
+// TestRing_AttachedReaderNeverOverrun_WriteRecord pins the invariant that a
+// registered reader using WaitNextCursored is never overrun by concurrent
+// WriteRecord calls, even when total data written far exceeds ring capacity.
+func TestRing_AttachedReaderNeverOverrun_WriteRecord(t *testing.T) {
+	const ringCap = 4096
+	const payload = 200 // each record: 5-byte header + 200 bytes = 205 bytes
+	const records = 200
+	r := newRing(ringCap)
+	rid := r.AddReader(0)
+	defer r.RemoveReader(rid)
+
+	go func() {
+		data := make([]byte, payload)
+		for i := 0; i < records; i++ {
+			r.WriteRecord(1, data)
+		}
+		r.Close()
+	}()
+
+	off := uint64(0)
+	for {
+		chunk, newOff, done, overrun := r.WaitNextCursored(rid, off)
+		if overrun {
+			t.Fatalf("attached reader overrun at offset %d (oldest=%d): eviction gate broken", off, r.OldestOffset())
+		}
+		off = newOff
+		_ = chunk
+		if done && len(chunk) == 0 {
+			break
+		}
+	}
+}
+
 func TestRing_WriteRecord_OverrunAlignedToBoundary(t *testing.T) {
 	const ringCap = 256
 	r := newRing(ringCap)

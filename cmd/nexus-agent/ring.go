@@ -5,6 +5,10 @@ import (
 	"sync"
 )
 
+// Ring is a bounded circular buffer addressed by monotonic offsets (tot = bytes
+// ever written). Registered reader cursors gate eviction: writes block until
+// every cursor is past the bytes they would overwrite, so attached readers
+// never observe an overrun.
 type Ring struct {
 	mu   sync.Mutex
 	cond *sync.Cond
@@ -272,18 +276,6 @@ func (r *Ring) SnapToRecordBoundary(from uint64) uint64 {
 }
 
 const ringChunk = 64 * 1024
-
-// WaitNext blocks until data past from is available or the ring is closed.
-func (r *Ring) WaitNext(from uint64) (data []byte, newOff uint64, done bool) {
-	r.mu.Lock()
-	for from == r.tot && !r.done {
-		r.cond.Wait()
-	}
-	data, newOff, _ = r.snapshotLocked(from)
-	done = r.done
-	r.mu.Unlock()
-	return
-}
 
 // WaitNextCursored advances the reader cursor and reports overrun when bytes were evicted.
 func (r *Ring) WaitNextCursored(id uint64, from uint64) (data []byte, newOff uint64, done bool, overrun bool) {

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/creack/pty"
 	"google.golang.org/grpc/codes"
@@ -94,9 +93,7 @@ func (cs *controlServer) execPTY(cmd *exec.Cmd, env []string, opts *agentpb.PtyO
 		}
 	}
 
-	sess.pendingRID = sess.ring.AddReader(0)
-	sess.hasPendingRID = true
-	time.AfterFunc(30*time.Second, sess.claimPendingReader)
+	sess.armPendingReader()
 
 	err := cs.a.sessions.spawn(sess, func() (int, error) {
 		ptmx, err := pty.StartWithSize(cmd, sz)
@@ -164,9 +161,7 @@ func (cs *controlServer) execPipe(cmd *exec.Cmd, env []string, sess *Session) er
 
 	sess.stdinW = stdinW
 	sess.tagged = true
-	sess.pendingRID = sess.ring.AddReader(0)
-	sess.hasPendingRID = true
-	time.AfterFunc(30*time.Second, sess.claimPendingReader)
+	sess.armPendingReader()
 
 	err = cs.a.sessions.spawn(sess, func() (int, error) {
 		if err := cmd.Start(); err != nil {
@@ -284,38 +279,32 @@ func unquoteEnvValue(v string) string {
 }
 
 var nexusHostUIDEnvPath = "/etc/nexus/hostuid.env"
-
-func readNexusHostUIDEnv() map[string]string {
-	data, err := os.ReadFile(nexusHostUIDEnvPath)
-	if err != nil {
-		return nil
-	}
-	m := make(map[string]string, 2)
-	for _, line := range strings.Split(string(data), "\n") {
-		k, v, ok := strings.Cut(line, "=")
-		if ok && k != "" {
-			m[k] = v
-		}
-	}
-	return m
-}
-
 var nexusCredEnvPath = "/run/nexus/cred.env"
 
-func readGuestCredEnv() map[string]string {
-	data, err := os.ReadFile(nexusCredEnvPath)
+// readEnvFile parses a KEY=VALUE file and returns the entries as a map.
+// When unquote is true, values are passed through unquoteEnvValue.
+// A missing or unreadable file returns nil.
+func readEnvFile(path string, unquote bool) map[string]string {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
-	m := make(map[string]string, 8)
+	m := make(map[string]string)
 	for _, line := range strings.Split(string(data), "\n") {
 		k, v, ok := strings.Cut(line, "=")
-		if ok && k != "" {
-			m[k] = unquoteEnvValue(v)
+		if !ok || k == "" {
+			continue
 		}
+		if unquote {
+			v = unquoteEnvValue(v)
+		}
+		m[k] = v
 	}
 	return m
 }
+
+func readNexusHostUIDEnv() map[string]string { return readEnvFile(nexusHostUIDEnvPath, false) }
+func readGuestCredEnv() map[string]string    { return readEnvFile(nexusCredEnvPath, true) }
 
 // bootSpecEnv returns the KEY=VALUE entries of the boot manifest at
 // bootspecPath (/etc/nexus/boot.json): the image-wide Spec.Env first, then
@@ -437,27 +426,22 @@ func mergeEnv(base []string, extra map[string]string) []string {
 	return env
 }
 
-// feedRingFromReader reads from r into ring until error (EOF, EIO, etc.).
-// EIO from a PTY master is the normal signal that the slave has closed.
 func feedRingFromReader(r io.Reader, ring *Ring) {
-	buf := make([]byte, 4096)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			ring.Write(buf[:n])
-		}
-		if err != nil {
-			return
-		}
-	}
+	feedRing(r, func(b []byte) { ring.Write(b) })
 }
 
 func feedRingFromReaderTagged(r io.Reader, ring *Ring, tag byte) {
+	feedRing(r, func(b []byte) { ring.WriteRecord(tag, b) })
+}
+
+// feedRing reads from r until error (EOF, EIO, etc.), passing each chunk to
+// write. EIO from a PTY master is the normal signal that the slave has closed.
+func feedRing(r io.Reader, write func([]byte)) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			ring.WriteRecord(tag, buf[:n])
+			write(buf[:n])
 		}
 		if err != nil {
 			return
