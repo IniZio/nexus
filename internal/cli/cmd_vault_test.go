@@ -28,6 +28,7 @@ func TestVaultLinkUnknownConnectorFails(t *testing.T) {
 func TestVaultLsHidesTokens(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_DATA_HOME", dir)
 
 	st, err := vaultStore()
 	if err != nil {
