@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/controller"
+	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/herdrout"
@@ -69,6 +70,9 @@ func New(cfg Config) *Backend {
 	b.nexusRun = b.defaultNexusRun
 	return b
 }
+
+// SetAgentOpts overrides herdragent options after construction.
+func (b *Backend) SetAgentOpts(opts ...herdragent.Option) { b.agentOpts = opts }
 
 // newWithRunners creates a Backend with injected runners for testing.
 func newWithRunners(cfg Config, hr, nr runner, opts ...herdragent.Option) *Backend {
@@ -139,6 +143,21 @@ func (b *Backend) nexusBaseEnv() []string {
 	return env
 }
 
+// nexusStoreRoot returns the nexus state root as subprocesses see it.
+// cfg.ExtraEnv may carry XDG_STATE_HOME (e.g. from the test harness); that
+// must match what store.DefaultRoot() returns inside the subprocess, so we
+// read from there first before falling back to the process env via
+// store.DefaultRoot().
+func (b *Backend) nexusStoreRoot() string {
+	for _, kv := range b.cfg.ExtraEnv {
+		if strings.HasPrefix(kv, "XDG_STATE_HOME=") {
+			return strings.TrimPrefix(kv, "XDG_STATE_HOME=") + "/nexus"
+		}
+	}
+	root, _ := store.DefaultRoot()
+	return root
+}
+
 func runCmd(ctx context.Context, bin string, extraEnv []string, argv ...string) (string, error) {
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, bin, argv...)
@@ -182,10 +201,31 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	}
 
 	branch := branchName(project, ref, time.Now().UnixMicro())
+	safeBranch := strings.ReplaceAll(branch, "/", "-")
+
+	// Fix (a): write a controller-owned marker before herdr worktree create so
+	// the worktree.created hook (on-worktree-created.sh) and the Go auto path
+	// in herdrWorktreeSandbox see it and skip auto-provisioning.  The marker is
+	// keyed on the safe branch name and lives in the nexus state dir.  We defer
+	// its removal so it is always cleaned up when Provision returns, regardless
+	// of success or failure.
+	var markerPath string
+	if storeRoot := b.nexusStoreRoot(); storeRoot != "" {
+		claimsDir := filepath.Join(storeRoot, "controller-wt-claims")
+		if mkErr := os.MkdirAll(claimsDir, 0o755); mkErr == nil {
+			markerPath = filepath.Join(claimsDir, safeBranch)
+			_ = os.WriteFile(markerPath, []byte{}, 0o644)
+			defer func() { //nolint:errcheck
+				if markerPath != "" {
+					os.Remove(markerPath)
+				}
+			}()
+		}
+	}
+
 	wtArgs := []string{"worktree", "create", "--workspace", parentWS, "--branch", branch, "--no-focus"}
 	if b.cfg.WorktreeDir != "" {
 		_ = os.MkdirAll(b.cfg.WorktreeDir, 0o755)
-		safeBranch := strings.ReplaceAll(branch, "/", "-")
 		wtArgs = append(wtArgs, "--path", filepath.Join(b.cfg.WorktreeDir, safeBranch))
 	}
 	wtOut, err := b.herdrRun(ctx, nil, wtArgs...)
@@ -206,6 +246,14 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 			return "", "", fmt.Errorf("nexus herdr space-open-pane after pane-only failure: %w\n%s", reopenErr, reopenOut)
 		}
 	}
+	// Binding written with correct principal — marker is no longer needed.
+	// Remove it now so the hook pane (if still starting) skips via the
+	// step-1 idempotency check (binding already exists) rather than via the
+	// file-system marker, which cannot be held past Provision's return.
+	if markerPath != "" {
+		os.Remove(markerPath) //nolint:errcheck
+		markerPath = ""
+	}
 
 	listOut, err := b.nexusRun(ctx, nil, "herdr", "list")
 	if err != nil {
@@ -221,8 +269,25 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		return "", "", fmt.Errorf("nexus herdr list: no sandbox_id for workspace %s", wsID)
 	}
 
+	// Fix (b): verify the bound sandbox's recorded principal matches the one
+	// we requested.  A non-empty mismatch means the hook raced us and created
+	// the sandbox under the wrong identity; fail provision so the caller can
+	// clean up and retry rather than silently operating as the wrong principal.
+	// An empty boundPrincipal means the binding predates this field — allow it.
+	if boundPrincipal := parsePrincipal(listOut, wsID); boundPrincipal != "" && boundPrincipal != principal {
+		return "", "", fmt.Errorf("nexus herdr provision: principal mismatch for workspace %s: bound=%q requested=%q", wsID, boundPrincipal, principal)
+	}
+
 	if err := b.waitForWorkspaceMount(ctx, nexusSandboxID); err != nil {
 		return "", "", fmt.Errorf("workspace mount: %w", err)
+	}
+
+	if err := b.verifyClaudeInGuest(ctx, nexusSandboxID); err != nil {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cleanCancel()
+		_, _ = b.nexusRun(cleanCtx, nil, "sandbox", "rm", nexusSandboxID)
+		_, _ = b.herdrRun(cleanCtx, nil, "worktree", "remove", wsID)
+		return "", "", err
 	}
 
 	agentName := "ctrl-" + wsID
@@ -369,6 +434,17 @@ func (b *Backend) verifyPaneInGuest(ctx context.Context, paneID, nexusSandboxID 
 	guestHostname := strings.TrimSpace(guestOut)
 	if paneHostname != guestHostname {
 		return fmt.Errorf("pane %s hostname %q != guest %q: pane is not running inside the guest VM", paneID, paneHostname, guestHostname)
+	}
+	return nil
+}
+
+func (b *Backend) verifyClaudeInGuest(ctx context.Context, sbID string) error {
+	out, err := b.nexusRun(ctx, nil, "exec", sbID, "--", "sh", "-lc", "command -v claude")
+	if err != nil {
+		return fmt.Errorf("claude check in guest %s: %w", sbID, err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return fmt.Errorf("claude not found in guest %s: image is missing the claude recipe", sbID)
 	}
 	return nil
 }
@@ -752,6 +828,12 @@ func parsePaneID(out, workspaceID string) string {
 // parseNexusHandle finds the nexus sandbox handle for workspaceID in `nexus herdr list` output.
 func parseNexusHandle(out, workspaceID string) string {
 	return parseListField(out, workspaceID, "handle=")
+}
+
+// parsePrincipal finds the principal field for workspaceID in `nexus herdr list` output.
+// Returns "" when the field is absent (old binding without principal).
+func parsePrincipal(out, workspaceID string) string {
+	return parseListField(out, workspaceID, "principal=")
 }
 
 // parseSandboxID finds the exact sb-... nexus sandbox id for workspaceID in `nexus herdr list` output.

@@ -68,6 +68,12 @@ type HerdrSpaceBinding struct {
 	// encoding/json leaves missing fields at their zero value on decode, so an
 	// old binding on disk loads without error; there is nothing to migrate.
 	RepoRoot string `json:"repo_root,omitempty"`
+	// Principal is the NEXUS_PRINCIPAL value in effect when this binding was
+	// created by the worktree-sandbox flow.  Empty for bindings written before
+	// this field existed.  encoding/json leaves missing fields at zero on
+	// decode, so old bindings load without error; the reuse guard treats empty
+	// as "unknown principal — allow reuse" to avoid breaking existing setups.
+	Principal string `json:"principal,omitempty"`
 	// WorktreeManaged marks bindings created by the worktree-sandbox flow.
 	// When true the space-prune reaper may remove the sandbox VM when the
 	// herdr workspace disappears.  Legacy bindings written before this field

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
@@ -55,15 +56,17 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 }
 
 func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
+	turnCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
 	for {
-		st, err := c.deps.Backend.Observe(ctx, t.HerdrAgent, true)
+		st, err := c.deps.Backend.Observe(turnCtx, t.HerdrAgent, true)
 		if err != nil {
 			return err
 		}
 		if !st.Settled {
 			continue
 		}
-		if repoll, rErr := c.deps.Backend.Observe(ctx, t.HerdrAgent, false); rErr == nil && repoll.Settled && repoll.Seq != st.Seq {
+		if repoll, rErr := c.deps.Backend.Observe(turnCtx, t.HerdrAgent, false); rErr == nil && repoll.Settled && repoll.Seq != st.Seq {
 			st = repoll
 		}
 

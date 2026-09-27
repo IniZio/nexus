@@ -35,7 +35,8 @@ type Router struct {
 	commandHandler Handler
 	clock          func() time.Time
 
-	workerCtx context.Context
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
 
 	mu      sync.Mutex
 	threads map[ThreadRef]*threadQueue
@@ -44,14 +45,16 @@ type Router struct {
 	wg sync.WaitGroup
 }
 
-// NewRouter constructs a Router; workers use context.Background so a cancelled Handle ctx does not abort in-flight work.
+// NewRouter constructs a Router; workers use a cancellable background context.
 func NewRouter(store TaskStore, flows Flows, opts ...RouterOption) *Router {
+	ctx, cancel := context.WithCancel(context.Background())
 	r := &Router{
-		store:     store,
-		flows:     flows,
-		clock:     time.Now,
-		threads:   make(map[ThreadRef]*threadQueue),
-		workerCtx: context.Background(),
+		store:        store,
+		flows:        flows,
+		clock:        time.Now,
+		threads:      make(map[ThreadRef]*threadQueue),
+		workerCtx:    ctx,
+		workerCancel: cancel,
 	}
 	for _, o := range opts {
 		o(r)
@@ -122,12 +125,18 @@ func (r *Router) Tick(ctx context.Context, idleBefore time.Time) error {
 	return nil
 }
 
-// Close stops accepting new work and blocks until all in-flight queues drain.
+// Close stops accepting new work, cancels worker context, and drains queues with a 30s bound.
 func (r *Router) Close() {
 	r.mu.Lock()
 	r.closed = true
 	r.mu.Unlock()
-	r.wg.Wait()
+	r.workerCancel()
+	done := make(chan struct{})
+	go func() { r.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+	}
 }
 
 func (r *Router) enqueue(q *threadQueue, fn func(context.Context)) {

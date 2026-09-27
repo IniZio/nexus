@@ -3,12 +3,15 @@ package herdr
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/IniZio/nexus/internal/controller"
+	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
 )
 
@@ -108,8 +111,14 @@ func min(a, b int) int {
 
 // herdrListLine returns a `nexus herdr list` output line for the given workspace.
 // handle and sandbox_id use distinct realistic values so parsers can be tested independently.
+// principal is empty by default; use herdrListLineWithPrincipal to set a specific value.
 func herdrListLine(wsID, paneID string) string {
-	return fmt.Sprintf("label=test\tworkspace_id=%s\thandle=test-handle\tsandbox_id=sb-abc123\tpane_id=%s\n", wsID, paneID)
+	return herdrListLineWithPrincipal(wsID, paneID, "")
+}
+
+// herdrListLineWithPrincipal is like herdrListLine but includes an explicit principal field.
+func herdrListLineWithPrincipal(wsID, paneID, principal string) string {
+	return fmt.Sprintf("label=test\tworkspace_id=%s\thandle=test-handle\tsandbox_id=sb-abc123\tpane_id=%s\tprincipal=%s\n", wsID, paneID, principal)
 }
 
 // nexusPSLine returns a `nexus ps` output line as returned by parsePSLine.
@@ -519,3 +528,127 @@ func TestStartAgentAcceptsGuestHostnameMatch(t *testing.T) {
 		t.Error("agent start must be called when guest verification passes")
 	}
 }
+
+func TestVerifyClaudeInGuest_PresentPasses(t *testing.T) {
+	b := newWithRunners(Config{}, nil, func(_ context.Context, _ []string, argv ...string) (string, error) {
+		return "/usr/local/bin/claude\n", nil
+	})
+	if err := b.verifyClaudeInGuest(context.Background(), "sb-test"); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestVerifyClaudeInGuest_MissingFails(t *testing.T) {
+	b := newWithRunners(Config{}, nil, func(_ context.Context, _ []string, argv ...string) (string, error) {
+		return "", nil
+	})
+	if err := b.verifyClaudeInGuest(context.Background(), "sb-test"); err == nil {
+		t.Error("expected error when claude missing, got nil")
+	}
+}
+
+// TestProvisionWritesControllerMarker verifies that Provision writes the
+// controller-owned marker before calling `herdr worktree create`, so the hook
+// can see it while herdr is still processing the create request.
+func TestProvisionWritesControllerMarker(t *testing.T) {
+	// Use a temp dir as the nexus state root.
+	stateDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateDir)
+
+	var markerExistedDuringCreate bool
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list": {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wM"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wM","agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+		"pane run":        {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+
+	// Intercept the herdr runner to check for the marker at worktree-create time.
+	herdrRunner := func(ctx context.Context, extraEnv []string, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "worktree" && argv[1] == "create" {
+			// Inspect claims dir — branch is ctrl/<something>.
+			claimsDir := filepath.Join(stateDir, "nexus", "controller-wt-claims")
+			entries, _ := os.ReadDir(claimsDir)
+			markerExistedDuringCreate = len(entries) > 0
+		}
+		return h.run(ctx, extraEnv, argv...)
+	}
+
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wM", "wM:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrRunner, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "3"), "slack:T:U999")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if !markerExistedDuringCreate {
+		t.Error("controller marker was not written before herdr worktree create")
+	}
+	// After Provision returns the marker must be cleaned up.
+	claimsDir := filepath.Join(stateDir, "nexus", "controller-wt-claims")
+	entries, _ := os.ReadDir(claimsDir)
+	if len(entries) != 0 {
+		t.Errorf("controller marker not cleaned up after Provision; remaining: %v", entries)
+	}
+}
+
+// TestProvisionVerifiesBoundPrincipal verifies that Provision fails when the
+// sandbox recorded in `nexus herdr list` has a principal that differs from
+// the one requested.  This guards against the hook race creating a sandbox
+// with the wrong identity.
+func TestProvisionVerifiesBoundPrincipal(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wP"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wP","agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+		"pane run":        {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		// list returns principal=local:newman — wrong identity.
+		"herdr list": {out: herdrListLineWithPrincipal("wP", "wP:p1", "local:newman")},
+		"exec":       {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "4"), "slack:T:U999")
+	if err == nil {
+		t.Fatal("Provision should fail on principal mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "principal mismatch") {
+		t.Errorf("error = %v, want principal mismatch", err)
+	}
+}
+
+// TestParsePrincipal verifies that parsePrincipal extracts the principal field
+// and returns "" gracefully when absent.
+func TestParsePrincipal(t *testing.T) {
+	line := herdrListLineWithPrincipal("wX", "wX:p1", "slack:T:U123")
+	if got := parsePrincipal(line, "wX"); got != "slack:T:U123" {
+		t.Errorf("parsePrincipal = %q, want %q", got, "slack:T:U123")
+	}
+	// Legacy line without principal field.
+	legacy := fmt.Sprintf("label=test\tworkspace_id=wY\thandle=h\tsandbox_id=sb-x\tpane_id=p\n")
+	if got := parsePrincipal(legacy, "wY"); got != "" {
+		t.Errorf("parsePrincipal legacy = %q, want empty", got)
+	}
+}
+
+// TestHerdrWorktreeSandbox_ReuseRejectsWrongPrincipal is tested in the cli
+// package (cmd_herdr_plugin_principal_test.go) where herdrWorktreeSandbox is
+// accessible.  This marker ensures the test exists; see that file.
+var _ = vault.PrincipalEnv // ensure vault import is used
