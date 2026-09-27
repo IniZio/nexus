@@ -4,7 +4,9 @@ package herdr
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,6 +48,39 @@ type entry struct {
 	wsID           string
 	branch         string // git branch ctrl/… created during Provision
 	tornDown       bool
+	agentSessionID string // claude --session-id value; set at Provision
+	lastTurnID     string // most recent turn marker; set at Prompt
+}
+
+// newID returns a 16-byte random value encoded as 32 hex characters (no dashes).
+func newID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// turnMarker returns the string embedded in a wrapped prompt for turn_id.
+func turnMarker(turnID string) string { return "hc-turn:" + turnID }
+
+// wrapPromptText prefixes text with a turn marker header.
+func wrapPromptText(text, turnID string) string {
+	return "[Slack · " + turnMarker(turnID) + "]\n" +
+		"Your final message each turn is posted back to the Slack thread; end with a concise answer.\n\n" +
+		text
+}
+
+// controllerSettingsJSON returns the minimal claude settings JSON for isolation.
+// permMode is the claude permission mode (e.g. "auto", "default").
+func controllerSettingsJSON(permMode string) string {
+	if permMode == "" {
+		permMode = "default"
+	}
+	b, _ := json.Marshal(map[string]any{
+		"permissions": map[string]any{"defaultMode": permMode},
+	})
+	return string(b)
 }
 
 // Backend implements controller.AgentBackend.
@@ -422,8 +457,21 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		return "", "", err
 	}
 
+	sessionID := newID()
+	permMode := controller.PermModeFromCtx(ctx)
+	model := controller.ModelFromCtx(ctx)
+	if model == "" {
+		model = b.cfg.Model
+	}
+	settingsJSON := controllerSettingsJSON(permMode)
+	settingsPath := "/tmp/ctrl-settings.json"
+	writeCmd := fmt.Sprintf("printf '%%s' %s > %s", shellescape(settingsJSON), settingsPath)
+	if out, wErr := b.nexusRun(ctx, nil, "exec", nexusSandboxID, "--", "sh", "-c", writeCmd); wErr != nil {
+		return "", "", fmt.Errorf("write controller settings: %w\n%s", wErr, out)
+	}
+
 	agentName := agentNameFromWsID(wsID)
-	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID, controller.PermModeFromCtx(ctx))
+	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID, permMode, model, sessionID, settingsPath)
 	if err != nil {
 		return "", "", fmt.Errorf("start agent: %w", err)
 	}
@@ -435,6 +483,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		nexusSandboxID: nexusSandboxID,
 		wsID:           wsID,
 		branch:         branch,
+		agentSessionID: sessionID,
 	}
 	b.sandboxes[nexusSandboxID] = agentRef
 	b.mu.Unlock()
@@ -579,9 +628,28 @@ func (b *Backend) verifyClaudeInGuest(ctx context.Context, sbID string) error {
 	return nil
 }
 
+// shellescape wraps s in single quotes, escaping any single quotes inside.
+func shellescape(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// isolationArgs returns the claude argv flags for hook/MCP isolation and session binding.
+// settingsPath is the guest path to the controller-written settings JSON.
+func isolationArgs(sessionID, settingsPath string) []string {
+	return []string{
+		"--setting-sources", "",
+		"--strict-mcp-config",
+		"--settings", settingsPath,
+		"--session-id", sessionID,
+	}
+}
+
 // startAgent launches the claude agent in paneID. permMode overrides the
 // backend-default permission mode when non-empty; "" uses b.permMode().
-func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, permMode string) (string, error) {
+// model overrides the backend config model when non-empty; "" uses b.cfg.Model.
+// sessionID is the claude --session-id value; settingsPath is the guest path
+// to the controller-written settings JSON.
+func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, permMode, model, sessionID, settingsPath string) (string, error) {
 	// Safety gate: verify the pane is inside the guest before starting the agent.
 	// On mismatch the agent would run on the host; fail closed.
 	if err := b.verifyPaneInGuest(ctx, paneID, nexusSandboxID); err != nil {
@@ -590,10 +658,14 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, 
 	if permMode == "" {
 		permMode = b.permMode()
 	}
+	if model == "" {
+		model = b.cfg.Model
+	}
 
-	out, err := b.herdrRun(ctx, nil, "agent", "start", name, "--kind", "claude", "--pane", paneID,
-		"--timeout", "300000",
-		"--", "--model", b.cfg.Model, "--permission-mode", permMode, "--max-turns", "1")
+	isoArgs := isolationArgs(sessionID, settingsPath)
+	claudeArgs := append([]string{"--model", model, "--permission-mode", permMode, "--max-turns", "1"}, isoArgs...)
+	startArgv := append([]string{"agent", "start", name, "--kind", "claude", "--pane", paneID, "--timeout", "300000", "--"}, claudeArgs...)
+	out, err := b.herdrRun(ctx, nil, startArgv...)
 	if err == nil {
 		if err := b.waitForAgentReady(ctx, name, 5*time.Minute); err != nil {
 			return "", fmt.Errorf("agent not ready: %w", err)
@@ -631,7 +703,10 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, 
 			break
 		}
 	}
-	claudeCmd := "claude --model " + b.cfg.Model + " --permission-mode " + permMode + " --max-turns 1"
+	// pane run: build shell command preserving empty --setting-sources "" arg.
+	claudeCmd := "claude --model " + model + " --permission-mode " + permMode + " --max-turns 1" +
+		` --setting-sources "" --strict-mcp-config --settings ` + settingsPath +
+		" --session-id " + sessionID
 	if renameErr == nil {
 		if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
 			return "", fmt.Errorf("herdr pane run: %w\n%s", runErr, runOut)
@@ -747,12 +822,19 @@ func parseAgentGetName(out string) string {
 	return ""
 }
 
-// Prompt delivers text to the agent.
+// Prompt delivers text to the agent, wrapped with a per-turn marker.
 func (b *Backend) Prompt(ctx context.Context, agentRef, text string) error {
 	if err := b.checkAgent(ctx, agentRef); err != nil {
 		return err
 	}
-	out, err := b.herdrRun(ctx, nil, "agent", "prompt", agentRef, text)
+	turnID := newID()
+	b.mu.Lock()
+	if e, ok := b.entries[agentRef]; ok {
+		e.lastTurnID = turnID
+	}
+	b.mu.Unlock()
+	wrapped := wrapPromptText(text, turnID)
+	out, err := b.herdrRun(ctx, nil, "agent", "prompt", agentRef, wrapped)
 	if err != nil {
 		return fmt.Errorf("herdr agent prompt: %w\n%s", err, out)
 	}
@@ -842,9 +924,9 @@ func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, erro
 	e := b.entries[agentRef]
 	b.mu.Unlock()
 
-	// Primary: guest transcript.
-	if e != nil {
-		if answer, tErr := b.readTranscriptAnswer(ctx, e.nexusSandboxID); tErr == nil && answer != "" {
+	// Primary: guest transcript via session ID and turn marker.
+	if e != nil && e.agentSessionID != "" && e.lastTurnID != "" {
+		if answer, tErr := b.readTranscriptAnswer(ctx, e.nexusSandboxID, e.agentSessionID, e.lastTurnID); tErr == nil && answer != "" {
 			return answer, nil
 		}
 	}
@@ -871,21 +953,135 @@ func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, erro
 	return controller.RawAnswerPrefix + paneText, nil
 }
 
-// readTranscriptAnswer runs nexus exec to find the newest Claude JSONL transcript
-// in the guest and parses the last assistant reply from it.
-func (b *Backend) readTranscriptAnswer(ctx context.Context, nexusSandboxID string) (string, error) {
-	cmd := `f=$(find /root/.claude/projects -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); [ -n "$f" ] && cat "$f"`
-	out, err := b.nexusRun(ctx, nil, "exec", nexusSandboxID, "--", "sh", "-c", cmd)
-	if err != nil {
-		return "", fmt.Errorf("read transcript: %w", err)
+// readTranscriptAnswer reads <sessionID>.jsonl from the guest and calls
+// parseFinalAnswer with retries (up to 5× at 300 ms) for transcript lag.
+func (b *Backend) readTranscriptAnswer(ctx context.Context, nexusSandboxID, sessionID, turnID string) (string, error) {
+	cmd := fmt.Sprintf(`cat /root/.claude/projects/*/%s.jsonl 2>/dev/null || true`, sessionID)
+	const maxRetries = 5
+	const retryDelay = 300 * time.Millisecond
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			b.sleepFn(retryDelay)
+		}
+		out, err := b.nexusRun(ctx, nil, "exec", nexusSandboxID, "--", "sh", "-c", cmd)
+		if err != nil {
+			return "", fmt.Errorf("read transcript: %w", err)
+		}
+		if answer := parseFinalAnswer(strings.Split(out, "\n"), turnMarker(turnID)); answer != "" {
+			return answer, nil
+		}
 	}
-	return parseTranscriptAnswer(out), nil
+	return "", nil
+}
+
+// parseFinalAnswer extracts the final assistant reply for a given turn marker
+// from a Claude JSONL transcript (live format: top-level "type" field).
+// It searches forward for the user entry containing the marker, then accumulates
+// assistant text blocks until the next real user entry. A tool_use block resets
+// the collected text so the final assistant message after the last tool use wins.
+// Thinking blocks are ignored.
+func parseFinalAnswer(lines []string, marker string) string {
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type messageObj struct {
+		Content json.RawMessage `json:"content"`
+	}
+	type entry struct {
+		Type       string     `json:"type"`
+		IsSidechain bool      `json:"isSidechain"`
+		IsMeta     bool       `json:"isMeta"`
+		Message    messageObj `json:"message"`
+	}
+
+	userText := func(e entry) (string, bool) {
+		if len(e.Message.Content) == 0 {
+			return "", false
+		}
+		// content may be a string or array
+		var s string
+		if json.Unmarshal(e.Message.Content, &s) == nil {
+			return s, true
+		}
+		var blocks []contentBlock
+		if json.Unmarshal(e.Message.Content, &blocks) != nil {
+			return "", false
+		}
+		for _, b := range blocks {
+			if b.Type == "tool_result" {
+				return "", false // tool_result-only: not a real user prompt
+			}
+		}
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, "\n"), true
+	}
+
+	var entries []entry
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var e entry
+		if json.Unmarshal([]byte(line), &e) == nil {
+			entries = append(entries, e)
+		}
+	}
+
+	// Find the LAST user entry containing the marker.
+	start := -1
+	for i, e := range entries {
+		if e.Type == "user" && !e.IsSidechain {
+			if t, ok := userText(e); ok && strings.Contains(t, marker) {
+				start = i
+			}
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+
+	var texts []string
+	for _, e := range entries[start+1:] {
+		if e.IsSidechain {
+			continue
+		}
+		if e.Type == "user" {
+			if t, ok := userText(e); ok && !e.IsMeta {
+				_ = t
+				break // next real user prompt; stop
+			}
+			continue
+		}
+		if e.Type != "assistant" {
+			continue
+		}
+		var blocks []contentBlock
+		if json.Unmarshal(e.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			switch b.Type {
+			case "tool_use":
+				texts = nil // reset; final message after last tool use wins
+			case "text":
+				if t := strings.TrimSpace(b.Text); t != "" {
+					texts = append(texts, t)
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(texts, "\n\n"))
 }
 
 // parseTranscriptAnswer extracts the last assistant reply from a Claude JSONL
-// transcript. It walks backwards from the end, collecting assistant text blocks
-// until it reaches the most recent real user prompt (not a tool_result entry).
-// Text blocks from multiple assistant turns are joined with blank lines.
+// transcript using the legacy format (message.role field). Kept for unit tests.
 func parseTranscriptAnswer(jsonlData string) string {
 	type contentBlock struct {
 		Type string `json:"type"`
@@ -930,7 +1126,6 @@ func parseTranscriptAnswer(jsonlData string) string {
 			}
 			for _, blk := range blocks {
 				if blk.Type != "tool_result" {
-					// Real user prompt; stop collecting.
 					done = true
 					break
 				}
@@ -940,7 +1135,6 @@ func parseTranscriptAnswer(jsonlData string) string {
 	if len(texts) == 0 {
 		return ""
 	}
-	// Reverse to restore forward order.
 	for i, j := 0, len(texts)-1; i < j; i, j = i+1, j-1 {
 		texts[i], texts[j] = texts[j], texts[i]
 	}
@@ -1050,8 +1244,21 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 		}
 	}
 
+	// Reuse existing session/settings; write settings again in case guest /tmp was wiped.
+	sessionID := e.agentSessionID
+	if sessionID == "" {
+		sessionID = newID()
+	}
+	permMode := b.permMode()
+	settingsJSON := controllerSettingsJSON(permMode)
+	settingsPath := "/tmp/ctrl-settings.json"
+	writeCmd := fmt.Sprintf("printf '%%s' %s > %s", shellescape(settingsJSON), settingsPath)
+	if out, wErr := b.nexusRun(ctx, nil, "exec", e.nexusSandboxID, "--", "sh", "-c", writeCmd); wErr != nil {
+		slog.Error("restart: write controller settings", "sandbox", sandboxID, "err", wErr, "out", out)
+	}
+
 	newAgentName := agentNameFromWsID(e.wsID)
-	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID, "")
+	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID, permMode, "", sessionID, settingsPath)
 	if err != nil {
 		return "", fmt.Errorf("restart %s: start agent: %w", sandboxID, err)
 	}
@@ -1062,6 +1269,7 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 		nexusSandboxID: e.nexusSandboxID,
 		wsID:           e.wsID,
 		branch:         e.branch,
+		agentSessionID: sessionID,
 	}
 	b.mu.Lock()
 	delete(b.entries, agentRef)

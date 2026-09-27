@@ -1791,6 +1791,237 @@ func TestParseTranscriptAnswer(t *testing.T) {
 	}
 }
 
+func TestParseFinalAnswer(t *testing.T) {
+	// Build JSONL lines in live transcript format (top-level "type" field).
+	userEntry := func(text string) string {
+		return `{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"text","text":"` + text + `"}]}}`
+	}
+	userWithMarker := func(marker string) string {
+		return `{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"text","text":"` + marker + `\n\nplease help"}]}}`
+	}
+	assistantText := func(text string) string {
+		return `{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}}`
+	}
+	assistantToolUse := func() string {
+		return `{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`
+	}
+	assistantToolThenText := func(toolID, text string) string {
+		return `{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"` + toolID + `","name":"Bash","input":{}},{"type":"text","text":"` + text + `"}]}}`
+	}
+	assistantThinking := func() string {
+		return `{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"internal reasoning"}]}}`
+	}
+	toolResult := func(id string) string {
+		return `{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"output"}]}}`
+	}
+	attach := func() string { return `{"type":"attachment"}` }
+
+	const mkr = "hc-turn:testid"
+
+	tests := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			name: "live fixture format: marker then text answer",
+			lines: []string{
+				attach(),
+				userWithMarker(mkr),
+				attach(),
+				assistantText("the answer is 42"),
+			},
+			want: "the answer is 42",
+		},
+		{
+			name: "2-turn: turn2 answer excludes turn1 answer",
+			lines: []string{
+				userWithMarker("hc-turn:turn1"),
+				assistantText("391"),
+				userWithMarker(mkr),
+				assistantText("143"),
+			},
+			want: "143",
+		},
+		{
+			name: "tool_use resets collected text: final message after last tool use wins",
+			lines: []string{
+				userWithMarker(mkr),
+				assistantToolThenText("t1", "final after tool"),
+			},
+			want: "final after tool",
+		},
+		{
+			name: "tool_use then more turns: only last assistant text",
+			lines: []string{
+				userWithMarker(mkr),
+				assistantText("first try"),
+				assistantToolUse(),
+				toolResult("t1"),
+				assistantText("done"),
+			},
+			want: "done",
+		},
+		{
+			name: "thinking block ignored",
+			lines: []string{
+				userWithMarker(mkr),
+				assistantThinking(),
+				assistantText("real answer"),
+			},
+			want: "real answer",
+		},
+		{
+			name: "tool_result-only user entries not treated as prompt boundary",
+			lines: []string{
+				userWithMarker(mkr),
+				assistantToolUse(),
+				toolResult("t1"),
+				assistantText("after tool"),
+			},
+			want: "after tool",
+		},
+		{
+			name: "next real user entry stops collection",
+			lines: []string{
+				userWithMarker(mkr),
+				assistantText("answer to turn"),
+				userEntry("new question"),
+				assistantText("answer to new question"),
+			},
+			want: "answer to turn",
+		},
+		{
+			name: "marker not found returns empty",
+			lines: []string{
+				userEntry("no marker here"),
+				assistantText("some text"),
+			},
+			want: "",
+		},
+		{
+			name: "live fixture: no marker returns empty",
+			lines: func() []string {
+				data, err := os.ReadFile("/var/tmp/live-transcript-fixture.jsonl")
+				if err != nil {
+					return []string{}
+				}
+				lines := strings.Split(string(data), "\n")
+				if len(lines) > 0 {
+					lines = lines[1:] // skip filename header
+				}
+				return lines
+			}(),
+			want: "", // no turn marker present in live fixture
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseFinalAnswer(tc.lines, mkr)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStartAgentIsolationFlags(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wiso"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wiso","agent_status":"idle","state_change_seq":1}}}`},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+		"pane run":        {out: ""},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wiso", "wiso:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "iso"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	checkArgv := func(label string, calls []fakeCall) {
+		for _, c := range calls {
+			if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+				argv := strings.Join(c.argv, " ")
+				if !strings.Contains(argv, "--setting-sources") {
+					t.Errorf("%s: agent start missing --setting-sources: %v", label, c.argv)
+				}
+				if !strings.Contains(argv, "--strict-mcp-config") {
+					t.Errorf("%s: agent start missing --strict-mcp-config: %v", label, c.argv)
+				}
+				if !strings.Contains(argv, "--settings") {
+					t.Errorf("%s: agent start missing --settings: %v", label, c.argv)
+				}
+				if !strings.Contains(argv, "--session-id") {
+					t.Errorf("%s: agent start missing --session-id: %v", label, c.argv)
+				}
+				return
+			}
+			// Check pane run path
+			if len(c.argv) >= 2 && c.argv[0] == "pane" && c.argv[1] == "run" {
+				cmd := strings.Join(c.argv, " ")
+				if !strings.Contains(cmd, "--setting-sources") {
+					t.Errorf("%s: pane run missing --setting-sources: %v", label, c.argv)
+				}
+				if !strings.Contains(cmd, "--strict-mcp-config") {
+					t.Errorf("%s: pane run missing --strict-mcp-config: %v", label, c.argv)
+				}
+				if !strings.Contains(cmd, "--settings") {
+					t.Errorf("%s: pane run missing --settings: %v", label, c.argv)
+				}
+				if !strings.Contains(cmd, "--session-id") {
+					t.Errorf("%s: pane run missing --session-id: %v", label, c.argv)
+				}
+				return
+			}
+		}
+	}
+
+	h.mu.Lock()
+	calls := append([]fakeCall{}, h.calls...)
+	h.mu.Unlock()
+	checkArgv("agent start path", calls)
+
+	// Test pane run fallback path (agent_pane_busy).
+	setupTestStore(t, "sb-abc123", testPrincipal)
+	busyErr := fmt.Errorf("exit status 1")
+	h2 := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wiso2"}}}`},
+		"agent start":     {out: `{"error":{"code":"agent_pane_busy","message":"busy"}}`, err: busyErr},
+		"agent rename":    {out: ""},
+		"pane run":        {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wiso2","agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+	})
+	n2 := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wiso2", "wiso2:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b2 := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h2.run, n2.run)
+	b2.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	_, _, err = b2.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "iso2"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision (busy path): %v", err)
+	}
+	h2.mu.Lock()
+	calls2 := append([]fakeCall{}, h2.calls...)
+	h2.mu.Unlock()
+	checkArgv("pane run path", calls2)
+}
+
 func TestParsePaneAnswer(t *testing.T) {
 	t.Run("live fixture", func(t *testing.T) {
 		data, err := os.ReadFile("testdata/live-pane-ar.txt")
