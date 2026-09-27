@@ -87,7 +87,7 @@ func (c *Controller) handleBlocked(ctx context.Context, t Task, st herdragent.St
 			tags += c.deps.Chat.Mention(u) + " "
 		}
 	}
-	msg := fmt.Sprintf("%s%s", tags, st.Question)
+	msg := fmt.Sprintf("%sthe agent needs your input:\n```\n%s\n```\nReply in this thread to answer — a reply that is just a number picks that option.", tags, st.Question)
 	if err := c.deps.Chat.Post(ctx, t.ThreadRef, msg); err != nil {
 		return err
 	}
@@ -95,18 +95,31 @@ func (c *Controller) handleBlocked(ctx context.Context, t Task, st herdragent.St
 }
 
 func (c *Controller) handleBlockedReply(ctx context.Context, t Task, ev Event) error {
-	var in AgentInput
-	if len(ev.Text) == 1 && ev.Text[0] >= '0' && ev.Text[0] <= '9' {
-		in = AgentInput{Key: ev.Text}
-	} else {
-		in = AgentInput{Text: ev.Text}
+	// Digit reply: send the key directly (picks a numbered menu option).
+	if len(ev.Text) == 1 && ev.Text[0] >= '1' && ev.Text[0] <= '9' {
+		if err := c.deps.Backend.Answer(ctx, t.HerdrAgent, AgentInput{Key: ev.Text}); err != nil {
+			return err
+		}
+		if err := c.waitNotBlocked(ctx, t.HerdrAgent); err != nil {
+			_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+			_ = c.deps.Chat.Post(ctx, t.ThreadRef, "agent error after answer: "+err.Error())
+			return err
+		}
+		nextSeq := t.StateChangeSeq + 1
+		if err := c.deps.Store.Transition(ctx, t.ThreadRef, StatusWaitingOnUser, StatusWorking, nextSeq); err != nil {
+			return err
+		}
+		t.Status = StatusWorking
+		t.StateChangeSeq = nextSeq
+		return c.runObserveLoop(ctx, t)
 	}
-	if err := c.deps.Backend.Answer(ctx, t.HerdrAgent, in); err != nil {
+	// Text reply: dismiss the dialog with Escape, then send as a new wrapped prompt.
+	if err := c.deps.Backend.Answer(ctx, t.HerdrAgent, AgentInput{Key: "Escape"}); err != nil {
 		return err
 	}
 	if err := c.waitNotBlocked(ctx, t.HerdrAgent); err != nil {
 		_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
-		_ = c.deps.Chat.Post(ctx, t.ThreadRef, "agent error after answer: "+err.Error())
+		_ = c.deps.Chat.Post(ctx, t.ThreadRef, "agent error after escape: "+err.Error())
 		return err
 	}
 	nextSeq := t.StateChangeSeq + 1
@@ -115,5 +128,10 @@ func (c *Controller) handleBlockedReply(ctx context.Context, t Task, ev Event) e
 	}
 	t.Status = StatusWorking
 	t.StateChangeSeq = nextSeq
+	if err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text); err != nil {
+		_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
+		c.postFailureReason(ctx, t.ThreadRef, err)
+		return err
+	}
 	return c.runObserveLoop(ctx, t)
 }

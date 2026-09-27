@@ -173,9 +173,9 @@ func TestBlockedReplySkipsStaleBlockedState(t *testing.T) {
 	}
 }
 
-func TestBlockedTextReplySentAsText(t *testing.T) {
+func TestBlockedTextReplySentAsEscapeThenPrompt(t *testing.T) {
 	ctx := context.Background()
-	d, _, st, be := newBlockedDeps(t)
+	d, ch, st, be := newBlockedDeps(t)
 	c := controller.New(d)
 
 	ref := controller.NewThreadRef("T1", "C1", "ts3")
@@ -203,12 +203,25 @@ func TestBlockedTextReplySentAsText(t *testing.T) {
 		t.Fatalf("OnReply: %v", err)
 	}
 
+	// Text replies to blocked dialog: Escape key sent first to dismiss, then text via Prompt.
 	answers := be.Answered()
 	if len(answers) == 0 {
 		t.Fatal("no Answer call recorded")
 	}
-	if answers[0].Text != "please use main branch" || answers[0].Key != "" {
-		t.Fatalf("answer=%+v; want Text='please use main branch'", answers[0])
+	if answers[0].Key != "Escape" || answers[0].Text != "" {
+		t.Fatalf("first Answer should be Escape to dismiss dialog; got=%+v", answers[0])
+	}
+	// The text is sent via Prompt (echoed back in the chat post).
+	posts := ch.Posts(ref)
+	found := false
+	for _, p := range posts {
+		if strings.Contains(p, "please use main branch") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("text 'please use main branch' not found in chat posts (should appear via Prompt echo): %v", posts)
 	}
 }
 
