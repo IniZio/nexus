@@ -53,7 +53,7 @@ case "$1" in
         # Exported on the exec'd process only; not set globally.
         export HERDR_AGENT="${HERDR_AGENT:-claude}"
         if [ -z "${NEXUS_BIN:-}" ]; then
-            NEXUS_BIN=$(sed -n 's/^exec "\(.*\)" "\$@"$/\1/p' "$SHIM" 2>/dev/null | head -n 1)
+            NEXUS_BIN=$(sed -n 's/^exec "${NEXUS_BIN:-\(.*\)}" "\$@"$/\1/p;s/^exec "\([^$][^"]*\)" "\$@"$/\1/p' "$SHIM" 2>/dev/null | head -n 1)
         fi
         GUEST_ENTRY="${NEXUS_BIN%/*}/nexus-guest-shell"
         if [ -n "${HERDR_WORKSPACE_ID:-}" ] && [ -x "$GUEST_ENTRY" ] && [ -f "$GUEST_ENTRY.nexusbin" ]; then
