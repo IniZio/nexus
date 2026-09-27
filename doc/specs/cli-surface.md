@@ -7,9 +7,9 @@ Purpose: authoritative inventory of nexus's own CLI surface. The test `internal/
 
 ## Scope
 
-This file documents the full public CLI surface of nexus on this branch, including `fork`, `snapshot`, and `restore` (shipped as primitives).
+This file documents the full public CLI surface of nexus on this branch.
 
-> **Historical note.** An earlier motive charter drafted this file as a parity target for a microsandbox-pivot repo and marked `fork`, `snapshot`, `restore`, `--nested`, and `supervisor-backfill-netns-identity` out-of-scope for that pivot. That pivot was superseded on 2026-08-15 by the strict-primitives turn; nexus is now the shipping repo and all verbs below are in-scope.
+> **Historical note.** An earlier motive charter drafted this file as a parity target for a microsandbox-pivot repo and marked `fork`, `snapshot`, `restore`, `--nested`, and `supervisor-backfill-netns-identity` out-of-scope for that pivot. Those verbs were subsequently declined and are not registered in the current CLI.
 
 Rootless/zero-networking-privilege egress mode (old P1 design) and hosted-service/server mode are not exposed as top-level verbs; they influence `egress` internals only.
 
@@ -140,33 +140,11 @@ Args: `<sandbox-ref> <cmd> [args...]`
 
 ---
 
-### ## fork
-
-Summary: Fork a sandbox into N running children (--count N, default 1)
-
-**OUT-OF-SCOPE for new repo** — fork-from-running snapshots declined.
-
-Flags (documented for reference only):
-- `--count int` — number of children (default 1)
-- `--force` — force fork even if preflight fails
-
-Args: `<sandbox-ref>`
-
----
-
 ### ## forward
 
 Summary: Port-forward a TCP port from a sandbox to localhost
 
 No flags. Args: `<sandbox-ref> <hostPort>:<guestPort>`
-
----
-
-### ## harvest
-
-Summary: (herdr worktree harvest — copies build artifacts from sandbox to host)
-
-No flags documented; see cmd_harvest.go.
 
 ---
 
@@ -265,20 +243,6 @@ No flags documented; see cmd_recover.go. Args: `<sandbox-ref>`
 
 ---
 
-### ## restore
-
-Summary: Restore N running sandboxes from a snapshot
-
-**OUT-OF-SCOPE for new repo** — restore-from-snapshot declined.
-
-Flags (documented for reference only):
-- `--count int` — number of children to restore (default 1)
-- `--force` — force restore even if preflight fails
-
-Args: `<snapshot-id>`
-
----
-
 ### ## resume
 
 Summary: Resume a paused sandbox (flat spelling of `sandbox resume`)
@@ -338,16 +302,6 @@ Args: `<sandbox-ref>`
 Summary: Open an interactive shell in a sandbox (PTY, raw mode, SIGWINCH forwarded)
 
 No flags. Args: `<sandbox-ref> [-- <cmd> [args...]]`
-
----
-
-### ## snapshot
-
-Summary: Snapshot management
-
-**OUT-OF-SCOPE for new repo** — snapshot management declined.
-
-Subcommands (documented for reference only): `create <ref>`, `list`, `rm <snapshot-id>`
 
 ---
 
