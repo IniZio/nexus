@@ -5328,7 +5328,7 @@ func herdrWorktreeSandbox(
 		SandboxID:        sb.ID.String(),
 		RepoRoot:         repoRoot,
 		WorktreeManaged:  true,
-HerdrSession:     herdrCurrentSession(),
+		HerdrSession:     herdrCurrentSession(),
 		WorktreePath:     info.Path,
 		Principal:        herdrEffectivePrincipal(),
 	}
