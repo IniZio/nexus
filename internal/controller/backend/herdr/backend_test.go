@@ -232,7 +232,7 @@ func TestProvisionSetsPrincipalEnv(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "2"), testPrincipal)
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "2"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestStartAgentHandlesAutoTaggedPane(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "3"), testPrincipal)
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "3"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision with agent_pane_busy: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestTeardownAlwaysRemovesSandbox(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "6"), testPrincipal)
+	sandboxID, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "6"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestTeardownRemovesByExactSandboxID(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "7"), testPrincipal)
+	sandboxID, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "7"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestTeardownIdempotentWhenIDAbsent(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "8"), testPrincipal)
+	sandboxID, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "8"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestAnswerDigitUsesSendKeys(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, ag, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "4"), testPrincipal)
+	_, ag, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "4"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestStartAgentRefusesHostPane(t *testing.T) {
 		"exec": {out: "nexus-e2e-abc\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "host"), testPrincipal)
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "host"), testPrincipal)
 	if err == nil {
 		t.Fatal("Provision must fail when pane hostname != guest hostname")
 	}
@@ -544,7 +544,7 @@ func TestStartAgentRefusesFallbackMarker(t *testing.T) {
 		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "fb"), testPrincipal)
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "fb"), testPrincipal)
 	if err == nil {
 		t.Fatal("Provision must fail when pane shows FALLBACK marker")
 	}
@@ -575,7 +575,7 @@ func TestStartAgentAcceptsGuestHostnameMatch(t *testing.T) {
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "match"), testPrincipal)
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "match"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision must succeed when pane hostname matches guest hostname: %v", err)
 	}
@@ -649,7 +649,7 @@ func TestProvisionWritesControllerMarker(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrRunner, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "3"), testPrincipal)
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "3"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -689,7 +689,7 @@ func TestProvisionVerifiesBoundPrincipal(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "4"), "slack:T:U999")
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "4"), "slack:T:U999")
 	if err == nil {
 		t.Fatal("Provision should fail on principal mismatch, got nil")
 	}
@@ -805,7 +805,7 @@ func TestTeardownEvictsEntry(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	sandboxID, agRef, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "ev"), testPrincipal)
+	sandboxID, agRef, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "ev"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -862,7 +862,7 @@ func TestProvisionFailsOnEmptyBoundPrincipal(t *testing.T) {
 		"exec":       {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "ep"), "u:alice")
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "ep"), "u:alice")
 	if err == nil {
 		t.Fatal("Provision must fail when bound principal is empty")
 	}
@@ -890,7 +890,7 @@ func TestProvisionSucceedsOnMatchingPrincipal(t *testing.T) {
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "mp"), "u:alice")
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "mp"), "u:alice")
 	if err != nil {
 		t.Fatalf("Provision must succeed when bound principal matches requested: %v", err)
 	}
@@ -912,7 +912,7 @@ func TestProvisionFailsOnEmptyRecordPrincipal(t *testing.T) {
 		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "erp"), "u:alice")
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "erp"), "u:alice")
 	if err == nil {
 		t.Fatal("Provision must fail when sandbox record principal is empty")
 	}
@@ -938,7 +938,7 @@ func TestProvisionFailsOnMismatchedRecordPrincipal(t *testing.T) {
 		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "mrp"), "u:alice")
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "mrp"), "u:alice")
 	if err == nil {
 		t.Fatal("Provision must fail when sandbox record principal differs from requested")
 	}
@@ -1103,5 +1103,93 @@ func TestRestart_DeadPaneRecreated(t *testing.T) {
 	}
 	if e.paneID != "wDead:p2" {
 		t.Errorf("new entry paneID = %q, want wDead:p2 (refreshed after pane recreation)", e.paneID)
+	}
+}
+
+// TestProvisionUsesChannelRepo verifies that the per-channel repo path (the
+// project argument to Provision) reaches herdr workspace create --cwd, not the
+// global cfg.RepoPath.  Two channels with distinct repos must produce two
+// distinct workspace create calls.
+func TestProvisionUsesChannelRepo(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+
+	// Track workspace create --cwd arguments.
+	var (
+		mu      sync.Mutex
+		cwdArgs []string
+	)
+
+	// workspace list returns no existing workspaces so create is always called.
+	emptyList := `{"result":{"workspaces":[]}}`
+
+	makeHerdrRunner := func(wsID string) runner {
+		return func(ctx context.Context, extraEnv []string, argv ...string) (string, error) {
+			if len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "create" {
+				for i, a := range argv {
+					if a == "--cwd" && i+1 < len(argv) {
+						mu.Lock()
+						cwdArgs = append(cwdArgs, argv[i+1])
+						mu.Unlock()
+					}
+				}
+				return fmt.Sprintf(`{"result":{"workspace":{"workspace_id":%q}}}`, wsID), nil
+			}
+			if len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "list" {
+				return emptyList, nil
+			}
+			if len(argv) >= 2 && argv[0] == "worktree" && argv[1] == "create" {
+				return fmt.Sprintf(`{"result":{"workspace":{"workspace_id":%q}}}`, wsID+"-wt"), nil
+			}
+			if len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read" {
+				return "root@nexus-fake-guest:/workspace#\n", nil
+			}
+			if len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start" {
+				return "", nil
+			}
+			if len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get" {
+				name := "ctrl-" + wsID + "-wt"
+				return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, name), nil
+			}
+			return "", nil
+		}
+	}
+
+	makeNexusRunner := func(wsID string) runner {
+		return func(ctx context.Context, extraEnv []string, argv ...string) (string, error) {
+			if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list" {
+				return herdrListLine(wsID+"-wt", wsID+"-wt:p1"), nil
+			}
+			if len(argv) >= 1 && argv[0] == "exec" {
+				return "nexus-fake-guest\n", nil
+			}
+			return "", nil
+		}
+	}
+
+	repos := []string{"/home/user/repo-alpha", "/home/user/repo-beta"}
+	wsIDs := []string{"wa", "wb"}
+
+	for i, repo := range repos {
+		wsID := wsIDs[i]
+		setupTestStore(t, "sb-abc123", testPrincipal)
+		b := newWithRunners(Config{Model: "claude-haiku-4-5"}, makeHerdrRunner(wsID), makeNexusRunner(wsID))
+		b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+		_, _, err := b.Provision(context.Background(), repo, controller.NewThreadRef("T", "C", fmt.Sprintf("%d", i)), testPrincipal)
+		if err != nil {
+			t.Fatalf("Provision for repo %q: %v", repo, err)
+		}
+	}
+
+	mu.Lock()
+	got := append([]string(nil), cwdArgs...)
+	mu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 workspace create --cwd calls, got %d: %v", len(got), got)
+	}
+	for i, repo := range repos {
+		if got[i] != repo {
+			t.Errorf("workspace create --cwd[%d] = %q, want %q", i, got[i], repo)
+		}
 	}
 }

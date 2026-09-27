@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,10 +43,11 @@ type Config struct {
 }
 
 var (
-	ErrInlineSecret = errors.New("config: inline secrets are not allowed; use env or file references")
-	ErrMissingRepo  = errors.New("config: channel has no repo configured")
-	ErrNoProject    = errors.New("controller: channel has no project")
-	ErrUnknownMode  = errors.New("config: unknown deployment_mode; valid values: laptop, shared")
+	ErrInlineSecret    = errors.New("config: inline secrets are not allowed; use env or file references")
+	ErrMissingRepo     = errors.New("config: channel has no repo configured")
+	ErrNonAbsoluteRepo = errors.New("config: channel repo must be an absolute path to a local git checkout")
+	ErrNoProject       = errors.New("controller: channel has no project")
+	ErrUnknownMode     = errors.New("config: unknown deployment_mode; valid values: laptop, shared")
 )
 
 func (t TokenRef) Validate(name string) error {
@@ -113,6 +115,9 @@ func (c *Config) Validate() error {
 	for id, ch := range c.Channels {
 		if strings.TrimSpace(ch.Repo) == "" {
 			return fmt.Errorf("%w: channel %q", ErrMissingRepo, id)
+		}
+		if !filepath.IsAbs(ch.Repo) {
+			return fmt.Errorf("%w: channel %q repo %q", ErrNonAbsoluteRepo, id, ch.Repo)
 		}
 	}
 	return nil

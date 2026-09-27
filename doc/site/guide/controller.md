@@ -21,7 +21,7 @@ slack:
 
 channels:
   C0123456789:               # Slack channel ID
-    repo: github.com/your-org/your-repo
+    repo: /home/user/repos/your-repo   # absolute path to local git checkout
     idle_pause: 10m          # pause sandbox after this idle time
     idle_stop:  1h           # stop sandbox after this idle time
 

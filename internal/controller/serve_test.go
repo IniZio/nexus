@@ -27,7 +27,7 @@ slack:
     env: SERVE_TEST_SLACK_BOT_TOKEN
 channels:
   C_TEST:
-    repo: github.com/example/repo
+    repo: /home/example/repo
     idle_pause: 200ms
     idle_stop: 1h
 deployment_mode: laptop

@@ -202,7 +202,11 @@ func runCmdPTY(ctx context.Context, bin string, extraEnv []string, argv ...strin
 // Provision creates a herdr worktree for project, binds a sandbox, starts the agent.
 // Returns (sandboxID=worktreeWorkspaceID, agentRef=agentName).
 func (b *Backend) Provision(ctx context.Context, project string, ref controller.ThreadRef, principal string) (string, string, error) {
-	parentWS, err := b.findOrCreateWorkspace(ctx)
+	repoPath := project
+	if repoPath == "" {
+		repoPath = b.cfg.RepoPath
+	}
+	parentWS, err := b.findOrCreateWorkspace(ctx, repoPath)
 	if err != nil {
 		return "", "", err
 	}
@@ -318,15 +322,15 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	return nexusSandboxID, agentRef, nil
 }
 
-func (b *Backend) findOrCreateWorkspace(ctx context.Context) (string, error) {
+func (b *Backend) findOrCreateWorkspace(ctx context.Context, repoPath string) (string, error) {
 	listOut, err := b.herdrRun(ctx, nil, "workspace", "list")
 	if err != nil {
 		return "", fmt.Errorf("herdr workspace list: %w\n%s", err, listOut)
 	}
-	if ws := parseWorkspaceForPath(listOut, b.cfg.RepoPath); ws != "" {
+	if ws := parseWorkspaceForPath(listOut, repoPath); ws != "" {
 		return ws, nil
 	}
-	createOut, err := b.herdrRun(ctx, nil, "workspace", "create", "--cwd", b.cfg.RepoPath)
+	createOut, err := b.herdrRun(ctx, nil, "workspace", "create", "--cwd", repoPath)
 	if err != nil {
 		return "", fmt.Errorf("herdr workspace create: %w\n%s", err, createOut)
 	}
@@ -936,6 +940,7 @@ func (b *Backend) checkAgent(ctx context.Context, agentRef string) error {
 }
 
 // branchName derives a unique, git-safe branch name from project + ref + timestamp.
+// Uses filepath.Base(project) so absolute repo paths produce short branch names.
 func branchName(project string, ref controller.ThreadRef, unixMicro int64) string {
 	h := sha256.Sum256([]byte(string(ref)))
 	slug := fmt.Sprintf("%x", h[:3])
@@ -947,7 +952,7 @@ func branchName(project string, ref controller.ThreadRef, unixMicro int64) strin
 			return r + 32
 		}
 		return '-'
-	}, project)
+	}, filepath.Base(project))
 	safe = strings.Trim(safe, "-")
 	if safe == "" {
 		safe = "task"

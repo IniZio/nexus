@@ -40,7 +40,7 @@ func TestBackendContractLive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	sb, ag, err := b.Provision(ctx, "lv-test", controller.NewThreadRef("T", "C", "1"), "u:test")
+	sb, ag, err := b.Provision(ctx, repoPath, controller.NewThreadRef("T", "C", "1"), "u:test")
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}

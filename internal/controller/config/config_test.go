@@ -26,7 +26,7 @@ slack:
     env: SLACK_BOT_TOKEN
 channels:
   C_GENERAL:
-    repo: github.com/example/app
+    repo: /home/example/app
     idle_pause: 10m
     idle_stop: 1h
 deployment_mode: laptop
@@ -40,8 +40,8 @@ func TestResolveChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if proj != "github.com/example/app" {
-		t.Fatalf("project = %q, want github.com/example/app", proj)
+	if proj != "/home/example/app" {
+		t.Fatalf("project = %q, want /home/example/app", proj)
 	}
 }
 
@@ -144,6 +144,23 @@ deployment_mode: enterprise
 	_, err := config.Parse([]byte(src))
 	if !errors.Is(err, config.ErrUnknownMode) {
 		t.Fatalf("expected ErrUnknownMode, got %v", err)
+	}
+}
+
+func TestValidateRejectsNonAbsoluteRepo(t *testing.T) {
+	yaml := `
+slack:
+  app_token:
+    env: SLACK_APP_TOKEN
+  bot_token:
+    env: SLACK_BOT_TOKEN
+channels:
+  C_REL:
+    repo: github.com/example/app
+`
+	_, err := config.Parse([]byte(yaml))
+	if !errors.Is(err, config.ErrNonAbsoluteRepo) {
+		t.Fatalf("expected ErrNonAbsoluteRepo, got %v", err)
 	}
 }
 

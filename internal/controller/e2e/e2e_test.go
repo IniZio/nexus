@@ -54,7 +54,7 @@ func TestControllerE2E(t *testing.T) {
 	backend := buildBackend(t, h, repoPath)
 	lc := buildLifecycle(h)
 	linker := controller.NewVaultLinker(v, vault.NewRegistry(), chat, testTeam, "")
-	projects := fixedProjectResolver{channel: testChannel, project: testProject}
+	projects := fixedProjectResolver{channel: testChannel, project: repoPath}
 
 	deps := controller.Deps{
 		Chat:      chat,
