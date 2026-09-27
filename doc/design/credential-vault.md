@@ -100,8 +100,7 @@ connectors: `github` and `linear`.
 **GitHub connector** uses the GitHub App flow (D14): 8-hour access tokens with
 refresh, using the nexus-shipped public `client_id`. Hosts may override
 `client_id` and `client_secret` in host config to use their own GitHub App.
-The real `client_id` to embed in the shipped binary is an open item (see
-§Open items).
+The shipped `client_id` is `Iv23liNEYppyhvQpXxXy` (registered GitHub App, device flow enabled).
 
 **Linear connector** uses authorization code + PKCE. The `link` command opens
 a browser or prints the URL for the user to visit; there is no device flow.
@@ -224,10 +223,7 @@ human-readable prompt to run the link command. No silent degradation.
 
 ## Open items
 
-- **GitHub App `client_id`**: the connector ships with a placeholder. A real
-  GitHub App must be registered and its `client_id` (and, for server-to-server
-  refresh, `client_secret` or private key) embedded before P1 ships. Hosts may
-  override both values in host config (D14).
+- **GitHub App `client_id`**: shipped as `Iv23liNEYppyhvQpXxXy` (registered, device flow enabled). Hosts may override in host config (D14).
 - **MCP injection path (D16 — shipped V7)**: host `mcpOAuth` entries are
   imported into the vault on first use via `ImportMCPOAuthIntoVault` (one-shot,
   never overwrites). Integration ID = `"linear"` for `mcp.linear.app` /

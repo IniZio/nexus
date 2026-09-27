@@ -17,9 +17,8 @@ import (
 	"github.com/IniZio/nexus/internal/core/vault"
 )
 
-// DefaultGitHubClientID is the nexus default GitHub App client ID.
-// TODO: register the GitHub App and replace this placeholder.
-const DefaultGitHubClientID = "TODO-register-github-app"
+// DefaultGitHubClientID is the nexus GitHub App client ID (device flow enabled).
+const DefaultGitHubClientID = "Iv23liNEYppyhvQpXxXy"
 
 var (
 	ErrAuthorizationPending = errors.New("connectors: authorization pending")
