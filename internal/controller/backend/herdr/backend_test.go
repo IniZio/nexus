@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -788,6 +789,23 @@ func TestRediscoverEntry_UppercaseWsID(t *testing.T) {
 	}
 	if e.wsID != wsID {
 		t.Errorf("rediscovered wsID = %q, want %q", e.wsID, wsID)
+	}
+}
+
+// TestDeterministicSessionIDIsValidUUID verifies that deterministicSessionID
+// returns an RFC 4122 UUID (8-4-4-4-12) with version 4 or 5 and variant bits,
+// and that the same input always produces the same output.
+func TestDeterministicSessionIDIsValidUUID(t *testing.T) {
+	uuidRE := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	id := deterministicSessionID("sb-abc123")
+	if !uuidRE.MatchString(id) {
+		t.Errorf("deterministicSessionID(%q) = %q, does not match UUID pattern", "sb-abc123", id)
+	}
+	if id2 := deterministicSessionID("sb-abc123"); id != id2 {
+		t.Errorf("deterministicSessionID not stable: %q != %q", id, id2)
+	}
+	if other := deterministicSessionID("sb-different"); other == id {
+		t.Error("different inputs produced same UUID")
 	}
 }
 
@@ -1931,6 +1949,49 @@ func TestParseFinalAnswer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRestartUsesResumeFlag verifies that Restart passes --resume to
+// `herdr agent start` (and not --session-id), because the transcript for that
+// session already exists and claude rejects a reused --session-id.
+func TestRestartUsesResumeFlag(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent start": {out: ""},
+		"agent get":   {out: `{"result":{"agent":{"agent":"ctrl-wRF","agent_status":"idle","state_change_seq":1}}}`},
+		"pane read":   {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"exec": {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.mu.Lock()
+	b.entries["ctrl-wRF"] = &entry{paneID: "wRF:p1", nexusSandboxID: "sb-rf1", wsID: "wRF"}
+	b.sandboxes["sb-rf1"] = "ctrl-wRF"
+	b.mu.Unlock()
+
+	if _, err := b.Restart(context.Background(), "sb-rf1", "ctrl-wRF"); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+			for i, arg := range c.argv {
+				if arg == "--session-id" {
+					t.Errorf("Restart agent start must not use --session-id (found at index %d)", i)
+					return
+				}
+				if arg == "--resume" {
+					return // found --resume: pass
+				}
+			}
+			t.Errorf("Restart agent start missing --resume flag: %v", c.argv)
+			return
+		}
+	}
+	t.Error("no agent start call found")
 }
 
 func TestStartAgentIsolationFlags(t *testing.T) {

@@ -61,12 +61,15 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// deterministicSessionID derives a stable session ID from a sandbox ID via SHA-256.
-// Because the sandbox ID is stored in Task.SandboxID it is available after a restart,
-// so rediscovery can recompute the same value without touching the store.
+// deterministicSessionID derives a stable RFC 4122 version-5 UUID from a sandbox ID
+// via SHA-256. Because the sandbox ID is stored in Task.SandboxID it is available
+// after a restart, so rediscovery can recompute the same value without touching the store.
 func deterministicSessionID(sandboxID string) string {
 	h := sha256.Sum256([]byte(sandboxID))
-	return hex.EncodeToString(h[:16])
+	h[6] = (h[6] & 0x0f) | 0x50 // version 5
+	h[8] = (h[8] & 0x3f) | 0x80 // variant RFC 4122
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
 }
 
 // turnMarker returns the string embedded in a wrapped prompt for turn_id.
@@ -479,7 +482,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	}
 
 	agentName := agentNameFromWsID(wsID)
-	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID, permMode, model, sessionID, settingsPath)
+	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID, permMode, model, sessionID, settingsPath, false)
 	if err != nil {
 		return "", "", fmt.Errorf("start agent: %w", err)
 	}
@@ -642,22 +645,28 @@ func shellescape(s string) string {
 }
 
 // isolationArgs returns the claude argv flags for hook/MCP isolation and session binding.
+// resume=true uses --resume <sessionID> (existing session); false uses --session-id (new).
 // settingsPath is the guest path to the controller-written settings JSON.
-func isolationArgs(sessionID, settingsPath string) []string {
+func isolationArgs(sessionID, settingsPath string, resume bool) []string {
+	sessionFlag := "--session-id"
+	if resume {
+		sessionFlag = "--resume"
+	}
 	return []string{
 		"--setting-sources", "",
 		"--strict-mcp-config",
 		"--settings", settingsPath,
-		"--session-id", sessionID,
+		sessionFlag, sessionID,
 	}
 }
 
 // startAgent launches the claude agent in paneID. permMode overrides the
 // backend-default permission mode when non-empty; "" uses b.permMode().
 // model overrides the backend config model when non-empty; "" uses b.cfg.Model.
-// sessionID is the claude --session-id value; settingsPath is the guest path
+// sessionID is the claude session identifier; settingsPath is the guest path
 // to the controller-written settings JSON.
-func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, permMode, model, sessionID, settingsPath string) (string, error) {
+// resume=true passes --resume (existing session); false passes --session-id (new session).
+func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, permMode, model, sessionID, settingsPath string, resume bool) (string, error) {
 	// Safety gate: verify the pane is inside the guest before starting the agent.
 	// On mismatch the agent would run on the host; fail closed.
 	if err := b.verifyPaneInGuest(ctx, paneID, nexusSandboxID); err != nil {
@@ -670,7 +679,7 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, 
 		model = b.cfg.Model
 	}
 
-	isoArgs := isolationArgs(sessionID, settingsPath)
+	isoArgs := isolationArgs(sessionID, settingsPath, resume)
 	claudeArgs := append([]string{"--model", model, "--permission-mode", permMode, "--max-turns", "1"}, isoArgs...)
 	startArgv := append([]string{"agent", "start", name, "--kind", "claude", "--pane", paneID, "--timeout", "300000", "--"}, claudeArgs...)
 	out, err := b.herdrRun(ctx, nil, startArgv...)
@@ -712,9 +721,13 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, 
 		}
 	}
 	// pane run: build shell command preserving empty --setting-sources "" arg.
+	sessionFlag := "--session-id"
+	if resume {
+		sessionFlag = "--resume"
+	}
 	claudeCmd := "claude --model " + model + " --permission-mode " + permMode + " --max-turns 1" +
 		` --setting-sources "" --strict-mcp-config --settings ` + settingsPath +
-		" --session-id " + sessionID
+		" " + sessionFlag + " " + sessionID
 	if renameErr == nil {
 		if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
 			return "", fmt.Errorf("herdr pane run: %w\n%s", runErr, runOut)
@@ -1210,7 +1223,7 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 	}
 
 	newAgentName := agentNameFromWsID(e.wsID)
-	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID, permMode, "", sessionID, settingsPath)
+	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID, permMode, "", sessionID, settingsPath, true)
 	if err != nil {
 		return "", fmt.Errorf("restart %s: start agent: %w", sandboxID, err)
 	}
