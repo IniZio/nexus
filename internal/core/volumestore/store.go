@@ -321,7 +321,12 @@ var DiskStatfs = func(path string) (int64, error) {
 
 // FreeSpaceFloorBytes is the floor Create keeps free after a disk volume is
 // preallocated. It is the same floor service.DiskUsage and BuildPreflight use.
+// Override via NEXUS_DISK_FLOOR_GIB (integer GiB) for test environments.
 var FreeSpaceFloorBytes = diskfloor.DefaultFreeSpaceFloorBytes
+
+func init() {
+	FreeSpaceFloorBytes = diskfloor.EnvDiskFloorBytes()
+}
 
 // checkFreeSpace refuses a sizeBytes allocation under dir when the remaining
 // free space would fall below FreeSpaceFloorBytes.

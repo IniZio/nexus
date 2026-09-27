@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
@@ -407,5 +408,14 @@ func TestCreate_dirVolumeSkipsFreeSpaceFloor(t *testing.T) {
 	s := newStore(t)
 	if _, err := s.Create(context.Background(), "dirvol", volumestore.KindDir, 0, ""); err != nil {
 		t.Fatalf("kind=dir must not be gated by the disk floor: %v", err)
+	}
+}
+
+func TestEnvDiskFloorBytes(t *testing.T) {
+	t.Setenv("NEXUS_DISK_FLOOR_GIB", "3")
+	got := diskfloor.EnvDiskFloorBytes()
+	const want int64 = 3 << 30
+	if got != want {
+		t.Fatalf("diskfloor.EnvDiskFloorBytes()=%d want %d", got, want)
 	}
 }

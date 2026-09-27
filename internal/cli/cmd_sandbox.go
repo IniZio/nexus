@@ -20,6 +20,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/builder/builderimage"
 	"github.com/IniZio/nexus/internal/core/config"
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -1184,7 +1185,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 
 			{
-				gcFloorBytes := uint64(service.DefaultGCFreeSpaceFloorGiB) * (1 << 30)
+				gcFloorBytes := uint64(diskfloor.EnvDiskFloorBytes())
 				if ugCfg, ugErr := config.LoadUserGlobal(); ugErr == nil && ugCfg.Image.FreeSpaceFloorGiB > 0 {
 					gcFloorBytes = uint64(ugCfg.Image.FreeSpaceFloorGiB) * (1 << 30)
 				}

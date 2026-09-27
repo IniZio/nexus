@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/image"
 )
@@ -242,7 +243,7 @@ func DiskUsage(ctx context.Context, stateDir string, c *image.Cache, store Sandb
 		return DiskUsageReport{}, fmt.Errorf("disk usage: %w", err)
 	}
 	rep.FreeBytes = free
-	rep.FloorBytes = uint64(DefaultGCFreeSpaceFloorGiB) << 30
+	rep.FloorBytes = uint64(diskfloor.EnvDiskFloorBytes())
 	rep.BelowFloor = free < rep.FloorBytes
 
 	if cache.Reclaimable > 0 || templates.Reclaimable > 0 {
