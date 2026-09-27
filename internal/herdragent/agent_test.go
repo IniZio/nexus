@@ -450,6 +450,78 @@ func TestState_FieldSet(t *testing.T) {
 	}
 }
 
+const idleJSON10 = `{"id":"cli:agent:get","result":{"agent":{"agent":"claude","agent_status":"idle","pane_id":"w9Z:p1M","revision":5,"state_change_seq":10,"workspace_id":"w9Z"},"type":"agent_info"}}`
+
+func TestLooksLikeDialog_PositiveSecondDialog(t *testing.T) {
+	data, err := os.ReadFile("testdata/second-dialog-pane.txt")
+	if err != nil {
+		t.Fatalf("testdata/second-dialog-pane.txt not available: %v", err)
+	}
+	if !herdragent.LooksLikeDialog(string(data)) {
+		t.Error("second-dialog-pane: want true, got false")
+	}
+}
+
+func TestLooksLikeDialog_PositiveBlockedPane(t *testing.T) {
+	data, err := os.ReadFile("testdata/blocked-pane.txt")
+	if err != nil {
+		t.Fatalf("testdata/blocked-pane.txt not available: %v", err)
+	}
+	if !herdragent.LooksLikeDialog(string(data)) {
+		t.Error("blocked-pane: want true, got false")
+	}
+}
+
+func TestLooksLikeDialog_NegativeCueAboveRule(t *testing.T) {
+	// Cue and cursor appear before the last full-width rule — must return false.
+	screen := " Do you want to proceed?\n ❯ 1. Yes\n   2. No\n" +
+		strings.Repeat("─", 80) + "\n" +
+		"idle terminal output\n"
+	if herdragent.LooksLikeDialog(screen) {
+		t.Error("cue above last rule: want false, got true")
+	}
+}
+
+func TestLooksLikeDialog_NegativePromptBoxOnly(t *testing.T) {
+	// Echoed prompt box (no dialog options) — must return false.
+	screen := strings.Repeat("─", 80) + "\n" +
+		"❯ [Slack · hc-turn:abc123]\n" +
+		"  create a simple go program\n"
+	if herdragent.LooksLikeDialog(screen) {
+		t.Error("prompt box only: want false, got true")
+	}
+}
+
+func TestObserve_IdleWithDialogScreen_PromotedToBlocked(t *testing.T) {
+	dialogScreen, err := os.ReadFile("testdata/second-dialog-pane.txt")
+	if err != nil {
+		t.Fatalf("testdata/second-dialog-pane.txt not available: %v", err)
+	}
+	// First get→idle, settlePoll get→idle (stable seq), checkScreenDialog reads dialog.
+	s := newScripter(
+		scriptedCall{out: idleJSON10},
+		scriptedCall{out: idleJSON10},
+		scriptedCall{out: string(dialogScreen)},
+	)
+	c := herdragent.New(s.Run, herdragent.WithSleep(noop))
+	st := c.Observe(context.Background(), "w9Z:p1M", 0)
+	if st.Status != herdragent.StatusBlocked {
+		t.Fatalf("want blocked (screen_dialog), got %q", st.Status)
+	}
+	if st.Reason != "screen_dialog" {
+		t.Errorf("want reason=screen_dialog, got %q", st.Reason)
+	}
+	if !strings.Contains(st.Question, "go run hello.go") {
+		t.Errorf("question missing 'go run hello.go': %q", st.Question)
+	}
+	if !strings.Contains(st.Question, "1. Yes") {
+		t.Errorf("question missing '1. Yes': %q", st.Question)
+	}
+	if !st.Settled {
+		t.Error("want settled=true for screen_dialog promotion")
+	}
+}
+
 func TestExtractQuestion(t *testing.T) {
 	t.Run("live blocked pane fixture", func(t *testing.T) {
 		data, err := os.ReadFile("/var/tmp/live-blocked-pane.txt")

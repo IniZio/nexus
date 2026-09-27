@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -121,6 +122,86 @@ func (c *Client) get(ctx context.Context, target string) State {
 	return parseAgentGet(out)
 }
 
+// isFullWidthRule returns true when s is a line consisting only of ─ (U+2500)
+// characters with at least 20 of them.
+func isFullWidthRule(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	count := 0
+	for _, r := range s {
+		if r != '─' {
+			return false
+		}
+		count++
+	}
+	return count >= 20
+}
+
+// linesAfterLastRule returns the lines that follow the last full-width ─ rule.
+// Falls back to the last 15 non-empty lines when no rule is found.
+func linesAfterLastRule(screen string) []string {
+	lines := strings.Split(screen, "\n")
+	lastIdx := -1
+	for i, l := range lines {
+		if isFullWidthRule(l) {
+			lastIdx = i
+		}
+	}
+	if lastIdx >= 0 {
+		return lines[lastIdx+1:]
+	}
+	var nonempty []string
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			nonempty = append(nonempty, l)
+		}
+	}
+	if len(nonempty) > 15 {
+		nonempty = nonempty[len(nonempty)-15:]
+	}
+	return nonempty
+}
+
+var dialogCursorRe = regexp.MustCompile(`(?m)^\s*❯\s*\d+\.\s`)
+
+var dialogCues = []string{
+	"do you want to proceed?",
+	"requires approval",
+	"esc to cancel",
+	"tab to amend",
+}
+
+// LooksLikeDialog returns true when screen contains a Claude Code permission
+// dialog. It inspects only the text after the last full-width horizontal rule
+// (or the last ~15 non-empty lines if no rule is present) and requires both a
+// known cue phrase and a numbered cursor option line.
+func LooksLikeDialog(screen string) bool {
+	after := linesAfterLastRule(screen)
+	text := strings.Join(after, "\n")
+	lower := strings.ToLower(text)
+	for _, cue := range dialogCues {
+		if strings.Contains(lower, cue) && dialogCursorRe.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) checkScreenDialog(ctx context.Context, target string, st State) (State, bool) {
+	out, err := c.run(ctx, "agent", "read", target, "--source", "recent-unwrapped", "--lines", "40")
+	if err != nil || !LooksLikeDialog(out) {
+		return st, false
+	}
+	promoted := st
+	promoted.Status = StatusBlocked
+	promoted.Question = tailBounded(ExtractQuestion(out), 4000)
+	promoted.Reason = "screen_dialog"
+	promoted.Settled = true
+	return promoted, true
+}
+
 func (c *Client) Observe(ctx context.Context, target string, wait time.Duration) State {
 	if wait > 0 {
 		_, waitErr := c.run(ctx, "agent", "wait", target,
@@ -212,6 +293,9 @@ func (c *Client) settlePoll(ctx context.Context, target string, st State) State 
 			return next
 		}
 		if next.Seq == prevSeq {
+			if promoted, ok := c.checkScreenDialog(ctx, target, next); ok {
+				return promoted
+			}
 			next.Settled = true
 			return next
 		}
@@ -222,6 +306,11 @@ func (c *Client) settlePoll(ctx context.Context, target string, st State) State 
 		if st.Status == StatusWorking {
 			st.Settled = true
 			return st
+		}
+		if st.Status == StatusIdle || st.Status == StatusDone {
+			if promoted, ok := c.checkScreenDialog(ctx, target, st); ok {
+				return promoted
+			}
 		}
 	}
 	st.Settled = false

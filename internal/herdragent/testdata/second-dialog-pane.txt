@@ -1,0 +1,39 @@
+       6 )
+       7
+       8 func main() {
+       9   fmt.Println("Hello from Go!")
+      10   fmt.Println("Current time:", time.Now().Format("2006-01-02 15:04:05"))
+     … +9 lines
+
+● Running the Go program
+  ⎿  $ go run hello.go
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   go run hello.go
+   Run the Go program
+
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: go run *
+   3. No
+
+ Esc to cancel · Tab to amend
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

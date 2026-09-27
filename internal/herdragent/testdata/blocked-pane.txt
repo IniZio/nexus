@@ -1,0 +1,40 @@
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PostToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PostToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PostToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PostToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   git push -u origin ctrl/nexus-29de8a-28bb96 2>&1 | head -20
+   Push branch to remote if needed
+
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: git push *
+   3. No
+
+ Esc to cancel · Tab to amend

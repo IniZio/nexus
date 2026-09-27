@@ -236,6 +236,9 @@ type Deps struct {
 	Model func(channel string) string
 	// TurnTimeout bounds one observe loop; zero means DefaultTurnTimeout.
 	TurnTimeout time.Duration
+	// Sleep is the seam used by runObserveLoop for idle settle-rechecks; nil
+	// defaults to a real context-aware sleep.
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // IdleThresholds: pause after Pause of inactivity, stop after Stop.

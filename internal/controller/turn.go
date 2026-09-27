@@ -6,12 +6,29 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
 )
 
 const answerFileSizeLimit = 11 * 1024
+
+const idleSettlePause = 1500 * time.Millisecond
+
+func (c *Controller) sleep(ctx context.Context, d time.Duration) error {
+	if c.deps.Sleep != nil {
+		return c.deps.Sleep(ctx, d)
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
 
 func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 	if err := c.deps.Linker.Require(ctx, ev.User); err != nil {
@@ -133,17 +150,48 @@ func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
 		}
 
 		switch st.Status {
-		case herdragent.StatusDone, herdragent.StatusIdle:
-			if st.Status == herdragent.StatusDone {
-				answer, rErr := c.deps.Backend.ReadAnswer(ctx, t.HerdrAgent, t.TurnID)
-				if rErr != nil {
-					_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
-					c.postFailureReason(ctx, t.ThreadRef, rErr)
-					return rErr
+		case herdragent.StatusDone:
+			answer, rErr := c.deps.Backend.ReadAnswer(ctx, t.HerdrAgent, t.TurnID)
+			if rErr != nil {
+				_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
+				c.postFailureReason(ctx, t.ThreadRef, rErr)
+				return rErr
+			}
+			if pErr := c.postAnswer(ctx, t, answer); pErr != nil {
+				return pErr
+			}
+			if tErr := c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusIdle, t.StateChangeSeq+1); tErr != nil && !errors.Is(tErr, ErrConflict) {
+				return tErr
+			}
+			_ = c.deps.Chat.React(ctx, t.ThreadRef, "white_check_mark")
+			return nil
+		case herdragent.StatusIdle:
+			if sErr := c.sleep(turnCtx, idleSettlePause); sErr != nil {
+				if turnCtx.Err() != nil {
+					nextSeq := t.StateChangeSeq + 1
+					if tErr := c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusIdle, nextSeq); tErr != nil && !errors.Is(tErr, ErrConflict) {
+						return tErr
+					}
+					_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+					_ = c.deps.Chat.Post(ctx, t.ThreadRef, fmt.Sprintf("turn timed out after %s; reply to continue", d))
+					return ErrTurnTimeout
 				}
-				if pErr := c.postAnswer(ctx, t, answer); pErr != nil {
-					return pErr
-				}
+				return ctx.Err()
+			}
+			if repoll, rErr := c.deps.Backend.Observe(turnCtx, t.HerdrAgent, false); rErr == nil && repoll.Settled {
+				st = repoll
+			}
+			if st.Status == herdragent.StatusBlocked {
+				return c.handleBlocked(ctx, t, st)
+			}
+			answer, rErr := c.deps.Backend.ReadAnswer(ctx, t.HerdrAgent, t.TurnID)
+			if rErr != nil {
+				_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
+				c.postFailureReason(ctx, t.ThreadRef, rErr)
+				return rErr
+			}
+			if pErr := c.postAnswer(ctx, t, answer); pErr != nil {
+				return pErr
 			}
 			if tErr := c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusIdle, t.StateChangeSeq+1); tErr != nil && !errors.Is(tErr, ErrConflict) {
 				return tErr

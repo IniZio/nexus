@@ -2132,3 +2132,24 @@ func TestParsePaneAnswer(t *testing.T) {
 		}
 	})
 }
+
+func TestObserveWaitCtxDeadlineReturnsError(t *testing.T) {
+	idleOut := `{"result":{"agent":{"agent":"ctrl-w9","agent_status":"idle","state_change_seq":1}}}`
+	h := newFakeCmd(map[string]fakeReply{
+		"agent get": {out: idleOut},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, nil)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.mu.Lock()
+	b.entries["ctrl-w9"] = &entry{paneID: "w9:p1", nexusSandboxID: "sb-xyz", wsID: "w9"}
+	b.sandboxes["sb-xyz"] = "ctrl-w9"
+	b.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := b.Observe(ctx, "ctrl-w9", true)
+	if err == nil {
+		t.Fatal("Observe(wait=true): want error on ctx deadline, got nil")
+	}
+}

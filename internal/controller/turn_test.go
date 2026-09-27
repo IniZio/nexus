@@ -795,3 +795,110 @@ func TestTurnFailurePostsWarningReaction(t *testing.T) {
 		t.Fatalf("no warning reaction; reactions=%v", ch.Reactions(ref))
 	}
 }
+
+func TestTurnIdleAfterWorkingPostsAnswer(t *testing.T) {
+	ctx := context.Background()
+	d, ch, st, be := newTurnDeps(t)
+	d.Sleep = func(_ context.Context, _ time.Duration) error { return nil }
+	c := controller.New(d)
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-idle-answer")
+	sbID, agRef, err := be.Provision(ctx, "myproject", ref, "p")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	be.Script(agRef,
+		herdragent.State{Status: herdragent.StatusWorking, Settled: false},
+		herdragent.State{Status: herdragent.StatusIdle, Settled: true},
+		herdragent.State{Status: herdragent.StatusIdle, Settled: true},
+	)
+
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusWorking,
+		SandboxID:      sbID,
+		HerdrAgent:     agRef,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if err := st.Upsert(ctx, task); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	ev := controller.Event{Kind: controller.EventMention, ThreadRef: ref, User: "U1", Text: "hello"}
+	if err := c.OnMention(ctx, task, ev); err != nil {
+		t.Fatalf("OnMention: %v", err)
+	}
+
+	posts := ch.Posts(ref)
+	if len(posts) == 0 {
+		t.Fatal("no posts; expected answer for idle-after-working")
+	}
+	found := false
+	for _, r := range ch.Reactions(ref) {
+		if r == "white_check_mark" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no white_check_mark; reactions=%v", ch.Reactions(ref))
+	}
+}
+
+func TestTurnDigitReplyThenSecondDialogPostsWaitingOnUser(t *testing.T) {
+	ctx := context.Background()
+	d, ch, st, be := newTurnDeps(t)
+	d.Sleep = func(_ context.Context, _ time.Duration) error { return nil }
+	c := controller.New(d)
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-second-dialog")
+	sbID, agRef, err := be.Provision(ctx, "myproject", ref, "p")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	// waitNotBlocked needs non-blocked; then main loop: working → blocked (second dialog)
+	be.Script(agRef,
+		herdragent.State{Status: herdragent.StatusIdle, Settled: true},
+		herdragent.State{Status: herdragent.StatusWorking, Settled: false},
+		herdragent.State{Status: herdragent.StatusBlocked, Settled: true, Question: "go run hello.go\nDo you want to proceed?\n❯ 1. Yes\n  2. No"},
+	)
+
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusWaitingOnUser,
+		SandboxID:      sbID,
+		HerdrAgent:     agRef,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if err := st.Upsert(ctx, task); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	ev := controller.Event{Kind: controller.EventReply, ThreadRef: ref, User: "U1", Text: "1"}
+	if err := c.OnReply(ctx, task, ev); err != nil {
+		t.Fatalf("OnReply: %v", err)
+	}
+
+	found := false
+	for _, p := range ch.Posts(ref) {
+		if strings.Contains(p, "the agent needs your input") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("second dialog not posted; posts=%v", ch.Posts(ref))
+	}
+
+	got, gErr := st.Get(ctx, ref)
+	if gErr != nil {
+		t.Fatalf("store.Get: %v", gErr)
+	}
+	if got.Status != controller.StatusWaitingOnUser {
+		t.Fatalf("status=%v; want waiting_on_user", got.Status)
+	}
+}

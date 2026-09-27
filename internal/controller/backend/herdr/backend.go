@@ -883,6 +883,7 @@ func (b *Backend) Observe(ctx context.Context, agentRef string, wait bool) (herd
 	}
 
 	var last herdragent.State
+	seenWorking := false
 	for {
 		st := client.Observe(ctx, agentRef, 0)
 		if st.Status != herdragent.StatusUnknown {
@@ -891,9 +892,15 @@ func (b *Backend) Observe(ctx context.Context, agentRef string, wait bool) (herd
 		if last.Status == herdragent.StatusDone || last.Status == herdragent.StatusBlocked {
 			return last, nil
 		}
+		if last.Status == herdragent.StatusWorking {
+			seenWorking = true
+		}
+		if last.Status == herdragent.StatusIdle && seenWorking {
+			return last, nil
+		}
 		select {
 		case <-ctx.Done():
-			return last, nil
+			return last, ctx.Err()
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
