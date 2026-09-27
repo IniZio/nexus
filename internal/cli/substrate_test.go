@@ -453,3 +453,43 @@ func TestSubstrateFindsCloudHypervisorOutsidePATH(t *testing.T) {
 		t.Errorf("binary path = %q, want %q", binCheck.Detail, chBin)
 	}
 }
+
+// TestDoctorToolChecks_EmptyPATH verifies that runAllChecks reports [FAIL] for
+// mke2fs and e2fsck when they are absent from PATH.
+//
+// MUTATION PROOF: remove the mke2fs/e2fsck checks from runAllChecks →
+// those names are never found in the check slice → this test goes RED.
+func TestDoctorToolChecks_EmptyPATH(t *testing.T) {
+	p := probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "", errors.New("not found") },
+		openKVM:  func() error { return nil },
+		getenv:   func(string) string { return "" },
+		executable: func() (string, error) {
+			return "/usr/local/bin/nexus", nil
+		},
+	}
+	checks, _ := runAllChecks(p)
+
+	toolChecks := map[string]*CheckResult{}
+	for i := range checks {
+		if checks[i].Name == "tool_mke2fs" || checks[i].Name == "tool_e2fsck" {
+			c := checks[i]
+			toolChecks[checks[i].Name] = &c
+		}
+	}
+
+	for _, name := range []string{"tool_mke2fs", "tool_e2fsck"} {
+		c, ok := toolChecks[name]
+		if !ok {
+			t.Errorf("check %q not found in runAllChecks output", name)
+			continue
+		}
+		if c.OK {
+			t.Errorf("check %q: OK=true with empty PATH; want false", name)
+		}
+		if c.Remediation == "" {
+			t.Errorf("check %q: Remediation is empty; want install hint", name)
+		}
+	}
+}

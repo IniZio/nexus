@@ -260,6 +260,30 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		}
 	}
 
+	if p.lookPath != nil {
+		for _, tool := range []struct {
+			name string
+			hint string
+		}{
+			{"mke2fs", "install e2fsprogs: sudo apt-get install e2fsprogs"},
+			{"e2fsck", "install e2fsprogs: sudo apt-get install e2fsprogs"},
+		} {
+			_, lookErr := p.lookPath(tool.name)
+			chk := CheckResult{
+				Name:        "tool_" + tool.name,
+				Description: tool.name + " executable in PATH",
+			}
+			if lookErr == nil {
+				chk.OK = true
+			} else {
+				chk.OK = false
+				chk.Detail = fmt.Sprintf("%s not found on PATH", tool.name)
+				chk.Remediation = tool.hint
+			}
+			checks = append(checks, chk)
+		}
+	}
+
 	if p.listHerdrProcs != nil {
 		checks = append(checks, checkHerdrProcesses(context.Background(), p.listHerdrProcs))
 	}
