@@ -626,8 +626,8 @@ func (s *VolumeStore) Detach(ctx context.Context, name, sandboxID string) error 
 		_ = lk.Close()
 		return fmt.Errorf("volume %s: detach: acquire lock: %w", name, err)
 	}
-	defer lk.Close()  //nolint:errcheck
-	defer lk.Unlock() //nolint:errcheck
+	defer lk.Close()  //nolint:errcheck // advisory lock fd close errors are non-actionable in a defer
+	defer lk.Unlock() //nolint:errcheck // advisory lock release errors are non-fatal; fd close covers it
 
 	rec, err := s.readRecord(name)
 	if err != nil {

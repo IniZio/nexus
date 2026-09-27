@@ -42,7 +42,7 @@ func NewSandboxResizer(d *CHDriver, id domain.SandboxID, bounds resize.Bounds, b
 	// Debug log on failure leaves state nil so getOrLoadMemState retries later.
 	loadCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	bootHintMiB := uint32(bounds.MemMinBytes / (1024 * 1024)) //nolint:gosec
+	bootHintMiB := uint32(bounds.MemMinBytes / (1024 * 1024)) //nolint:gosec // G115: MemMinBytes derives from vmcfg.Config.BootMemMiB (uint32 MiB), so the quotient always fits in uint32
 	if _, err := d.getOrLoadMemState(loadCtx, id, bootHintMiB); err != nil {
 		slog.Debug("cloudhypervisor: NewSandboxResizer: pre-load mem state (will retry)",
 			"sandbox", id, "err", err)
