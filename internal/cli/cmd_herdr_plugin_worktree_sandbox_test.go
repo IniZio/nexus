@@ -267,11 +267,6 @@ func TestHerdrWorktreeSandbox_alreadyBound_noOp(t *testing.T) {
 // ── linked-worktree guard ─────────────────────────────────────────────────────
 
 func TestHerdrWorktreeSandbox_mainCheckout_notBound(t *testing.T) {
-	// When IsLinkedWorktree=false the workspace is the main checkout (e.g. w8).
-	// herdrWorktreeSandbox must leave it unbound.
-	//
-	// MUTATION PROOF: remove the !info.IsLinkedWorktree guard.
-	// createSandbox is called → RED: "createSandbox must not be called".
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{
 		info: herdrWorktreeInfo{Branch: "work", Path: "/repo", IsLinkedWorktree: false},
@@ -279,20 +274,19 @@ func TestHerdrWorktreeSandbox_mainCheckout_notBound(t *testing.T) {
 	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
 
 	createCalled := false
-	err := callHerdrWorktreeSandbox(t, "w8", root, false, false, /*auto*/
+	err := callHerdrWorktreeSandbox(t, "w8", root, false, false,
 		func(_ context.Context, _, _, _, _ string, _ []string, _ []string, _ string, _ domain.EgressPathPolicies, _ domain.EgressMCPPolicies, _ bool) error {
 			createCalled = true
 			return nil
 		},
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("explicit call on main checkout: want non-nil error, got nil")
 	}
 	if createCalled {
 		t.Error("createSandbox must not be called for main checkout workspace")
 	}
-	// Confirm no binding was written.
 	all, _ := herdrSpaceReadAll(root)
 	if len(all) != 0 {
 		t.Errorf("expected no bindings; got %d", len(all))
@@ -302,16 +296,12 @@ func TestHerdrWorktreeSandbox_mainCheckout_notBound(t *testing.T) {
 // ── list error → fail safe ────────────────────────────────────────────────────
 
 func TestHerdrWorktreeSandbox_listError_failSafe(t *testing.T) {
-	// When herdr worktree list fails, workspace stays unbound (no error returned).
-	//
-	// MUTATION PROOF: propagate the error instead of returning nil.
-	// RED: test expects nil error but gets the list error.
 	root := t.TempDir()
 	swapListFn(t, stubWorktreeList{err: errors.New("herdr unreachable")}.fn())
 
-	err := callHerdrWorktreeSandbox(t, "w-new", root, false, false /*auto*/, nil, nil)
-	if err != nil {
-		t.Fatalf("expected nil (fail-safe) but got: %v", err)
+	err := callHerdrWorktreeSandbox(t, "w-new", root, false, false, nil, nil)
+	if err == nil {
+		t.Fatal("explicit call with list error: want non-nil error, got nil")
 	}
 	all, _ := herdrSpaceReadAll(root)
 	if len(all) != 0 {
@@ -2745,5 +2735,45 @@ func TestHerdrWorktreeSandbox_staleRebind_startsStoppedSandbox(t *testing.T) {
 	}
 	if len(started) != 0 {
 		t.Fatalf("a Running sandbox must not be started again; got %v", started)
+	}
+}
+
+// ── explicit mode failure paths ───────────────────────────────────────────────
+
+func TestHerdrWorktreeSandbox_explicitListTimeout_error(t *testing.T) {
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{err: errors.New("context deadline exceeded")}.fn())
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+
+	err := callHerdrWorktreeSandbox(t, "w-explicit", root, false /*conditional*/, false /*auto*/, nil, nil)
+	if err == nil {
+		t.Fatal("explicit call with list timeout: want non-nil error, got nil")
+	}
+}
+
+func TestHerdrWorktreeSandbox_explicitMainCheckout_error(t *testing.T) {
+	root := t.TempDir()
+	mainInfo := herdrWorktreeInfo{
+		Branch:           "main",
+		Path:             "/repo",
+		IsLinkedWorktree: false,
+	}
+	swapListFn(t, stubWorktreeList{info: mainInfo}.fn())
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+
+	err := callHerdrWorktreeSandbox(t, "w-explicit", root, false, false, nil, nil)
+	if err == nil {
+		t.Fatal("explicit call with main checkout: want non-nil error, got nil")
+	}
+}
+
+func TestHerdrWorktreeSandbox_autoListTimeout_nil(t *testing.T) {
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{err: errors.New("context deadline exceeded")}.fn())
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+
+	err := callHerdrWorktreeSandbox(t, "w-auto", root, false, true, nil, nil)
+	if err != nil {
+		t.Fatalf("--auto call with list timeout: want nil error, got %v", err)
 	}
 }

@@ -3847,10 +3847,18 @@ func herdrEffectivePrincipal() string {
 }
 
 /**
- * herdrWorktreeListTimeout bounds the `herdr worktree list` probe in step 3.
- * A hung herdr daemon must not wedge every new pane on the machine.
+ * herdrWorktreeListTimeout bounds the `herdr worktree list` probe in step 3
+ * for hook-driven (--auto/--conditional) calls. A hung herdr daemon must not
+ * wedge every new pane on the machine.
+ *
+ * herdrWorktreeListTimeoutExplicit is the longer bound used for explicit
+ * (neither --auto nor --conditional) calls, where the user's herdr may have
+ * many workspaces and the list is slower than in isolated harnesses.
  */
-const herdrWorktreeListTimeout = 2 * time.Second
+const (
+	herdrWorktreeListTimeout         = 2 * time.Second
+	herdrWorktreeListTimeoutExplicit = 15 * time.Second
+)
 
 /**
  * herdrWorktreeCreateTimeout bounds the sandbox create call in step 7.
@@ -4881,26 +4889,42 @@ func herdrWorktreeSandbox(
 		return nil
 	}
 
+	explicit := !auto && !conditional
+
 	herdrBin, err := resolveHerdrBin()
 	if err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: resolve herdr binary: %v\n", err)
+		if explicit {
+			return fmt.Errorf("worktree-sandbox: resolve herdr binary: %w", err)
+		}
 		return nil
 	}
 
 	/**
-	 * Step 3: list worktrees (fail-safe on error). A 2 s context bounds the
-	 * herdr probe so a hung daemon cannot wedge every new pane on the machine.
+	 * Step 3: list worktrees. For hook-driven calls a 2 s context bounds the
+	 * probe so a hung daemon cannot wedge every new pane on the machine.
+	 * For explicit calls a 15 s timeout accommodates larger workspace lists.
 	 */
-	listCtx, listCancel := context.WithTimeout(ctx, herdrWorktreeListTimeout)
+	listTimeout := herdrWorktreeListTimeout
+	if explicit {
+		listTimeout = herdrWorktreeListTimeoutExplicit
+	}
+	listCtx, listCancel := context.WithTimeout(ctx, listTimeout)
 	defer listCancel()
 	info, err := herdrListWorktreeForWorkspaceFn(listCtx, herdrBin, workspaceID)
 	if err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: herdr worktree list: %v\n", err)
+		if explicit {
+			return fmt.Errorf("worktree-sandbox: herdr worktree list: %w", err)
+		}
 		return nil
 	}
 
 	if !info.IsLinkedWorktree {
 		fmt.Fprintf(w, "worktree-sandbox: workspace %s is main checkout, skipping\n", workspaceID)
+		if explicit {
+			return fmt.Errorf("worktree-sandbox: workspace %s is main checkout; explicit calls require a linked worktree", workspaceID)
+		}
 		return nil
 	}
 
