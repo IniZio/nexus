@@ -39,7 +39,7 @@ func TestValidTransition(t *testing.T) {
 		StatusWaitingOnUser: {StatusWorking, StatusIdle, StatusPaused, StatusFailed, StatusClosed},
 		StatusIdle:          {StatusWorking, StatusPaused, StatusFailed, StatusClosed},
 		StatusPaused:        {StatusWorking, StatusFailed, StatusClosed},
-		StatusFailed:        {StatusStarting, StatusClosed},
+		StatusFailed:        {StatusStarting, StatusWorking, StatusClosed},
 		StatusClosed:        {},
 	}
 	for from, tos := range table {

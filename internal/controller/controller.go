@@ -94,6 +94,7 @@ var validTransitions = map[Status]map[Status]bool{
 	},
 	StatusFailed: {
 		StatusStarting: true,
+		StatusWorking:  true,
 		StatusClosed:   true,
 	},
 	StatusClosed: {},
@@ -167,6 +168,9 @@ type TaskStore interface {
 	Transition(ctx context.Context, ref ThreadRef, from, to Status, seq uint64) error
 	ListIdle(ctx context.Context, before time.Time) ([]Task, error)
 	TouchActivity(ctx context.Context, ref ThreadRef, author string) error
+	// ResetStuck transitions all starting/working tasks to failed; called on startup to clear
+	// tasks that were interrupted mid-turn. Bypasses state-machine checks.
+	ResetStuck(ctx context.Context) error
 }
 
 type AgentInput struct {

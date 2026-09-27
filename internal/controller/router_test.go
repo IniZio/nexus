@@ -86,6 +86,18 @@ func (s *fakeStore) TouchActivity(_ context.Context, ref ThreadRef, author strin
 	return nil
 }
 
+func (s *fakeStore) ResetStuck(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ref, t := range s.tasks {
+		if t.Status == StatusStarting || t.Status == StatusWorking {
+			t.Status = StatusFailed
+			s.tasks[ref] = t
+		}
+	}
+	return nil
+}
+
 // fakeFlows records calls and delegates to optional function hooks.
 type fakeFlows struct {
 	mu           sync.Mutex

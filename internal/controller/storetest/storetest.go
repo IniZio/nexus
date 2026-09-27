@@ -80,6 +80,18 @@ func (f *Fake) ListIdle(_ context.Context, before time.Time) ([]controller.Task,
 	return out, nil
 }
 
+func (f *Fake) ResetStuck(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for ref, t := range f.tasks {
+		if t.Status == controller.StatusStarting || t.Status == controller.StatusWorking {
+			t.Status = controller.StatusFailed
+			f.tasks[ref] = t
+		}
+	}
+	return nil
+}
+
 func (f *Fake) TouchActivity(_ context.Context, ref controller.ThreadRef, author string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

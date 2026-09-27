@@ -27,16 +27,23 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 	}
 
 	if t.SandboxID == "" {
+		_ = c.deps.Chat.React(ctx, t.ThreadRef, "eyes")
+		_ = c.deps.Chat.Post(ctx, t.ThreadRef, "provisioning a sandbox — first run can take several minutes")
 		principal := vault.SlackPrincipal(t.ThreadRef.Team(), ev.User)
 		sbID, agRef, provErr := c.deps.Backend.Provision(ctx, project, t.ThreadRef, principal)
 		if provErr != nil {
+			if sbID != "" {
+				_ = c.deps.Backend.Teardown(ctx, sbID)
+			}
 			_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
-			_ = c.deps.Chat.Post(ctx, t.ThreadRef, "provision error: "+provErr.Error())
+			_ = c.deps.Store.Transition(ctx, t.ThreadRef, t.Status, StatusFailed, t.StateChangeSeq+1)
+			c.postFailureReason(ctx, t.ThreadRef, provErr)
 			return provErr
 		}
 		t.SandboxID = sbID
 		t.HerdrAgent = agRef
 		t.Project = project
+		t.Status = StatusStarting
 		if uErr := c.deps.Store.Upsert(ctx, t); uErr != nil {
 			return uErr
 		}
@@ -56,6 +63,8 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 	}
 
 	if err := c.deps.Backend.Prompt(ctx, t.HerdrAgent, ev.Text); err != nil {
+		_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
+		c.postFailureReason(ctx, t.ThreadRef, err)
 		return err
 	}
 
@@ -96,6 +105,8 @@ func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
 				_ = c.deps.Chat.Post(ctx, t.ThreadRef, fmt.Sprintf("turn timed out after %s; reply to continue", d))
 				return ErrTurnTimeout
 			}
+			_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
+			c.postFailureReason(ctx, t.ThreadRef, err)
 			return err
 		}
 		if !st.Settled {
@@ -110,6 +121,8 @@ func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
 			if st.Status == herdragent.StatusDone {
 				answer, rErr := c.deps.Backend.ReadAnswer(ctx, t.HerdrAgent)
 				if rErr != nil {
+					_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusFailed, t.StateChangeSeq+1)
+					c.postFailureReason(ctx, t.ThreadRef, rErr)
 					return rErr
 				}
 				if pErr := c.postAnswer(ctx, t, answer); pErr != nil {

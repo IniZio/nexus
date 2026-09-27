@@ -164,6 +164,12 @@ func (s *Store) TouchActivity(ctx context.Context, ref controller.ThreadRef, aut
 	return nil
 }
 
+func (s *Store) ResetStuck(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET status = 'failed' WHERE status IN ('starting', 'working')`)
+	return err
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

@@ -39,6 +39,7 @@ func (c *Controller) waitNotBlocked(ctx context.Context, agentRef string) error 
 func (c *Controller) OnReply(ctx context.Context, t Task, ev Event) error {
 	if err := c.deps.Linker.Require(ctx, ev.User); err != nil {
 		_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+		c.postFailureReason(ctx, t.ThreadRef, err)
 		return err
 	}
 	if ev.User != t.Owner {

@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -261,6 +262,61 @@ func TestIdleReplyRepromptsAndPostsAnswer(t *testing.T) {
 	got, _ := st.Get(ctx, ref)
 	if got.Status != controller.StatusIdle {
 		t.Errorf("expected final status idle; got %v", got.Status)
+	}
+}
+
+// TestOnReplyUnlinkedUserGetsReasonPost: user who has not linked the integration receives
+// a warning reaction AND an in-thread post explaining the failure.
+func TestOnReplyUnlinkedUserGetsReasonPost(t *testing.T) {
+	ctx := context.Background()
+	ch := chattest.New()
+	st := storetest.New()
+	be := backendtest.New()
+	d := controller.Deps{
+		Chat:      ch,
+		Store:     st,
+		Backend:   be,
+		Lifecycle: &fakeLc{},
+		Linker:    &fakeLinker{err: fmt.Errorf("%w: link with /link", controller.ErrNotLinked)},
+		Projects:  &fakeProjects{project: "myproject"},
+	}
+	c := controller.New(d)
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-unlinked-post")
+	sbID, agRef, err := be.Provision(ctx, "myproject", ref, "p")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusWaitingOnUser,
+		SandboxID:      sbID,
+		HerdrAgent:     agRef,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if err := st.Upsert(ctx, task); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	ev := controller.Event{Kind: controller.EventReply, ThreadRef: ref, User: "U2", Text: "help"}
+	gotErr := c.OnReply(ctx, task, ev)
+	if !errors.Is(gotErr, controller.ErrNotLinked) {
+		t.Fatalf("expected ErrNotLinked; got %v", gotErr)
+	}
+
+	posts := ch.Posts(ref)
+	found := false
+	for _, p := range posts {
+		if strings.Contains(p, "link") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected in-thread reason post containing 'link'; posts=%v", posts)
 	}
 }
 

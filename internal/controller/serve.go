@@ -97,6 +97,12 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 	if linkHandler != nil {
 		routerOpts = append(routerOpts, WithCommandHandler(linkHandler))
 	}
+	if rErr := deps.Store.ResetStuck(ctx); rErr != nil {
+		slog.Warn("controller: reset stuck tasks on startup", "err", rErr)
+	} else {
+		slog.Info("controller: stuck tasks reset to failed")
+	}
+
 	ctrl := New(deps)
 	router := NewRouter(deps.Store, ctrl, routerOpts...)
 	defer router.Close()
