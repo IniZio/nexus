@@ -38,9 +38,11 @@ func TestHerdrWorktreeSandbox_ReuseRejectsWrongPrincipal(t *testing.T) {
 	swapHerdrWorkspaceList(t, "w-a", "w-b")
 	t.Setenv(vault.PrincipalEnv, "slack:T:U999")
 
+	// Sandbox record must carry the authoritative principal (create.go sets this).
+	reuseRecord := domain.Sandbox{ID: domain.NewSandboxID(), Principal: "local:newman"}
 	var w strings.Builder
 	err := herdrWorktreeSandbox(context.Background(), "w-b", &w, root, false, false, false, false,
-		noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+		noopCreate, stubSandboxGet(reuseRecord, nil))
 	if err == nil {
 		t.Fatal("expected error on principal mismatch, got nil")
 	}
@@ -62,9 +64,11 @@ func TestHerdrWorktreeSandbox_ReuseAllowsSamePrincipal(t *testing.T) {
 	swapHerdrWorkspaceList(t, "w-a", "w-b")
 	t.Setenv(vault.PrincipalEnv, "slack:T:U999")
 
+	// Sandbox record carries authoritative principal; reuse compares against it.
+	reuseRecord := domain.Sandbox{ID: domain.NewSandboxID(), Principal: "slack:T:U999"}
 	var w strings.Builder
 	err := herdrWorktreeSandbox(context.Background(), "w-b", &w, root, false, false, false, false,
-		noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+		noopCreate, stubSandboxGet(reuseRecord, nil))
 	if err != nil {
 		t.Errorf("unexpected error when principals match: %v\n%s", err, w.String())
 	}

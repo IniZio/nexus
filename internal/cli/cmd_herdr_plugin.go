@@ -5053,25 +5053,13 @@ func herdrWorktreeSandbox(
 			 * probe fails open (all alive) when herdr cannot be listed, so an
 			 * unreachable herdr keeps today's reuse behaviour.
 			 */
-if bound.HerdrWorkspaceID == workspaceID || herdrWorkspaceListedFn(ctx, herdrBin)(bound) {
-					/**
-					 * Fix (b) — defence in depth: if NEXUS_PRINCIPAL is set and
-					 * differs from the principal recorded on the existing binding,
-					 * refuse the reuse.  Silently reusing here would assign the
-					 * already-running sandbox to the wrong identity (e.g. the hook
-					 * path created it as local:newman but the controller wants
-					 * slack:T:U123).
-					 *
-					 * bound.Principal == "" means the binding pre-dates this field
-					 * (or was written without a principal, e.g. in tests) — allow
-					 * reuse so we don't break existing deployments.
-					 */
-					envPrincipal := os.Getenv(vault.PrincipalEnv)
-					if envPrincipal != "" && bound.Principal != "" && envPrincipal != bound.Principal {
-						return fmt.Errorf("worktree-sandbox: handle %s: principal mismatch: binding has %q, requested %q — refusing reuse", handle, bound.Principal, envPrincipal)
-					}
-					fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
-					return nil
+			if bound.HerdrWorkspaceID == workspaceID || herdrWorkspaceListedFn(ctx, herdrBin)(bound) {
+				effPrincipal := herdrEffectivePrincipal()
+				if rSb, rErr := getFn(ctx, bound.SandboxHandle); rErr == nil && rSb.Principal != "" && effPrincipal != rSb.Principal {
+					return fmt.Errorf("worktree-sandbox: handle %s: principal mismatch: sandbox has %q, requested %q — refusing reuse", handle, rSb.Principal, effPrincipal)
+				}
+				fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
+				return nil
 			}
 			fmt.Fprintf(w, "worktree-sandbox: handle %s bound to workspace %s, which no longer exists in herdr — rebinding to %s\n", handle, bound.HerdrWorkspaceID, workspaceID)
 			rebindStale = true
@@ -5274,8 +5262,8 @@ if bound.HerdrWorkspaceID == workspaceID || herdrWorkspaceListedFn(ctx, herdrBin
 			}
 			return nil
 		}
-		adoptPrincipal := os.Getenv(vault.PrincipalEnv)
-		if adoptPrincipal != sb.Principal {
+		adoptPrincipal := herdrEffectivePrincipal()
+		if sb.Principal != "" && adoptPrincipal != sb.Principal {
 			fmt.Fprintf(w, "worktree-sandbox: sandbox %s principal mismatch: sandbox has %q, requested %q — refusing adopt\n", handle, sb.Principal, adoptPrincipal)
 			if !failSafe {
 				return fmt.Errorf("worktree-sandbox: sandbox %s principal mismatch: sandbox has %q, requested %q", handle, sb.Principal, adoptPrincipal)
