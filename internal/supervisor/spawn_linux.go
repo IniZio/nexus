@@ -275,16 +275,23 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 
 	useScope := !cfg.Ephemeral && len(cfg.CacheDiskLeaseFiles) == 0 && systemdUserProbe()
 	if useScope {
-		if scopeErr := spawnViaSystemdScope(exe, args, logFile, cfg.Config.SandboxRef); scopeErr != nil {
+		sdCmd, scopeErr := spawnViaSystemdScope(exe, args, logFile, cfg.Config.SandboxRef)
+		if scopeErr != nil {
 			_ = logFile.Close()
 			return 0, nil, fmt.Errorf("spawn supervisor: %w", scopeErr)
 		}
+		spawnPid := sdCmd.Process.Pid
+		scopeExited := make(chan struct{})
+		go func() { _ = sdCmd.Wait(); close(scopeExited) }()
 		_ = logFile.Close()
 		pidfile := PidfilePath(cfg.StateDir)
 		deadline := time.Now().Add(readyTimeout)
 		for time.Now().Before(deadline) {
-			if reason, readErr := os.ReadFile(filepath.Join(cfg.StateDir, supervisorErrFile)); readErr == nil && len(reason) > 0 {
-				return 0, nil, fmt.Errorf("spawn supervisor: %s", string(reason))
+			if killErr := syscall.Kill(spawnPid, 0); killErr != nil {
+				if reason, readErr := os.ReadFile(filepath.Join(cfg.StateDir, supervisorErrFile)); readErr == nil && len(reason) > 0 {
+					return 0, nil, fmt.Errorf("spawn supervisor: %s", string(reason))
+				}
+				return 0, nil, fmt.Errorf("spawn supervisor (systemd scope): process exited before writing pidfile (pid %d); see %s", spawnPid, logPath)
 			}
 			data, readErr := os.ReadFile(pidfile)
 			if readErr == nil {
@@ -295,7 +302,8 @@ func SpawnDetached(cfg SpawnConfig) (pid int, watchdog *os.File, err error) {
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		return 0, nil, fmt.Errorf("spawn supervisor (systemd scope): timed out waiting for %s", pidfile)
+		terminateSupervisor(spawnPid, scopeExited, terminateSupervisorGrace)
+		return 0, nil, fmt.Errorf("spawn supervisor (systemd scope): timed out waiting for %s (pid %d)", pidfile, spawnPid)
 	}
 
 	cmd := exec.Command(exe, args...)

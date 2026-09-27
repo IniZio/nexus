@@ -3,7 +3,9 @@
 package supervisor
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,10 +35,13 @@ func TestSupervisorScopeUnit(t *testing.T) {
 func TestBuildSystemdScopeArgs(t *testing.T) {
 	args := buildSystemdScopeArgs("nexus-sb-abc", "/usr/bin/nexus", []string{"__supervisor", "--sandbox-ref", "abc"})
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--user", "--scope", "--collect", "--unit=nexus-sb-abc", "OOMScoreAdjust=0", "/usr/bin/nexus", "__supervisor"} {
+	for _, want := range []string{"--user", "--scope", "--collect", "--unit=nexus-sb-abc", "/usr/bin/nexus", "__supervisor"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("buildSystemdScopeArgs: missing %q in %q", want, joined)
 		}
+	}
+	if strings.Contains(joined, "OOMScore") {
+		t.Errorf("OOMScoreAdjust must not appear in scope args (not a valid scope property): %q", joined)
 	}
 }
 
@@ -50,9 +55,13 @@ func TestSpawnDetached_SystemdPathUsed(t *testing.T) {
 	})
 
 	systemdUserProbe = func() bool { return true }
-	execSystemdRun = func(sdArgs []string, _ *os.File) error {
+	execSystemdRun = func(sdArgs []string, _ *os.File) (*exec.Cmd, error) {
 		capturedArgs = sdArgs
-		return nil
+		cmd := exec.Command("sleep", "10")
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+		return cmd, nil
 	}
 
 	stateDir := t.TempDir()
@@ -135,7 +144,7 @@ func TestSpawnDetached_EphemeralSkipsScope(t *testing.T) {
 	})
 
 	systemdUserProbe = func() bool { return true }
-	execSystemdRun = func(_ []string, _ *os.File) error {
+	execSystemdRun = func(_ []string, _ *os.File) (*exec.Cmd, error) {
 		panic("execSystemdRun must not be called for Ephemeral spawn")
 	}
 
@@ -193,5 +202,53 @@ func TestDefaultSystemdUserProbe_PresentPrivateDir(t *testing.T) {
 
 	if !defaultSystemdUserProbe() {
 		t.Error("probe should return true when systemd/private exists")
+	}
+}
+
+// TestSpawnViaSystemdScope_RealScope verifies that defaultExecSystemdRun:
+// (a) returns in < 2 s (proving cmd.Start() not cmd.Run() semantics), and
+// (b) places the launched process in the expected scope cgroup.
+// Skipped when no systemd user manager is available.
+func TestSpawnViaSystemdScope_RealScope(t *testing.T) {
+	if !defaultSystemdUserProbe() {
+		t.Skip("systemd user manager not available")
+	}
+
+	rand := fmt.Sprintf("%x", time.Now().UnixNano())
+	unit := "nexus-test-" + rand[:8]
+
+	logFile, err := os.CreateTemp(t.TempDir(), "scope-test-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = logFile.Close() })
+
+	sdArgs := buildSystemdScopeArgs(unit, "sleep", []string{"30"})
+
+	start := time.Now()
+	cmd, err := defaultExecSystemdRun(sdArgs, logFile)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("defaultExecSystemdRun: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = exec.Command("systemctl", "--user", "stop", unit+".scope").Run()
+	})
+
+	if elapsed > 2*time.Second {
+		t.Errorf("scope start took %v, want < 2s (cmd.Run would block for 30s)", elapsed)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	cgroupData, cgErr := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", cmd.Process.Pid))
+	if cgErr != nil {
+		t.Fatalf("read cgroup for pid %d: %v", cmd.Process.Pid, cgErr)
+	}
+	if !strings.Contains(string(cgroupData), unit+".scope") {
+		t.Errorf("process %d not in expected scope cgroup %q; /proc/cgroup:\n%s",
+			cmd.Process.Pid, unit+".scope", cgroupData)
 	}
 }
