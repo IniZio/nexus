@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -325,6 +326,72 @@ func TestTurnParentCtxCancelNoTransition(t *testing.T) {
 	}
 	if got.Status == controller.StatusIdle {
 		t.Fatalf("status transitioned to idle on parent ctx cancel; want working")
+	}
+}
+
+func TestTurnNotLinkedPostsReasonInThread(t *testing.T) {
+	ctx := context.Background()
+	d, ch, st, _ := newTurnDeps(t)
+	d.Linker = &fakeLinker{err: fmt.Errorf("%w: link with /link github", controller.ErrNotLinked)}
+	c := controller.New(d)
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-notlinked")
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusStarting,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if err := st.Upsert(ctx, task); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	ev := controller.Event{Kind: controller.EventMention, ThreadRef: ref, User: "U1", Text: "hi"}
+	if err := c.OnMention(ctx, task, ev); err == nil {
+		t.Fatal("expected error from OnMention; got nil")
+	}
+
+	posts := ch.Posts(ref)
+	found := false
+	for _, p := range posts {
+		if strings.Contains(p, "link") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no actionable message posted in-thread; posts=%v", posts)
+	}
+}
+
+func TestTurnNoProjectPostsReasonInThread(t *testing.T) {
+	ctx := context.Background()
+	d, ch, st, _ := newTurnDeps(t)
+	d.Projects = &fakeProjects{project: ""}
+	c := controller.New(d)
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-noproject")
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusStarting,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if err := st.Upsert(ctx, task); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	ev := controller.Event{Kind: controller.EventMention, ThreadRef: ref, User: "U1", Text: "hi"}
+	if err := c.OnMention(ctx, task, ev); err == nil {
+		t.Fatal("expected error from OnMention; got nil")
+	}
+
+	posts := ch.Posts(ref)
+	if len(posts) == 0 {
+		t.Fatalf("no message posted in-thread for ErrNoProject; posts=%v", posts)
 	}
 }
 

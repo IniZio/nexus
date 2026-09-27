@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
@@ -14,12 +15,14 @@ const answerFileSizeLimit = 11 * 1024
 func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 	if err := c.deps.Linker.Require(ctx, ev.User); err != nil {
 		_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+		c.postFailureReason(ctx, t.ThreadRef, err)
 		return err
 	}
 
 	project, err := c.deps.Projects.Resolve(ctx, t.ThreadRef.Channel())
 	if err != nil {
 		_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+		c.postFailureReason(ctx, t.ThreadRef, err)
 		return err
 	}
 
@@ -122,6 +125,19 @@ func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
 			return c.handleBlocked(ctx, t, st)
 		}
 	}
+}
+
+// postFailureReason sends the error reason in-thread for user-actionable errors;
+// for all others it posts a generic message and logs the real cause.
+func (c *Controller) postFailureReason(ctx context.Context, ref ThreadRef, err error) {
+	var msg string
+	if errors.Is(err, ErrNotLinked) || errors.Is(err, ErrNoProject) {
+		msg = err.Error()
+	} else {
+		slog.Error("controller turn failure", "ref", ref, "err", err)
+		msg = "failed, see controller log"
+	}
+	_ = c.deps.Chat.Post(ctx, ref, msg)
 }
 
 func (c *Controller) postAnswer(ctx context.Context, t Task, answer string) error {
