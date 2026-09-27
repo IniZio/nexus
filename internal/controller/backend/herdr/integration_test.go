@@ -45,9 +45,10 @@ func TestBackendContractLive(t *testing.T) {
 		t.Fatalf("Provision: %v", err)
 	}
 	t.Logf("provisioned sandbox=%s agent=%s", sb, ag)
+	var lastTurn string
 
 	t.Run("unknown agentRef errors", func(t *testing.T) {
-		if err := b.Prompt(ctx, "bogus", "hi"); err == nil {
+		if _, err := b.Prompt(ctx, "bogus", "hi"); err == nil {
 			t.Error("Prompt on unknown agentRef should error")
 		}
 		if _, err := b.Observe(ctx, "bogus", false); err == nil {
@@ -96,9 +97,11 @@ func TestBackendContractLive(t *testing.T) {
 			pane := captureAgentPaneViaBackend(t, b, ag)
 			t.Fatalf("timed out waiting for idle/done; last status: %s\npane tail:\n%s", lastStatus, pane)
 		}
-		if err := b.Prompt(ctx, ag, "echo hello"); err != nil {
+		turn, err := b.Prompt(ctx, ag, "echo hello")
+		if err != nil {
 			t.Fatalf("Prompt: %v", err)
 		}
+		lastTurn = turn
 		postDeadline := time.Now().Add(90 * time.Second)
 		for time.Now().Before(postDeadline) {
 			st, err := b.Observe(ctx, ag, false)
@@ -116,7 +119,7 @@ func TestBackendContractLive(t *testing.T) {
 	})
 
 	t.Run("ReadAnswer", func(t *testing.T) {
-		if _, err := b.ReadAnswer(ctx, ag); err != nil {
+		if _, err := b.ReadAnswer(ctx, ag, lastTurn); err != nil {
 			t.Errorf("ReadAnswer: %v", err)
 		}
 	})
@@ -131,7 +134,7 @@ func TestBackendContractLive(t *testing.T) {
 		if err := b.Teardown(ctx, "sb-unknown"); err == nil {
 			t.Error("Teardown for unknown id must return error; no recorded sb- id means sandbox rm would be unsafe")
 		}
-		if err := b.Prompt(ctx, ag, "hi"); err == nil {
+		if _, err := b.Prompt(ctx, ag, "hi"); err == nil {
 			t.Error("Prompt after Teardown should error")
 		}
 	})
@@ -185,7 +188,7 @@ func captureAgentPaneViaBackend(t *testing.T, b *Backend, ag string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := b.ReadAnswer(ctx, ag)
+	out, err := b.ReadAnswer(ctx, ag, "")
 	if err != nil {
 		return fmt.Sprintf("(pane read error: %v)", err)
 	}
