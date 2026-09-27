@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,34 +81,16 @@ func runVaultLinkGitHub(ctx context.Context, key vault.Key, st vault.Store, out 
 	}
 	fmt.Fprintf(out.Stdout(), "Open: %s\nCode: %s\n", auth.VerificationURI, auth.UserCode)
 
-	interval := time.Duration(auth.Interval) * time.Second
-	if interval < 5*time.Second {
-		interval = 5 * time.Second
+	rec, pollErr := connectors.WaitDevice(ctx, conn, auth, time.Sleep)
+	if pollErr != nil {
+		return fmt.Errorf("vault link github: %w", pollErr)
 	}
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
-		}
-		rec, pollErr := conn.PollDevice(ctx, auth.DeviceCode)
-		if errors.Is(pollErr, connectors.ErrAuthorizationPending) {
-			continue
-		}
-		if errors.Is(pollErr, connectors.ErrSlowDown) {
-			interval += 5 * time.Second
-			continue
-		}
-		if pollErr != nil {
-			return fmt.Errorf("vault link github: %w", pollErr)
-		}
-		rec.AllowedProjects = []string{"*"}
-		if err := st.Put(ctx, key, rec); err != nil {
-			return fmt.Errorf("vault link github: store credential: %w", err)
-		}
-		fmt.Fprintln(out.Stdout(), "github: linked")
-		return nil
+	rec.AllowedProjects = []string{"*"}
+	if err := st.Put(ctx, key, rec); err != nil {
+		return fmt.Errorf("vault link github: store credential: %w", err)
 	}
+	fmt.Fprintln(out.Stdout(), "github: linked")
+	return nil
 }
 
 func runVaultLinkLinear(ctx context.Context, key vault.Key, st vault.Store, out *Output) error {

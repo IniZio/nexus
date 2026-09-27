@@ -13,6 +13,7 @@ import (
 
 	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	"github.com/IniZio/nexus/internal/core/vault"
+	"github.com/IniZio/nexus/internal/core/vault/connectors"
 	"github.com/IniZio/nexus/internal/core/vault/linkflow"
 )
 
@@ -29,6 +30,7 @@ type VaultLinker struct {
 	team       string
 	mode       controllerconfig.DeploymentMode
 	GenState   func() string
+	PollSleep  func(time.Duration)
 	mu         sync.Mutex
 	pkceStates map[string]pkceState
 }
@@ -44,6 +46,7 @@ func NewVaultLinker(v vault.Vault, reg *vault.Registry, chat ChatAdapter, team s
 		team:       team,
 		mode:       mode,
 		GenState:   randomState,
+		PollSleep:  time.Sleep,
 		pkceStates: make(map[string]pkceState),
 	}
 }
@@ -130,14 +133,18 @@ func (l *VaultLinker) linkGitHub(ctx context.Context, ev Event) error {
 	pollCtx, cancel := context.WithTimeout(context.Background(), expiry)
 	go func() {
 		defer cancel()
-		l.pollGitHub(pollCtx, c, da.DeviceCode, ev.User, ev.ThreadRef)
+		l.pollGitHub(pollCtx, c, da, ev.User, ev.ThreadRef)
 	}()
 	return nil
 }
 
-func (l *VaultLinker) pollGitHub(ctx context.Context, c vault.Connector, deviceCode, user string, ref ThreadRef) {
-	rec, err := c.PollDevice(ctx, deviceCode)
+func (l *VaultLinker) pollGitHub(ctx context.Context, c vault.Connector, da vault.DeviceAuth, user string, ref ThreadRef) {
+	rec, err := connectors.WaitDevice(ctx, c, da, l.PollSleep)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			_ = l.chat.PostEphemeral(ctx, ref, user, "github link expired, run /link github again")
+			return
+		}
 		slog.Error("github device poll failed", "user", user, "err", err)
 		_ = l.chat.PostEphemeral(ctx, ref, user, fmt.Sprintf("github link failed: %v", err))
 		return

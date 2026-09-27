@@ -14,6 +14,7 @@ import (
 	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/vault"
+	"github.com/IniZio/nexus/internal/core/vault/connectors"
 	"github.com/IniZio/nexus/internal/core/vault/vaulttest"
 )
 
@@ -83,7 +84,9 @@ func newLinkerWithMode(t *testing.T, v vault.Vault, mode controllerconfig.Deploy
 	t.Helper()
 	ch := chattest.New()
 	reg := vault.NewRegistry()
-	return controller.NewVaultLinker(v, reg, ch, "T1", mode), ch, reg
+	l := controller.NewVaultLinker(v, reg, ch, "T1", mode)
+	l.PollSleep = func(time.Duration) {}
+	return l, ch, reg
 }
 
 // syncConnector wraps FakeConnector and signals when PollDevice is done.
@@ -104,7 +107,9 @@ func newLinkerSetup(t *testing.T) (*controller.VaultLinker, *chattest.Fake, vaul
 	ch := chattest.New()
 	v := vaulttest.NewFake()
 	reg := vault.NewRegistry()
-	return controller.NewVaultLinker(v, reg, ch, "T1", controllerconfig.ModeLocal), ch, v, reg
+	l := controller.NewVaultLinker(v, reg, ch, "T1", controllerconfig.ModeLocal)
+	l.PollSleep = func(time.Duration) {}
+	return l, ch, v, reg
 }
 
 func TestRequireRefusesUnlinkedPrincipal(t *testing.T) {
@@ -307,4 +312,100 @@ func TestLinkGitHubSharedModeNoProjects(t *testing.T) {
 	if len(rec.AllowedProjects) != 0 {
 		t.Fatalf("AllowedProjects = %v, want empty", rec.AllowedProjects)
 	}
+}
+
+// seqPollConnector returns a scripted sequence of PollDevice responses, then
+// falls through to the embedded FakeConnector.
+type seqPollConnector struct {
+	*vaulttest.FakeConnector
+	mu      sync.Mutex
+	results []seqPollResult
+	idx     int
+}
+
+type seqPollResult struct {
+	rec vault.Record
+	err error
+}
+
+func (c *seqPollConnector) PollDevice(ctx context.Context, code string) (vault.Record, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.idx >= len(c.results) {
+		return c.FakeConnector.PollDevice(ctx, code)
+	}
+	r := c.results[c.idx]
+	c.idx++
+	return r.rec, r.err
+}
+
+func TestLinkGitHubPendingThenSuccess(t *testing.T) {
+	ctx := context.Background()
+	inner := vaulttest.NewFake()
+	linker, ch, reg := newLinkerWithVault(t, inner)
+
+	fc := &seqPollConnector{
+		FakeConnector: vaulttest.NewFakeConnector("github"),
+		results: []seqPollResult{
+			{err: connectors.ErrAuthorizationPending},
+			{err: connectors.ErrAuthorizationPending},
+			// third call falls through to FakeConnector which returns a valid record
+		},
+	}
+	if err := reg.Register(fc); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-seq")
+	ev := controller.Event{Kind: controller.EventSlashCommand, ThreadRef: ref, User: "U6", Text: "/link github"}
+	if err := linker.CommandHandler()(ctx, ev); err != nil {
+		t.Fatalf("CommandHandler: %v", err)
+	}
+
+	waitForEphemeral(t, ch, ref, "U6", "github linked", 3*time.Second)
+
+	k := vault.Key{Principal: vault.SlackPrincipal("T1", "U6"), Integration: "github"}
+	if _, err := inner.Get(ctx, k); err != nil {
+		t.Fatalf("vault.Get after pending-then-success: %v", err)
+	}
+}
+
+// blockUntilCtxConnector blocks PollDevice until ctx is done, then returns ctx.Err().
+// StartDevice returns ExpiresIn=1 so the poll context expires in ~1s.
+type blockUntilCtxConnector struct {
+	*vaulttest.FakeConnector
+}
+
+func (c *blockUntilCtxConnector) StartDevice(_ context.Context) (vault.DeviceAuth, error) {
+	return vault.DeviceAuth{
+		DeviceCode:      "dev-code",
+		UserCode:        "USER-CODE",
+		VerificationURI: "https://example.com/device",
+		ExpiresIn:       1,
+		Interval:        0,
+	}, nil
+}
+
+func (c *blockUntilCtxConnector) PollDevice(ctx context.Context, _ string) (vault.Record, error) {
+	<-ctx.Done()
+	return vault.Record{}, ctx.Err()
+}
+
+func TestLinkGitHubExpiryPostsExpiredMessage(t *testing.T) {
+	ctx := context.Background()
+	inner := vaulttest.NewFake()
+	linker, ch, reg := newLinkerWithVault(t, inner)
+
+	fc := &blockUntilCtxConnector{FakeConnector: vaulttest.NewFakeConnector("github")}
+	if err := reg.Register(fc); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-expiry")
+	ev := controller.Event{Kind: controller.EventSlashCommand, ThreadRef: ref, User: "U7", Text: "/link github"}
+	if err := linker.CommandHandler()(ctx, ev); err != nil {
+		t.Fatalf("CommandHandler: %v", err)
+	}
+
+	waitForEphemeral(t, ch, ref, "U7", "github link expired", 5*time.Second)
 }
