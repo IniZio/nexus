@@ -57,6 +57,7 @@ type Backend struct {
 	mu        sync.Mutex
 	entries   map[string]*entry // agentRef → pane/torn state
 	sandboxes map[string]string
+	torn      map[string]bool // sandboxIDs torn down by this process; repeat Teardown is a no-op
 }
 
 // New returns a Backend using real herdr and nexus binaries.
@@ -65,6 +66,7 @@ func New(cfg Config) *Backend {
 		cfg:       cfg,
 		entries:   make(map[string]*entry),
 		sandboxes: make(map[string]string),
+		torn:      make(map[string]bool),
 		sleepFn:   time.Sleep,
 		nowFn:     time.Now,
 	}
@@ -85,6 +87,7 @@ func newWithRunners(cfg Config, hr, nr runner, opts ...herdragent.Option) *Backe
 		agentOpts: opts,
 		entries:   make(map[string]*entry),
 		sandboxes: make(map[string]string),
+		torn:      make(map[string]bool),
 		sleepFn:   func(time.Duration) {}, // no-op for tests
 		nowFn:     time.Now,
 	}
@@ -771,6 +774,10 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 
 func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 	b.mu.Lock()
+	if b.torn[sandboxID] {
+		b.mu.Unlock()
+		return nil
+	}
 	agRef, known := b.sandboxes[sandboxID]
 	var nexusSandboxID, nexusHandle, wsID string
 	if known {
@@ -817,6 +824,7 @@ func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 	b.mu.Lock()
 	delete(b.entries, agRef)
 	delete(b.sandboxes, sandboxID)
+	b.torn[sandboxID] = true
 	b.mu.Unlock()
 	return nil
 }

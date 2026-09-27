@@ -822,6 +822,25 @@ func TestTeardownEvictsEntry(t *testing.T) {
 	if inSandboxes {
 		t.Error("entry still present in b.sandboxes after Teardown")
 	}
+	rmBefore := countCalls(n, "sandbox", "rm")
+	if err := b.Teardown(context.Background(), sandboxID); err != nil {
+		t.Fatalf("second Teardown: %v", err)
+	}
+	if got := countCalls(n, "sandbox", "rm"); got != rmBefore {
+		t.Errorf("second Teardown ran sandbox rm again (%d -> %d)", rmBefore, got)
+	}
+}
+
+func countCalls(f *fakeCmd, prefix ...string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if len(c.argv) >= len(prefix) && strings.Join(c.argv[:len(prefix)], " ") == strings.Join(prefix, " ") {
+			n++
+		}
+	}
+	return n
 }
 
 // ── K2: principal hard-cutover tests ──────────────────────────────────────
