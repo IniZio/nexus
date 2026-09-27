@@ -832,24 +832,28 @@ func swapAuthorization(authHeader string, sandboxID domain.SandboxID, host strin
 		}
 		return broker.Resolve(placeholder)
 	}
+	lower := strings.ToLower(authHeader)
 	switch {
-	case strings.HasPrefix(authHeader, "Bearer "):
-		placeholder := strings.TrimPrefix(authHeader, "Bearer ")
+	case strings.HasPrefix(lower, "bearer "):
+		// len("bearer ") == 7; preserve original scheme casing per RFC 7235.
+		placeholder := authHeader[7:]
 		realToken, ok := resolve(placeholder)
 		if !ok {
 			return "", false
 		}
-		return "Bearer " + realToken, true
-	case strings.HasPrefix(authHeader, "token "):
+		return authHeader[:7] + realToken, true
+	case strings.HasPrefix(lower, "token "):
 		// GitHub CLI uses "token <TOKEN>" (not Bearer) for classic PATs and GH_TOKEN.
-		placeholder := strings.TrimPrefix(authHeader, "token ")
+		// len("token ") == 6.
+		placeholder := authHeader[6:]
 		realToken, ok := resolve(placeholder)
 		if !ok {
 			return "", false
 		}
-		return "token " + realToken, true
-	case strings.HasPrefix(authHeader, "Basic "):
-		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
+		return authHeader[:6] + realToken, true
+	case strings.HasPrefix(lower, "basic "):
+		// len("basic ") == 6.
+		raw, err := base64.StdEncoding.DecodeString(authHeader[6:])
 		if err != nil {
 			return "", false
 		}
@@ -861,7 +865,7 @@ func swapAuthorization(authHeader string, sandboxID domain.SandboxID, host strin
 		if !ok {
 			return "", false
 		}
-		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken)), true
+		return authHeader[:6] + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken)), true
 	default:
 		return "", false
 	}
@@ -1405,13 +1409,14 @@ func lookupPolicy(pp PathPolicies, placeholder, host string) (HostPolicy, bool) 
 // (git HTTPS) schemes — the same set as swapAuthorization. Returns "" when
 // the header is absent, empty, or in an unrecognized scheme.
 func extractPlaceholder(authHeader string) string {
+	lower := strings.ToLower(authHeader)
 	switch {
-	case strings.HasPrefix(authHeader, "Bearer "):
-		return strings.TrimPrefix(authHeader, "Bearer ")
-	case strings.HasPrefix(authHeader, "token "):
-		return strings.TrimPrefix(authHeader, "token ")
-	case strings.HasPrefix(authHeader, "Basic "):
-		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
+	case strings.HasPrefix(lower, "bearer "):
+		return authHeader[7:]
+	case strings.HasPrefix(lower, "token "):
+		return authHeader[6:]
+	case strings.HasPrefix(lower, "basic "):
+		raw, err := base64.StdEncoding.DecodeString(authHeader[6:])
 		if err != nil {
 			return ""
 		}

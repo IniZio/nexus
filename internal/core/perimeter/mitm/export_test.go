@@ -1,5 +1,10 @@
 package mitm
 
+import (
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+)
+
 // RefMatchesGlobForTest exposes the unexported refMatchesGlob for white-box
 // unit tests in the mitm_test package (proxy_test.go).  Only compiled during
 // `go test`.
@@ -17,4 +22,14 @@ func LookupPolicyForTest(pp PathPolicies, placeholder, host string) (HostPolicy,
 // MatchesDotSuffixForTest exposes matchesDotSuffix for white-box unit tests.
 func MatchesDotSuffixForTest(host string, suffixes []string) bool {
 	return matchesDotSuffix(host, suffixes)
+}
+
+// SwapAuthorizationForTest exposes swapAuthorization for unit tests.
+func SwapAuthorizationForTest(authHeader string, sandboxID domain.SandboxID, host string, broker *cred.Broker, scoped bool) (string, bool) {
+	return swapAuthorization(authHeader, sandboxID, host, broker, scoped)
+}
+
+// ExtractPlaceholderForTest exposes extractPlaceholder for unit tests.
+func ExtractPlaceholderForTest(authHeader string) string {
+	return extractPlaceholder(authHeader)
 }
