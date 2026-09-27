@@ -1406,3 +1406,95 @@ func TestParseListFieldNoPrefixCollision(t *testing.T) {
 		t.Errorf("parseListField(\"wDJ1\"): got %q, want %q", got2, "h-wrong")
 	}
 }
+
+// ── R10: volume cleanup + branch deletion tests ───────────────────────────
+
+// TestTeardownRemovesVolumesAndBranch verifies that Teardown, after removing
+// the worktree, calls `nexus volume ls`, then `nexus volume rm <name>` for each
+// of the five exact volume names, and `git -C <repo> branch -D ctrl/...`.
+func TestTeardownRemovesVolumesAndBranch(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+
+	const handle = "test-handle"
+	vols := worktreeVolumeNames(handle)
+	// Build a `nexus volume ls` output that includes all five volumes plus an
+	// unrelated volume that must NOT be removed.
+	var lsBuf strings.Builder
+	lsBuf.WriteString("unrelated-vol\n")
+	for _, v := range vols {
+		lsBuf.WriteString(v + "\n")
+	}
+	lsOut := lsBuf.String()
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wVol"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wVol","agent_status":"idle","state_change_seq":1}}}`},
+		"worktree remove": {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wVol", "wVol:p1")},
+		"ps":                     {out: nexusPSLine(handle, "sb-abc123")},
+		"sandbox rm":             {out: ""},
+		"exec":                   {out: "nexus-fake-guest\n"},
+		"volume ls":              {out: lsOut},
+		"volume rm":              {out: ""},
+	})
+	g := newFakeCmd(map[string]fakeReply{
+		"branch": {out: ""},
+	})
+
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run, g.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	sandboxID, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "vol"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if err := b.Teardown(context.Background(), sandboxID); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	// volume ls must be called.
+	if !n.calledWith("volume", "ls") {
+		t.Error("expected nexus volume ls call")
+	}
+
+	// Each of the five volumes must be removed exactly; unrelated-vol must not.
+	n.mu.Lock()
+	rmNames := make(map[string]int)
+	for _, c := range n.calls {
+		if len(c.argv) == 3 && c.argv[0] == "volume" && c.argv[1] == "rm" {
+			rmNames[c.argv[2]]++
+		}
+	}
+	n.mu.Unlock()
+
+	for _, v := range vols {
+		if rmNames[v] != 1 {
+			t.Errorf("expected exactly one nexus volume rm %q; got %d", v, rmNames[v])
+		}
+	}
+	if rmNames["unrelated-vol"] != 0 {
+		t.Errorf("unrelated-vol must not be removed; got %d rm calls", rmNames["unrelated-vol"])
+	}
+
+	// git branch -D must be called with the ctrl/ branch.
+	if !g.calledWith("-C", "/repo", "branch", "-D") {
+		t.Error("expected git -C /repo branch -D <branch> call")
+	}
+	g.mu.Lock()
+	var branchArg string
+	for _, c := range g.calls {
+		if len(c.argv) == 5 && c.argv[0] == "-C" && c.argv[2] == "branch" && c.argv[3] == "-D" {
+			branchArg = c.argv[4]
+		}
+	}
+	g.mu.Unlock()
+	if !strings.HasPrefix(branchArg, "ctrl/") {
+		t.Errorf("git branch -D argument = %q; want ctrl/... prefix", branchArg)
+	}
+}

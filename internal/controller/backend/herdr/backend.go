@@ -43,6 +43,7 @@ type entry struct {
 	nexusHandle    string
 	nexusSandboxID string
 	wsID           string
+	branch         string // git branch ctrl/… created during Provision
 	tornDown       bool
 }
 
@@ -51,6 +52,7 @@ type Backend struct {
 	cfg       Config
 	herdrRun  runner
 	nexusRun  runner
+	gitRun    runner            // injected for tests; real impl calls git directly
 	agentOpts []herdragent.Option
 	sleepFn   func(time.Duration) // injected for tests
 	nowFn     func() time.Time    // injected for tests
@@ -73,6 +75,7 @@ func New(cfg Config) *Backend {
 	}
 	b.herdrRun = b.defaultHerdrRun
 	b.nexusRun = b.defaultNexusRun
+	b.gitRun = b.defaultGitRun
 	return b
 }
 
@@ -85,6 +88,7 @@ func newWithRunners(cfg Config, hr, nr runner, opts ...herdragent.Option) *Backe
 		cfg:       cfg,
 		herdrRun:  hr,
 		nexusRun:  nr,
+		gitRun:    func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil },
 		agentOpts: opts,
 		entries:   make(map[string]*entry),
 		sandboxes: make(map[string]string),
@@ -92,6 +96,13 @@ func newWithRunners(cfg Config, hr, nr runner, opts ...herdragent.Option) *Backe
 		sleepFn:   func(time.Duration) {}, // no-op for tests
 		nowFn:     time.Now,
 	}
+	return b
+}
+
+// newWithRunnersGit creates a Backend with injected herdr, nexus, and git runners for testing.
+func newWithRunnersGit(cfg Config, hr, nr, gr runner, opts ...herdragent.Option) *Backend {
+	b := newWithRunners(cfg, hr, nr, opts...)
+	b.gitRun = gr
 	return b
 }
 
@@ -127,6 +138,102 @@ func (b *Backend) defaultNexusRun(ctx context.Context, extraEnv []string, argv .
 	}
 	base := b.nexusBaseEnv()
 	return runCmd(ctx, nexusBin, append(base, extraEnv...), argv...)
+}
+
+func (b *Backend) defaultGitRun(ctx context.Context, _ []string, argv ...string) (string, error) {
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("git not found: %w", err)
+	}
+	return runCmd(ctx, gitBin, nil, argv...)
+}
+
+// sandboxHandleSlug derives a VolumeStore-legal slug from a nexus sandbox handle.
+// Mirrors herdrHandleSlug in internal/cli/cmd_herdr_plugin.go.
+func sandboxHandleSlug(handle string) string {
+	var b strings.Builder
+	prev := byte('-')
+	for i := 0; i < len(handle); i++ {
+		c := handle[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			lc := c + ('a' - 'A')
+			b.WriteByte(lc)
+			prev = lc
+		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_':
+			b.WriteByte(c)
+			prev = c
+		default:
+			if prev != '-' {
+				b.WriteByte('-')
+				prev = '-'
+			}
+		}
+	}
+	return b.String()
+}
+
+// worktreeVolumeNames returns the exact named volumes for a nexus sandbox handle.
+// Matches herdrWorktreeVolumeNames in internal/cli/cmd_herdr_plugin.go.
+func worktreeVolumeNames(handle string) []string {
+	slug := sandboxHandleSlug(handle)
+	return []string{
+		slug + "-docker",
+		slug + "-agentcfg",
+		slug + "-gocache",
+		slug + "-gopath",
+		slug + "-nexusstate",
+	}
+}
+
+// removeVolumes lists nexus volumes and removes exact names for handle's volume set.
+// Logs failures; never returns an error (missing volumes are benign).
+func (b *Backend) removeVolumes(ctx context.Context, handle string) {
+	if handle == "" {
+		return
+	}
+	names := worktreeVolumeNames(handle)
+	nameSet := make(map[string]bool, len(names))
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	lsOut, err := b.nexusRun(ctx, nil, "volume", "ls")
+	if err != nil {
+		slog.Error("teardown: volume ls", "handle", handle, "err", err)
+		return
+	}
+	for _, line := range strings.Split(lsOut, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if !nameSet[name] {
+			continue
+		}
+		if _, rmErr := b.nexusRun(ctx, nil, "volume", "rm", name); rmErr != nil {
+			slog.Error("teardown: volume rm", "volume", name, "err", rmErr)
+		}
+	}
+}
+
+// deleteBranch deletes the git branch (must start with "ctrl/") from cfg.RepoPath.
+// Logs failures; never returns an error.
+func (b *Backend) deleteBranch(ctx context.Context, branch string) {
+	if branch == "" || !strings.HasPrefix(branch, "ctrl/") {
+		return
+	}
+	repoPath := b.cfg.RepoPath
+	if repoPath == "" {
+		return
+	}
+	if _, err := b.gitRun(ctx, nil, "-C", repoPath, "branch", "-D", branch); err != nil {
+		slog.Error("teardown: git branch -D", "branch", branch, "err", err)
+	}
 }
 
 func (b *Backend) baseEnv() []string {
@@ -268,8 +375,9 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	}
 
 	// Rollback: on any error return after worktree creation, remove sandbox (if
-	// bound) then the worktree. committed is set to true only on success.
+	// bound) then the worktree, volumes, and branch. committed is set to true only on success.
 	var rollbackSandboxID string
+	var rollbackNexusHandle string
 	committed := false
 	defer func() {
 		if committed {
@@ -285,6 +393,8 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		if _, rbErr := b.herdrRun(cleanCtx, nil, "worktree", "remove", "--workspace", wsID, "--force"); rbErr != nil {
 			slog.Error("provision rollback: worktree remove", "workspace", wsID, "err", rbErr)
 		}
+		b.removeVolumes(cleanCtx, rollbackNexusHandle)
+		b.deleteBranch(cleanCtx, branch)
 	}()
 
 	bindOut, bindErr := b.nexusRun(ctx, []string{vault.PrincipalEnv + "=" + principal}, "herdr", "worktree-sandbox", wsID)
@@ -318,7 +428,8 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	if nexusSandboxID == "" {
 		return "", "", fmt.Errorf("nexus herdr list: no sandbox_id for workspace %s", wsID)
 	}
-	rollbackSandboxID = nexusSandboxID // sandbox is now bound; rollback must rm it
+	rollbackSandboxID = nexusSandboxID   // sandbox is now bound; rollback must rm it
+	rollbackNexusHandle = nexusHandle
 
 	boundPrincipal := parsePrincipal(listOut, wsID)
 	if boundPrincipal == "" || boundPrincipal != principal {
@@ -353,6 +464,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		nexusHandle:    nexusHandle,
 		nexusSandboxID: nexusSandboxID,
 		wsID:           wsID,
+		branch:         branch,
 	}
 	b.sandboxes[nexusSandboxID] = agentRef
 	b.mu.Unlock()
@@ -815,6 +927,7 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 		nexusHandle:    e.nexusHandle,
 		nexusSandboxID: e.nexusSandboxID,
 		wsID:           e.wsID,
+		branch:         e.branch,
 	}
 	b.mu.Lock()
 	delete(b.entries, agentRef)
@@ -873,11 +986,18 @@ func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 	if err := b.removeWorktree(ctx, wsID); err != nil {
 		return err
 	}
+	b.removeVolumes(ctx, nexusHandle)
+	// Retrieve branch from entry for deletion (safe: tornDown is set, entry still present).
 	b.mu.Lock()
+	var branch string
+	if e, ok := b.entries[agRef]; ok {
+		branch = e.branch
+	}
 	delete(b.entries, agRef)
 	delete(b.sandboxes, sandboxID)
 	b.torn[sandboxID] = true
 	b.mu.Unlock()
+	b.deleteBranch(ctx, branch)
 	return nil
 }
 
