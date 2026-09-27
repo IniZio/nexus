@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
@@ -159,6 +160,10 @@ func (c *Controller) postFailureReason(ctx context.Context, ref ThreadRef, err e
 }
 
 func (c *Controller) postAnswer(ctx context.Context, t Task, answer string) error {
+	if strings.HasPrefix(answer, RawAnswerPrefix) {
+		raw := []byte(strings.TrimPrefix(answer, RawAnswerPrefix))
+		return c.deps.Chat.PostFile(ctx, t.ThreadRef, "agent-output.txt", raw)
+	}
 	if len(answer) > answerFileSizeLimit {
 		return c.deps.Chat.PostFile(ctx, t.ThreadRef, "answer.txt", []byte(answer))
 	}

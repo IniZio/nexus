@@ -243,6 +243,11 @@ var DefaultIdle = IdleThresholds{Pause: 30 * time.Minute, Stop: 4 * time.Hour}
 
 const DefaultTurnTimeout = 30 * time.Minute
 
+// RawAnswerPrefix is prepended by AgentBackend.ReadAnswer when both transcript
+// and pane parsing fail; postAnswer uploads the payload as a file instead of
+// posting it inline.
+const RawAnswerPrefix = "\x00raw\x00"
+
 type permModeKey struct{}
 
 // WithPermMode returns a child context carrying a per-provision permission mode.

@@ -828,27 +828,186 @@ func (b *Backend) Answer(ctx context.Context, agentRef string, in controller.Age
 	return nil
 }
 
-// ReadAnswer returns the recent output for agentRef.
-// Falls back to pane read when the agent has exited (e.g. after --max-turns 1).
+// ReadAnswer returns the agent's answer for agentRef.
+// Primary: reads the guest Claude transcript JSONL and parses the last assistant reply.
+// Fallback: parses the pane scrollback to extract ● answer blocks.
+// Last resort: returns the raw pane dump prefixed with controller.RawAnswerPrefix so
+// postAnswer can upload it as a file rather than posting inline.
 func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, error) {
 	if err := b.checkAgent(ctx, agentRef); err != nil {
 		return "", err
 	}
-	out, err := b.herdrRun(ctx, nil, "agent", "read", agentRef, "--source", "recent-unwrapped", "--lines", "200")
-	if err == nil {
-		return out, nil
-	}
+
 	b.mu.Lock()
 	e := b.entries[agentRef]
 	b.mu.Unlock()
-	if e == nil {
-		return "", fmt.Errorf("herdr agent read: %w\n%s", err, out)
+
+	// Primary: guest transcript.
+	if e != nil {
+		if answer, tErr := b.readTranscriptAnswer(ctx, e.nexusSandboxID); tErr == nil && answer != "" {
+			return answer, nil
+		}
 	}
-	paneOut, paneErr := b.herdrRun(ctx, nil, "pane", "read", e.paneID, "--source", "recent-unwrapped", "--lines", "200")
+
+	// Read pane text (agent read, then pane read fallback).
+	paneText, paneErr := b.herdrRun(ctx, nil, "agent", "read", agentRef, "--source", "recent-unwrapped", "--lines", "200")
 	if paneErr != nil {
-		return "", fmt.Errorf("herdr agent read: %w\n%s", err, out)
+		if e == nil {
+			return "", fmt.Errorf("herdr agent read: %w\n%s", paneErr, paneText)
+		}
+		var p2Err error
+		paneText, p2Err = b.herdrRun(ctx, nil, "pane", "read", e.paneID, "--source", "recent-unwrapped", "--lines", "200")
+		if p2Err != nil {
+			return "", fmt.Errorf("herdr agent read: %w\n%s", paneErr, paneText)
+		}
 	}
-	return paneOut, nil
+
+	// Pane parsing fallback.
+	if answer := parsePaneAnswer(paneText); answer != "" {
+		return answer, nil
+	}
+
+	// Last resort: raw dump uploaded as file.
+	return controller.RawAnswerPrefix + paneText, nil
+}
+
+// readTranscriptAnswer runs nexus exec to find the newest Claude JSONL transcript
+// in the guest and parses the last assistant reply from it.
+func (b *Backend) readTranscriptAnswer(ctx context.Context, nexusSandboxID string) (string, error) {
+	cmd := `f=$(find /root/.claude/projects -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); [ -n "$f" ] && cat "$f"`
+	out, err := b.nexusRun(ctx, nil, "exec", nexusSandboxID, "--", "sh", "-c", cmd)
+	if err != nil {
+		return "", fmt.Errorf("read transcript: %w", err)
+	}
+	return parseTranscriptAnswer(out), nil
+}
+
+// parseTranscriptAnswer extracts the last assistant reply from a Claude JSONL
+// transcript. It walks backwards from the end, collecting assistant text blocks
+// until it reaches the most recent real user prompt (not a tool_result entry).
+// Text blocks from multiple assistant turns are joined with blank lines.
+func parseTranscriptAnswer(jsonlData string) string {
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type messageObj struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	type record struct {
+		Message messageObj `json:"message"`
+	}
+
+	lines := strings.Split(strings.TrimRight(jsonlData, "\n"), "\n")
+	var texts []string // collected in reverse order
+	done := false
+	for i := len(lines) - 1; i >= 0 && !done; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var rec record
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		switch rec.Message.Role {
+		case "assistant":
+			var blocks []contentBlock
+			if err := json.Unmarshal(rec.Message.Content, &blocks); err != nil {
+				continue
+			}
+			for j := len(blocks) - 1; j >= 0; j-- {
+				if blocks[j].Type == "text" && blocks[j].Text != "" {
+					texts = append(texts, blocks[j].Text)
+				}
+			}
+		case "human":
+			var blocks []contentBlock
+			if err := json.Unmarshal(rec.Message.Content, &blocks); err != nil {
+				done = true
+				break
+			}
+			for _, blk := range blocks {
+				if blk.Type != "tool_result" {
+					// Real user prompt; stop collecting.
+					done = true
+					break
+				}
+			}
+		}
+	}
+	if len(texts) == 0 {
+		return ""
+	}
+	// Reverse to restore forward order.
+	for i, j := 0, len(texts)-1; i < j; i, j = i+1, j-1 {
+		texts[i], texts[j] = texts[j], texts[i]
+	}
+	return strings.TrimSpace(strings.Join(texts, "\n\n"))
+}
+
+// parsePaneAnswer extracts the agent's answer from raw pane scrollback text.
+// It finds the last ❯ prompt line with content, then collects ● answer blocks
+// and their indented continuations while dropping hook errors, timing lines,
+// tool summaries, box borders, and mode indicators.
+func parsePaneAnswer(paneText string) string {
+	lines := strings.Split(paneText, "\n")
+
+	// Find the last ❯ line that has text after the marker.
+	lastPromptIdx := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "❯ ") && strings.TrimSpace(line[len("❯ "):]) != "" {
+			lastPromptIdx = i
+		}
+	}
+	if lastPromptIdx < 0 {
+		return ""
+	}
+
+	var parts []string
+	inAnswer := false
+	for _, line := range lines[lastPromptIdx+1:] {
+		switch {
+		case strings.Contains(line, "⎿"):
+			// Hook errors and tool result indentation.
+			inAnswer = false
+		case strings.HasPrefix(line, "✻ "):
+			// Timing line.
+			inAnswer = false
+		case strings.HasPrefix(line, "  Ran "):
+			// Tool-use summary (e.g. "  Ran 1 shell command").
+			inAnswer = false
+		case strings.HasPrefix(line, "──"):
+			// Box border / divider.
+			inAnswer = false
+		case strings.TrimSpace(line) == "❯":
+			// Bare input prompt.
+			inAnswer = false
+		case strings.HasPrefix(line, "  ⏸") || strings.HasPrefix(line, "⏸"):
+			// Permission mode indicator.
+			inAnswer = false
+		case strings.HasPrefix(line, "● "):
+			rest := strings.TrimPrefix(line, "● ")
+			if strings.HasPrefix(rest, "Ran ") {
+				// Stop-hook / tool summary line.
+				inAnswer = false
+				break
+			}
+			parts = append(parts, rest)
+			inAnswer = true
+		case inAnswer && strings.HasPrefix(line, "  "):
+			trimmed := strings.TrimLeft(line, " ")
+			if trimmed != "" {
+				parts = append(parts, trimmed)
+			}
+		default:
+			if strings.TrimSpace(line) != "" {
+				inAnswer = false
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 // Teardown removes the nexus sandbox and then the herdr worktree.

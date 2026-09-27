@@ -1714,3 +1714,122 @@ func TestPermModeFromContextReachesAgentStart(t *testing.T) {
 	}
 	t.Error("no agent start call found")
 }
+
+func TestParseTranscriptAnswer(t *testing.T) {
+	entry := func(role, content string) string {
+		return `{"message":{"role":"` + role + `","content":` + content + `}}`
+	}
+	textBlock := func(s string) string { return `[{"type":"text","text":"` + s + `"}]` }
+	toolResultBlock := `[{"type":"tool_result","tool_use_id":"t1","content":"output"}]`
+
+	tests := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			name: "text-only answer",
+			lines: []string{
+				entry("human", textBlock("what is 2+2?")),
+				entry("assistant", textBlock("4")),
+			},
+			want: "4",
+		},
+		{
+			name: "multi-block answer joined",
+			lines: []string{
+				entry("human", textBlock("hello")),
+				entry("assistant", `[{"type":"text","text":"part one"},{"type":"tool_use","id":"x","name":"Bash","input":{}},{"type":"text","text":"part two"}]`),
+			},
+			want: "part one\n\npart two",
+		},
+		{
+			name: "tool_use blocks in between are skipped (only text kept)",
+			lines: []string{
+				entry("human", textBlock("run something")),
+				entry("assistant", `[{"type":"tool_use","id":"x","name":"Bash","input":{}}]`),
+				entry("human", toolResultBlock),
+				entry("assistant", textBlock("done")),
+			},
+			want: "done",
+		},
+		{
+			name: "older turn text not included",
+			lines: []string{
+				entry("human", textBlock("first prompt")),
+				entry("assistant", textBlock("first answer")),
+				entry("human", textBlock("second prompt")),
+				entry("assistant", textBlock("second answer")),
+			},
+			want: "second answer",
+		},
+		{
+			name: "tool_result-only human entries not treated as real prompt boundary",
+			lines: []string{
+				entry("human", textBlock("prompt")),
+				entry("assistant", `[`+`{"type":"tool_use","id":"t1","name":"Bash","input":{}}]`),
+				entry("human", toolResultBlock),
+				entry("assistant", textBlock("final")),
+			},
+			want: "final",
+		},
+		{
+			name: "empty jsonl",
+			lines: nil,
+			want:  "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data := strings.Join(tc.lines, "\n")
+			got := parseTranscriptAnswer(data)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParsePaneAnswer(t *testing.T) {
+	t.Run("live fixture", func(t *testing.T) {
+		data, err := os.ReadFile("testdata/live-pane-ar.txt")
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		got := parsePaneAnswer(string(data))
+		want := "572b368 fix(controller): guest-shell, marker lifetime, per-channel perm mode"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no prompt line returns empty", func(t *testing.T) {
+		got := parsePaneAnswer("● some output\n")
+		if got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("strips hook errors and timing", func(t *testing.T) {
+		pane := "❯ ask something\n" +
+			"  ⎿  SessionStart:startup hook error\n" +
+			"● my answer\n" +
+			"✻ Brewed for 2s\n"
+		got := parsePaneAnswer(pane)
+		if got != "my answer" {
+			t.Errorf("got %q, want %q", got, "my answer")
+		}
+	})
+
+	t.Run("skips Ran N stop hook lines", func(t *testing.T) {
+		pane := "❯ prompt\n" +
+			"● real answer\n" +
+			"● Ran 3 stop hooks\n" +
+			"  ⎿  hook error\n"
+		got := parsePaneAnswer(pane)
+		if got != "real answer" {
+			t.Errorf("got %q, want %q", got, "real answer")
+		}
+	})
+}

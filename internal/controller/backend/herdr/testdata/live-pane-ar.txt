@@ -1,0 +1,60 @@
+
+ ▐▛███▛█   Claude Code v2.1.280
+▝▜██████▀  Haiku 4.5 · Claude API
+  ▝▝ ▝▝    /workspace
+
+⚠ 1 MCP server needs authentication · run /mcp
+  ⎿  SessionStart:startup hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  SessionStart:startup hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+
+❯ what's the latest commit on develop? reply with just the hash and subject
+  ⎿  UserPromptSubmit hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+
+  Ran 1 shell command
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PreToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PostToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  PostToolUse:Bash hook error
+  ⎿  Failed with non-blocking status code: /bin/sh: 1: bun: not found
+
+● 572b368 fix(controller): guest-shell, marker lifetime, per-channel perm mode
+
+● Ran 5 stop hooks
+  ⎿  Stop hook error: Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  Stop hook error: Failed with non-blocking status code: /bin/sh: 1: bun: not found
+  ⎿  Stop hook error: Failed with non-blocking status code: /bin/sh: 1: bun: not found
+
+✻ Brewed for 4s · done 3:48 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ⏸ manual mode on · ← for agents

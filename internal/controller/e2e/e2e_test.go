@@ -224,7 +224,7 @@ func testMentionProvisions(t *testing.T, ctx context.Context, chat *chattest.Fak
 		Kind:      controller.EventMention,
 		ThreadRef: ref,
 		User:      testUser,
-		Text:      "echo hello from nexus e2e test",
+		Text:      "what is 17*23? reply with only the number",
 	}
 	if err := router.Handle(ctx, ev); err != nil {
 		t.Fatalf("Handle mention: %v", err)
@@ -238,17 +238,24 @@ func testMentionProvisions(t *testing.T, ctx context.Context, chat *chattest.Fak
 			if r == "white_check_mark" {
 				task, _ := store.Get(ctx, ref)
 				t.Logf("got check_mark; sandbox=%s status=%s", task.SandboxID, task.Status)
-				echoExpected := "hello from nexus e2e test"
 				found := false
 				for _, p := range posts {
-					if strings.Contains(p, echoExpected) {
+					if strings.Contains(p, "391") {
 						found = true
-						t.Logf("echo output confirmed in agent response")
+						t.Logf("math answer confirmed in agent response")
 						break
 					}
 				}
 				if !found {
-					t.Errorf("MentionProvisionsSandbox: agent response missing %q; posts: %v", echoExpected, posts)
+					t.Errorf("MentionProvisionsSandbox: agent response missing %q; posts: %v", "391", posts)
+				}
+				for _, p := range posts {
+					if strings.Contains(p, "Claude Code v") {
+						t.Errorf("MentionProvisionsSandbox: post contains raw TUI banner: %q", p)
+					}
+					if strings.Contains(p, "17*23") {
+						t.Errorf("MentionProvisionsSandbox: post contains prompt text (pane dump): %q", p)
+					}
 				}
 				return task
 			}
@@ -515,6 +522,11 @@ outer:
 	if !found {
 		t.Errorf("AgentRunsInGuest: guest hostname %q not found in agent posts: %v", guestHostname, posts)
 	}
+	for _, p := range posts {
+		if strings.Contains(p, "Claude Code v") {
+			t.Errorf("AgentRunsInGuest: post contains raw TUI banner: %q", p)
+		}
+	}
 
 	hostHostname, _ := os.Hostname()
 	if hostHostname != guestHostname {
@@ -656,13 +668,13 @@ func testSecondTurn(t *testing.T, ctx context.Context, chat *chattest.Fake, rout
 		Kind:      controller.EventReply,
 		ThreadRef: ref,
 		User:      testUser,
-		Text:      "echo nexus-second-turn-confirmed",
+		Text:      "what is 13*11? reply with only the number",
 	}
 	if err := router.Handle(ctx, ev); err != nil {
 		t.Fatalf("second_turn: Handle: %v", err)
 	}
 
-	const wantPhrase = "nexus-second-turn-confirmed"
+	const wantPhrase = "143"
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
 		checkmarks := 0
@@ -679,6 +691,14 @@ func testSecondTurn(t *testing.T, ctx context.Context, chat *chattest.Fake, rout
 				if strings.Contains(p, wantPhrase) {
 					found = true
 					break
+				}
+			}
+			for _, p := range newPosts {
+				if strings.Contains(p, "Claude Code v") {
+					t.Errorf("second_turn: post contains raw TUI banner: %q", p)
+				}
+				if strings.Contains(p, "13*11") {
+					t.Errorf("second_turn: post contains prompt text (pane dump): %q", p)
 				}
 			}
 			cur2, _ := store.Get(ctx, ref)
