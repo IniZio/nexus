@@ -120,7 +120,7 @@ func (l *VaultLinker) linkGitHub(ctx context.Context, ev Event) error {
 		return err
 	}
 	msg := fmt.Sprintf("Enter code *%s* at: %s", da.UserCode, da.VerificationURI)
-	if err := l.chat.Post(ctx, ev.ThreadRef, msg); err != nil {
+	if err := l.chat.PostEphemeral(ctx, ev.ThreadRef, ev.User, msg); err != nil {
 		return err
 	}
 	expiry := 300 * time.Second
@@ -139,7 +139,7 @@ func (l *VaultLinker) pollGitHub(ctx context.Context, c vault.Connector, deviceC
 	rec, err := c.PollDevice(ctx, deviceCode)
 	if err != nil {
 		slog.Error("github device poll failed", "user", user, "err", err)
-		_ = l.chat.Post(ctx, ref, fmt.Sprintf("github link failed: %v", err))
+		_ = l.chat.PostEphemeral(ctx, ref, user, fmt.Sprintf("github link failed: %v", err))
 		return
 	}
 	// Connectors no longer set policy; controller sets AllowedProjects per deployment mode.
@@ -151,7 +151,7 @@ func (l *VaultLinker) pollGitHub(ctx context.Context, c vault.Connector, deviceC
 	k := vault.Key{Principal: vault.SlackPrincipal(l.team, user), Integration: "github"}
 	if err := l.v.Put(ctx, k, rec); err != nil {
 		slog.Error("github vault put failed", "user", user, "err", err)
-		_ = l.chat.Post(ctx, ref, fmt.Sprintf("github link failed: %v", err))
+		_ = l.chat.PostEphemeral(ctx, ref, user, fmt.Sprintf("github link failed: %v", err))
 		return
 	}
 	slog.Info("github linked", "user", user)
@@ -161,7 +161,7 @@ func (l *VaultLinker) pollGitHub(ctx context.Context, c vault.Connector, deviceC
 	} else {
 		msg = "github linked"
 	}
-	_ = l.chat.Post(ctx, ref, msg)
+	_ = l.chat.PostEphemeral(ctx, ref, user, msg)
 }
 
 func (l *VaultLinker) linkLinearStart(ctx context.Context, ev Event) error {
@@ -177,7 +177,7 @@ func (l *VaultLinker) linkLinearStart(ctx context.Context, ev Event) error {
 	l.mu.Lock()
 	l.pkceStates[ev.User] = pkceState{state: state, codeVerifier: codeVerifier}
 	l.mu.Unlock()
-	return l.chat.Post(ctx, ev.ThreadRef, "Authorize Linear: "+authURL)
+	return l.chat.PostEphemeral(ctx, ev.ThreadRef, ev.User, "Authorize Linear: "+authURL)
 }
 
 func (l *VaultLinker) linkLinearPaste(ctx context.Context, ev Event, rawURL string) error {
@@ -211,7 +211,7 @@ func (l *VaultLinker) linkLinearPaste(ctx context.Context, ev Event, rawURL stri
 	l.mu.Lock()
 	delete(l.pkceStates, ev.User)
 	l.mu.Unlock()
-	return l.chat.Post(ctx, ev.ThreadRef, "Linear linked!")
+	return l.chat.PostEphemeral(ctx, ev.ThreadRef, ev.User, "Linear linked!")
 }
 
 func randomState() string {

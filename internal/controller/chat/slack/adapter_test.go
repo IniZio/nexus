@@ -31,19 +31,23 @@ func newFakeSource() *fakeSource {
 
 // apiRecorder keys by "channel:threadTS" so teamID mismatches don't matter.
 type apiRecorder struct {
-	mu        sync.Mutex
-	posts     map[string][]string
-	files     map[string][]string
-	reactions map[string][]string
+	mu         sync.Mutex
+	posts      map[string][]string
+	ephemerals map[string][]string // key: "channel:user"
+	files      map[string][]string
+	reactions  map[string][]string
 }
 
 func newAPIRecorder() *apiRecorder {
 	return &apiRecorder{
-		posts:     make(map[string][]string),
-		files:     make(map[string][]string),
-		reactions: make(map[string][]string),
+		posts:      make(map[string][]string),
+		ephemerals: make(map[string][]string),
+		files:      make(map[string][]string),
+		reactions:  make(map[string][]string),
 	}
 }
+
+func ephKey(channel, user string) string { return channel + ":user:" + user }
 
 func chanKey(channel, threadTS string) string { return channel + ":" + threadTS }
 
@@ -112,7 +116,7 @@ func (d *slackDriver) Inject(ctx context.Context, ev controller.Event) error {
 			ChannelID: channelID,
 			UserID:    ev.User,
 			Command:   ev.Text,
-			TriggerID: threadTS,
+			TriggerID: "trig_" + threadTS, // adapter ignores TriggerID; ts comes from ref
 		}
 		smEv = socketmode.Event{Type: socketmode.EventTypeSlashCommand, Data: cmd}
 	}
@@ -135,6 +139,17 @@ func (d *slackDriver) Files(ref controller.ThreadRef) []string {
 	d.recorder.mu.Lock()
 	defer d.recorder.mu.Unlock()
 	return copySlice(d.recorder.files[refKey(ref)])
+}
+
+func (d *slackDriver) Ephemerals(ref controller.ThreadRef, user string) []string {
+	parts := strings.SplitN(string(ref), ":", 4)
+	if len(parts) != 4 {
+		return nil
+	}
+	channelID := parts[2]
+	d.recorder.mu.Lock()
+	defer d.recorder.mu.Unlock()
+	return copySlice(d.recorder.ephemerals[ephKey(channelID, user)])
 }
 
 func (d *slackDriver) Reactions(ref controller.ThreadRef) []string {
@@ -185,6 +200,19 @@ func buildTestAdapter(t *testing.T) (*slackadapter.Adapter, *slackDriver) {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"ok": true, "ts": "2000.0", "channel": channel,
 			})
+		case "/api/chat.postEphemeral":
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "bad form", 400)
+				return
+			}
+			channel := r.PostForm.Get("channel")
+			user := r.PostForm.Get("user")
+			text := r.PostForm.Get("text")
+			key := ephKey(channel, user)
+			rec.mu.Lock()
+			rec.ephemerals[key] = append(rec.ephemerals[key], text)
+			rec.mu.Unlock()
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "message_ts": "2000.0"})
 		case "/api/reactions.add":
 			if err := r.ParseForm(); err != nil {
 				http.Error(w, "bad form", 400)
@@ -409,5 +437,8 @@ func TestSlackSlashCommandRoutes(t *testing.T) {
 	}
 	if ev.ThreadRef.Channel() != "C_CHAN" {
 		t.Fatalf("Channel() = %q, want C_CHAN", ev.ThreadRef.Channel())
+	}
+	if ev.ThreadRef.TS() != "" {
+		t.Fatalf("TS() = %q, want empty (slash commands have no real ts)", ev.ThreadRef.TS())
 	}
 }

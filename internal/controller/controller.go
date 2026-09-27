@@ -33,6 +33,14 @@ func (r ThreadRef) Team() string {
 	return parts[1]
 }
 
+func (r ThreadRef) TS() string {
+	parts := strings.SplitN(string(r), ":", 4)
+	if len(parts) < 4 {
+		return ""
+	}
+	return parts[3]
+}
+
 type Status string
 
 const (
@@ -146,6 +154,7 @@ type Handler func(ctx context.Context, ev Event) error
 type ChatAdapter interface {
 	Run(ctx context.Context, h Handler) error
 	Post(ctx context.Context, ref ThreadRef, text string) error
+	PostEphemeral(ctx context.Context, ref ThreadRef, user, text string) error
 	PostFile(ctx context.Context, ref ThreadRef, name string, content []byte) error
 	React(ctx context.Context, ref ThreadRef, emoji string) error
 	Mention(user string) string

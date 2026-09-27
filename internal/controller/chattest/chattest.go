@@ -17,17 +17,24 @@ import (
 type Driver interface {
 	Inject(ctx context.Context, ev controller.Event) error
 	Posts(ref controller.ThreadRef) []string
+	Ephemerals(ref controller.ThreadRef, user string) []string
 	Files(ref controller.ThreadRef) []string
 	Reactions(ref controller.ThreadRef) []string
 }
 
+type ephemeralKey struct {
+	ref  controller.ThreadRef
+	user string
+}
+
 // Fake is a goroutine-safe in-memory ChatAdapter that also satisfies Driver.
 type Fake struct {
-	mu        sync.Mutex
-	pending   []controller.Event
-	posts     map[controller.ThreadRef][]string
-	files     map[controller.ThreadRef][]string
-	reactions map[controller.ThreadRef][]string
+	mu         sync.Mutex
+	pending    []controller.Event
+	posts      map[controller.ThreadRef][]string
+	ephemerals map[ephemeralKey][]string
+	files      map[controller.ThreadRef][]string
+	reactions  map[controller.ThreadRef][]string
 
 	injectCh chan controller.Event
 	doneCh   chan struct{}
@@ -38,11 +45,12 @@ type Fake struct {
 // New returns a fresh Fake.
 func New() *Fake {
 	return &Fake{
-		posts:     make(map[controller.ThreadRef][]string),
-		files:     make(map[controller.ThreadRef][]string),
-		reactions: make(map[controller.ThreadRef][]string),
-		injectCh:  make(chan controller.Event, 256),
-		doneCh:    make(chan struct{}),
+		posts:      make(map[controller.ThreadRef][]string),
+		ephemerals: make(map[ephemeralKey][]string),
+		files:      make(map[controller.ThreadRef][]string),
+		reactions:  make(map[controller.ThreadRef][]string),
+		injectCh:   make(chan controller.Event, 256),
+		doneCh:     make(chan struct{}),
 	}
 }
 
@@ -105,6 +113,15 @@ func (f *Fake) Post(_ context.Context, ref controller.ThreadRef, text string) er
 	return nil
 }
 
+// PostEphemeral records an ephemeral message for ref+user.
+func (f *Fake) PostEphemeral(_ context.Context, ref controller.ThreadRef, user, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := ephemeralKey{ref: ref, user: user}
+	f.ephemerals[k] = append(f.ephemerals[k], text)
+	return nil
+}
+
 // PostFile records the file name for ref.
 func (f *Fake) PostFile(_ context.Context, ref controller.ThreadRef, name string, _ []byte) error {
 	f.mu.Lock()
@@ -131,6 +148,13 @@ func (f *Fake) Posts(ref controller.ThreadRef) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return copySlice(f.posts[ref])
+}
+
+// Ephemerals returns a copy of all ephemeral texts posted to ref for user.
+func (f *Fake) Ephemerals(ref controller.ThreadRef, user string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return copySlice(f.ephemerals[ephemeralKey{ref: ref, user: user}])
 }
 
 // Files returns a copy of all file names posted to ref.
@@ -165,10 +189,11 @@ func RunAdapterContract(t *testing.T, newAdapter func(t *testing.T) (controller.
 		t.Helper()
 		adapter, drv := newAdapter(t)
 		ref := controller.NewThreadRef("T1", "C1", "ts1")
+		slashRef := controller.NewThreadRef("T1", "C1", "")
 		events := []controller.Event{
 			{Kind: controller.EventMention, ThreadRef: ref, User: "U1", Text: "hello"},
 			{Kind: controller.EventReply, ThreadRef: ref, User: "U2", Text: "world"},
-			{Kind: controller.EventSlashCommand, ThreadRef: ref, User: "U3", Text: "/cmd"},
+			{Kind: controller.EventSlashCommand, ThreadRef: slashRef, User: "U3", Text: "/cmd"},
 		}
 		for _, ev := range events {
 			if err := drv.Inject(context.Background(), ev); err != nil {
@@ -306,6 +331,19 @@ func RunAdapterContract(t *testing.T, newAdapter func(t *testing.T) (controller.
 		}
 		if !strings.Contains(m, "U123") {
 			t.Fatalf("Mention(%q) = %q does not contain user id", "U123", m)
+		}
+	})
+
+	t.Run("PostEphemeral recorded by Ephemerals", func(t *testing.T) {
+		t.Helper()
+		adapter, drv := newAdapter(t)
+		ref := controller.NewThreadRef("T1", "C1", "ts1")
+		if err := adapter.PostEphemeral(context.Background(), ref, "U42", "secret code"); err != nil {
+			t.Fatalf("PostEphemeral: %v", err)
+		}
+		msgs := drv.Ephemerals(ref, "U42")
+		if !containsStr(msgs, "secret code") {
+			t.Fatalf("Ephemerals(%v, U42) = %v, want to contain %q", ref, msgs, "secret code")
 		}
 	})
 }

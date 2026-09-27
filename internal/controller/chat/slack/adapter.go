@@ -139,7 +139,7 @@ func (a *Adapter) dispatch(ctx context.Context, ev socketmode.Event, h controlle
 		if !ok {
 			return nil
 		}
-		ref := controller.NewThreadRef(cmd.TeamID, cmd.ChannelID, cmd.TriggerID)
+		ref := controller.NewThreadRef(cmd.TeamID, cmd.ChannelID, "")
 		return h(ctx, controller.Event{
 			Kind:      controller.EventSlashCommand,
 			ThreadRef: ref,
@@ -152,7 +152,7 @@ func (a *Adapter) dispatch(ctx context.Context, ev socketmode.Event, h controlle
 
 // SlashCommandToEvent converts a SlashCommand to a controller.Event (exported for tests).
 func SlashCommandToEvent(cmd goslack.SlashCommand) controller.Event {
-	ref := controller.NewThreadRef(cmd.TeamID, cmd.ChannelID, cmd.TriggerID)
+	ref := controller.NewThreadRef(cmd.TeamID, cmd.ChannelID, "")
 	return controller.Event{
 		Kind:      controller.EventSlashCommand,
 		ThreadRef: ref,
@@ -190,6 +190,21 @@ func (a *Adapter) Post(ctx context.Context, ref controller.ThreadRef, text strin
 		goslack.MsgOptionText(text, false),
 		goslack.MsgOptionTS(threadTS),
 	)
+	return err
+}
+
+// PostEphemeral sends an ephemeral message visible only to user. thread_ts is
+// included only when the ref carries a real message timestamp.
+func (a *Adapter) PostEphemeral(ctx context.Context, ref controller.ThreadRef, user, text string) error {
+	_, channelID, threadTS, ok := a.parseThreadRef(ref)
+	if !ok {
+		return fmt.Errorf("slack: malformed ThreadRef: %q", ref)
+	}
+	opts := []goslack.MsgOption{goslack.MsgOptionText(text, false)}
+	if threadTS != "" {
+		opts = append(opts, goslack.MsgOptionTS(threadTS))
+	}
+	_, err := a.api.PostEphemeralContext(ctx, channelID, user, opts...)
 	return err
 }
 

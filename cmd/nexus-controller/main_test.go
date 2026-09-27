@@ -24,8 +24,11 @@ func (s stubChat) PostFile(_ context.Context, _ controller.ThreadRef, _ string, 
 	return nil
 }
 func (s stubChat) React(_ context.Context, _ controller.ThreadRef, _ string) error { return nil }
-func (s stubChat) Mention(user string) string                                      { return "<@" + user + ">" }
-func (s stubChat) TeamID() string                                                  { return s.teamID }
+func (s stubChat) PostEphemeral(_ context.Context, _ controller.ThreadRef, _, _ string) error {
+	return nil
+}
+func (s stubChat) Mention(user string) string { return "<@" + user + ">" }
+func (s stubChat) TeamID() string             { return s.teamID }
 
 // stubLifecycleSvc satisfies sandbox.LifecycleService without a real store.
 type stubLifecycleSvc struct{}

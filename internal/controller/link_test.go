@@ -60,6 +60,20 @@ func waitForPost(t *testing.T, ch *chattest.Fake, ref controller.ThreadRef, want
 	t.Fatalf("timed out waiting for post containing %q; got %v", want, ch.Posts(ref))
 }
 
+func waitForEphemeral(t *testing.T, ch *chattest.Fake, ref controller.ThreadRef, user, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, p := range ch.Ephemerals(ref, user) {
+			if strings.Contains(p, want) {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for ephemeral containing %q; got %v", want, ch.Ephemerals(ref, user))
+}
+
 func newLinkerWithVault(t *testing.T, v vault.Vault) (*controller.VaultLinker, *chattest.Fake, *vault.Registry) {
 	t.Helper()
 	return newLinkerWithMode(t, v, controllerconfig.ModeLocal)
@@ -122,18 +136,18 @@ func TestLinkGitHubPostsDeviceCodeEphemeral(t *testing.T) {
 		t.Fatalf("CommandHandler: %v", err)
 	}
 
-	posts := ch.Posts(ref)
-	if len(posts) == 0 {
-		t.Fatal("no posts after /link github")
+	ephemerals := ch.Ephemerals(ref, "U1")
+	if len(ephemerals) == 0 {
+		t.Fatalf("no ephemeral messages after /link github; public posts=%v", ch.Posts(ref))
 	}
 	found := false
-	for _, p := range posts {
+	for _, p := range ephemerals {
 		if len(p) > 0 {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("device code not posted; posts=%v", posts)
+		t.Fatalf("device code not posted ephemerally; ephemerals=%v", ephemerals)
 	}
 }
 
@@ -154,8 +168,8 @@ func TestLinkLinearPasteURLCompletes(t *testing.T) {
 	if err := handler(ctx, ev); err != nil {
 		t.Fatalf("CommandHandler /link linear: %v", err)
 	}
-	if len(ch.Posts(ref)) == 0 {
-		t.Fatal("expected auth URL post")
+	if len(ch.Ephemerals(ref, "U1")) == 0 {
+		t.Fatal("expected ephemeral auth URL post")
 	}
 
 	pastedURL := fmt.Sprintf("https://example.com/callback?code=abc123&state=%s", fixedState)
@@ -192,7 +206,7 @@ func TestLinkGitHubPollErrorNotifiesUser(t *testing.T) {
 		t.Fatalf("CommandHandler: %v", err)
 	}
 
-	waitForPost(t, ch, ref, "github link failed", 3*time.Second)
+	waitForEphemeral(t, ch, ref, "U1", "github link failed", 3*time.Second)
 }
 
 func TestLinkGitHubVaultPutErrorNotifiesUser(t *testing.T) {
@@ -213,7 +227,7 @@ func TestLinkGitHubVaultPutErrorNotifiesUser(t *testing.T) {
 		t.Fatalf("CommandHandler: %v", err)
 	}
 
-	waitForPost(t, ch, ref, "github link failed", 3*time.Second)
+	waitForEphemeral(t, ch, ref, "U2", "github link failed", 3*time.Second)
 }
 
 func TestLinkGitHubSuccessPostsConfirmation(t *testing.T) {
@@ -234,7 +248,7 @@ func TestLinkGitHubSuccessPostsConfirmation(t *testing.T) {
 		t.Fatalf("CommandHandler: %v", err)
 	}
 
-	waitForPost(t, ch, ref, "github linked", 3*time.Second)
+	waitForEphemeral(t, ch, ref, "U3", "github linked", 3*time.Second)
 }
 
 func TestLinkGitHubLaptopModeAllowsStar(t *testing.T) {
@@ -254,7 +268,7 @@ func TestLinkGitHubLaptopModeAllowsStar(t *testing.T) {
 		t.Fatalf("CommandHandler: %v", err)
 	}
 
-	waitForPost(t, ch, ref, "github linked", 3*time.Second)
+	waitForEphemeral(t, ch, ref, "U4", "github linked", 3*time.Second)
 
 	k := vault.Key{Principal: vault.SlackPrincipal("T1", "U4"), Integration: "github"}
 	rec, err := inner.Get(ctx, k)
@@ -283,7 +297,7 @@ func TestLinkGitHubSharedModeNoProjects(t *testing.T) {
 		t.Fatalf("CommandHandler: %v", err)
 	}
 
-	waitForPost(t, ch, ref, "no projects", 3*time.Second)
+	waitForEphemeral(t, ch, ref, "U5", "no projects", 3*time.Second)
 
 	k := vault.Key{Principal: vault.SlackPrincipal("T1", "U5"), Integration: "github"}
 	rec, err := inner.Get(ctx, k)
