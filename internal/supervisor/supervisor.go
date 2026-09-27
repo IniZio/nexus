@@ -698,7 +698,7 @@ func RunDetached(cfg Config) error {
 		perimSupPtr.Store(sup)
 	}
 
-	resolveGitHubFromVault(ctx, hostVault, broker, sb)
+	vaultGitHubPayload := resolveGitHubFromVault(ctx, hostVault, broker, sb)
 
 	// ── 5a-gitssh. Start git SSH relay ───────────────────────────────────────
 	// Accepts guest-initiated vsock connections on GitSSHRelayPort (1026) and
@@ -931,6 +931,9 @@ func RunDetached(cfg Config) error {
 		if len(mcpOAuthSeedMap) > 0 {
 			agentSeeder = wrapSeederWithExtra(agentSeeder, buildMCPOAuthCredPayload(mcpOAuthSeedMap))
 		}
+		if len(vaultGitHubPayload) > 0 {
+			agentSeeder = wrapSeederWithExtra(agentSeeder, vaultGitHubPayload)
+		}
 		cert := svc.GetPerimeterCACert(sb.ID)
 		// D-PD-33 / D-PD-36: seed human secrets whenever SecretHosts is non-empty.
 		// OpenEgress=true (human open-egress) AND OpenEgress=false (--egress closed)
@@ -985,6 +988,13 @@ func RunDetached(cfg Config) error {
 				slog.Warn("supervisor.update_ca_certs_failed", "err", ucErr)
 			} else {
 				slog.Info("supervisor.update_ca_certs_done")
+			}
+			if len(vaultGitHubPayload) > 0 && sb.AgentName == "" {
+				if writeErr := agentSeeder(ctx, sb.ID, nil); writeErr != nil {
+					slog.Warn("supervisor.vault_github_cred_write_failed", "sandbox", sb.ID, "err", writeErr)
+				} else {
+					slog.Info("supervisor.vault_github_cred_written", "sandbox", sb.ID)
+				}
 			}
 		}
 	}

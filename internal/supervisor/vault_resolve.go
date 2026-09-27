@@ -18,22 +18,34 @@ var openSupervisorVaultFn = func() (vault.Vault, error) {
 }
 
 // resolveGitHubFromVault resolves the GitHub token from the vault for the
-// sandbox's principal and registers it with the broker. Non-fatal: failures
-// are logged and the sandbox continues without a GitHub credential.
-func resolveGitHubFromVault(ctx context.Context, v vault.Vault, broker *cred.Broker, sb domain.Sandbox) {
-	if v == nil || sb.Principal == "" {
-		return
+// sandbox's principal, registers the placeholder with the broker, and returns
+// the cred.env payload (GH_TOKEN=<placeholder>\nGITHUB_TOKEN=<placeholder>\n)
+// for seeding the guest. Returns nil on any failure (non-fatal).
+func resolveGitHubFromVault(ctx context.Context, v vault.Vault, broker *cred.Broker, sb domain.Sandbox) []byte {
+	if v == nil {
+		slog.Info("supervisor.vault_github_skip", "reason", "vault_nil")
+		return nil
+	}
+	if sb.Principal == "" {
+		slog.Info("supervisor.vault_github_skip", "reason", "no_principal")
+		return nil
 	}
 	bind, ok, err := service.GitHubSecretFromVault(ctx, v, sb.Principal, sb.Project)
-	if err != nil || !ok {
-		if err != nil {
-			slog.Info("supervisor.vault_github_skip", "err", err)
-		}
-		return
+	if err != nil {
+		slog.Info("supervisor.vault_github_skip", "principal", sb.Principal, "err", err)
+		return nil
 	}
-	if _, _, regErr := service.ApplyVaultSecretsToBroker(broker, sb.ID, []service.SecretBind{bind}); regErr != nil {
+	if !ok {
+		slog.Info("supervisor.vault_github_skip", "principal", sb.Principal, "reason", "no_token")
+		return nil
+	}
+	payload, _, regErr := service.ApplyVaultSecretsToBroker(broker, sb.ID, []service.SecretBind{bind})
+	if regErr != nil {
 		slog.Warn("supervisor.vault_github_register_failed", "err", regErr)
+		return nil
 	}
+	slog.Info("supervisor.vault_github_placeholder_ready", "principal", sb.Principal, "bytes", len(payload))
+	return payload
 }
 
 // resolveVaultMCPBindsForBroker calls BuildMCPOAuthBindsFromVault and registers

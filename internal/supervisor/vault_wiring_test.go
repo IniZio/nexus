@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -26,15 +27,21 @@ func TestSupervisorResolvesGitHubViaVault(t *testing.T) {
 	sid[0] = 1
 	sb := domain.Sandbox{ID: sid, Principal: "alice"}
 
-	resolveGitHubFromVault(ctx, fakeV, broker, sb)
+	payload := resolveGitHubFromVault(ctx, fakeV, broker, sb)
 
-	src, srcErr := fakeV.Source(key, "")
-	if srcErr != nil {
-		t.Fatalf("Source: %v", srcErr)
+	if len(payload) == 0 {
+		t.Fatal("resolveGitHubFromVault returned empty payload; GH_TOKEN placeholder not seeded")
 	}
-	tok, _, tokErr := src.Token(ctx)
-	if tokErr != nil || tok != "gh-tok" {
-		t.Errorf("vault github token = %q (err %v), want gh-tok", tok, tokErr)
+	payloadStr := string(payload)
+	if !strings.Contains(payloadStr, "GH_TOKEN=") {
+		t.Errorf("payload missing GH_TOKEN line; got %q", payloadStr)
+	}
+	if !strings.Contains(payloadStr, "GITHUB_TOKEN=") {
+		t.Errorf("payload missing GITHUB_TOKEN alias; got %q", payloadStr)
+	}
+	ph := strings.TrimPrefix(strings.SplitN(payloadStr, "\n", 2)[0], "GH_TOKEN=")
+	if _, ok := broker.Resolve(ph); !ok {
+		t.Errorf("broker.Resolve(%q) = false; placeholder not registered for github.com", ph)
 	}
 }
 
