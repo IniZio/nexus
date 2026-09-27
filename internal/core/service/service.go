@@ -660,6 +660,14 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 		if err != nil {
 			return fmt.Errorf("re-validate: %w", err)
 		}
+		if rec.State == domain.Paused {
+			if pr, ok := s.driver.(driver.PauseResumer); ok {
+				if resumeErr := pr.Resume(ctx, rec.ID); resumeErr != nil {
+					slog.Warn("service: stop: resume-before-stop failed; forcing stop",
+						"sandbox", rec.ID, "err", resumeErr)
+				}
+			}
+		}
 		if err := s.driver.Stop(ctx, rec.ID); err != nil {
 			return fmt.Errorf("driver: %w", err)
 		}

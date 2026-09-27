@@ -426,7 +426,8 @@ func TestLifecycle_PauseResume(t *testing.T) {
 }
 
 func TestLifecycle_StopFromPaused(t *testing.T) {
-	svc := newSvc(t)
+	fakeDriver := fake.New()
+	svc := service.New(newFileStore(t), fakeDriver, lifecycle.New())
 	sb, _ := svc.Create(ctx(), "proj", "box", service.CreateOptions{})
 
 	if _, err := svc.Start(ctx(), sb.ID.String()); err != nil {
@@ -435,6 +436,7 @@ func TestLifecycle_StopFromPaused(t *testing.T) {
 	if _, err := svc.Pause(ctx(), sb.ID.String()); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
+	fakeDriver.ResetCalls()
 
 	stopped, err := svc.Stop(ctx(), sb.ID.String())
 	if err != nil {
@@ -442,6 +444,26 @@ func TestLifecycle_StopFromPaused(t *testing.T) {
 	}
 	if stopped.State != domain.Stopped {
 		t.Errorf("after Stop from paused: state = %q, want Stopped", stopped.State)
+	}
+
+	calls := fakeDriver.Calls()
+	resumeIdx, stopIdx := -1, -1
+	for i, c := range calls {
+		switch c.Kind {
+		case fake.CallResume:
+			resumeIdx = i
+		case fake.CallStop:
+			stopIdx = i
+		}
+	}
+	if resumeIdx < 0 {
+		t.Error("expected driver.Resume call before Stop; none recorded")
+	}
+	if stopIdx < 0 {
+		t.Error("expected driver.Stop call; none recorded")
+	}
+	if resumeIdx >= 0 && stopIdx >= 0 && resumeIdx >= stopIdx {
+		t.Errorf("driver.Resume (idx %d) must precede driver.Stop (idx %d)", resumeIdx, stopIdx)
 	}
 
 	started, err := svc.Start(ctx(), sb.ID.String())
