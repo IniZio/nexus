@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/controller"
+	"github.com/IniZio/nexus/internal/core/sandboxhandle"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
 )
@@ -1325,6 +1326,90 @@ func TestProvisionRollbackOnAgentStartFailure(t *testing.T) {
 	}
 	if !h.calledWith("worktree", "remove", "--workspace", "wRB", "--force") {
 		t.Errorf("rollback: expected herdr worktree remove --workspace wRB --force; calls: %v", h.calls)
+	}
+}
+
+// TestProvisionRollbackOnWorktreeSandboxFailure verifies that when
+// nexus herdr worktree-sandbox fails before the nexus herdr list call, the
+// deferred rollback still removes the expected volumes and deletes the branch.
+// This requires rollbackNexusHandle to be set from the pre-computed handle
+// (repo name + worktree dir basename) rather than waiting for herdr list.
+//
+// MUTATION PROOF: remove the early rollbackNexusHandle assignment and revert
+// to the old `var rollbackNexusHandle string` → volume ls is never called →
+// this test fails on the "volume ls must be called" assertion.
+func TestProvisionRollbackOnWorktreeSandboxFailure(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+
+	var capturedBranch string
+	var volumeRmCalls []string
+	volumeLsCalled := false
+
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "list":
+			return `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`, nil
+		case len(argv) >= 2 && argv[0] == "worktree" && argv[1] == "create":
+			for i, a := range argv {
+				if a == "--branch" && i+1 < len(argv) {
+					capturedBranch = argv[i+1]
+				}
+			}
+			return `{"result":{"workspace":{"workspace_id":"wEarly"}}}`, nil
+		case len(argv) >= 2 && argv[0] == "worktree" && argv[1] == "remove":
+			return "", nil
+		}
+		return "", nil
+	}
+
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "worktree-sandbox":
+			return "error: volumestore: mke2fs not found on PATH (install e2fsprogs)", fmt.Errorf("exit status 1")
+		case len(argv) >= 2 && argv[0] == "volume" && argv[1] == "ls":
+			volumeLsCalled = true
+			if capturedBranch == "" {
+				return "", nil
+			}
+			safeBranch := strings.ReplaceAll(capturedBranch, "/", "-")
+			handle := sandboxhandle.WorktreeHandle("repo", safeBranch)
+			return strings.Join(worktreeVolumeNames(handle), "\n") + "\n", nil
+		case len(argv) >= 3 && argv[0] == "volume" && argv[1] == "rm":
+			volumeRmCalls = append(volumeRmCalls, argv[2])
+			return "", nil
+		}
+		return "", nil
+	}
+
+	gitFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		return "", nil
+	}
+
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn, gitFn)
+
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "early"), testPrincipal)
+	if err == nil {
+		t.Fatal("Provision: expected error, got nil")
+	}
+	if !volumeLsCalled {
+		t.Error("rollback: nexus volume ls must be called when worktree-sandbox fails (rollbackNexusHandle must be set early)")
+	}
+	if capturedBranch == "" {
+		t.Skip("branch not captured from herdr worktree create; cannot verify volume rm calls")
+	}
+	safeBranch := strings.ReplaceAll(capturedBranch, "/", "-")
+	expectedHandle := sandboxhandle.WorktreeHandle("repo", safeBranch)
+	for _, name := range worktreeVolumeNames(expectedHandle) {
+		found := false
+		for _, rm := range volumeRmCalls {
+			if rm == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("rollback: expected nexus volume rm %s; rm calls: %v", name, volumeRmCalls)
+		}
 	}
 }
 

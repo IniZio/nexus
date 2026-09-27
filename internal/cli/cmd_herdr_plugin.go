@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/portfwd"
+	"github.com/IniZio/nexus/internal/core/sandboxhandle"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/vault"
@@ -465,9 +467,13 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			if hostPath, _, ok := strings.Cut(mountSpec, ":"); ok && hostPath != "" {
 				cmd.Dir = hostPath
 			}
+			var stderrBuf bytes.Buffer
 			cmd.Stdout = out.w
-			cmd.Stderr = out.w
-			return cmd.Run()
+			cmd.Stderr = io.MultiWriter(out.w, &stderrBuf)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("%w\n%s", err, sandboxCreateLastErrors(stderrBuf.String()))
+			}
+			return nil
 		}
 		getFn := func(ctx context.Context, handle string) (domain.Sandbox, error) {
 			return svc.Get(ctx, handle)
@@ -4452,34 +4458,32 @@ func herdrWtRemoveVolumes(ctx context.Context, storeRoot, handle string, keep ..
  * to nothing, so callers always get a non-empty stem to append a suffix to.
  */
 func herdrHandleSlug(handle string) string {
-	var b strings.Builder
-	prev := byte('-')
-	for i := 0; i < len(handle); i++ {
-		c := handle[i]
-		switch {
-		case c >= 'A' && c <= 'Z':
-			lc := c + ('a' - 'A')
-			b.WriteByte(lc)
-			prev = lc
-		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_':
-			b.WriteByte(c)
-			prev = c
-		default: // '/', '-', whitespace, anything else → collapse to one '-'
-			if prev != '-' {
-				b.WriteByte('-')
-				prev = '-'
-			}
+	return sandboxhandle.Slug(handle)
+}
+
+// sandboxCreateLastErrors extracts the most useful lines from stderr captured
+// during a failed `sandbox create` subprocess. Lines starting with "error:"
+// are preferred; when none are found, the last 20 non-empty lines are returned.
+// The result is trimmed and may be empty if stderr was empty.
+func sandboxCreateLastErrors(stderr string) string {
+	var errLines, allLines []string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		allLines = append(allLines, line)
+		if strings.HasPrefix(line, "error:") {
+			errLines = append(errLines, line)
 		}
 	}
-	/**
-	 * First char must be [a-z0-9]; trim any leading '.', '_', '-' the grammar
-	 * forbids in that position, plus trailing separators for tidiness.
-	 */
-	slug := strings.Trim(b.String(), "-._")
-	if slug == "" {
-		slug = "wt"
+	if len(errLines) > 0 {
+		return strings.Join(errLines, "\n")
 	}
-	return slug
+	if len(allLines) > 20 {
+		allLines = allLines[len(allLines)-20:]
+	}
+	return strings.Join(allLines, "\n")
 }
 
 /**
@@ -4737,27 +4741,7 @@ func herdrWorktreeIdentity(info herdrWorktreeInfo) string {
 }
 
 func herdrWorktreeSandboxHandle(repoName, branch string) string {
-	sanitize := func(s, fallback string) string {
-		var b strings.Builder
-		prev := '-'
-		for _, r := range s {
-			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
-				b.WriteRune(r)
-				prev = r
-			} else {
-				if prev != '-' {
-					b.WriteByte('-')
-				}
-				prev = '-'
-			}
-		}
-		slug := strings.Trim(b.String(), "-")
-		if slug == "" {
-			return fallback
-		}
-		return slug
-	}
-	return sanitize(repoName, "repo") + "/" + sanitize(branch, "worktree")
+	return sandboxhandle.WorktreeHandle(repoName, branch)
 }
 
 /**

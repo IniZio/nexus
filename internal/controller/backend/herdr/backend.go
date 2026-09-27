@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/controller"
+	"github.com/IniZio/nexus/internal/core/sandboxhandle"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
@@ -148,35 +149,10 @@ func (b *Backend) defaultGitRun(ctx context.Context, _ []string, argv ...string)
 	return runCmd(ctx, gitBin, nil, argv...)
 }
 
-// sandboxHandleSlug derives a VolumeStore-legal slug from a nexus sandbox handle.
-// Mirrors herdrHandleSlug in internal/cli/cmd_herdr_plugin.go.
-func sandboxHandleSlug(handle string) string {
-	var b strings.Builder
-	prev := byte('-')
-	for i := 0; i < len(handle); i++ {
-		c := handle[i]
-		switch {
-		case c >= 'A' && c <= 'Z':
-			lc := c + ('a' - 'A')
-			b.WriteByte(lc)
-			prev = lc
-		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_':
-			b.WriteByte(c)
-			prev = c
-		default:
-			if prev != '-' {
-				b.WriteByte('-')
-				prev = '-'
-			}
-		}
-	}
-	return b.String()
-}
-
 // worktreeVolumeNames returns the exact named volumes for a nexus sandbox handle.
 // Matches herdrWorktreeVolumeNames in internal/cli/cmd_herdr_plugin.go.
 func worktreeVolumeNames(handle string) []string {
-	slug := sandboxHandleSlug(handle)
+	slug := sandboxhandle.Slug(handle)
 	return []string{
 		slug + "-docker",
 		slug + "-agentcfg",
@@ -377,7 +353,10 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	// Rollback: on any error return after worktree creation, remove sandbox (if
 	// bound) then the worktree, volumes, and branch. committed is set to true only on success.
 	var rollbackSandboxID string
-	var rollbackNexusHandle string
+	// Pre-compute the expected nexus handle from the repo name and worktree dir
+	// basename so rollback can remove volumes even when worktree-sandbox fails
+	// before the nexus herdr list call that would normally reveal the handle.
+	rollbackNexusHandle := sandboxhandle.WorktreeHandle(filepath.Base(repoPath), safeBranch)
 	committed := false
 	defer func() {
 		if committed {
