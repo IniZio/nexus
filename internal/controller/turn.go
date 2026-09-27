@@ -3,7 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
-	"time"
+	"fmt"
 
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/herdragent"
@@ -37,6 +37,10 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 		if uErr := c.deps.Store.Upsert(ctx, t); uErr != nil {
 			return uErr
 		}
+	} else if t.Owner != "" && ev.User != t.Owner {
+		_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+		_ = c.deps.Chat.Post(ctx, t.ThreadRef, "this thread belongs to "+c.deps.Chat.Mention(t.Owner))
+		return ErrNotOwner
 	}
 
 	if t.Status != StatusWorking {
@@ -56,11 +60,39 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 }
 
 func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
-	turnCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	d := c.turnTimeout()
+	turnCtx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
 	for {
+		select {
+		case <-turnCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			nextSeq := t.StateChangeSeq + 1
+			if tErr := c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusIdle, nextSeq); tErr != nil && !errors.Is(tErr, ErrConflict) {
+				return tErr
+			}
+			_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+			_ = c.deps.Chat.Post(ctx, t.ThreadRef, fmt.Sprintf("turn timed out after %s; reply to continue", d))
+			return ErrTurnTimeout
+		default:
+		}
+
 		st, err := c.deps.Backend.Observe(turnCtx, t.HerdrAgent, true)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if turnCtx.Err() != nil {
+				nextSeq := t.StateChangeSeq + 1
+				if tErr := c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusIdle, nextSeq); tErr != nil && !errors.Is(tErr, ErrConflict) {
+					return tErr
+				}
+				_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+				_ = c.deps.Chat.Post(ctx, t.ThreadRef, fmt.Sprintf("turn timed out after %s; reply to continue", d))
+				return ErrTurnTimeout
+			}
 			return err
 		}
 		if !st.Settled {
@@ -81,7 +113,9 @@ func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
 					return pErr
 				}
 			}
-			_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusIdle, t.StateChangeSeq+1)
+			if tErr := c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusIdle, t.StateChangeSeq+1); tErr != nil && !errors.Is(tErr, ErrConflict) {
+				return tErr
+			}
 			_ = c.deps.Chat.React(ctx, t.ThreadRef, "white_check_mark")
 			return nil
 		case herdragent.StatusBlocked:

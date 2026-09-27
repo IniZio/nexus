@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,171 @@ func TestTurnProvisionCarriesLinkedPrincipal(t *testing.T) {
 	want := vault.SlackPrincipal("T1", "U1")
 	if provisions[0].Principal != want {
 		t.Fatalf("principal=%q; want %q", provisions[0].Principal, want)
+	}
+}
+
+func TestTurnTimeoutTransitionsIdleAndReturnsErrTurnTimeout(t *testing.T) {
+	ctx := context.Background()
+	d, ch, st, be := newTurnDeps(t)
+	d.TurnTimeout = 50 * time.Millisecond
+	c := controller.New(d)
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-timeout")
+	sbID, agRef, err := be.Provision(ctx, "myproject", ref, "p")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	// script a non-settling state so the loop never exits normally
+	be.Script(agRef, herdragent.State{Status: herdragent.StatusWorking, Settled: false})
+
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusWorking,
+		SandboxID:      sbID,
+		HerdrAgent:     agRef,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if uErr := st.Upsert(ctx, task); uErr != nil {
+		t.Fatalf("Upsert: %v", uErr)
+	}
+
+	ev := controller.Event{Kind: controller.EventMention, ThreadRef: ref, User: "U1", Text: "go"}
+	err = c.OnMention(ctx, task, ev)
+	if !errors.Is(err, controller.ErrTurnTimeout) {
+		t.Fatalf("want ErrTurnTimeout; got %v", err)
+	}
+
+	found := false
+	for _, r := range ch.Reactions(ref) {
+		if r == "warning" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no warning reaction; reactions=%v", ch.Reactions(ref))
+	}
+
+	posts := ch.Posts(ref)
+	timedOut := false
+	for _, p := range posts {
+		if strings.Contains(p, "timed out") {
+			timedOut = true
+		}
+	}
+	if !timedOut {
+		t.Fatalf("no timeout post; posts=%v", posts)
+	}
+
+	got, gErr := st.Get(ctx, ref)
+	if gErr != nil {
+		t.Fatalf("store.Get: %v", gErr)
+	}
+	if got.Status != controller.StatusIdle {
+		t.Fatalf("status=%v; want idle", got.Status)
+	}
+}
+
+func TestTurnNotOwnerRefuses(t *testing.T) {
+	ctx := context.Background()
+	d, ch, st, be := newTurnDeps(t)
+	c := controller.New(d)
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-notowner")
+	sbID, agRef, err := be.Provision(ctx, "myproject", ref, "p")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusIdle,
+		SandboxID:      sbID,
+		HerdrAgent:     agRef,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if uErr := st.Upsert(ctx, task); uErr != nil {
+		t.Fatalf("Upsert: %v", uErr)
+	}
+
+	ev := controller.Event{Kind: controller.EventMention, ThreadRef: ref, User: "U2", Text: "hi"}
+	err = c.OnMention(ctx, task, ev)
+	if !errors.Is(err, controller.ErrNotOwner) {
+		t.Fatalf("want ErrNotOwner; got %v", err)
+	}
+
+	if len(be.Provisioned()) > 1 {
+		t.Fatal("unexpected extra Provision call")
+	}
+	// no Prompt should have been sent
+	// verify no white_check_mark reaction
+	for _, r := range ch.Reactions(ref) {
+		if r == "white_check_mark" {
+			t.Fatal("got white_check_mark; expected refusal only")
+		}
+	}
+	found := false
+	for _, r := range ch.Reactions(ref) {
+		if r == "warning" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no warning reaction; reactions=%v", ch.Reactions(ref))
+	}
+}
+
+func TestTurnParentCtxCancelNoTransition(t *testing.T) {
+	d, _, st, be := newTurnDeps(t)
+	d.TurnTimeout = 5 * time.Second
+	c := controller.New(d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ref := controller.NewThreadRef("T1", "C1", "ts-cancel")
+	sbID, agRef, err := be.Provision(ctx, "myproject", ref, "p")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	be.Script(agRef, herdragent.State{Status: herdragent.StatusWorking, Settled: false})
+
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusWorking,
+		SandboxID:      sbID,
+		HerdrAgent:     agRef,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if uErr := st.Upsert(ctx, task); uErr != nil {
+		t.Fatalf("Upsert: %v", uErr)
+	}
+
+	// cancel parent ctx immediately
+	cancel()
+
+	ev := controller.Event{Kind: controller.EventMention, ThreadRef: ref, User: "U1", Text: "go"}
+	err = c.OnMention(ctx, task, ev)
+	if err == nil {
+		t.Fatal("expected error; got nil")
+	}
+	if errors.Is(err, controller.ErrTurnTimeout) {
+		t.Fatalf("got ErrTurnTimeout; parent ctx cancel should not produce turn timeout")
+	}
+
+	got, gErr := st.Get(context.Background(), ref)
+	if gErr != nil {
+		t.Fatalf("store.Get: %v", gErr)
+	}
+	if got.Status == controller.StatusIdle {
+		t.Fatalf("status transitioned to idle on parent ctx cancel; want working")
 	}
 }
 

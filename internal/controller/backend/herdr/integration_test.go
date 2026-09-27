@@ -26,7 +26,7 @@ func TestBackendContractLive(t *testing.T) {
 		Model:           "claude-haiku-4-5",
 		HerdrSocketPath: h.SocketPath(),
 		NexusBin:        h.NexusBin(),
-		ExtraEnv:        extraEnvFromHarness(h),
+		ExtraEnv:        h.ExtraEnv(),
 		WorktreeDir:     h.WorktreeDir(),
 		PermissionMode:  "default",
 	}
@@ -208,33 +208,4 @@ func captureHerdrSessions(t *testing.T) string {
 	cmd := exec.Command("herdr", "session", "list")
 	out, _ := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out))
-}
-
-func extraEnvFromHarness(h *livenexus.Harness) []string {
-	fullEnv := h.Env()
-	keys := []string{
-		"XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "NEXUS_KERNEL_PATH", "TMPDIR",
-		"NEXUS_DISK_FLOOR_GIB", "NEXUS_HERDR_DOCKER_DISK_GIB", "NEXUS_HERDR_GOCACHE_DISK_GIB", "NEXUS_HERDR_GOPATH_DISK_GIB",
-	}
-	want := make(map[string]bool, len(keys))
-	for _, k := range keys {
-		want[k] = true
-	}
-	var out []string
-	for _, e := range fullEnv {
-		k, _, ok := cutEnv(e)
-		if ok && want[k] {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-func cutEnv(e string) (key string, val string, ok bool) {
-	for i, c := range e {
-		if c == '=' {
-			return e[:i], e[i+1:], true
-		}
-	}
-	return "", "", false
 }

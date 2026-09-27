@@ -23,6 +23,28 @@ import (
 	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
+// slackChat is the subset of *slackadapter.Adapter needed by realDepsFactory.
+type slackChat interface {
+	controller.ChatAdapter
+	TeamID() string
+}
+
+// Package-level vars are the seams that let tests replace network-bound or
+// substrate-bound constructors without touching production call paths.
+var (
+	// newSlackAdapter constructs the Slack Socket Mode adapter; tests replace
+	// this to avoid the auth.test network call.
+	newSlackAdapter = func(appToken, botToken string) (slackChat, error) {
+		return slackadapter.New(appToken, botToken)
+	}
+
+	// newSandboxLifecycle wraps buildSandboxLifecycle; tests replace this to
+	// avoid opening a real store or substrate.
+	newSandboxLifecycle = func(v vault.Vault) (*sandbox.ServiceLifecycle, error) {
+		return buildSandboxLifecycle(v)
+	}
+)
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: nexus-controller <subcommand> [flags]")
 	fmt.Fprintln(os.Stderr, "")
@@ -77,7 +99,7 @@ func runServe(args []string) error {
 // internal/cli/cmd_sandbox.go#newSandboxService.
 func realDepsFactory(cfg *controllerconfig.Config, appToken, botToken string, v vault.Vault) (controller.Deps, controller.Handler, error) {
 	// Slack Socket Mode adapter — calls auth.test; fails closed on bad tokens.
-	chat, err := slackadapter.New(appToken, botToken)
+	chat, err := newSlackAdapter(appToken, botToken)
 	if err != nil {
 		return controller.Deps{}, nil, fmt.Errorf("slack adapter: %w", err)
 	}
@@ -106,14 +128,14 @@ func realDepsFactory(cfg *controllerconfig.Config, appToken, botToken string, v 
 	})
 
 	// Sandbox lifecycle — mirrors newSandboxService in internal/cli/cmd_sandbox.go.
-	svcLifecycle, err := buildSandboxLifecycle(v)
+	svcLifecycle, err := newSandboxLifecycle(v)
 	if err != nil {
 		return controller.Deps{}, nil, fmt.Errorf("sandbox lifecycle: %w", err)
 	}
 
 	// VaultLinker — principal = slack:<team>:<user>.
 	reg := vault.NewRegistry()
-	linker := controller.NewVaultLinker(v, reg, chat, chat.TeamID())
+	linker := controller.NewVaultLinker(v, reg, chat, chat.TeamID(), cfg.DeploymentMode)
 
 	// ProjectResolver — static mapping from config.
 	projects := controllerconfig.NewResolver(cfg)

@@ -21,11 +21,14 @@ func buildVaultForceRefreshFns(v vault.Vault, sandboxID domain.SandboxID, princi
 	for intID, hosts := range vaultIntegrationHosts {
 		key := vault.Key{Principal: principal, Integration: intID}
 		for _, h := range hosts {
-			h, key := h, key
+			h, key, project := h, key, project
 			fns[h] = func(ctx context.Context) (string, error) {
 				rec, err := v.ForceRefresh(ctx, key)
 				if err != nil {
 					return "", err
+				}
+				if !rec.AllowsProject(project) {
+					return "", vault.ErrProjectNotAllowed
 				}
 				_ = broker.SetRealToken(sandboxID, h, rec.AccessToken)
 				return rec.AccessToken, nil

@@ -45,6 +45,7 @@ var (
 	ErrInlineSecret = errors.New("config: inline secrets are not allowed; use env or file references")
 	ErrMissingRepo  = errors.New("config: channel has no repo configured")
 	ErrNoProject    = errors.New("controller: channel has no project")
+	ErrUnknownMode  = errors.New("config: unknown deployment_mode; valid values: laptop, shared")
 )
 
 func (t TokenRef) Validate(name string) error {
@@ -95,6 +96,14 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) Validate() error {
+	if c.DeploymentMode == "" {
+		c.DeploymentMode = ModeLocal
+	}
+	switch c.DeploymentMode {
+	case ModeLocal, ModeShared:
+	default:
+		return fmt.Errorf("%w: %q", ErrUnknownMode, c.DeploymentMode)
+	}
 	if err := c.Slack.AppToken.Validate("slack.app_token"); err != nil {
 		return err
 	}

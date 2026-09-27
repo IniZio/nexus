@@ -446,8 +446,8 @@ func TestRouterCloseDrains(t *testing.T) {
 	}
 }
 
-// TestRouterMentionOnClosedTaskCallsOnMention checks closed+Mention → OnMention.
-func TestRouterMentionOnClosedTaskCallsOnMention(t *testing.T) {
+// TestRouterMentionOnClosedTaskDropped checks closed+Mention → drop (terminal).
+func TestRouterMentionOnClosedTaskDropped(t *testing.T) {
 	ref := NewThreadRef("T", "C", "closed1")
 	store := newFakeStore()
 	_ = store.Upsert(context.Background(), Task{
@@ -460,8 +460,8 @@ func TestRouterMentionOnClosedTaskCallsOnMention(t *testing.T) {
 	_ = r.Handle(context.Background(), Event{Kind: EventMention, ThreadRef: ref, User: "u"})
 	r.Close()
 
-	if len(flows.mentionCalls) != 1 {
-		t.Errorf("OnMention called %d times, want 1", len(flows.mentionCalls))
+	if len(flows.mentionCalls) != 0 || len(flows.replyCalls) != 0 {
+		t.Error("expected no flow calls for mention on closed thread")
 	}
 }
 
@@ -522,11 +522,71 @@ func TestRouterPreservesPerThreadOrder(t *testing.T) {
 	}
 }
 
+// TestRouterReplyOnStoppedTaskCallsOnReply checks stopped+Reply → OnReply (revive).
+func TestRouterReplyOnStoppedTaskCallsOnReply(t *testing.T) {
+	ref := NewThreadRef("T", "C", "stopped1")
+	store := newFakeStore()
+	_ = store.Upsert(context.Background(), Task{
+		ThreadRef: ref, Status: StatusStopped, Owner: "u", LastAuthor: "u",
+		LastActivityAt: time.Now(),
+	})
+
+	flows := &fakeFlows{}
+	r := NewRouter(store, flows)
+	_ = r.Handle(context.Background(), Event{Kind: EventReply, ThreadRef: ref, User: "u"})
+	r.Close()
+
+	if len(flows.replyCalls) != 1 || len(flows.mentionCalls) != 0 {
+		t.Errorf("stopped+Reply: OnReply=%d OnMention=%d, want 1/0",
+			len(flows.replyCalls), len(flows.mentionCalls))
+	}
+}
+
+// TestRouterMentionOnIdleTaskCallsOnReply checks idle+Mention → OnReply (not OnMention).
+func TestRouterMentionOnIdleTaskCallsOnReply(t *testing.T) {
+	ref := NewThreadRef("T", "C", "idle-mention1")
+	store := newFakeStore()
+	_ = store.Upsert(context.Background(), Task{
+		ThreadRef: ref, Status: StatusIdle, Owner: "u", LastAuthor: "u",
+		LastActivityAt: time.Now(),
+	})
+
+	flows := &fakeFlows{}
+	r := NewRouter(store, flows)
+	_ = r.Handle(context.Background(), Event{Kind: EventMention, ThreadRef: ref, User: "u"})
+	r.Close()
+
+	if len(flows.replyCalls) != 1 || len(flows.mentionCalls) != 0 {
+		t.Errorf("idle+Mention: OnReply=%d OnMention=%d, want 1/0",
+			len(flows.replyCalls), len(flows.mentionCalls))
+	}
+}
+
+// TestRouterMentionOnFailedTaskCallsOnMention checks failed+Mention → OnMention (reopen).
+func TestRouterMentionOnFailedTaskCallsOnMention(t *testing.T) {
+	ref := NewThreadRef("T", "C", "failed-mention1")
+	store := newFakeStore()
+	_ = store.Upsert(context.Background(), Task{
+		ThreadRef: ref, Status: StatusFailed, Owner: "u", LastAuthor: "u",
+		LastActivityAt: time.Now(),
+	})
+
+	flows := &fakeFlows{}
+	r := NewRouter(store, flows)
+	_ = r.Handle(context.Background(), Event{Kind: EventMention, ThreadRef: ref, User: "u"})
+	r.Close()
+
+	if len(flows.mentionCalls) != 1 || len(flows.replyCalls) != 0 {
+		t.Errorf("failed+Mention: OnMention=%d OnReply=%d, want 1/0",
+			len(flows.mentionCalls), len(flows.replyCalls))
+	}
+}
+
 // TestRouterMentionOnLiveThreadIsReply verifies that a Mention into a live
-// (starting/working/idle/waiting_on_user/paused) thread is treated as OnReply.
+// (starting/working/idle/waiting_on_user/paused/stopped) thread is treated as OnReply.
 func TestRouterMentionOnLiveThreadIsReply(t *testing.T) {
 	liveStatuses := []Status{
-		StatusStarting, StatusWorking, StatusIdle, StatusWaitingOnUser, StatusPaused,
+		StatusStarting, StatusWorking, StatusIdle, StatusWaitingOnUser, StatusPaused, StatusStopped,
 	}
 	for _, st := range liveStatuses {
 		st := st

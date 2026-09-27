@@ -16,14 +16,12 @@ import (
 const LongAnswerThreshold = 11 * 1024
 
 // eventSource abstracts where inbound socketmode.Events come from.
-// The real implementation reads from sm.Events; tests inject directly.
 type eventSource interface {
 	events() <-chan socketmode.Event
 	ack(req *socketmode.Request)
 	run(ctx context.Context) error
 }
 
-// realSource wraps a socketmode.Client.
 type realSource struct{ sm *socketmode.Client }
 
 func (r *realSource) events() <-chan socketmode.Event { return r.sm.Events }
@@ -56,18 +54,14 @@ func New(appToken, botToken string) (*Adapter, error) {
 	}, nil
 }
 
-// NewAdapterFromParts constructs an Adapter from pre-resolved credentials and a socketmode client.
-// Used in integration tests that supply an httptest-backed API server.
 func NewAdapterFromParts(api *goslack.Client, sm *socketmode.Client, botID, teamID string) *Adapter {
 	return &Adapter{api: api, src: &realSource{sm: sm}, botID: botID, teamID: teamID}
 }
 
-// newWithSource constructs an Adapter with a custom event source (for unit tests).
 func newWithSource(api *goslack.Client, src eventSource, botID, teamID string) *Adapter {
 	return &Adapter{api: api, src: src, botID: botID, teamID: teamID}
 }
 
-// chanSource is an eventSource backed by a plain channel, used in tests.
 type chanSource struct{ ch <-chan socketmode.Event }
 
 func (c *chanSource) events() <-chan socketmode.Event { return c.ch }
@@ -75,17 +69,14 @@ func (c *chanSource) ack(_ *socketmode.Request)       {}
 func (c *chanSource) run(ctx context.Context) error   { <-ctx.Done(); return nil }
 
 // NewAdapterWithFakeSource constructs an Adapter whose inbound events come from ch.
-// Used in tests to bypass the WebSocket connection.
 func NewAdapterWithFakeSource(api *goslack.Client, ch <-chan socketmode.Event, botID, teamID string) *Adapter {
 	return &Adapter{api: api, src: &chanSource{ch: ch}, botID: botID, teamID: teamID}
 }
 
 var reMention = regexp.MustCompile(`<@[^>]+>`)
 
-// TeamID returns the Slack team ID reported by auth.test at construction time.
 func (a *Adapter) TeamID() string { return a.teamID }
 
-// StripBotMention removes all <@…> mentions from text and trims whitespace.
 func StripBotMention(text string) string {
 	return strings.TrimSpace(reMention.ReplaceAllString(text, ""))
 }
@@ -151,15 +142,10 @@ func SlashCommandToEvent(cmd goslack.SlashCommand) controller.Event {
 }
 
 func (a *Adapter) handleEventsAPIRaw(ctx context.Context, ev socketmode.Event, h controller.Handler) error {
-	// ev.Data is slackevents.EventsAPIEvent after socketmode parsing
 	type innerHolder interface {
 		GetInnerEvent() interface{}
 		GetTeamID() string
 	}
-
-	// Use the raw approach: ev.Data contains the parsed outer event
-	// socketmode delivers slackevents.EventsAPIEvent in ev.Data
-	// We use type assertion through the socketmode package types
 	return dispatchInnerEvent(ctx, ev, a, h)
 }
 
@@ -192,7 +178,6 @@ func PostLong(ctx context.Context, a *Adapter, ref controller.ThreadRef, text st
 	return a.Post(ctx, ref, text)
 }
 
-// PostFile uploads content as a snippet in the thread.
 func (a *Adapter) PostFile(ctx context.Context, ref controller.ThreadRef, name string, content []byte) error {
 	_, channelID, threadTS, ok := a.parseThreadRef(ref)
 	if !ok {
@@ -208,7 +193,6 @@ func (a *Adapter) PostFile(ctx context.Context, ref controller.ThreadRef, name s
 	return err
 }
 
-// React adds an emoji reaction to the thread's root message.
 func (a *Adapter) React(ctx context.Context, ref controller.ThreadRef, emoji string) error {
 	_, channelID, threadTS, ok := a.parseThreadRef(ref)
 	if !ok {
@@ -220,14 +204,11 @@ func (a *Adapter) React(ctx context.Context, ref controller.ThreadRef, emoji str
 	})
 }
 
-// Mention returns the Slack-native mention markup.
 func (a *Adapter) Mention(user string) string {
 	return "<@" + user + ">"
 }
 
-// NewTestAdapter returns an Adapter with no real connections for unit tests
-// that only need Mention or StripBotMention behaviour.
+// NewTestAdapter returns an Adapter with no real connections for unit tests.
 func NewTestAdapter(botID, teamID string) *Adapter {
-	// api is nil; tests must not call Post/PostFile/React on this instance.
 	return &Adapter{botID: botID, teamID: teamID}
 }

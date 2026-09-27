@@ -47,11 +47,12 @@ type entry struct {
 
 // Backend implements controller.AgentBackend.
 type Backend struct {
-	cfg               Config
-	herdrRun          runner
-	nexusRun          runner
-	agentOpts         []herdragent.Option
-	agentReadyTimeout time.Duration // 0 = skip idle-wait in waitForAgentReady (tests)
+	cfg       Config
+	herdrRun  runner
+	nexusRun  runner
+	agentOpts []herdragent.Option
+	sleepFn   func(time.Duration) // injected for tests
+	nowFn     func() time.Time    // injected for tests
 
 	mu        sync.Mutex
 	entries   map[string]*entry // agentRef → pane/torn state
@@ -61,10 +62,11 @@ type Backend struct {
 // New returns a Backend using real herdr and nexus binaries.
 func New(cfg Config) *Backend {
 	b := &Backend{
-		cfg:               cfg,
-		entries:           make(map[string]*entry),
-		sandboxes:         make(map[string]string),
-		agentReadyTimeout: 90 * time.Second,
+		cfg:       cfg,
+		entries:   make(map[string]*entry),
+		sandboxes: make(map[string]string),
+		sleepFn:   time.Sleep,
+		nowFn:     time.Now,
 	}
 	b.herdrRun = b.defaultHerdrRun
 	b.nexusRun = b.defaultNexusRun
@@ -83,6 +85,8 @@ func newWithRunners(cfg Config, hr, nr runner, opts ...herdragent.Option) *Backe
 		agentOpts: opts,
 		entries:   make(map[string]*entry),
 		sandboxes: make(map[string]string),
+		sleepFn:   func(time.Duration) {}, // no-op for tests
+		nowFn:     time.Now,
 	}
 	return b
 }
@@ -203,12 +207,6 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	branch := branchName(project, ref, time.Now().UnixMicro())
 	safeBranch := strings.ReplaceAll(branch, "/", "-")
 
-	// Fix (a): write a controller-owned marker before herdr worktree create so
-	// the worktree.created hook (on-worktree-created.sh) and the Go auto path
-	// in herdrWorktreeSandbox see it and skip auto-provisioning.  The marker is
-	// keyed on the safe branch name and lives in the nexus state dir.  We defer
-	// its removal so it is always cleaned up when Provision returns, regardless
-	// of success or failure.
 	var markerPath string
 	if storeRoot := b.nexusStoreRoot(); storeRoot != "" {
 		claimsDir := filepath.Join(storeRoot, "controller-wt-claims")
@@ -269,13 +267,17 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		return "", "", fmt.Errorf("nexus herdr list: no sandbox_id for workspace %s", wsID)
 	}
 
-	// Fix (b): verify the bound sandbox's recorded principal matches the one
-	// we requested.  A non-empty mismatch means the hook raced us and created
-	// the sandbox under the wrong identity; fail provision so the caller can
-	// clean up and retry rather than silently operating as the wrong principal.
-	// An empty boundPrincipal means the binding predates this field — allow it.
-	if boundPrincipal := parsePrincipal(listOut, wsID); boundPrincipal != "" && boundPrincipal != principal {
+	boundPrincipal := parsePrincipal(listOut, wsID)
+	if boundPrincipal == "" || boundPrincipal != principal {
 		return "", "", fmt.Errorf("nexus herdr provision: principal mismatch for workspace %s: bound=%q requested=%q", wsID, boundPrincipal, principal)
+	}
+
+	recPrincipal, recErr := b.sandboxPrincipalFromRecord(nexusSandboxID)
+	if recErr != nil {
+		return "", "", fmt.Errorf("nexus herdr provision: sandbox record check: %w", recErr)
+	}
+	if recPrincipal == "" || recPrincipal != principal {
+		return "", "", fmt.Errorf("nexus herdr provision: principal mismatch for sandbox %s: record=%q requested=%q", nexusSandboxID, recPrincipal, principal)
 	}
 
 	if err := b.waitForWorkspaceMount(ctx, nexusSandboxID); err != nil {
@@ -344,7 +346,7 @@ func (b *Backend) permMode() string {
 
 // fallbackMarkers are strings emitted by nexus-guest-shell when it falls back to the host.
 var fallbackMarkers = []string{
-	"nexus-guest-shell: FALLBACK host shell:",
+	herdragent.GuestShellFallbackMarker,
 	"not a nexus space",
 	"no nexus sandbox binding",
 }
@@ -459,7 +461,9 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 	out, err := b.herdrRun(ctx, nil, "agent", "start", name, "--kind", "claude", "--pane", paneID,
 		"--", "--model", b.cfg.Model, "--permission-mode", b.permMode(), "--max-turns", "1")
 	if err == nil {
-		b.waitForAgentReady(ctx, name, 90*time.Second)
+		if err := b.waitForAgentReady(ctx, name, 90*time.Second); err != nil {
+			return "", fmt.Errorf("agent not ready: %w", err)
+		}
 		return name, nil
 	}
 	code, _, ok := herdrout.ParseHerdrErrorCode(out)
@@ -495,7 +499,9 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 		if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
 			return "", fmt.Errorf("herdr pane run: %w\n%s", runErr, runOut)
 		}
-		b.waitForAgentReady(ctx, name, 90*time.Second)
+		if err := b.waitForAgentReady(ctx, name, 90*time.Second); err != nil {
+			return "", fmt.Errorf("agent not ready: %w", err)
+		}
 		return name, nil
 	}
 	if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
@@ -505,7 +511,9 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 	if detectErr != nil {
 		return "", fmt.Errorf("agent detection failed after pane run — pane may not be running claude: %w", detectErr)
 	}
-	b.waitForAgentReady(ctx, agentName, 90*time.Second)
+	if err := b.waitForAgentReady(ctx, agentName, 90*time.Second); err != nil {
+		return "", fmt.Errorf("agent not ready: %w", err)
+	}
 	return agentName, nil
 }
 
@@ -529,26 +537,35 @@ func (b *Backend) waitForWorkspaceMount(ctx context.Context, sandboxID string) e
 }
 
 // waitForAgentReady waits until the agent is idle (ready to accept prompts).
-func (b *Backend) waitForAgentReady(ctx context.Context, agentRef string, _ time.Duration) {
-	if b.agentReadyTimeout == 0 {
-		return
-	}
+// Returns an error if the agent does not become ready within timeout.
+func (b *Backend) waitForAgentReady(ctx context.Context, agentRef string, timeout time.Duration) error {
 	agentRunner := func(ctx context.Context, argv ...string) (string, error) {
 		return b.herdrRun(ctx, nil, argv...)
 	}
 	client := herdragent.New(agentRunner, b.agentOpts...)
-	deadline := time.Now().Add(b.agentReadyTimeout)
-	for time.Now().Before(deadline) && ctx.Err() == nil {
+	sleepFn := b.sleepFn
+	if sleepFn == nil {
+		sleepFn = time.Sleep
+	}
+	nowFn := b.nowFn
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	deadline := nowFn().Add(timeout)
+	for nowFn().Before(deadline) && ctx.Err() == nil {
 		st := client.Observe(ctx, agentRef, 0)
 		if st.Status == herdragent.StatusIdle && st.Settled {
-			return
+			return nil
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(1 * time.Second):
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+		sleepFn(1 * time.Second)
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("herdr backend: agent %q not ready after %s", agentRef, timeout)
 }
 
 // waitForAgentDetection polls herdr agent get until the pane is registered as a named agent.
@@ -589,7 +606,7 @@ func parseAgentGetName(out string) string {
 
 // Prompt delivers text to the agent.
 func (b *Backend) Prompt(ctx context.Context, agentRef, text string) error {
-	if err := b.checkAgent(agentRef); err != nil {
+	if err := b.checkAgent(ctx, agentRef); err != nil {
 		return err
 	}
 	out, err := b.herdrRun(ctx, nil, "agent", "prompt", agentRef, text)
@@ -602,7 +619,7 @@ func (b *Backend) Prompt(ctx context.Context, agentRef, text string) error {
 // Observe returns the current herdragent.State. wait=true polls until terminal or ctx done.
 // agent_not_found for a registered agent is treated as done (process exited).
 func (b *Backend) Observe(ctx context.Context, agentRef string, wait bool) (herdragent.State, error) {
-	if err := b.checkAgent(agentRef); err != nil {
+	if err := b.checkAgent(ctx, agentRef); err != nil {
 		return herdragent.State{}, err
 	}
 	agentRunner := func(ctx context.Context, argv ...string) (string, error) {
@@ -641,7 +658,7 @@ func (b *Backend) Answer(ctx context.Context, agentRef string, in controller.Age
 	if (in.Text == "") == (in.Key == "") {
 		return fmt.Errorf("herdr backend: exactly one of Text or Key must be set")
 	}
-	if err := b.checkAgent(agentRef); err != nil {
+	if err := b.checkAgent(ctx, agentRef); err != nil {
 		return err
 	}
 	if in.Key != "" {
@@ -672,7 +689,7 @@ func (b *Backend) Answer(ctx context.Context, agentRef string, in controller.Age
 // ReadAnswer returns the recent output for agentRef.
 // Falls back to pane read when the agent has exited (e.g. after --max-turns 1).
 func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, error) {
-	if err := b.checkAgent(agentRef); err != nil {
+	if err := b.checkAgent(ctx, agentRef); err != nil {
 		return "", err
 	}
 	out, err := b.herdrRun(ctx, nil, "agent", "read", agentRef, "--source", "recent-unwrapped", "--lines", "200")
@@ -702,9 +719,54 @@ func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, erro
 // Idempotency is detected by the exact id being absent from nexus ps, not by
 // error-string matching. An unknown sandboxID (never provisioned by this backend)
 // returns an error; it is never silently ignored.
-// Restart re-launches the guest agent after a stop/start cycle.
+// Restart re-launches the guest agent after a stop/start cycle; sandbox must be running.
 func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (string, error) {
-	return "", controller.ErrNotImplemented
+	b.mu.Lock()
+	e, ok := b.entries[agentRef]
+	b.mu.Unlock()
+	if !ok {
+		var discoverErr error
+		_, e, discoverErr = b.rediscoverBySandboxID(ctx, sandboxID)
+		if discoverErr != nil {
+			return "", fmt.Errorf("restart %s: %w", sandboxID, discoverErr)
+		}
+	}
+
+	// Verify the pane is alive and in the guest. After a sandbox stop/start the
+	// guest shell may have exited; check once and recreate the pane if needed.
+	paneID := e.paneID
+	paneOut, _ := b.herdrRun(ctx, nil, "pane", "read", paneID, "--source", "recent-unwrapped", "--lines", "50")
+	if extractHostnameFromPrompt(paneOut) == "" {
+		reopenOut, reopenErr := b.nexusRun(ctx, nil, "herdr", "space-open-pane", e.wsID)
+		if reopenErr != nil {
+			return "", fmt.Errorf("restart %s: space-open-pane: %w\n%s", sandboxID, reopenErr, reopenOut)
+		}
+		listOut, listErr := b.nexusRun(ctx, nil, "herdr", "list")
+		if listErr == nil {
+			if newPaneID := parsePaneID(listOut, e.wsID); newPaneID != "" {
+				paneID = newPaneID
+			}
+		}
+	}
+
+	newAgentName := "ctrl-" + e.wsID
+	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID)
+	if err != nil {
+		return "", fmt.Errorf("restart %s: start agent: %w", sandboxID, err)
+	}
+
+	newEntry := &entry{
+		paneID:         paneID,
+		nexusHandle:    e.nexusHandle,
+		nexusSandboxID: e.nexusSandboxID,
+		wsID:           e.wsID,
+	}
+	b.mu.Lock()
+	delete(b.entries, agentRef)
+	b.entries[newAgentRef] = newEntry
+	b.sandboxes[sandboxID] = newAgentRef
+	b.mu.Unlock()
+	return newAgentRef, nil
 }
 
 func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
@@ -724,7 +786,15 @@ func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 	b.mu.Unlock()
 
 	if !known {
-		return fmt.Errorf("teardown %s: nexus sandbox id unknown — never provisioned by this backend; refusing sandbox rm", sandboxID)
+		var e *entry
+		var discoverErr error
+		agRef, e, discoverErr = b.rediscoverBySandboxID(ctx, sandboxID)
+		if discoverErr != nil {
+			return fmt.Errorf("teardown %s: %w", sandboxID, discoverErr)
+		}
+		nexusSandboxID = e.nexusSandboxID
+		nexusHandle = e.nexusHandle
+		wsID = e.wsID
 	}
 
 	if nexusSandboxID != "" {
@@ -741,7 +811,14 @@ func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 		}
 	}
 
-	return b.removeWorktree(ctx, wsID)
+	if err := b.removeWorktree(ctx, wsID); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	delete(b.entries, agRef)
+	delete(b.sandboxes, sandboxID)
+	b.mu.Unlock()
+	return nil
 }
 
 // removeWorktree removes the herdr worktree for sandboxID. workspace_not_found
@@ -780,12 +857,69 @@ func parsePSLine(out, exactID string) (handle string, found bool) {
 	return "", false
 }
 
-func (b *Backend) checkAgent(agentRef string) error {
+// rediscoverEntry reconstructs an entry from live nexus herdr list; agentRef must be ctrl-<wsID>.
+func (b *Backend) rediscoverEntry(ctx context.Context, agentRef string) (*entry, error) {
+	if !strings.HasPrefix(agentRef, "ctrl-") {
+		return nil, fmt.Errorf("herdr backend: cannot rediscover agentRef %q: not a ctrl- reference", agentRef)
+	}
+	wsID := strings.TrimPrefix(agentRef, "ctrl-")
+	listOut, err := b.nexusRun(ctx, nil, "herdr", "list")
+	if err != nil {
+		return nil, fmt.Errorf("herdr backend: rediscover %q: nexus herdr list: %w", agentRef, err)
+	}
+	paneID := parsePaneID(listOut, wsID)
+	if paneID == "" {
+		return nil, fmt.Errorf("herdr backend: agentRef %q (workspace %s) not found in nexus herdr list", agentRef, wsID)
+	}
+	e := &entry{
+		paneID:         paneID,
+		nexusHandle:    parseNexusHandle(listOut, wsID),
+		nexusSandboxID: parseSandboxID(listOut, wsID),
+		wsID:           wsID,
+	}
+	b.mu.Lock()
+	b.entries[agentRef] = e
+	if e.nexusSandboxID != "" {
+		b.sandboxes[e.nexusSandboxID] = agentRef
+	}
+	b.mu.Unlock()
+	return e, nil
+}
+
+// rediscoverBySandboxID reconstructs an entry from nexus herdr list on map miss.
+func (b *Backend) rediscoverBySandboxID(ctx context.Context, sandboxID string) (agRef string, e *entry, err error) {
+	listOut, listErr := b.nexusRun(ctx, nil, "herdr", "list")
+	if listErr != nil {
+		return "", nil, fmt.Errorf("herdr backend: rediscover sandbox %q: nexus herdr list: %w", sandboxID, listErr)
+	}
+	wsID := parseWorkspaceIDBySandboxID(listOut, sandboxID)
+	if wsID == "" {
+		return "", nil, fmt.Errorf("herdr backend: sandbox %q not found in nexus herdr list; never provisioned or already torn down", sandboxID)
+	}
+	agRef = "ctrl-" + wsID
+	e = &entry{
+		paneID:         parsePaneID(listOut, wsID),
+		nexusHandle:    parseNexusHandle(listOut, wsID),
+		nexusSandboxID: sandboxID,
+		wsID:           wsID,
+	}
+	b.mu.Lock()
+	b.entries[agRef] = e
+	b.sandboxes[sandboxID] = agRef
+	b.mu.Unlock()
+	return agRef, e, nil
+}
+
+func (b *Backend) checkAgent(ctx context.Context, agentRef string) error {
 	b.mu.Lock()
 	e, ok := b.entries[agentRef]
 	b.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("herdr backend: unknown agentRef %q", agentRef)
+		var err error
+		e, err = b.rediscoverEntry(ctx, agentRef)
+		if err != nil {
+			return fmt.Errorf("herdr backend: unknown agentRef %q: %w", agentRef, err)
+		}
 	}
 	if e.tornDown {
 		return fmt.Errorf("herdr backend: torn-down agentRef %q", agentRef)
@@ -841,9 +975,45 @@ func parsePrincipal(out, workspaceID string) string {
 	return parseListField(out, workspaceID, "principal=")
 }
 
+// sandboxPrincipalFromRecord reads the principal from the on-disk sandbox record.
+// The record is at <storeRoot>/sandboxes/<sandboxID>/record.json.
+func (b *Backend) sandboxPrincipalFromRecord(sandboxID string) (string, error) {
+	storeRoot := b.nexusStoreRoot()
+	recordPath := filepath.Join(storeRoot, "sandboxes", sandboxID, "record.json")
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		return "", fmt.Errorf("read sandbox record %s: %w", sandboxID, err)
+	}
+	var rec struct {
+		Principal string `json:"principal"`
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return "", fmt.Errorf("decode sandbox record %s: %w", sandboxID, err)
+	}
+	return rec.Principal, nil
+}
+
 // parseSandboxID finds the exact sb-... nexus sandbox id for workspaceID in `nexus herdr list` output.
 func parseSandboxID(out, workspaceID string) string {
 	return parseListField(out, workspaceID, "sandbox_id=")
+}
+
+// parseWorkspaceIDBySandboxID finds the workspace_id for a given sandbox_id in
+// `nexus herdr list` output.
+func parseWorkspaceIDBySandboxID(out, sandboxID string) string {
+	needle := "sandbox_id=" + sandboxID
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		for _, f := range strings.Split(line, "\t") {
+			if v, ok := strings.CutPrefix(f, "workspace_id="); ok {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 func parseListField(out, workspaceID, prefix string) string {

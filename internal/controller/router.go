@@ -206,14 +206,19 @@ func (r *Router) processEvent(ctx context.Context, ev Event) {
 	}
 
 	switch task.Status {
-	case StatusClosed, StatusFailed:
+	case StatusClosed:
+		// Terminal: drop all events.
+		slog.Info("router: event on closed thread dropped", "ref", ev.ThreadRef, "kind", ev.Kind)
+	case StatusFailed:
 		if ev.Kind == EventMention {
 			if fErr := r.flows.OnMention(ctx, task, ev); fErr != nil {
 				slog.Error("router: OnMention (reopen)", "ref", ev.ThreadRef, "err", fErr)
 			}
 		}
-		// Reply into closed/failed thread → drop.
+		// Reply into failed thread → drop.
 	default:
+		// StatusStarting, StatusWorking, StatusIdle, StatusWaitingOnUser, StatusPaused, StatusStopped:
+		// mentions on an existing non-terminal thread are follow-up turns (resume/revive), not new sessions.
 		if fErr := r.flows.OnReply(ctx, task, ev); fErr != nil {
 			slog.Error("router: OnReply", "ref", ev.ThreadRef, "err", fErr)
 		}

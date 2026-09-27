@@ -12,12 +12,10 @@ import (
 // ErrUnlinked is returned when no credential record exists for the requested key.
 var ErrUnlinked = errors.New("vault: principal not linked")
 
-// ErrProjectNotAllowed is returned when the requested project is not in the
-// record's AllowedProjects list.
+// ErrProjectNotAllowed is returned when the project is not in AllowedProjects.
 var ErrProjectNotAllowed = errors.New("vault: project not allowed")
 
-// Key identifies a credential record by the principal that owns it and the
-// integration it grants access to.
+// Key identifies a credential record by principal and integration.
 type Key struct {
 	Principal   string
 	Integration string
@@ -29,13 +27,12 @@ type Record struct {
 	RefreshToken string
 	Expiry       time.Time
 	Scopes       []string
-	// AllowedProjects is the list of project identifiers this record may be
-	// used for. The special value "*" permits all projects.
+	// AllowedProjects lists project identifiers this record may be used for; "*" permits all.
 	AllowedProjects []string
 }
 
-// projectAllowed reports whether project is in the allowed set.
-func (r Record) projectAllowed(project string) bool {
+// AllowsProject reports whether project is in the allowed set.
+func (r Record) AllowsProject(project string) bool {
 	for _, p := range r.AllowedProjects {
 		if p == "*" || strings.EqualFold(p, project) {
 			return true
@@ -44,8 +41,7 @@ func (r Record) projectAllowed(project string) bool {
 	return false
 }
 
-// Store is a low-level key/value store for vault Records. V1 implements this
-// as an encrypted file store; this interface lets tests substitute a MemStore.
+// Store is the low-level key/value store for vault Records.
 type Store interface {
 	Get(ctx context.Context, key Key) (Record, error)
 	Put(ctx context.Context, key Key, record Record) error
@@ -53,18 +49,13 @@ type Store interface {
 	List(ctx context.Context) ([]Key, error)
 }
 
-// Vault is the high-level credential store. It provides the same CRUD surface
-// as Store plus Source, which returns a cred.CredentialSource scoped to a
-// specific project. V2 implements the real vault with lazy refresh.
+// Vault is the high-level credential store with lazy refresh and project scoping.
 type Vault interface {
 	Get(ctx context.Context, key Key) (Record, error)
 	Put(ctx context.Context, key Key, record Record) error
 	Delete(ctx context.Context, key Key) error
 	List(ctx context.Context) ([]Key, error)
 	// Source returns a cred.CredentialSource for key scoped to project.
-	// It returns ErrUnlinked when no record exists for key, and
-	// ErrProjectNotAllowed when project is not in AllowedProjects.
 	Source(key Key, project string) (cred.CredentialSource, error)
-	// ForceRefresh evicts cached state and forces a connector Refresh for key.
 	ForceRefresh(ctx context.Context, key Key) (Record, error)
 }

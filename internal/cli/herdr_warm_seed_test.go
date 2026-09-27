@@ -152,11 +152,11 @@ func TestHerdrWarmTeardown_promoteThenRm(t *testing.T) {
 	vs := volumestore.New(filepath.Join(storeRoot, "volumes"))
 
 	binding := HerdrSpaceBinding{
-		SpaceLabel:      "test:space",
+		SpaceLabel:       "test:space",
 		HerdrWorkspaceID: "wXX",
-		SandboxHandle:   handle,
-		WorktreeManaged: true,
-		RepoRoot:        "",
+		SandboxHandle:    handle,
+		WorktreeManaged:  true,
+		RepoRoot:         "",
 	}
 	if err := HerdrSpacePut(context.Background(), storeRoot, binding); err != nil {
 		t.Fatalf("HerdrSpacePut: %v", err)
@@ -217,7 +217,7 @@ func TestHerdrWarmSeedWiring(t *testing.T) {
 	if err := os.Unsetenv("NEXUS_NO_VOLUME_SEED"); err != nil {
 		t.Fatal(err)
 	}
-	seeded, err := herdrWtSeedVolumeFn(context.Background(), nil, "test-vol", "proj", volumestore.WarmKindGoCache, herdrGoCacheDiskSizeBytes)
+	seeded, err := herdrWtSeedVolumeFn(context.Background(), nil, "test-vol", "proj", volumestore.WarmKindGoCache, herdrGoCacheDiskSizeBytes())
 	if err != nil || !seeded {
 		t.Errorf("stub returned seeded=%v err=%v", seeded, err)
 	}

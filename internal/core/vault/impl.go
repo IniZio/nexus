@@ -43,7 +43,7 @@ func (v *VaultImpl) Source(key Key, project string) (cred.CredentialSource, erro
 	if err != nil {
 		return nil, err
 	}
-	if !rec.projectAllowed(project) {
+	if !rec.AllowsProject(project) {
 		return nil, ErrProjectNotAllowed
 	}
 	return &vaultSource{key: key, project: project, vault: v}, nil

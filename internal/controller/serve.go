@@ -13,9 +13,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/vaulthost"
 )
 
-// DepsFactory builds runtime Deps plus an optional /link command Handler from
-// a validated Config, resolved Slack tokens, and an open Vault. Returning a
-// non-nil Handler registers it as the command handler for the router.
+// DepsFactory builds runtime Deps; a non-nil Handler is registered as the /link command handler.
 type DepsFactory func(cfg *controllerconfig.Config, appToken, botToken string, v vault.Vault) (Deps, Handler, error)
 
 type serveState struct {
@@ -28,14 +26,12 @@ type serveState struct {
 // ServeOpt customises Serve; use the With* functions.
 type ServeOpt func(*serveState)
 
-// WithDepsFactory injects a custom dependency builder. Tests use this to
-// substitute fakes and assert that each Deps field is the expected type.
+// WithDepsFactory injects a custom dependency builder.
 func WithDepsFactory(f DepsFactory) ServeOpt {
 	return func(s *serveState) { s.factory = f }
 }
 
-// WithVaultOpener injects a custom vault opener. Tests use this to simulate a
-// missing vault key without a real keyring.
+// WithVaultOpener injects a custom vault opener.
 func WithVaultOpener(f func() (vault.Vault, error)) ServeOpt {
 	return func(s *serveState) { s.vaultOpener = f }
 }
@@ -48,16 +44,7 @@ func WithServeTickInterval(d time.Duration) ServeOpt {
 	return func(s *serveState) { s.tickInterval = &d }
 }
 
-// Serve loads configuration from cfgPath, wires every adapter, and runs the
-// controller until ctx is cancelled. It returns nil on clean shutdown and a
-// descriptive error on any fail-closed condition.
-//
-// Fail-closed conditions (Serve returns non-nil before starting):
-//   - config file missing or invalid YAML
-//   - slack.app_token or slack.bot_token refs don't resolve
-//   - no channels are configured
-//   - inline secret present (caught by config.Parse)
-//   - vault key unavailable
+// Serve loads config, wires adapters, and runs the controller until ctx is cancelled.
 func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 	ss := &serveState{
 		vaultOpener: func() (vault.Vault, error) { return vaulthost.Open() },
@@ -70,7 +57,6 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 		return fmt.Errorf("serve: no DepsFactory configured; pass one via WithDepsFactory")
 	}
 
-	// 1. Load and validate config.
 	cfg, err := controllerconfig.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("serve: %w", err)
@@ -79,7 +65,6 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 		return fmt.Errorf("serve: config: at least one channel must be configured")
 	}
 
-	// 2. Resolve Slack tokens — fail closed when env/file is absent.
 	appToken, err := cfg.Slack.AppToken.Resolve()
 	if err != nil {
 		return fmt.Errorf("serve: slack app_token: %w", err)
@@ -95,19 +80,19 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 		return fmt.Errorf("serve: slack bot_token: resolved to empty string")
 	}
 
-	// 3. Open vault — fail closed when the key is unavailable.
 	v, err := ss.vaultOpener()
 	if err != nil {
 		return fmt.Errorf("serve: vault: %w", err)
 	}
 
-	// 4. Build runtime dependencies.
 	deps, linkHandler, err := ss.factory(cfg, appToken, botToken, v)
 	if err != nil {
 		return fmt.Errorf("serve: build deps: %w", err)
 	}
+	if deps.IdleFor == nil {
+		deps.IdleFor = IdleForFromConfig(cfg)
+	}
 
-	// 5. Wire router with optional /link command handler.
 	var routerOpts []RouterOption
 	if linkHandler != nil {
 		routerOpts = append(routerOpts, WithCommandHandler(linkHandler))
@@ -116,17 +101,10 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 	router := NewRouter(deps.Store, ctrl, routerOpts...)
 	defer router.Close()
 
-	idlePause, _ := minIdleDurations(cfg)
-	tickInterval := idlePause / 2
+	idlePause := SmallestPause(cfg)
+	tickInterval := TickIntervalFor(idlePause)
 	if ss.tickInterval != nil {
 		tickInterval = *ss.tickInterval
-	} else {
-		switch {
-		case tickInterval < time.Second:
-			tickInterval = time.Second
-		case tickInterval > 30*time.Minute:
-			tickInterval = 30 * time.Minute
-		}
 	}
 
 	tickCtx, cancelTick := context.WithCancel(ctx)
@@ -147,30 +125,57 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 		}
 	}()
 
-	// 7. Run chat adapter — blocks until ctx is cancelled.
 	slog.Info("nexus-controller: ready", "channels", len(cfg.Channels))
 	return deps.Chat.Run(ctx, router.Handle)
 }
 
-// minIdleDurations returns the smallest positive idle_pause and idle_stop
-// across all configured channels. Falls back to 30m / 4h when no channel
-// has either value set.
-func minIdleDurations(cfg *controllerconfig.Config) (pause, stop time.Duration) {
-	pause = 30 * time.Minute
-	stop = 4 * time.Hour
-	for _, ch := range cfg.Channels {
-		if ch.IdlePause > 0 && ch.IdlePause < pause {
-			pause = ch.IdlePause
+// IdleForFromConfig maps channel name to IdleThresholds, falling back to DefaultIdle.
+func IdleForFromConfig(cfg *controllerconfig.Config) func(string) IdleThresholds {
+	return func(channel string) IdleThresholds {
+		ch, ok := cfg.Channels[channel]
+		if !ok {
+			return DefaultIdle
 		}
-		if ch.IdleStop > 0 && ch.IdleStop < stop {
-			stop = ch.IdleStop
+		t := IdleThresholds{Pause: ch.IdlePause, Stop: ch.IdleStop}
+		if t.Pause <= 0 {
+			t.Pause = DefaultIdle.Pause
 		}
+		if t.Stop <= 0 {
+			t.Stop = DefaultIdle.Stop
+		}
+		return t
 	}
-	return
 }
 
-// ControllerStateDir returns the XDG state directory for controller data
-// (e.g. the SQLite task store).
+// SmallestPause returns the smallest effective idle_pause across all configured channels.
+func SmallestPause(cfg *controllerconfig.Config) time.Duration {
+	pause := DefaultIdle.Pause
+	for _, ch := range cfg.Channels {
+		effective := ch.IdlePause
+		if effective <= 0 {
+			effective = DefaultIdle.Pause
+		}
+		if effective < pause {
+			pause = effective
+		}
+	}
+	return pause
+}
+
+// TickIntervalFor returns half minPause, clamped to [1s, 30m].
+func TickIntervalFor(minPause time.Duration) time.Duration {
+	d := minPause / 2
+	switch {
+	case d < time.Second:
+		return time.Second
+	case d > 30*time.Minute:
+		return 30 * time.Minute
+	default:
+		return d
+	}
+}
+
+// ControllerStateDir returns the XDG state directory for controller SQLite data.
 func ControllerStateDir() (string, error) {
 	xdg := os.Getenv("XDG_STATE_HOME")
 	if xdg == "" {

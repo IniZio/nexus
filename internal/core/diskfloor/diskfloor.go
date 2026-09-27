@@ -8,6 +8,7 @@
 package diskfloor
 
 import (
+	"log/slog"
 	"os"
 	"strconv"
 )
@@ -21,13 +22,31 @@ const DefaultFreeSpaceFloorGiB = 15
 
 const DefaultFreeSpaceFloorBytes int64 = DefaultFreeSpaceFloorGiB << 30
 
+// EnvGiBBytes reads an integer GiB value from the named environment variable.
+// It returns defaultGiB<<30 when the variable is unset, empty, non-integer,
+// zero, or negative, logging a warning in the latter two cases.
+// Both herdr volume size knobs (NEXUS_HERDR_*_DISK_GIB) and the disk floor
+// knob (NEXUS_DISK_FLOOR_GIB) delegate to this function so validation is
+// consistent: values must be positive integers.
+func EnvGiBBytes(key string, defaultGiB int64) int64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultGiB << 30
+	}
+	gib, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		slog.Warn("diskfloor: ignoring non-integer env var, using default", "key", key, "value", v, "defaultGiB", defaultGiB)
+		return defaultGiB << 30
+	}
+	if gib <= 0 {
+		slog.Warn("diskfloor: ignoring non-positive env var, using default", "key", key, "value", v, "defaultGiB", defaultGiB)
+		return defaultGiB << 30
+	}
+	return gib << 30
+}
+
 // EnvDiskFloorBytes returns the floor derived from NEXUS_DISK_FLOOR_GIB, or
 // DefaultFreeSpaceFloorBytes when the variable is absent or invalid.
 func EnvDiskFloorBytes() int64 {
-	if v := os.Getenv("NEXUS_DISK_FLOOR_GIB"); v != "" {
-		if gib, err := strconv.ParseInt(v, 10, 64); err == nil && gib >= 0 {
-			return gib << 30
-		}
-	}
-	return DefaultFreeSpaceFloorBytes
+	return EnvGiBBytes("NEXUS_DISK_FLOOR_GIB", DefaultFreeSpaceFloorGiB)
 }

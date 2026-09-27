@@ -21,6 +21,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/audit"
 	"github.com/IniZio/nexus/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
@@ -4101,7 +4102,7 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	 * Containerfile turns out not to use docker.
 	 */
 	if imageFlag == "--file" {
-		args = append(args, "--mount-named", fmt.Sprintf("%s:/var/lib/docker:size=%dg", herdrDockerDiskVolumeName(handle), herdrDockerDiskSizeBytes>>30))
+		args = append(args, "--mount-named", fmt.Sprintf("%s:/var/lib/docker:size=%dg", herdrDockerDiskVolumeName(handle), herdrDockerDiskSizeBytes()>>30))
 	}
 	/**
 	 * Go build-cache disks. Unconditional (unlike the docker disk above): every
@@ -4148,8 +4149,8 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	 * /dev/vda. That is an accepted, explicit gap — see the ticket's Decision
 	 * section — not a silent reproduction of the bug.
 	 */
-	args = append(args, "--mount-named", fmt.Sprintf("%s:/root/.cache:size=%dg", herdrGoCacheDiskVolumeName(handle), herdrGoCacheDiskSizeBytes>>30))
-	args = append(args, "--mount-named", fmt.Sprintf("%s:/root/go:size=%dg", herdrGoPathDiskVolumeName(handle), herdrGoPathDiskSizeBytes>>30))
+	args = append(args, "--mount-named", fmt.Sprintf("%s:/root/.cache:size=%dg", herdrGoCacheDiskVolumeName(handle), herdrGoCacheDiskSizeBytes()>>30))
+	args = append(args, "--mount-named", fmt.Sprintf("%s:/root/go:size=%dg", herdrGoPathDiskVolumeName(handle), herdrGoPathDiskSizeBytes()>>30))
 	for _, s := range secrets {
 		args = append(args, "--secret", s)
 	}
@@ -4281,23 +4282,24 @@ func herdrWorktreeVolumeNames(handle string) []string {
 	}
 }
 
-// herdrEnvDiskBytes reads an integer GiB value from env (e.g. "2"), returning
-// defaultGiB converted to bytes when the variable is unset or unparseable.
-// Used by test harnesses to reduce volume sizes via NEXUS_HERDR_*_DISK_GIB.
-func herdrEnvDiskBytes(key string, defaultGiB int64) int64 {
-	if v := os.Getenv(key); v != "" {
-		if gib, err := strconv.ParseInt(v, 10, 64); err == nil && gib > 0 {
-			return gib << 30
-		}
-	}
-	return defaultGiB << 30
+// herdrDockerDiskSizeBytes returns the docker volume size in bytes, read lazily
+// from NEXUS_HERDR_DOCKER_DISK_GIB (default 20 GiB). Test harnesses may set
+// the env var before the call to override the size.
+func herdrDockerDiskSizeBytes() int64 {
+	return diskfloor.EnvGiBBytes("NEXUS_HERDR_DOCKER_DISK_GIB", 20)
 }
 
-var (
-	herdrDockerDiskSizeBytes  = herdrEnvDiskBytes("NEXUS_HERDR_DOCKER_DISK_GIB", 20)
-	herdrGoCacheDiskSizeBytes = herdrEnvDiskBytes("NEXUS_HERDR_GOCACHE_DISK_GIB", 10)
-	herdrGoPathDiskSizeBytes  = herdrEnvDiskBytes("NEXUS_HERDR_GOPATH_DISK_GIB", 10)
-)
+// herdrGoCacheDiskSizeBytes returns the Go cache volume size in bytes, read
+// lazily from NEXUS_HERDR_GOCACHE_DISK_GIB (default 10 GiB).
+func herdrGoCacheDiskSizeBytes() int64 {
+	return diskfloor.EnvGiBBytes("NEXUS_HERDR_GOCACHE_DISK_GIB", 10)
+}
+
+// herdrGoPathDiskSizeBytes returns the GOPATH volume size in bytes, read
+// lazily from NEXUS_HERDR_GOPATH_DISK_GIB (default 10 GiB).
+func herdrGoPathDiskSizeBytes() int64 {
+	return diskfloor.EnvGiBBytes("NEXUS_HERDR_GOPATH_DISK_GIB", 10)
+}
 
 // wtVolumeResult describes one volume touched during worktree prune.
 type wtVolumeResult struct {
@@ -4917,14 +4919,6 @@ func herdrWorktreeSandbox(
 	 */
 	switch {
 	case auto:
-		/**
-		 * Fix (a): if the controller pre-claimed this branch by writing a marker
-		 * before calling `herdr worktree create`, the hook must skip auto-
-		 * provisioning.  The controller will call worktree-sandbox explicitly
-		 * (without --auto) with NEXUS_PRINCIPAL set, creating the sandbox under
-		 * the correct identity.  Skipping here prevents the hook from racing the
-		 * controller and creating a sandbox with the host owner's identity.
-		 */
 		if herdrIsControllerClaimed(storeRoot, info.Branch) {
 			fmt.Fprintf(w, "worktree-sandbox: branch %s is controller-claimed; skipping auto-provision (controller will bind explicitly)\n", info.Branch)
 			return nil
@@ -5059,7 +5053,7 @@ func herdrWorktreeSandbox(
 			 * probe fails open (all alive) when herdr cannot be listed, so an
 			 * unreachable herdr keeps today's reuse behaviour.
 			 */
-				if bound.HerdrWorkspaceID == workspaceID || herdrWorkspaceListedFn(ctx, herdrBin)(bound) {
+if bound.HerdrWorkspaceID == workspaceID || herdrWorkspaceListedFn(ctx, herdrBin)(bound) {
 					/**
 					 * Fix (b) — defence in depth: if NEXUS_PRINCIPAL is set and
 					 * differs from the principal recorded on the existing binding,
@@ -5191,9 +5185,9 @@ func herdrWorktreeSandbox(
 				sizeBytes int64
 				skip      bool
 			}{
-				{herdrDockerDiskVolumeName(handle), volumestore.WarmKindDocker, herdrDockerDiskSizeBytes, imageFlag != "--file"},
-				{herdrGoCacheDiskVolumeName(handle), volumestore.WarmKindGoCache, herdrGoCacheDiskSizeBytes, false},
-				{herdrGoPathDiskVolumeName(handle), volumestore.WarmKindGoPath, herdrGoPathDiskSizeBytes, false},
+				{herdrDockerDiskVolumeName(handle), volumestore.WarmKindDocker, herdrDockerDiskSizeBytes(), imageFlag != "--file"},
+				{herdrGoCacheDiskVolumeName(handle), volumestore.WarmKindGoCache, herdrGoCacheDiskSizeBytes(), false},
+				{herdrGoPathDiskVolumeName(handle), volumestore.WarmKindGoPath, herdrGoPathDiskSizeBytes(), false},
 			}
 			svs := volumestore.New(filepath.Join(storeRoot, "volumes"))
 			for _, e := range seedEntries {
@@ -5280,6 +5274,14 @@ func herdrWorktreeSandbox(
 			}
 			return nil
 		}
+		adoptPrincipal := os.Getenv(vault.PrincipalEnv)
+		if adoptPrincipal != sb.Principal {
+			fmt.Fprintf(w, "worktree-sandbox: sandbox %s principal mismatch: sandbox has %q, requested %q — refusing adopt\n", handle, sb.Principal, adoptPrincipal)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: sandbox %s principal mismatch: sandbox has %q, requested %q", handle, sb.Principal, adoptPrincipal)
+			}
+			return nil
+		}
 		if rebindStale {
 			fmt.Fprintf(w, "worktree-sandbox: sandbox %s adopted for workspace %s (stale binding replaced)\n", handle, workspaceID)
 		} else {
@@ -5338,7 +5340,7 @@ func herdrWorktreeSandbox(
 		SandboxID:        sb.ID.String(),
 		RepoRoot:         repoRoot,
 		WorktreeManaged:  true,
-		HerdrSession:     herdrCurrentSession(),
+HerdrSession:     herdrCurrentSession(),
 		WorktreePath:     info.Path,
 		Principal:        herdrEffectivePrincipal(),
 	}

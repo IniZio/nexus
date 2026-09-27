@@ -289,3 +289,26 @@ rejected; the fixture cannot be `codex`, which is now a registered profile.
 `seam` fields `PID1Args`, `SBHandle` and `HostHome` are optional: an empty
 string omits the corresponding kernel cmdline parameter (`HostHome` feeds
 `--hosthome=`). Orca tests pass `""` for `hostHome` deliberately.
+---
+
+## Disk-size env knobs (test/ops override)
+
+Three environment variables control the size of the named volumes attached to
+every worktree sandbox. They are read **lazily** at the point of use (not at
+package init), so `t.Setenv` in tests is effective without package-reload.
+
+| Variable | Default | Unit | Purpose |
+|---|---|---|---|
+| `NEXUS_HERDR_DOCKER_DISK_GIB` | `20` | GiB | `/var/lib/docker` volume (docker layer cache) |
+| `NEXUS_HERDR_GOCACHE_DISK_GIB` | `10` | GiB | `/root/.cache` volume (Go build cache) |
+| `NEXUS_HERDR_GOPATH_DISK_GIB` | `10` | GiB | `/root/go` volume (GOPATH / module cache) |
+
+Parsing is handled by `diskfloor.EnvGiBBytes` (same function as
+`NEXUS_DISK_FLOOR_GIB`). Values must be positive integers; zero, negative, and
+non-integer values are rejected and the default is used instead (a warning is
+logged via `slog`). To shrink volumes in a test harness, set the variable
+before the function under test is called — for example:
+
+```go
+t.Setenv("NEXUS_HERDR_DOCKER_DISK_GIB", "2")
+```

@@ -33,6 +33,30 @@ func TestLinearConnectorContract(t *testing.T) {
 	vaulttest.RunConnectorContract(t, c)
 }
 
+func TestLinearExchangeNilAllowedProjects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "lin_token",
+			"expires_in":   86400,
+		})
+	}))
+	defer srv.Close()
+
+	ep := oauth2.Endpoint{
+		AuthURL:  srv.URL + "/auth",
+		TokenURL: srv.URL + "/token",
+	}
+	c := newLinearWithEndpoint("cid", "csec", srv.URL+"/cb", ep, srv.Client())
+	rec, err := c.Exchange(t.Context(), "code", "verifier")
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if rec.AllowedProjects != nil {
+		t.Errorf("connector must not set AllowedProjects; got %v", rec.AllowedProjects)
+	}
+}
+
 func TestLinearRefreshRoundtrip(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

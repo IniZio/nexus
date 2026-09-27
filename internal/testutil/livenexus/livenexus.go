@@ -1,33 +1,9 @@
 // Package livenexus provides an isolated live-test harness for nexus integration tests.
-//
-// Every live test that touches sandboxes, herdr worktrees, or herdr sessions MUST
-// use this harness. It guarantees:
-//
-//   - Nexus state (XDG_STATE_HOME) lives in a fresh /var/tmp directory, never the
-//     prod ~/.local/state/nexus tree.
-//   - A dedicated herdr server runs under a unique systemd unit, so no command
-//     reaches the prod herdr session.
-//   - Prod image cache is hard-linked read-only into the test root (no writable
-//     symlink into prod state; new images written by the test land in the test root).
-//   - Herdr worktree checkouts go under <base>/worktrees, not ~/.herdr/worktrees.
-//   - Cleanup order: rm each tracked sandbox → wait for supervisor PIDs → stop
-//     herdr unit → remove test root → kill+report any leaked processes.
-//   - Cleanup runs even when the test fails or panics (via t.Cleanup).
-//   - Cleanup fails the test if any process referencing the test root survives.
-//   - Cleanup compares before/after prod invariants and fails on any difference.
-//   - Cleanup never touches any resource it did not create.
-//   - Run refuses any argv containing "prune" and refuses to run when the resolved
-//     state root matches the prod path.
-//
-// Kernel: NEXUS_KERNEL_PATH is forwarded unchanged from the host environment so
-// the real kernel binary is reused read-only. All other nexus data (store,
-// bindings, caches) starts empty inside the isolated state root.
-//
-// Herdr config: XDG_CONFIG_HOME is overridden to <base>/config so that the
-// harness herdr server loads a harness-owned copy of the nexus plugin built
-// from this worktree. Its shim respects NEXUS_BIN, ensuring panes run inside
-// the guest VM rather than on the host. The session socket lives at
-// <base>/config/herdr/sessions/<session>/herdr.sock.
+// Every live test touching sandboxes, herdr worktrees, or sessions MUST use this harness.
+// Isolation: XDG_STATE_HOME in fresh /var/tmp, dedicated herdr systemd unit, prod image
+// cache hard-linked read-only, worktrees under <base>/worktrees. Cleanup runs on panic
+// or failure (t.Cleanup), fails on leaked procs or prod-invariant changes, never touches
+// prod resources. Run/RunHerdr refuse "prune". NEXUS_KERNEL_PATH forwarded unchanged.
 package livenexus
 
 import (
@@ -51,8 +27,7 @@ import (
 	"time"
 )
 
-// prodStateRoot resolves the nexus state root that the current environment uses
-// without any override from this harness. Used for the collision guard.
+// prodStateRoot resolves the nexus state root without harness overrides (collision guard).
 func prodStateRoot() (string, error) {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "nexus"), nil
@@ -94,7 +69,7 @@ func validateSocket(socketPath string) error {
 	return nil
 }
 
-// envSnapshot captures a point-in-time view of prod-side resources for leak detection.
+// envSnapshot is a point-in-time view of prod-side resources for leak detection.
 type envSnapshot struct {
 	prodPS         string // output of `nexus ps` against prod socket
 	herdrSessions  string // sorted names under ~/.config/herdr/sessions
@@ -112,8 +87,7 @@ func prodVaultDir() string {
 	return filepath.Join(home, ".local", "share", "nexus", "vault")
 }
 
-// checksumDir returns a sorted newline-separated listing of "<name> <sha256>" for
-// every regular file under dir. Used to detect prod-vault mutations.
+// checksumDir returns a sorted "<name> <sha256>" listing for every file under dir.
 func checksumDir(dir string) string {
 	var lines []string
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -129,15 +103,12 @@ func checksumDir(dir string) string {
 		lines = append(lines, fmt.Sprintf("%s %s", rel, hex.EncodeToString(h[:])))
 		return nil
 	})
-	// WalkDir already returns entries in lexical order; no sort needed.
 	return strings.Join(lines, "\n")
 }
 
-// captureEnvSnapshot records current prod-side environment state.
-// base and session scope the per-harness fields to avoid false-positive
-// violations caused by concurrent harnesses running in parallel.
-// base="" → liveProcs not checked; session="" → session fields not checked.
-func captureEnvSnapshot(nexusBin, base, session string) envSnapshot {
+// captureEnvSnapshot records prod-side state; base/session scope fields to avoid
+// false positives from parallel harnesses (""→field skipped).
+func captureEnvSnapshot(prodBin, base, session string) envSnapshot {
 	home, _ := os.UserHomeDir()
 	var liveProcs string
 	if base != "" {
@@ -156,24 +127,25 @@ func captureEnvSnapshot(nexusBin, base, session string) envSnapshot {
 		if _, err := os.Stat(sessDir); err == nil {
 			herdrSessions = "exists"
 		}
-		out := runCapture("systemctl", "--user", "list-units", "--all", session+".service", "--no-legend")
+		out, _ := runCapture("systemctl", "--user", "list-units", "--all", session+".service", "--no-legend")
 		if strings.TrimSpace(out) != "" {
 			systemdUnits = out
 		}
 	}
+	ps, _ := runCapture(prodBin, "ps")
+	branches, _ := runCapture("git", "-C", mainRepoPath(), "branch", "--list")
 	return envSnapshot{
-		prodPS:         runCapture(nexusBin, "ps"),
+		prodPS:         ps,
 		herdrSessions:  herdrSessions,
 		herdrWorktrees: listDirEntries(filepath.Join(home, ".herdr", "worktrees", "nexus")),
-		gitBranches:    runCapture("git", "-C", "/home/newman/magic/nexus", "branch", "--list"),
+		gitBranches:    branches,
 		systemdUnits:   systemdUnits,
 		liveProcs:      liveProcs,
 		prodVaultSum:   checksumDir(prodVaultDir()),
 	}
 }
 
-// checkSnapshot compares the stored before-snapshot against after, returning one
-// error string per changed field.
+// checkSnapshot returns one error string per field that changed since preSnap.
 func (h *Harness) checkSnapshot(after envSnapshot) []string {
 	var errs []string
 	diff := func(name, before, afterVal string) {
@@ -184,22 +156,20 @@ func (h *Harness) checkSnapshot(after envSnapshot) []string {
 	diff("nexus ps", h.preSnap.prodPS, after.prodPS)
 	diff("herdr sessions", h.preSnap.herdrSessions, after.herdrSessions)
 	diff("herdr worktrees/nexus", h.preSnap.herdrWorktrees, after.herdrWorktrees)
-	diff("git branches in /home/newman/magic/nexus", h.preSnap.gitBranches, after.gitBranches)
+	diff("git branches in "+mainRepoPath(), h.preSnap.gitBranches, after.gitBranches)
 	diff("systemd nl-* units", h.preSnap.systemdUnits, after.systemdUnits)
 	diff("live procs /var/tmp/nxl-*", h.preSnap.liveProcs, after.liveProcs)
 	diff("prod vault dir checksum", h.preSnap.prodVaultSum, after.prodVaultSum)
 	return errs
 }
 
-// runCapture runs a command and returns trimmed combined output; never fails the
-// test — command errors are silently ignored so snapshot capture is always safe.
-func runCapture(name string, args ...string) string {
-	out, _ := exec.Command(name, args...).CombinedOutput()
-	return strings.TrimSpace(string(out))
+// runCapture runs a command and returns trimmed combined output and any error.
+func runCapture(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
-// listDirEntries returns a newline-joined sorted list of directory entry names,
-// or "" when the directory does not exist.
+// listDirEntries returns newline-joined entry names under dir, or "" if missing.
 func listDirEntries(dir string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -212,38 +182,27 @@ func listDirEntries(dir string) string {
 	return strings.Join(names, "\n")
 }
 
-// hardLinkImagesDir populates dst with the prod image cache, skipping locks/.
-//
-// Only files under sha256/ are hard-linked: those are content-addressed blobs
-// opened read-only by the OCI store, so sharing their inode is safe.
-// Everything else (*.ext4, *.img, and any other file a VM or builder may open
-// read-write) is copied sparse via `cp --sparse=always` so test writes never
-// mutate prod inodes.
+// hardLinkImagesDir populates dst from prod image cache: sha256/ blobs are
+// hard-linked (read-only); other files (disk images) are sparse-copied.
 func hardLinkImagesDir(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable entries
+			return err
 		}
 		rel, relErr := filepath.Rel(src, path)
 		if relErr != nil || rel == "." {
 			return nil
 		}
 		if d.IsDir() {
-			// skip the locks/ subtree — per-test locking must use the test root
 			if d.Name() == "locks" {
 				return filepath.SkipDir
 			}
 			return os.MkdirAll(filepath.Join(dst, rel), 0o700)
 		}
 		dstPath := filepath.Join(dst, rel)
-		// Skip if already present.
 		if _, existErr := os.Lstat(dstPath); existErr == nil {
 			return nil
 		}
-		// Only hard-link immutable content-addressed blobs under sha256/.
-		// The OCI content store opens these blobs read-only; sharing the inode
-		// is safe. All other files (disk images, ext4 volumes) may be opened
-		// read-write by test VMs or builders and must be copied.
 		parts := strings.SplitN(rel, string(filepath.Separator), 2)
 		if parts[0] == "sha256" {
 			if linkErr := os.Link(path, dstPath); linkErr != nil {
@@ -258,8 +217,7 @@ func hardLinkImagesDir(src, dst string) error {
 	})
 }
 
-// copyFileSparse copies src to dst using cp --sparse=always, which preserves
-// holes in disk images without reading or writing unnecessary zero blocks.
+// copyFileSparse copies src to dst using cp --sparse=always to preserve holes.
 func copyFileSparse(src, dst string) error {
 	out, err := exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
 	if err != nil {
@@ -268,10 +226,7 @@ func copyFileSparse(src, dst string) error {
 	return nil
 }
 
-// checksumLinkedProdFiles returns sha256 checksums for small files under
-// sha256Dir that hardLinkImagesDir hard-links. Large blobs (>maxChecksumSize)
-// are skipped to bound runtime; they are content-addressed so their names
-// already encode integrity.
+// checksumLinkedProdFiles returns sha256 checksums for hard-linked files in sha256Dir; blobs >100 MiB skipped.
 func checksumLinkedProdFiles(sha256Dir string) map[string]string {
 	const maxChecksumSize = 100 * 1024 * 1024
 	sums := make(map[string]string)
@@ -307,8 +262,7 @@ func fileChecksum(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// findProcsReferencingPath scans /proc for processes whose cmdline contains path.
-// Returns a slice of PIDs (may be empty).
+// findProcsReferencingPath returns PIDs whose /proc/*/cmdline contains path.
 func findProcsReferencingPath(path string) []int {
 	entries, _ := filepath.Glob("/proc/[0-9]*/cmdline")
 	var pids []int
@@ -317,7 +271,6 @@ func findProcsReferencingPath(path string) []int {
 		if err != nil {
 			continue
 		}
-		// cmdline is NUL-separated; treat as a single byte slice for Contains
 		if !strings.Contains(string(data), path) {
 			continue
 		}
@@ -350,7 +303,8 @@ type Harness struct {
 	kernelPath     string
 	sessionName    string
 	socketPath     string
-	nexusBin       string
+	nexusBin       string // worktree-built binary used to drive isolated sandboxes
+	prodNexusBin   string // installed prod nexus from PATH used for prod-state snapshots
 	base           string // /var/tmp/nxl-* root, for leak scanning
 	worktreeDir    string // <base>/worktrees — herdr worktree checkouts go here
 	herdrPluginDir string
@@ -362,13 +316,7 @@ type Harness struct {
 	linkedProdSums map[string]string
 }
 
-// New creates an isolated harness for t. It:
-//  1. Creates a temp dir under /var/tmp.
-//  2. Hard-links the prod image cache read-only into the test root.
-//  3. Starts a herdr server in its own systemd user unit.
-//  4. Registers cleanup in t.Cleanup (runs even on test failure or panic).
-//
-// Fails the test immediately when isolation cannot be guaranteed.
+// New creates an isolated harness for t; fails immediately if isolation cannot be guaranteed.
 func New(t *testing.T) *Harness {
 	t.Helper()
 
@@ -377,8 +325,9 @@ func New(t *testing.T) *Harness {
 		t.Fatalf("livenexus: create base dir: %v", err)
 	}
 
-	// Resolve (or build) the nexus binary inside base so it is cleaned up with it.
-	nexusBin, resolveErr := resolveNexusBin(base)
+	prodNexus, _ := exec.LookPath("nexus")
+
+	nexusBin, resolveErr := resolveNexusBin()
 	if resolveErr != nil {
 		_ = os.RemoveAll(base)
 		t.Fatalf("livenexus: %v", resolveErr)
@@ -434,11 +383,6 @@ func New(t *testing.T) *Harness {
 		t.Fatalf("livenexus: mkdir nexus state: %v", mkErr)
 	}
 
-	// Hard-link the prod image cache into the test root.
-	// Hard links are instant (no data copy), let the test read cached images, and
-	// ensure test writes (new cache entries) land in the isolated root — prod files
-	// are never modified or deleted by the test, and there is no writable symlink
-	// into prod state.
 	prodNexusState, _ := prodStateRoot()
 	prodImagesDir := filepath.Join(prodNexusState, "images")
 	if _, statErr := os.Stat(prodImagesDir); statErr == nil {
@@ -455,7 +399,7 @@ func New(t *testing.T) *Harness {
 	prodSha256Dir := filepath.Join(prodNexusState, "images", "sha256")
 	linkedSums := checksumLinkedProdFiles(prodSha256Dir)
 
-	preSnap := captureEnvSnapshot(nexusBin, base, session)
+	preSnap := captureEnvSnapshot(prodNexus, base, session)
 	preSnap.credsDirSet = true
 
 	h := &Harness{
@@ -468,6 +412,7 @@ func New(t *testing.T) *Harness {
 		sessionName:    session,
 		socketPath:     socketPath,
 		nexusBin:       nexusBin,
+		prodNexusBin:   prodNexus,
 		base:           base,
 		worktreeDir:    worktreeDir,
 		herdrPluginDir: herdrPluginDir,
@@ -491,9 +436,6 @@ func (h *Harness) startHerdr(t *testing.T, base string) {
 		t.Fatalf("livenexus: %v", err)
 	}
 
-	// Build --setenv flags from the full isolated env (h.Env()) so the herdr
-	// server inherits XDG_STATE_HOME, XDG_DATA_HOME, CREDENTIALS_DIRECTORY,
-	// NEXUS_KERNEL_PATH, NEXUS_BIN, PATH, TMPDIR, etc. without duplicating the list.
 	setenvArgs := make([]string, 0, len(h.Env())+10)
 	setenvArgs = append(setenvArgs,
 		"--user", "--unit="+h.sessionName,
@@ -527,10 +469,7 @@ func (h *Harness) startHerdr(t *testing.T, base string) {
 	}
 }
 
-// sweepIsolatedSandboxes removes all nexus sandboxes visible in the isolated
-// state root. This is a safety net for sandboxes whose herdr workspace was
-// removed by the backend teardown but whose nexus supervisor was never told to
-// stop. It only touches sandboxes inside h's isolated XDG_STATE_HOME.
+// sweepIsolatedSandboxes errors on sandboxes in the isolated root not caught by tracked teardown.
 func (h *Harness) sweepIsolatedSandboxes(ctx context.Context) {
 	cmd := exec.CommandContext(ctx, h.nexusBin, "ps")
 	cmd.Env = h.Env()
@@ -548,30 +487,17 @@ func (h *Harness) sweepIsolatedSandboxes(ctx context.Context) {
 	}
 }
 
-// cleanup is registered with t.Cleanup and runs even when the test fails or panics.
-// Order:
-//  0. Preserve logs (before any teardown so supervisor state dirs still exist).
-//  1. rm every tracked sandbox handle.
-//  2. safety sweep: rm any sandboxes in the isolated root not caught by step 1.
-//  3. wait for supervisor PIDs referencing this root to exit.
-//  4. stop the herdr systemd unit and remove its session dir.
-//  5. remove the test root directory.
-//  6. kill+report any process still referencing the (now-deleted) root path.
-//  7. compare before/after prod invariants; fail on any difference.
+// cleanup is registered with t.Cleanup and runs even on test failure or panic.
 func (h *Harness) cleanup(base string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// 0. Preserve logs before teardown: supervisor state dirs (and their logs)
-	// are deleted by service.Remove inside teardownHandle. Snapshotting here
-	// ensures per-workspace supervisor.log files are captured even on failure.
 	if h.t.Failed() || os.Getenv("NEXUS_LIVE_KEEP_LOGS") == "1" {
 		if dest := preserveLogs(base); dest != "" {
 			h.t.Logf("livenexus: logs preserved at %s", dest)
 		}
 	}
 
-	// 1. Remove all tracked sandbox handles.
 	h.mu.Lock()
 	tracked := append([]string(nil), h.handles...)
 	h.mu.Unlock()
@@ -579,27 +505,19 @@ func (h *Harness) cleanup(base string) {
 		h.teardownHandle(ctx, handle)
 	}
 
-	// 2. Safety sweep: rm any nexus sandboxes in the isolated root that were not
 	h.sweepIsolatedSandboxes(ctx)
 
-	// 3. Stop herdr unit first so its nexus child processes release the store root.
 	_ = exec.Command("systemctl", "--user", "stop", h.sessionName+".service").Run()
 	_ = exec.Command("herdr", "--session", h.sessionName, "session", "delete", h.sessionName).Run()
 	sessionDir := filepath.Join(h.configHome, "herdr", "sessions", h.sessionName)
 	_ = os.RemoveAll(sessionDir)
 
-	// nexus __supervisor processes hold a reference to the store root; they must
-	// exit before os.RemoveAll succeeds cleanly.
 	waitProcsExit(base, 60*time.Second)
 
-	// 4. Capture after-snapshot before removing base: the nexus binary lives
-	// inside base, so it must still exist when we run `nexus ps`.
-	after := captureEnvSnapshot(h.nexusBin, base, h.sessionName)
+	after := captureEnvSnapshot(h.prodNexusBin, base, h.sessionName)
 
-	// 5. Remove the test root.
 	_ = os.RemoveAll(base)
 
-	// 6. Kill+report any process still referencing our root path.
 	leakedPIDs := findProcsReferencingPath(base)
 	for _, pid := range leakedPIDs {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
@@ -609,7 +527,6 @@ func (h *Harness) cleanup(base string) {
 			len(leakedPIDs), base, leakedPIDs)
 	}
 
-	// 7. Compare before/after prod invariants.
 	for _, e := range h.checkSnapshot(after) {
 		h.t.Errorf("livenexus: prod isolation violation — %s", e)
 	}
@@ -626,10 +543,7 @@ func (h *Harness) cleanup(base string) {
 	}
 }
 
-// preserveLogs copies all regular *.log files under base into
-// /var/tmp/nxl-logs/<basename-of-base>/ preserving relative paths.
-// Returns the destination directory on success, or "" on failure.
-// Never deletes anything.
+// preserveLogs copies *.log files to /var/tmp/nxl-logs/<basename>/; returns dest or "".
 func preserveLogs(base string) string {
 	dest := filepath.Join("/var/tmp", "nxl-logs", filepath.Base(base))
 	var copied int
@@ -681,9 +595,7 @@ func (h *Harness) teardownHandle(ctx context.Context, handle string) {
 	_ = cmd.Run()
 }
 
-// Env returns the environment slice that child processes must use to run
-// inside the isolated state. It includes XDG_STATE_HOME, XDG_CONFIG_HOME,
-// XDG_DATA_HOME, HERDR_SOCKET_PATH, TMPDIR, and PATH.
+// Env returns the environment slice for child processes running in the isolated state.
 func (h *Harness) Env() []string {
 	home, _ := os.UserHomeDir()
 	localBin := filepath.Join(home, ".local", "bin")
@@ -695,9 +607,8 @@ func (h *Harness) Env() []string {
 	skipKeys := map[string]bool{
 		"XDG_STATE_HOME": true, "XDG_DATA_HOME": true, "XDG_CONFIG_HOME": true,
 		"HERDR_SOCKET_PATH": true, "TMPDIR": true, "PATH": true,
-		"CREDENTIALS_DIRECTORY": true,
-		"NEXUS_BIN":             true,
-		// Volume size / disk-floor overrides: harness sets small values below.
+		"CREDENTIALS_DIRECTORY":        true,
+		"NEXUS_BIN":                    true,
 		"NEXUS_HERDR_DOCKER_DISK_GIB":  true,
 		"NEXUS_HERDR_GOCACHE_DISK_GIB": true,
 		"NEXUS_HERDR_GOPATH_DISK_GIB":  true,
@@ -739,9 +650,7 @@ func (h *Harness) Env() []string {
 func (h *Harness) CredsDir() string     { return h.credsDir }
 func (h *Harness) VaultKeyPath() string { return filepath.Join(h.credsDir, "nexus-vault-key") }
 
-// Run executes nexusBin with args inside the isolated environment.
-// It refuses any argv containing "prune" and refuses to run when the
-// resolved state root matches prod.
+// Run executes nexusBin in the isolated environment; refuses "prune" argv or prod state root.
 func (h *Harness) Run(ctx context.Context, args ...string) (string, error) {
 	for _, a := range args {
 		if strings.Contains(a, "prune") {
@@ -758,8 +667,7 @@ func (h *Harness) Run(ctx context.Context, args ...string) (string, error) {
 	return string(out), err
 }
 
-// RunHerdr executes herdr with args inside the isolated environment.
-// It refuses any argv containing "prune".
+// RunHerdr executes herdr with args inside the isolated environment. Refuses "prune" argv.
 func (h *Harness) RunHerdr(ctx context.Context, args ...string) (string, error) {
 	for _, a := range args {
 		if strings.Contains(a, "prune") {
@@ -776,8 +684,7 @@ func (h *Harness) RunHerdr(ctx context.Context, args ...string) (string, error) 
 	return string(out), err
 }
 
-// Track registers handle for cleanup. In t.Cleanup, only tracked handles are
-// removed — never a wildcard or list-based sweep.
+// Track registers handle for teardown in cleanup. Only tracked handles are removed.
 func (h *Harness) Track(handle string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -794,10 +701,7 @@ func (h *Harness) SocketPath() string { return h.socketPath }
 func (h *Harness) StateRoot() string { return h.stateRoot }
 func (h *Harness) DataHome() string  { return h.dataHome }
 
-// SnapshotLogs copies all *.log files under the harness base directory to
-// /var/tmp/nxl-logs/<base-name>/ and logs the destination. Call this from
-// a test's t.Cleanup BEFORE any teardown that deletes supervisor state dirs,
-// so that per-workspace supervisor.log files are preserved on failure.
+// SnapshotLogs copies *.log files to /var/tmp/nxl-logs/<base>/; call before teardown.
 func (h *Harness) SnapshotLogs() {
 	if !h.t.Failed() && os.Getenv("NEXUS_LIVE_KEEP_LOGS") != "1" {
 		return
@@ -810,9 +714,7 @@ func (h *Harness) SnapshotLogs() {
 // NexusBin returns the nexus binary path.
 func (h *Harness) NexusBin() string { return h.nexusBin }
 
-// WorktreeDir returns the directory for herdr worktree checkouts within the
-// isolated test root. Pass this to backend.Config.WorktreeDir so that worktree
-// git checkouts land here and not under ~/.herdr/worktrees.
+// WorktreeDir returns the isolated herdr worktree checkout directory.
 func (h *Harness) WorktreeDir() string { return h.worktreeDir }
 
 func resolveHerdrBin() (string, error) {
@@ -837,21 +739,76 @@ func worktreeRoot() (string, error) {
 	return root, nil
 }
 
-func probeVaultSupport(bin string) bool {
-	out, err := exec.Command(bin, "vault", "ls").CombinedOutput()
-	s := string(out)
-	// If the exec itself failed (binary missing, not executable, crashed) and the
-	// output doesn't contain the "unknown command" strings, the binary can't be
-	// probed — treat as no vault support.
-	if err != nil && !strings.Contains(s, "unknown command") && !strings.Contains(s, "command not found") {
-		return false
+func parseMainWorktreePath(porcelain string) (string, error) {
+	for _, line := range strings.Split(porcelain, "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			return strings.TrimSpace(p), nil
+		}
 	}
-	return !strings.Contains(s, "unknown command") && !strings.Contains(s, "command not found")
+	return "", fmt.Errorf("livenexus: no worktree line in git worktree list output")
 }
 
-// buildNexusBin builds the nexus binary into base (which is the per-test
-// isolated root). It returns the path to the binary. The binary is cleaned
-// up automatically when base is removed in t.Cleanup.
+func mainRepoPath() string {
+	if p := os.Getenv("NEXUS_LIVE_MAIN_REPO"); p != "" {
+		return p
+	}
+	root, err := worktreeRoot()
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", root, "worktree", "list", "--porcelain").Output()
+	if err == nil {
+		if p, pErr := parseMainWorktreePath(string(out)); pErr == nil {
+			return p
+		}
+	}
+	return root
+}
+
+func cutEnv(e string) (key, val string, ok bool) {
+	for i, c := range e {
+		if c == '=' {
+			return e[:i], e[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+func (h *Harness) ExtraEnv() []string {
+	keys := map[string]bool{
+		"XDG_STATE_HOME":               true,
+		"XDG_DATA_HOME":                true,
+		"XDG_CONFIG_HOME":              true,
+		"CREDENTIALS_DIRECTORY":        true,
+		"NEXUS_KERNEL_PATH":            true,
+		"TMPDIR":                       true,
+		"NEXUS_DISK_FLOOR_GIB":         true,
+		"NEXUS_HERDR_DOCKER_DISK_GIB":  true,
+		"NEXUS_HERDR_GOCACHE_DISK_GIB": true,
+		"NEXUS_HERDR_GOPATH_DISK_GIB":  true,
+	}
+	var out []string
+	for _, e := range h.Env() {
+		k, _, ok := cutEnv(e)
+		if ok && keys[k] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func probeVaultSupport(bin string) bool {
+	out, _ := exec.Command(bin, "help").CombinedOutput()
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) > 0 && f[0] == "vault" {
+			return true
+		}
+	}
+	return false
+}
+
+// buildNexusBin builds the nexus binary into base and returns its path.
 func buildNexusBin(base string) (string, error) {
 	root, err := worktreeRoot()
 	if err != nil {
@@ -872,20 +829,14 @@ func buildNexusBin(base string) (string, error) {
 const nexusE2EBin = "/var/tmp/nexus-e2e-bin/nexus"
 
 // nexusBinOnce guards the single per-process build of the nexus binary.
-// It always runs go build (incremental — cheap when nothing changed) so that
-// code changes made between test runs are never missed.
 var (
 	nexusBinOnce sync.Once
 	nexusBinPath string
 	nexusBinErr  error
 )
 
-// resolveNexusBin returns the nexus binary path. When NEXUS_BIN is set it is
-// used directly. Otherwise the binary is built once per test process via
-// sync.Once: go build writes to a temp file then atomically renames it onto
-// nexusE2EBin so concurrent test packages already executing the old inode are
-// unaffected ("text file busy" avoided).
-func resolveNexusBin(_ string) (string, error) {
+// resolveNexusBin returns the nexus binary (NEXUS_BIN if set; else built once per process).
+func resolveNexusBin() (string, error) {
 	if p := os.Getenv("NEXUS_BIN"); p != "" {
 		if !probeVaultSupport(p) {
 			return "", fmt.Errorf("livenexus: NEXUS_BIN=%s lacks vault support", p)
@@ -903,7 +854,6 @@ func resolveNexusBin(_ string) (string, error) {
 			nexusBinErr = err
 			return
 		}
-		// Build into a temp file so the rename onto nexusE2EBin is atomic.
 		tmp := fmt.Sprintf("%s/nexus.tmp.%d", dir, os.Getpid())
 		cmd := exec.Command("go", "build", "-o", tmp, "./cmd/nexus")
 		cmd.Dir = root

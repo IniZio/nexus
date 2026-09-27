@@ -317,8 +317,7 @@ func TestCleanupOrderStopsSupervisorsFirst(t *testing.T) {
 func TestResolveNexusBinNeverUsesPATH(t *testing.T) {
 	t.Setenv("NEXUS_BIN", "")
 
-	dir := t.TempDir()
-	bin, err := resolveNexusBin(dir)
+	bin, err := resolveNexusBin()
 	if err != nil {
 		t.Fatalf("resolveNexusBin: %v", err)
 	}
@@ -362,10 +361,11 @@ func TestBuildDirInsideBase(t *testing.T) {
 
 func TestSnapshotDetectsLeak(t *testing.T) {
 	dir := t.TempDir()
-	bin, err := resolveNexusBin(dir)
+	bin, err := resolveNexusBin()
 	if err != nil {
 		t.Fatalf("resolveNexusBin: %v", err)
 	}
+	_ = dir
 	snap := captureEnvSnapshot(bin, "", "")
 
 	h := &Harness{t: t, nexusBin: bin, preSnap: snap}
@@ -476,6 +476,53 @@ func TestHarnessIsolatesVaultAndKey(t *testing.T) {
 	h.preSnap = envSnapshot{credsDirSet: true, prodVaultSum: "before"}
 	if errs4 := h.checkSnapshot(snap2); len(errs4) == 0 {
 		t.Error("changed vault sum should produce an error")
+	}
+}
+
+func TestParseMainWorktreePath(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "single worktree",
+			input: "worktree /path/to/main\nHEAD abc123\nbranch refs/heads/main\n",
+			want:  "/path/to/main",
+		},
+		{
+			name:  "multiple worktrees",
+			input: "worktree /path/to/main\nHEAD abc\nbranch refs/heads/main\n\nworktree /path/to/linked\nHEAD def\nbranch refs/heads/feat\n",
+			want:  "/path/to/main",
+		},
+		{
+			name:    "empty output",
+			input:   "",
+			wantErr: true,
+		},
+		{
+			name:    "no worktree line",
+			input:   "HEAD abc\nbranch refs/heads/main\n",
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseMainWorktreePath(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("parseMainWorktreePath(%q): want error, got %q", tc.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseMainWorktreePath(%q): %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Errorf("parseMainWorktreePath(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 const (
 	testTeam    = "T0TEST"
 	testUser    = "U0TEST"
+	testUser2   = "U0TEST2"
 	testChannel = "C0TEST"
 	testProject = "ctrl-e2e-test"
 )
@@ -52,7 +53,7 @@ func TestControllerE2E(t *testing.T) {
 	chat := chattest.New()
 	backend := buildBackend(t, h, repoPath)
 	lc := buildLifecycle(h)
-	linker := controller.NewVaultLinker(v, vault.NewRegistry(), chat, testTeam)
+	linker := controller.NewVaultLinker(v, vault.NewRegistry(), chat, testTeam, "")
 	projects := fixedProjectResolver{channel: testChannel, project: testProject}
 
 	deps := controller.Deps{
@@ -114,6 +115,21 @@ func TestControllerE2E(t *testing.T) {
 		ref := controller.NewThreadRef(testTeam, testChannel, "ts-provision")
 		sharedTask = testMentionProvisions(t, ctx, chat, router, ref, store)
 		trackSandbox(sharedTask.SandboxID)
+	})
+
+	t.Run("second_turn", func(t *testing.T) {
+		if sharedTask.SandboxID == "" {
+			t.Fatal("no sandbox from MentionProvisionsSandbox")
+		}
+		testSecondTurn(t, ctx, chat, router, store, sharedTask)
+	})
+
+	t.Run("other_user_refused", func(t *testing.T) {
+		if sharedTask.SandboxID == "" {
+			t.Fatal("no sandbox from MentionProvisionsSandbox")
+		}
+		seedVaultUser(t, ctx, v, token, testUser2)
+		testOtherUserRefused(t, ctx, chat, router, store, sharedTask)
 	})
 
 	t.Run("IdleSweepPausesAndResumes", func(t *testing.T) {
@@ -594,6 +610,143 @@ func importMCPOAuthIntoVault(ctx context.Context, v vault.Vault, entry *mcpOAuth
 	return v.Put(ctx, k, rec)
 }
 
+func seedVaultUser(t *testing.T, ctx context.Context, v vault.Vault, token, user string) {
+	t.Helper()
+	principal := vault.SlackPrincipal(testTeam, user)
+	k := vault.Key{Principal: principal, Integration: "github"}
+	rec := vault.Record{
+		AccessToken:     token,
+		Expiry:          time.Now().Add(24 * time.Hour),
+		AllowedProjects: []string{"*"},
+	}
+	if err := v.Put(ctx, k, rec); err != nil {
+		t.Fatalf("vault.Put user=%s: %v", user, err)
+	}
+	t.Logf("seeded vault for %s", principal)
+}
+
+func testSecondTurn(t *testing.T, ctx context.Context, chat *chattest.Fake, router *controller.Router, store controller.TaskStore, task controller.Task) {
+	t.Helper()
+	ref := task.ThreadRef
+
+	// Confirm task is idle; testMentionProvisions waits for white_check_mark which
+	// is posted after the StatusIdle transition, so this should be fast.
+	idleDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(idleDeadline) {
+		cur, err := store.Get(ctx, ref)
+		if err == nil && cur.Status == controller.StatusIdle {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	cur, getErr := store.Get(ctx, ref)
+	if getErr != nil || cur.Status != controller.StatusIdle {
+		t.Fatalf("second_turn: task not idle; status=%v err=%v", cur.Status, getErr)
+	}
+
+	preCheckmarks := 0
+	for _, r := range chat.Reactions(ref) {
+		if r == "white_check_mark" {
+			preCheckmarks++
+		}
+	}
+	prePosts := len(chat.Posts(ref))
+
+	ev := controller.Event{
+		Kind:      controller.EventReply,
+		ThreadRef: ref,
+		User:      testUser,
+		Text:      "echo nexus-second-turn-confirmed",
+	}
+	if err := router.Handle(ctx, ev); err != nil {
+		t.Fatalf("second_turn: Handle: %v", err)
+	}
+
+	const wantPhrase = "nexus-second-turn-confirmed"
+	deadline := time.Now().Add(5 * time.Minute)
+	for time.Now().Before(deadline) {
+		checkmarks := 0
+		for _, r := range chat.Reactions(ref) {
+			if r == "white_check_mark" {
+				checkmarks++
+			}
+		}
+		if checkmarks > preCheckmarks {
+			posts := chat.Posts(ref)
+			newPosts := posts[min(prePosts, len(posts)):]
+			found := false
+			for _, p := range newPosts {
+				if strings.Contains(p, wantPhrase) {
+					found = true
+					break
+				}
+			}
+			cur2, _ := store.Get(ctx, ref)
+			if cur2.SandboxID != task.SandboxID {
+				t.Errorf("second_turn: SandboxID changed: was %s, now %s", task.SandboxID, cur2.SandboxID)
+			}
+			if !found {
+				t.Errorf("second_turn: check_mark posted but phrase %q absent in new posts: %v", wantPhrase, newPosts)
+			}
+			t.Logf("second_turn: complete; sandbox=%s status=%s", cur2.SandboxID, cur2.Status)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("second_turn: no completion within 5 min; posts=%v reactions=%v", chat.Posts(ref), chat.Reactions(ref))
+}
+
+func testOtherUserRefused(t *testing.T, ctx context.Context, chat *chattest.Fake, router *controller.Router, store controller.TaskStore, task controller.Task) {
+	t.Helper()
+	ref := task.ThreadRef
+
+	// Wait for idle so the owner check is reached (not the working/busy branch).
+	idleDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(idleDeadline) {
+		cur, err := store.Get(ctx, ref)
+		if err == nil && cur.Status == controller.StatusIdle {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	cur, getErr := store.Get(ctx, ref)
+	if getErr != nil || cur.Status != controller.StatusIdle {
+		t.Fatalf("other_user_refused: task not idle; status=%v err=%v", cur.Status, getErr)
+	}
+	preSeq := cur.StateChangeSeq
+	prePosts := len(chat.Posts(ref))
+
+	ev := controller.Event{
+		Kind:      controller.EventReply,
+		ThreadRef: ref,
+		User:      testUser2,
+		Text:      "this should be refused",
+	}
+	if err := router.Handle(ctx, ev); err != nil {
+		t.Fatalf("other_user_refused: Handle: %v", err)
+	}
+
+	// blocked.go posts "only <@owner> can drive this thread".
+	ownerMention := "<@" + testUser + ">"
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		posts := chat.Posts(ref)
+		for _, p := range posts[min(prePosts, len(posts)):] {
+			if strings.Contains(p, ownerMention) {
+				t.Logf("other_user_refused: refusal posted %q", p)
+				cur2, _ := store.Get(ctx, ref)
+				if cur2.StateChangeSeq != preSeq {
+					t.Errorf("other_user_refused: StateChangeSeq changed (agent prompted): was %d, now %d", preSeq, cur2.StateChangeSeq)
+				}
+				t.Logf("other_user_refused: seq stable at %d; owner check passed", cur2.StateChangeSeq)
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Errorf("other_user_refused: no refusal post containing %q within 15s; posts=%v", ownerMention, chat.Posts(ref))
+}
+
 func openIsolatedVault(t *testing.T, h *livenexus.Harness) vault.Vault {
 	t.Helper()
 	keyData, err := os.ReadFile(h.VaultKeyPath())
@@ -632,7 +785,7 @@ func buildBackend(t *testing.T, h *livenexus.Harness, repoPath string) *herdrbac
 		PermissionMode:  "default",
 		HerdrSocketPath: h.SocketPath(),
 		NexusBin:        h.NexusBin(),
-		ExtraEnv:        extraEnvFromHarness(h),
+		ExtraEnv:        h.ExtraEnv(),
 		WorktreeDir:     h.WorktreeDir(),
 	}
 	b := herdrbackend.New(cfg)
@@ -769,39 +922,6 @@ egress:
 		}
 	}
 	return dir
-}
-
-func extraEnvFromHarness(h *livenexus.Harness) []string {
-	fullEnv := h.Env()
-	keys := map[string]bool{
-		"XDG_STATE_HOME":               true,
-		"XDG_DATA_HOME":                true,
-		"XDG_CONFIG_HOME":              true,
-		"CREDENTIALS_DIRECTORY":        true,
-		"NEXUS_KERNEL_PATH":            true,
-		"TMPDIR":                       true,
-		"NEXUS_DISK_FLOOR_GIB":         true,
-		"NEXUS_HERDR_DOCKER_DISK_GIB":  true,
-		"NEXUS_HERDR_GOCACHE_DISK_GIB": true,
-		"NEXUS_HERDR_GOPATH_DISK_GIB":  true,
-	}
-	var out []string
-	for _, e := range fullEnv {
-		k, _, ok := cutEnv(e)
-		if ok && keys[k] {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-func cutEnv(e string) (key, val string, ok bool) {
-	for i, c := range e {
-		if c == '=' {
-			return e[:i], e[i+1:], true
-		}
-	}
-	return "", "", false
 }
 
 var _ controller.SandboxLifecycle = (*cliLifecycle)(nil)

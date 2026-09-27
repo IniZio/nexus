@@ -20,6 +20,8 @@ type fakeCmd struct {
 	mu      sync.Mutex
 	calls   []fakeCall
 	replies map[string]fakeReply // key = first argv word
+	seqs    map[string]fakeSeq   // per-call sequences (overrides replies)
+	seqIdx  map[string]int       // current index into seqs
 }
 
 type fakeCall struct {
@@ -32,8 +34,20 @@ type fakeReply struct {
 	err error
 }
 
+// fakeSeq is a sequence of replies for a given key. The first call returns
+// replies[0], the second replies[1], and so on. The last entry is repeated
+// for all subsequent calls.
+type fakeSeq []fakeReply
+
 func newFakeCmd(replies map[string]fakeReply) *fakeCmd {
 	return &fakeCmd{replies: replies}
+}
+
+// newFakeCmdSeq creates a fakeCmd with per-key reply sequences for testing
+// call-order-dependent behaviour (e.g. first call returns idle, subsequent
+// calls return a different status).
+func newFakeCmdSeq(replies map[string]fakeReply, seqs map[string]fakeSeq) *fakeCmd {
+	return &fakeCmd{replies: replies, seqs: seqs, seqIdx: make(map[string]int)}
 }
 
 func (f *fakeCmd) run(ctx context.Context, extraEnv []string, argv ...string) (string, error) {
@@ -42,6 +56,23 @@ func (f *fakeCmd) run(ctx context.Context, extraEnv []string, argv ...string) (s
 	f.mu.Unlock()
 	if len(argv) == 0 {
 		return "", nil
+	}
+	// Try sequence replies first (by 3-word, 2-word, 1-word key).
+	for _, n := range []int{3, 2, 1} {
+		if len(argv) < n {
+			continue
+		}
+		key := strings.Join(argv[:n], " ")
+		if seq, ok := f.seqs[key]; ok {
+			f.mu.Lock()
+			idx := f.seqIdx[key]
+			if idx < len(seq)-1 {
+				f.seqIdx[key] = idx + 1
+			}
+			r := seq[idx]
+			f.mu.Unlock()
+			return r.out, r.err
+		}
 	}
 	key := strings.Join(argv[:min(len(argv), 3)], " ")
 	if r, ok := f.replies[key]; ok {
@@ -109,11 +140,14 @@ func min(a, b int) int {
 	return b
 }
 
+// testPrincipal is the default principal used in tests that don't exercise principal logic.
+const testPrincipal = "u:testprincipal"
+
 // herdrListLine returns a `nexus herdr list` output line for the given workspace.
 // handle and sandbox_id use distinct realistic values so parsers can be tested independently.
-// principal is empty by default; use herdrListLineWithPrincipal to set a specific value.
+// Uses testPrincipal so hard-cutover principal checks pass in generic tests.
 func herdrListLine(wsID, paneID string) string {
-	return herdrListLineWithPrincipal(wsID, paneID, "")
+	return herdrListLineWithPrincipal(wsID, paneID, testPrincipal)
 }
 
 // herdrListLineWithPrincipal is like herdrListLine but includes an explicit principal field.
@@ -126,6 +160,25 @@ func nexusPSLine(handle, sbID string) string {
 	return fmt.Sprintf("HANDLE\tSTATE\tAGENT\tMOUNTS\tID\n%s\trunning\tclaude\t/workspace\t%s\n1 sandbox(es)\n", handle, sbID)
 }
 
+// setupTestStore creates a temp store root with a sandbox record.json and wires
+// XDG_STATE_HOME so b.nexusStoreRoot() resolves to it. The sandbox ID used by
+// herdrListLine is "sb-abc123"; pass that when provisioning with herdrListLine.
+// Call before Provision in any test that must pass the record principal check.
+func setupTestStore(t *testing.T, sandboxID, principal string) string {
+	t.Helper()
+	stateDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateDir)
+	sbDir := filepath.Join(stateDir, "nexus", "sandboxes", sandboxID)
+	if err := os.MkdirAll(sbDir, 0o755); err != nil {
+		t.Fatalf("setupTestStore mkdir: %v", err)
+	}
+	rec := fmt.Sprintf(`{"schema_version":1,"id":%q,"principal":%q}`, sandboxID, principal)
+	if err := os.WriteFile(filepath.Join(sbDir, "record.json"), []byte(rec), 0o644); err != nil {
+		t.Fatalf("setupTestStore write record: %v", err)
+	}
+	return stateDir
+}
+
 func TestBackendMapsHerdrState(t *testing.T) {
 	cases := []struct {
 		status herdragent.Status
@@ -136,27 +189,20 @@ func TestBackendMapsHerdrState(t *testing.T) {
 		{herdragent.StatusDone},
 	}
 	for _, tc := range cases {
+		tc := tc
 		t.Run(string(tc.status), func(t *testing.T) {
 			h := newFakeCmd(map[string]fakeReply{
-				"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
-				"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w2"}}}`},
-				"agent start":     {out: ""},
-				"agent get":       {out: fmt.Sprintf(`{"result":{"agent":{"agent":"ctrl-w2","agent_status":%q,"state_change_seq":1}}}`, tc.status)},
-				"agent wait":      {out: ""},
-				"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+				"agent get": {out: fmt.Sprintf(`{"result":{"agent":{"agent":"ctrl-w2","agent_status":%q,"state_change_seq":1}}}`, tc.status)},
 			})
-			n := newFakeCmd(map[string]fakeReply{
-				"herdr worktree-sandbox": {out: ""},
-				"herdr list":             {out: herdrListLine("w2", "w2:p1")},
-				"exec":                   {out: "nexus-fake-guest\n"},
-			})
-			b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+			b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, nil)
 			b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
-			_, ag, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "1"), "u:alice")
-			if err != nil {
-				t.Fatalf("Provision: %v", err)
-			}
-			st, err := b.Observe(context.Background(), ag, false)
+			// Inject entry directly — this test is about Observe status mapping,
+			// not about Provision or waitForAgentReady.
+			b.mu.Lock()
+			b.entries["ctrl-w2"] = &entry{paneID: "w2:p1", nexusSandboxID: "sb-abc123", wsID: "w2"}
+			b.sandboxes["sb-abc123"] = "ctrl-w2"
+			b.mu.Unlock()
+			st, err := b.Observe(context.Background(), "ctrl-w2", false)
 			if err != nil {
 				t.Fatalf("Observe: %v", err)
 			}
@@ -168,6 +214,7 @@ func TestBackendMapsHerdrState(t *testing.T) {
 }
 
 func TestProvisionSetsPrincipalEnv(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	h := newFakeCmd(map[string]fakeReply{
 		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w3"}}}`},
@@ -185,7 +232,7 @@ func TestProvisionSetsPrincipalEnv(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "2"), "slack:T:U123")
+	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "2"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -196,7 +243,7 @@ func TestProvisionSetsPrincipalEnv(t *testing.T) {
 	}
 	found := false
 	for _, e := range env {
-		if e == "NEXUS_PRINCIPAL=slack:T:U123" {
+		if e == "NEXUS_PRINCIPAL="+testPrincipal {
 			found = true
 		}
 	}
@@ -206,6 +253,7 @@ func TestProvisionSetsPrincipalEnv(t *testing.T) {
 }
 
 func TestStartAgentHandlesAutoTaggedPane(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	// herdr agent start returns agent_pane_busy → should rename + pane run
 	busyErr := fmt.Errorf("exit status 1")
 	h := newFakeCmd(map[string]fakeReply{
@@ -226,7 +274,7 @@ func TestStartAgentHandlesAutoTaggedPane(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "3"), "u:x")
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "3"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision with agent_pane_busy: %v", err)
 	}
@@ -239,6 +287,7 @@ func TestStartAgentHandlesAutoTaggedPane(t *testing.T) {
 }
 
 func TestTeardownAlwaysRemovesSandbox(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	h := newFakeCmd(map[string]fakeReply{
 		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w6"}}}`},
@@ -258,7 +307,7 @@ func TestTeardownAlwaysRemovesSandbox(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "6"), "u:z")
+	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "6"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -276,6 +325,7 @@ func TestTeardownAlwaysRemovesSandbox(t *testing.T) {
 }
 
 func TestTeardownRemovesByExactSandboxID(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	h := newFakeCmd(map[string]fakeReply{
 		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w7"}}}`},
@@ -295,7 +345,7 @@ func TestTeardownRemovesByExactSandboxID(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "7"), "u:a")
+	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "7"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -336,6 +386,7 @@ func TestTeardownRefusesWithoutRecordedID(t *testing.T) {
 }
 
 func TestTeardownIdempotentWhenIDAbsent(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	h := newFakeCmd(map[string]fakeReply{
 		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w8"}}}`},
@@ -355,7 +406,7 @@ func TestTeardownIdempotentWhenIDAbsent(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "8"), "u:b")
+	sandboxID, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "8"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -369,6 +420,7 @@ func TestTeardownIdempotentWhenIDAbsent(t *testing.T) {
 }
 
 func TestAnswerDigitUsesSendKeys(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	h := newFakeCmd(map[string]fakeReply{
 		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"w5"}}}`},
@@ -388,7 +440,7 @@ func TestAnswerDigitUsesSendKeys(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, ag, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "4"), "u:y")
+	_, ag, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "4"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -445,6 +497,7 @@ func TestAnswerDigitUsesSendKeys(t *testing.T) {
 // TestStartAgentRefusesHostPane verifies that startAgent fails when pane hostname
 // does not match the nexus exec hostname — i.e., the pane is on the host, not the guest.
 func TestStartAgentRefusesHostPane(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	h := newFakeCmd(map[string]fakeReply{
 		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"whost"}}}`},
@@ -460,7 +513,7 @@ func TestStartAgentRefusesHostPane(t *testing.T) {
 		"exec": {out: "nexus-e2e-abc\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "host"), "u:a")
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "host"), testPrincipal)
 	if err == nil {
 		t.Fatal("Provision must fail when pane hostname != guest hostname")
 	}
@@ -475,6 +528,7 @@ func TestStartAgentRefusesHostPane(t *testing.T) {
 // TestStartAgentRefusesFallbackMarker verifies that startAgent fails when the pane
 // output contains the nexus-guest-shell FALLBACK marker (host shell opened instead of guest).
 func TestStartAgentRefusesFallbackMarker(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	h := newFakeCmd(map[string]fakeReply{
 		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wfb"}}}`},
@@ -490,7 +544,7 @@ func TestStartAgentRefusesFallbackMarker(t *testing.T) {
 		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "fb"), "u:b")
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "fb"), testPrincipal)
 	if err == nil {
 		t.Fatal("Provision must fail when pane shows FALLBACK marker")
 	}
@@ -505,6 +559,7 @@ func TestStartAgentRefusesFallbackMarker(t *testing.T) {
 // TestStartAgentAcceptsGuestHostnameMatch verifies that startAgent succeeds when
 // the pane hostname matches nexus exec hostname (pane is in the guest).
 func TestStartAgentAcceptsGuestHostnameMatch(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
 	h := newFakeCmd(map[string]fakeReply{
 		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
 		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wmatch"}}}`},
@@ -520,7 +575,7 @@ func TestStartAgentAcceptsGuestHostnameMatch(t *testing.T) {
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
-	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "match"), "u:c")
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "match"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision must succeed when pane hostname matches guest hostname: %v", err)
 	}
@@ -554,6 +609,15 @@ func TestProvisionWritesControllerMarker(t *testing.T) {
 	// Use a temp dir as the nexus state root.
 	stateDir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateDir)
+	// Create sandbox record so the record principal check passes.
+	sbDir := filepath.Join(stateDir, "nexus", "sandboxes", "sb-abc123")
+	if err := os.MkdirAll(sbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := fmt.Sprintf(`{"schema_version":1,"id":"sb-abc123","principal":%q}`, testPrincipal)
+	if err := os.WriteFile(filepath.Join(sbDir, "record.json"), []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var markerExistedDuringCreate bool
 	h := newFakeCmd(map[string]fakeReply{
@@ -585,7 +649,7 @@ func TestProvisionWritesControllerMarker(t *testing.T) {
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrRunner, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "3"), "slack:T:U999")
+	_, _, err := b.Provision(context.Background(), "myproj", controller.NewThreadRef("T", "C", "3"), testPrincipal)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -652,3 +716,373 @@ func TestParsePrincipal(t *testing.T) {
 // package (cmd_herdr_plugin_principal_test.go) where herdrWorktreeSandbox is
 // accessible.  This marker ensures the test exists; see that file.
 var _ = vault.PrincipalEnv // ensure vault import is used
+
+// ── K1: rediscovery tests ──────────────────────────────────────────────────
+
+// TestRediscoverEntry_CanPromptPreExistingAgent verifies that a freshly
+// constructed Backend (empty maps) can Prompt an agent that already exists in
+// live herdr state, rediscovering its entry on the first miss.
+func TestRediscoverEntry_CanPromptPreExistingAgent(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent prompt": {out: ""},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr list": {out: herdrListLine("wR1", "wR1:p1")},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	// Empty maps — simulates a controller restart.
+	if err := b.Prompt(context.Background(), "ctrl-wR1", "hello"); err != nil {
+		t.Fatalf("Prompt on rediscovered agent: %v", err)
+	}
+	if !n.calledWith("herdr", "list") {
+		t.Error("expected nexus herdr list to be called for rediscovery")
+	}
+	if !h.calledWith("agent", "prompt") {
+		t.Error("expected herdr agent prompt to be called")
+	}
+}
+
+// TestRediscoverEntry_CanObservePreExistingAgent verifies that Observe
+// rediscovers an entry on map miss.
+func TestRediscoverEntry_CanObservePreExistingAgent(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent get": {out: `{"result":{"agent":{"agent":"ctrl-wR2","agent_status":"idle","state_change_seq":1}}}`},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr list": {out: herdrListLine("wR2", "wR2:p1")},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	st, err := b.Observe(context.Background(), "ctrl-wR2", false)
+	if err != nil {
+		t.Fatalf("Observe on rediscovered agent: %v", err)
+	}
+	if st.Status != herdragent.StatusIdle {
+		t.Errorf("status = %q, want idle", st.Status)
+	}
+}
+
+// TestRediscoverBySandboxID_CanTeardown verifies Teardown can rediscover an
+// entry when the sandboxes map is empty (controller restart scenario).
+func TestRediscoverBySandboxID_CanTeardown(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"worktree remove": {out: ""},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr list": {out: herdrListLine("wR3", "wR3:p1")},
+		"ps":         {out: nexusPSLine("test-handle", "sb-abc123")},
+		"sandbox rm": {out: ""},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	// Empty maps — controller restart.
+	if err := b.Teardown(context.Background(), "sb-abc123"); err != nil {
+		t.Fatalf("Teardown after rediscovery: %v", err)
+	}
+	if !n.calledWith("sandbox", "rm", "sb-abc123") {
+		t.Error("expected nexus sandbox rm sb-abc123")
+	}
+}
+
+// TestTeardownEvictsEntry verifies that Teardown removes entries from the
+// in-memory maps so a second call would not find the sandbox.
+func TestTeardownEvictsEntry(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wEv"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wEv","agent_status":"idle","state_change_seq":1}}}`},
+		"worktree remove": {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wEv", "wEv:p1")},
+		"ps":                     {out: nexusPSLine("test-handle", "sb-abc123")},
+		"sandbox rm":             {out: ""},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	sandboxID, agRef, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "ev"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if err := b.Teardown(context.Background(), sandboxID); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	b.mu.Lock()
+	_, inEntries := b.entries[agRef]
+	_, inSandboxes := b.sandboxes[sandboxID]
+	b.mu.Unlock()
+	if inEntries {
+		t.Error("entry still present in b.entries after Teardown")
+	}
+	if inSandboxes {
+		t.Error("entry still present in b.sandboxes after Teardown")
+	}
+}
+
+// ── K2: principal hard-cutover tests ──────────────────────────────────────
+
+// TestProvisionFailsOnEmptyBoundPrincipal verifies that Provision rejects a
+// binding whose principal field is absent (empty string), not just mismatched.
+func TestProvisionFailsOnEmptyBoundPrincipal(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wEP"}}}`},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		// list returns empty principal — hard cutover must reject this.
+		"herdr list": {out: herdrListLineWithPrincipal("wEP", "wEP:p1", "")},
+		"exec":       {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "ep"), "u:alice")
+	if err == nil {
+		t.Fatal("Provision must fail when bound principal is empty")
+	}
+	if !strings.Contains(err.Error(), "principal mismatch") {
+		t.Errorf("error should mention principal mismatch; got: %v", err)
+	}
+}
+
+// TestProvisionSucceedsOnMatchingPrincipal verifies the happy path where
+// bound principal == requested principal and record also matches.
+func TestProvisionSucceedsOnMatchingPrincipal(t *testing.T) {
+	setupTestStore(t, "sb-abc123", "u:alice")
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wMP"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wMP","agent_status":"idle","state_change_seq":1}}}`},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLineWithPrincipal("wMP", "wMP:p1", "u:alice")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "mp"), "u:alice")
+	if err != nil {
+		t.Fatalf("Provision must succeed when bound principal matches requested: %v", err)
+	}
+}
+
+// TestProvisionFailsOnEmptyRecordPrincipal verifies that Provision rejects a
+// sandbox whose record.json has an empty principal, even when the binding matches.
+func TestProvisionFailsOnEmptyRecordPrincipal(t *testing.T) {
+	setupTestStore(t, "sb-abc123", "") // empty principal in record
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wERP"}}}`},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLineWithPrincipal("wERP", "wERP:p1", "u:alice")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "erp"), "u:alice")
+	if err == nil {
+		t.Fatal("Provision must fail when sandbox record principal is empty")
+	}
+	if !strings.Contains(err.Error(), "principal mismatch") {
+		t.Errorf("error should mention principal mismatch; got: %v", err)
+	}
+}
+
+// TestProvisionFailsOnMismatchedRecordPrincipal verifies that Provision rejects
+// a sandbox whose record.json principal differs from the requested principal,
+// even when the binding matches.
+func TestProvisionFailsOnMismatchedRecordPrincipal(t *testing.T) {
+	setupTestStore(t, "sb-abc123", "u:other") // different principal in record
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wMRP"}}}`},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLineWithPrincipal("wMRP", "wMRP:p1", "u:alice")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "mrp"), "u:alice")
+	if err == nil {
+		t.Fatal("Provision must fail when sandbox record principal differs from requested")
+	}
+	if !strings.Contains(err.Error(), "principal mismatch") {
+		t.Errorf("error should mention principal mismatch; got: %v", err)
+	}
+}
+
+// ── K3: waitForAgentReady tests ───────────────────────────────────────────
+
+// TestWaitForAgentReady_BecomesReady verifies that waitForAgentReady returns
+// nil when the agent becomes idle before the deadline, using an injected no-op
+// sleepFn so the test runs without real delays.
+func TestWaitForAgentReady_BecomesReady(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent get": {out: `{"result":{"agent":{"agent":"ctrl-test","agent_status":"idle","state_change_seq":1}}}`},
+	})
+	b := newWithRunners(Config{}, h.run, nil)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	if err := b.waitForAgentReady(context.Background(), "ctrl-test", 5*time.Second); err != nil {
+		t.Fatalf("waitForAgentReady: unexpected error: %v", err)
+	}
+}
+
+// TestWaitForAgentReady_Timeout verifies that waitForAgentReady returns a
+// timeout error when the agent never becomes ready. Uses a minimal timeout
+// and a no-op sleepFn so the loop runs fast.
+func TestWaitForAgentReady_Timeout(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		// agent always working, never idles
+		"agent get": {out: `{"result":{"agent":{"agent":"ctrl-to","agent_status":"working","state_change_seq":1}}}`},
+	})
+	b := newWithRunners(Config{}, h.run, nil)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(1 * time.Millisecond)}
+	err := b.waitForAgentReady(context.Background(), "ctrl-to", 1*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitForAgentReady: expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not ready after") {
+		t.Errorf("error should mention not-ready timeout; got: %v", err)
+	}
+}
+
+// ── Restart tests ─────────────────────────────────────────────────────────
+
+// TestRestart_CachedEntry verifies that Restart launches a new agent for a
+// cached entry, evicts the old ref, and stores the new ref.
+func TestRestart_CachedEntry(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent start": {out: ""},
+		"agent get":   {out: `{"result":{"agent":{"agent":"ctrl-wRst","agent_status":"idle","state_change_seq":1}}}`},
+		// pane read returns guest prompt — pane is alive, no recreation needed.
+		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"exec": {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.mu.Lock()
+	b.entries["ctrl-wRst"] = &entry{paneID: "wRst:p1", nexusSandboxID: "sb-rst1", wsID: "wRst"}
+	b.sandboxes["sb-rst1"] = "ctrl-wRst"
+	b.mu.Unlock()
+
+	newRef, err := b.Restart(context.Background(), "sb-rst1", "ctrl-wRst")
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if newRef == "" {
+		t.Error("Restart must return a non-empty ref")
+	}
+	b.mu.Lock()
+	_, oldPresent := b.entries["ctrl-wRst"]
+	newEntry, newPresent := b.entries[newRef]
+	sandboxRef := b.sandboxes["sb-rst1"]
+	b.mu.Unlock()
+	if oldPresent && newRef != "ctrl-wRst" {
+		t.Error("old agentRef still in b.entries after Restart")
+	}
+	if !newPresent {
+		t.Errorf("new agentRef %q not in b.entries after Restart", newRef)
+	}
+	if newEntry == nil || newEntry.nexusSandboxID != "sb-rst1" {
+		t.Errorf("new entry has wrong nexusSandboxID: %+v", newEntry)
+	}
+	if sandboxRef != newRef {
+		t.Errorf("b.sandboxes[sb-rst1] = %q, want %q", sandboxRef, newRef)
+	}
+}
+
+// TestRestart_EmptyCacheRediscovers verifies that Restart rediscovers the
+// entry from nexus herdr list when the in-memory cache is empty.
+func TestRestart_EmptyCacheRediscovers(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent start": {out: ""},
+		"agent get":   {out: `{"result":{"agent":{"agent":"ctrl-wRst2","agent_status":"idle","state_change_seq":1}}}`},
+		"pane read":   {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr list": {out: herdrListLine("wRst2", "wRst2:p1")},
+		"exec":       {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	// empty caches — simulates controller restart
+
+	newRef, err := b.Restart(context.Background(), "sb-abc123", "ctrl-wRst2")
+	if err != nil {
+		t.Fatalf("Restart with empty cache: %v", err)
+	}
+	if newRef == "" {
+		t.Error("Restart must return a non-empty ref")
+	}
+	if !n.calledWith("herdr", "list") {
+		t.Error("expected nexus herdr list to be called for rediscovery")
+	}
+}
+
+// TestRestart_DeadPaneRecreated verifies that Restart calls space-open-pane
+// when the pane shows no guest prompt, and uses the refreshed paneID.
+func TestRestart_DeadPaneRecreated(t *testing.T) {
+	// pane read: first call returns "" (dead pane); subsequent calls return
+	// guest prompt (pane alive after recreation).
+	h := newFakeCmdSeq(
+		map[string]fakeReply{
+			"agent start": {out: ""},
+			"agent get":   {out: `{"result":{"agent":{"agent":"ctrl-wDead","agent_status":"idle","state_change_seq":1}}}`},
+		},
+		map[string]fakeSeq{
+			"pane read": {
+				{out: ""}, // first read: dead pane
+				{out: "root@nexus-fake-guest:/workspace#\n"}, // subsequent: alive
+			},
+		},
+	)
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr space-open-pane": {out: ""},
+		// herdr list after reopen returns a new pane id.
+		"herdr list": {out: herdrListLine("wDead", "wDead:p2")},
+		"exec":       {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.mu.Lock()
+	b.entries["ctrl-wDead"] = &entry{paneID: "wDead:p1", nexusSandboxID: "sb-dead1", wsID: "wDead"}
+	b.sandboxes["sb-dead1"] = "ctrl-wDead"
+	b.mu.Unlock()
+
+	newRef, err := b.Restart(context.Background(), "sb-dead1", "ctrl-wDead")
+	if err != nil {
+		t.Fatalf("Restart with dead pane: %v", err)
+	}
+	if !n.calledWith("herdr", "space-open-pane", "wDead") {
+		t.Error("expected herdr space-open-pane to be called for dead pane")
+	}
+	// New entry should use the refreshed pane id.
+	b.mu.Lock()
+	e := b.entries[newRef]
+	b.mu.Unlock()
+	if e == nil {
+		t.Fatalf("new entry not found for ref %q", newRef)
+	}
+	if e.paneID != "wDead:p2" {
+		t.Errorf("new entry paneID = %q, want wDead:p2 (refreshed after pane recreation)", e.paneID)
+	}
+}

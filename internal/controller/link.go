@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
+	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/vault/linkflow"
 )
@@ -24,17 +27,22 @@ type VaultLinker struct {
 	reg        *vault.Registry
 	chat       ChatAdapter
 	team       string
+	mode       controllerconfig.DeploymentMode
 	GenState   func() string
 	mu         sync.Mutex
 	pkceStates map[string]pkceState
 }
 
-func NewVaultLinker(v vault.Vault, reg *vault.Registry, chat ChatAdapter, team string) *VaultLinker {
+func NewVaultLinker(v vault.Vault, reg *vault.Registry, chat ChatAdapter, team string, mode controllerconfig.DeploymentMode) *VaultLinker {
+	if mode == "" {
+		mode = controllerconfig.ModeLocal
+	}
 	return &VaultLinker{
 		v:          v,
 		reg:        reg,
 		chat:       chat,
 		team:       team,
+		mode:       mode,
 		GenState:   randomState,
 		pkceStates: make(map[string]pkceState),
 	}
@@ -115,17 +123,45 @@ func (l *VaultLinker) linkGitHub(ctx context.Context, ev Event) error {
 	if err := l.chat.Post(ctx, ev.ThreadRef, msg); err != nil {
 		return err
 	}
-	go l.pollGitHub(context.Background(), c, da.DeviceCode, ev.User)
+	expiry := 300 * time.Second
+	if da.ExpiresIn > 0 {
+		expiry = time.Duration(da.ExpiresIn) * time.Second
+	}
+	pollCtx, cancel := context.WithTimeout(context.Background(), expiry)
+	go func() {
+		defer cancel()
+		l.pollGitHub(pollCtx, c, da.DeviceCode, ev.User, ev.ThreadRef)
+	}()
 	return nil
 }
 
-func (l *VaultLinker) pollGitHub(ctx context.Context, c vault.Connector, deviceCode, user string) {
+func (l *VaultLinker) pollGitHub(ctx context.Context, c vault.Connector, deviceCode, user string, ref ThreadRef) {
 	rec, err := c.PollDevice(ctx, deviceCode)
 	if err != nil {
+		slog.Error("github device poll failed", "user", user, "err", err)
+		_ = l.chat.Post(ctx, ref, fmt.Sprintf("github link failed: %v", err))
 		return
 	}
+	// Connectors no longer set policy; controller sets AllowedProjects per deployment mode.
+	if l.mode == controllerconfig.ModeShared {
+		rec.AllowedProjects = nil
+	} else {
+		rec.AllowedProjects = []string{"*"}
+	}
 	k := vault.Key{Principal: vault.SlackPrincipal(l.team, user), Integration: "github"}
-	_ = l.v.Put(ctx, k, rec)
+	if err := l.v.Put(ctx, k, rec); err != nil {
+		slog.Error("github vault put failed", "user", user, "err", err)
+		_ = l.chat.Post(ctx, ref, fmt.Sprintf("github link failed: %v", err))
+		return
+	}
+	slog.Info("github linked", "user", user)
+	var msg string
+	if l.mode == controllerconfig.ModeShared {
+		msg = "github linked, but no projects are allowed yet — ask the controller operator to grant access"
+	} else {
+		msg = "github linked"
+	}
+	_ = l.chat.Post(ctx, ref, msg)
 }
 
 func (l *VaultLinker) linkLinearStart(ctx context.Context, ev Event) error {

@@ -70,27 +70,6 @@ func TestHerdrWorktreeSandbox_ReuseAllowsSamePrincipal(t *testing.T) {
 	}
 }
 
-func TestHerdrWorktreeSandbox_ReuseAllowsEmptyBindingPrincipal(t *testing.T) {
-	root := t.TempDir()
-	const handle = "nexus/main"
-	seedBindingWithPrincipal(t, root, "w-a", handle, "")
-
-	swapListFn(t, stubWorktreeList{
-		info: linkedWorktreeInfoAuto("w-b", "main", "/srv/wt/nexus/main", "/srv/repos/nexus/.git"),
-	}.fn())
-	swapRenameFn(t, func(_ context.Context, _, _, _ string) error { return nil })
-	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
-	swapHerdrWorkspaceList(t, "w-a", "w-b")
-	t.Setenv(vault.PrincipalEnv, "slack:T:U999")
-
-	var w strings.Builder
-	err := herdrWorktreeSandbox(context.Background(), "w-b", &w, root, false, false, false, false,
-		noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
-	if err != nil {
-		t.Errorf("legacy binding (no principal): unexpected error: %v\n%s", err, w.String())
-	}
-}
-
 func TestHerdrWorktreeSandbox_ControllerClaimedBranchSkipsAuto(t *testing.T) {
 	root := t.TempDir()
 

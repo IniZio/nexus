@@ -21,14 +21,14 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/herdragent"
 )
 
 // binary path to form the companion sidecar. A single source-of-truth constant
 const herdrSidecarSuffix = ".nexusbin"
 
-// guestShellFallbackMarker is written to stderr when nexus-guest-shell falls
-// back to a host shell. space-agent matches this prefix to detect a broken pane.
-const guestShellFallbackMarker = "nexus-guest-shell: FALLBACK host shell:"
+// guestShellFallbackMarker is the shared prefix for host-shell fallback messages.
+const guestShellFallbackMarker = herdragent.GuestShellFallbackMarker
 
 var herdrFallbackStderrFn = func() io.Writer { return os.Stderr }
 

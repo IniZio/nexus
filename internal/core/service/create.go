@@ -372,7 +372,7 @@ type CreateAndBootOptions struct {
 	// Without AllowedRepo the same guard still rejects any GitHub bind.
 	Secrets []SecretBind
 
-	// Vault is the credential vault for principal-scoped token resolution (V6).
+	// Vault is the credential vault for principal-scoped token resolution.
 	// When set, the principal is derived from NEXUS_PRINCIPAL env or LocalPrincipal.
 	Vault vault.Vault
 

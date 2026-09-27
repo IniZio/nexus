@@ -131,11 +131,10 @@ func (c *GitHubConnector) PollDevice(ctx context.Context, deviceCode string) (va
 		scopes = strings.Split(strings.TrimSpace(out.Scope), ",")
 	}
 	return vault.Record{
-		AccessToken:     out.AccessToken,
-		RefreshToken:    out.RefreshToken,
-		Expiry:          expiry,
-		Scopes:          scopes,
-		AllowedProjects: []string{"*"},
+		AccessToken:  out.AccessToken,
+		RefreshToken: out.RefreshToken,
+		Expiry:       expiry,
+		Scopes:       scopes,
 	}, nil
 }
 

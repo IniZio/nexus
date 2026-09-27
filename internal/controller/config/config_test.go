@@ -114,3 +114,41 @@ channels:
 		t.Fatalf("expected ErrMissingRepo, got %v", err)
 	}
 }
+
+func TestEmptyDeploymentModeNormalisesToLaptop(t *testing.T) {
+	const src = `
+slack:
+  app_token:
+    env: SLACK_APP_TOKEN
+  bot_token:
+    env: SLACK_BOT_TOKEN
+`
+	cfg, err := config.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.DeploymentMode != config.ModeLocal {
+		t.Fatalf("DeploymentMode = %q, want %q", cfg.DeploymentMode, config.ModeLocal)
+	}
+}
+
+func TestUnknownDeploymentModeRejected(t *testing.T) {
+	const src = `
+slack:
+  app_token:
+    env: SLACK_APP_TOKEN
+  bot_token:
+    env: SLACK_BOT_TOKEN
+deployment_mode: enterprise
+`
+	_, err := config.Parse([]byte(src))
+	if !errors.Is(err, config.ErrUnknownMode) {
+		t.Fatalf("expected ErrUnknownMode, got %v", err)
+	}
+}
+
+func TestErrNoProjectIsControllerAlias(t *testing.T) {
+	if !errors.Is(controller.ErrNoProject, config.ErrNoProject) {
+		t.Fatal("controller.ErrNoProject must be the same error as config.ErrNoProject")
+	}
+}

@@ -75,7 +75,7 @@ Summary: Run the chat controller (execs nexus-controller)
 Execs the separate `nexus-controller` binary found next to the `nexus` executable, falling back to PATH; all args are passed through; exit code is propagated; not-found is an error.
 
 Subcommands:
-- `serve` — run the controller server (currently wired to in-memory fakes; the Slack adapter, SQLite task store, and agent backend arrive in later slices)
+- `serve` — run the controller server; wired to a Slack Socket Mode adapter, SQLite task store under `$XDG_STATE_HOME/nexus/controller/tasks.db`, the herdr agent backend, the core sandbox service lifecycle, and the core vault linker
 
 ---
 

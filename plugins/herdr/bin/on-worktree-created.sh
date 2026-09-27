@@ -25,10 +25,6 @@ if [ -z "$WS" ]; then
     exit 0
 fi
 
-# Fix (a): if the controller pre-claimed this branch, skip auto-provisioning.
-# The controller writes a marker at <nexus-state>/controller-wt-claims/<safe-branch>
-# BEFORE calling `herdr worktree create`, so the hook sees it here.  The Go
-# code in herdrWorktreeSandbox performs the same check as defence in depth.
 if command -v jq >/dev/null 2>&1; then
     _BRANCH=$(printf '%s' "${HERDR_PLUGIN_EVENT_JSON:-}" \
         | jq -r '.worktree.branch // empty' 2>/dev/null)

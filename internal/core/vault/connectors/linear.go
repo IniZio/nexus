@@ -69,7 +69,7 @@ func (c *LinearConnector) Exchange(ctx context.Context, code, codeVerifier strin
 	if err != nil {
 		return vault.Record{}, fmt.Errorf("linear: exchange: %w", err)
 	}
-	return linearTokenToRecord(tok, []string{"*"}), nil
+	return linearTokenToRecord(tok, nil), nil
 }
 
 func (c *LinearConnector) Refresh(ctx context.Context, rec vault.Record) (vault.Record, error) {

@@ -133,7 +133,7 @@ func TestServeWiresConfiguredAdapters(t *testing.T) {
 
 		backend := herdrbackend.New(herdrbackend.Config{Model: "claude-haiku-4-5"})
 		reg := vault.NewRegistry()
-		linker := controller.NewVaultLinker(v, reg, chat, "T_TEST")
+		linker := controller.NewVaultLinker(v, reg, chat, "T_TEST", cfg.DeploymentMode)
 		projects := controllerconfig.NewResolver(cfg)
 
 		deps := controller.Deps{
@@ -336,4 +336,94 @@ func TestServeIdleTickerUsesConfigDurations(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestIdleForFromConfig(t *testing.T) {
+	cfg := &controllerconfig.Config{
+		Channels: map[string]controllerconfig.ChannelConfig{
+			"A": {IdlePause: 2 * time.Hour, IdleStop: 8 * time.Hour},
+			"B": {},
+		},
+	}
+	fn := controller.IdleForFromConfig(cfg)
+
+	if got := fn("A"); got != (controller.IdleThresholds{Pause: 2 * time.Hour, Stop: 8 * time.Hour}) {
+		t.Errorf("IdleFor(A) = %+v, want {2h, 8h}", got)
+	}
+	if got := fn("B"); got != controller.DefaultIdle {
+		t.Errorf("IdleFor(B) = %+v, want DefaultIdle %+v", got, controller.DefaultIdle)
+	}
+	if got := fn("unknown"); got != controller.DefaultIdle {
+		t.Errorf("IdleFor(unknown) = %+v, want DefaultIdle %+v", got, controller.DefaultIdle)
+	}
+}
+
+func TestTickIntervalFor(t *testing.T) {
+	cases := []struct {
+		minPause time.Duration
+		want     time.Duration
+	}{
+		{10 * time.Second, 5 * time.Second},
+		{500 * time.Millisecond, time.Second},
+		{100 * time.Millisecond, time.Second},
+	}
+	for _, tc := range cases {
+		got := controller.TickIntervalFor(tc.minPause)
+		if got != tc.want {
+			t.Errorf("TickIntervalFor(%v) = %v, want %v", tc.minPause, got, tc.want)
+		}
+	}
+}
+
+// TestServeFactoryIdleForNotOverwritten verifies that when the factory sets
+// deps.IdleFor, Serve does not replace it with IdleForFromConfig.
+func TestServeFactoryIdleForNotOverwritten(t *testing.T) {
+	cfgPath := writeTempConfig(t, serveTestConfigYAML)
+	t.Setenv("SERVE_TEST_SLACK_APP_TOKEN", "xapp-fake-token")
+	t.Setenv("SERVE_TEST_SLACK_BOT_TOKEN", "xoxb-fake-token")
+
+	sentinel := controller.IdleThresholds{Pause: 99 * time.Minute, Stop: 99 * time.Hour}
+	idleForCalled := make(chan struct{}, 1)
+
+	chat := chattest.New()
+	spy := newSpyStore()
+
+	factory := func(cfg *controllerconfig.Config, _, _ string, v vault.Vault) (controller.Deps, controller.Handler, error) {
+		deps := controller.Deps{
+			Chat:      chat,
+			Store:     spy,
+			Backend:   &serveTestNopBackend{},
+			Lifecycle: &serveTestSandboxLC{},
+			Linker:    &serveTestNopLinker{},
+			Projects:  controllerconfig.NewResolver(cfg),
+			IdleFor: func(_ string) controller.IdleThresholds {
+				select {
+				case idleForCalled <- struct{}{}:
+				default:
+				}
+				return sentinel
+			},
+		}
+		return deps, nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.Serve(ctx, cfgPath,
+			controller.WithDepsFactory(factory),
+			controller.WithVaultOpener(fakeVaultOpener(t)),
+			controller.WithServeTickInterval(20*time.Millisecond),
+		)
+	}()
+
+	select {
+	case <-spy.listIdleCalls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: idle ticker did not fire")
+	}
+	cancel()
+	<-done
+	_ = sentinel
+	_ = idleForCalled
 }

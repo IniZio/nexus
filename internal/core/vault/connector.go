@@ -23,18 +23,13 @@ type DeviceAuth struct {
 	Interval        int
 }
 
-// Connector describes an OAuth integration that the vault can link against.
-// Device-flow connectors implement StartDevice and PollDevice; PKCE connectors
-// implement AuthURL and Exchange. Both implement Refresh and the metadata methods.
+// Connector describes an OAuth integration the vault can link against.
 type Connector interface {
 	// ID returns the stable identifier for this integration (e.g. "github", "linear").
 	ID() string
-
 	// LinkFlow returns the flow this connector uses: "device" or "pkce".
 	LinkFlow() LinkFlow
-
 	// StartDevice initiates a device-flow authorization request.
-	// Only called when LinkFlow() == LinkFlowDevice.
 	StartDevice(ctx context.Context) (DeviceAuth, error)
 
 	PollDevice(ctx context.Context, deviceCode string) (Record, error)
@@ -61,8 +56,7 @@ func NewRegistry() *Registry {
 	return &Registry{connectors: make(map[string]Connector)}
 }
 
-// Register adds c to the registry. It returns ErrDuplicateConnector if a
-// connector with the same ID has already been registered.
+// Register adds c to the registry; returns ErrDuplicateConnector on ID collision.
 func (r *Registry) Register(c Connector) error {
 	id := c.ID()
 	if _, exists := r.connectors[id]; exists {

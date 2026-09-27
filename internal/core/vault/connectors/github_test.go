@@ -91,6 +91,32 @@ func TestGitHubDevicePollSlowDown(t *testing.T) {
 	}
 }
 
+func TestGitHubPollDeviceNilAllowedProjects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "ghs_token",
+			"refresh_token": "ghr_refresh",
+			"expires_in":    28800,
+			"scope":         "repo",
+		})
+	}))
+	defer srv.Close()
+
+	ep := oauth2.Endpoint{
+		DeviceAuthURL: srv.URL + "/device",
+		TokenURL:      srv.URL + "/token",
+	}
+	c := newGitHubWithEndpoint("cid", ep, srv.Client())
+	rec, err := c.PollDevice(t.Context(), "dev-code")
+	if err != nil {
+		t.Fatalf("PollDevice: %v", err)
+	}
+	if rec.AllowedProjects != nil {
+		t.Errorf("connector must not set AllowedProjects; got %v", rec.AllowedProjects)
+	}
+}
+
 func TestGitHubDefaultClientIDOverridable(t *testing.T) {
 	defaultConn := NewGitHub("")
 	if defaultConn.cfg.ClientID != DefaultGitHubClientID {
