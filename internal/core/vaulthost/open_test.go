@@ -7,6 +7,17 @@ import (
 	"testing"
 )
 
+func TestDefaultConnectorRegistryResolvesGitHub(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	reg, err := DefaultConnectorRegistry()
+	if err != nil {
+		t.Fatalf("DefaultConnectorRegistry: %v", err)
+	}
+	if _, err := reg.Get("github"); err != nil {
+		t.Fatalf("registry.Get(\"github\"): %v", err)
+	}
+}
+
 func TestVaultDirUsesXDGDataHome(t *testing.T) {
 	t.Run("respects XDG_DATA_HOME override", func(t *testing.T) {
 		tmp := t.TempDir()

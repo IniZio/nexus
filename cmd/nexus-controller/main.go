@@ -20,6 +20,7 @@ import (
 	coreservice "github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/vault"
+	"github.com/IniZio/nexus/internal/core/vaulthost"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
@@ -134,7 +135,10 @@ func realDepsFactory(cfg *controllerconfig.Config, appToken, botToken string, v 
 	}
 
 	// VaultLinker — principal = slack:<team>:<user>.
-	reg := vault.NewRegistry()
+	reg, err := vaulthost.DefaultConnectorRegistry()
+	if err != nil {
+		return controller.Deps{}, nil, fmt.Errorf("connector registry: %w", err)
+	}
 	linker := controller.NewVaultLinker(v, reg, chat, chat.TeamID(), cfg.DeploymentMode)
 
 	// ProjectResolver — static mapping from config.

@@ -25,6 +25,17 @@ func Open() (*vault.VaultImpl, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vaulthost: store: %w", err)
 	}
+	reg, err := DefaultConnectorRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return vault.NewVaultImpl(st, reg), nil
+}
+
+// DefaultConnectorRegistry builds the production connector registry from the
+// on-disk app config. Used by both Open and the controller binary so they
+// always register the same set of connectors.
+func DefaultConnectorRegistry() (*vault.Registry, error) {
 	cfg, _ := defaultAppConfig()
 	reg := vault.NewRegistry()
 	_ = reg.Register(connectors.NewGitHub(cfg.GitHub.ClientID))
@@ -32,7 +43,7 @@ func Open() (*vault.VaultImpl, error) {
 		redirectURL := fmt.Sprintf("http://localhost:%d", linkflow.LoopbackPort)
 		_ = reg.Register(connectors.NewLinear(cfg.Linear.ClientID, cfg.Linear.ClientSecret, redirectURL))
 	}
-	return vault.NewVaultImpl(st, reg), nil
+	return reg, nil
 }
 
 // DefaultDir returns the canonical vault directory: $XDG_DATA_HOME/nexus/vault
