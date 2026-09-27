@@ -10,9 +10,6 @@ import (
 
 	"github.com/IniZio/nexus/internal/controller"
 	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
-	"github.com/IniZio/nexus/internal/controller/sandbox"
-	"github.com/IniZio/nexus/internal/core/domain"
-	"github.com/IniZio/nexus/internal/core/vault"
 )
 
 // stubChat implements slackChat without network access.
@@ -30,21 +27,13 @@ func (s stubChat) PostEphemeral(_ context.Context, _ controller.ThreadRef, _, _ 
 func (s stubChat) Mention(user string) string { return "<@" + user + ">" }
 func (s stubChat) TeamID() string             { return s.teamID }
 
-// stubLifecycleSvc satisfies sandbox.LifecycleService without a real store.
-type stubLifecycleSvc struct{}
+// stubLifecycle implements controller.SandboxLifecycle without a real subprocess.
+type stubLifecycle struct{}
 
-func (stubLifecycleSvc) Pause(_ context.Context, _ string) (domain.Sandbox, error) {
-	return domain.Sandbox{}, nil
-}
-func (stubLifecycleSvc) Resume(_ context.Context, _ string) (domain.Sandbox, error) {
-	return domain.Sandbox{}, nil
-}
-func (stubLifecycleSvc) Stop(_ context.Context, _ string) (domain.Sandbox, error) {
-	return domain.Sandbox{}, nil
-}
-func (stubLifecycleSvc) Start(_ context.Context, _ string) (domain.Sandbox, error) {
-	return domain.Sandbox{}, nil
-}
+func (stubLifecycle) Pause(_ context.Context, _ string) error  { return nil }
+func (stubLifecycle) Resume(_ context.Context, _ string) error { return nil }
+func (stubLifecycle) Stop(_ context.Context, _ string) error   { return nil }
+func (stubLifecycle) Start(_ context.Context, _ string) error  { return nil }
 
 // setupFactory replaces the two network/substrate-bound package vars with stubs
 // and returns a cleanup function that restores the originals.
@@ -56,8 +45,8 @@ func setupFactory(t *testing.T) func() {
 	newSlackAdapter = func(_, _ string) (slackChat, error) {
 		return stubChat{teamID: "TTEST"}, nil
 	}
-	newSandboxLifecycle = func(v vault.Vault) (*sandbox.ServiceLifecycle, error) {
-		return sandbox.NewServiceLifecycle(stubLifecycleSvc{}), nil
+	newSandboxLifecycle = func() controller.SandboxLifecycle {
+		return stubLifecycle{}
 	}
 
 	return func() {
@@ -175,8 +164,8 @@ func TestRealDepsFactory_PropagatesSlackError(t *testing.T) {
 
 	wantErr := errors.New("auth.test: invalid token")
 	newSlackAdapter = func(_, _ string) (slackChat, error) { return nil, wantErr }
-	newSandboxLifecycle = func(v vault.Vault) (*sandbox.ServiceLifecycle, error) {
-		return sandbox.NewServiceLifecycle(stubLifecycleSvc{}), nil
+	newSandboxLifecycle = func() controller.SandboxLifecycle {
+		return stubLifecycle{}
 	}
 
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -189,3 +178,4 @@ func TestRealDepsFactory_PropagatesSlackError(t *testing.T) {
 		t.Errorf("error = %v, want to wrap %v", err, wantErr)
 	}
 }
+

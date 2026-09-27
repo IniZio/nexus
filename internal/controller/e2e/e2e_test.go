@@ -798,44 +798,11 @@ const (
 	e2eIdleStop  = 60 * time.Second
 )
 
-type cliLifecycle struct {
-	h *livenexus.Harness
-}
-
 func buildLifecycle(h *livenexus.Harness) controller.SandboxLifecycle {
-	return &cliLifecycle{h: h}
-}
-
-func (l *cliLifecycle) Pause(ctx context.Context, sandboxID string) error {
-	out, err := l.h.Run(ctx, "herdr", "pause", sandboxID)
-	if err != nil {
-		return fmt.Errorf("nexus herdr pause %s: %w\n%s", sandboxID, err, out)
-	}
-	return nil
-}
-
-func (l *cliLifecycle) Resume(ctx context.Context, sandboxID string) error {
-	out, err := l.h.Run(ctx, "herdr", "resume", sandboxID)
-	if err != nil {
-		return fmt.Errorf("nexus herdr resume %s: %w\n%s", sandboxID, err, out)
-	}
-	return nil
-}
-
-func (l *cliLifecycle) Stop(ctx context.Context, sandboxID string) error {
-	out, err := l.h.Run(ctx, "sandbox", "stop", sandboxID)
-	if err != nil {
-		return fmt.Errorf("nexus sandbox stop %s: %w\n%s", sandboxID, err, out)
-	}
-	return nil
-}
-
-func (l *cliLifecycle) Start(ctx context.Context, sandboxID string) error {
-	out, err := l.h.Run(ctx, "sandbox", "start", sandboxID)
-	if err != nil {
-		return fmt.Errorf("nexus sandbox start %s: %w\n%s", sandboxID, err, out)
-	}
-	return nil
+	return sandbox.NewCLILifecycle(sandbox.CLIConfig{
+		NexusBin: h.NexusBin(),
+		FullEnv:  h.Env(),
+	})
 }
 
 type fixedProjectResolver struct {
@@ -924,5 +891,4 @@ egress:
 	return dir
 }
 
-var _ controller.SandboxLifecycle = (*cliLifecycle)(nil)
-var _ = sandbox.NewServiceLifecycle
+var _ controller.SandboxLifecycle = (*sandbox.CLILifecycle)(nil)

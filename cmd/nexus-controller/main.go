@@ -9,19 +9,14 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/IniZio/nexus/internal/cli"
 	"github.com/IniZio/nexus/internal/controller"
 	herdrbackend "github.com/IniZio/nexus/internal/controller/backend/herdr"
 	slackadapter "github.com/IniZio/nexus/internal/controller/chat/slack"
 	controllerconfig "github.com/IniZio/nexus/internal/controller/config"
 	"github.com/IniZio/nexus/internal/controller/sandbox"
 	"github.com/IniZio/nexus/internal/controller/store/sqlite"
-	"github.com/IniZio/nexus/internal/core/lifecycle"
-	coreservice "github.com/IniZio/nexus/internal/core/service"
-	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/vaulthost"
-	"github.com/IniZio/nexus/internal/core/volumestore"
 )
 
 // slackChat is the subset of *slackadapter.Adapter needed by realDepsFactory.
@@ -39,10 +34,9 @@ var (
 		return slackadapter.New(appToken, botToken)
 	}
 
-	// newSandboxLifecycle wraps buildSandboxLifecycle; tests replace this to
-	// avoid opening a real store or substrate.
-	newSandboxLifecycle = func(v vault.Vault) (*sandbox.ServiceLifecycle, error) {
-		return buildSandboxLifecycle(v)
+	// newSandboxLifecycle returns a CLI-based lifecycle; tests replace this.
+	newSandboxLifecycle = func() controller.SandboxLifecycle {
+		return sandbox.NewCLILifecycle(sandbox.CLIConfig{})
 	}
 )
 
@@ -96,8 +90,7 @@ func runServe(args []string) error {
 }
 
 // realDepsFactory builds production dependencies from a validated config and
-// an open vault. Follows the same construction pattern as
-// internal/cli/cmd_sandbox.go#newSandboxService.
+// an open vault.
 func realDepsFactory(cfg *controllerconfig.Config, appToken, botToken string, v vault.Vault) (controller.Deps, controller.Handler, error) {
 	// Slack Socket Mode adapter — calls auth.test; fails closed on bad tokens.
 	chat, err := newSlackAdapter(appToken, botToken)
@@ -128,11 +121,7 @@ func realDepsFactory(cfg *controllerconfig.Config, appToken, botToken string, v 
 		HerdrSocketPath: os.Getenv("HERDR_SOCKET_PATH"),
 	})
 
-	// Sandbox lifecycle — mirrors newSandboxService in internal/cli/cmd_sandbox.go.
-	svcLifecycle, err := newSandboxLifecycle(v)
-	if err != nil {
-		return controller.Deps{}, nil, fmt.Errorf("sandbox lifecycle: %w", err)
-	}
+	svcLifecycle := newSandboxLifecycle()
 
 	// VaultLinker — principal = slack:<team>:<user>.
 	reg, err := vaulthost.DefaultConnectorRegistry()
@@ -153,28 +142,4 @@ func realDepsFactory(cfg *controllerconfig.Config, appToken, botToken string, v 
 		Projects:  projects,
 	}
 	return deps, linker.CommandHandler(), nil
-}
-
-// buildSandboxLifecycle creates a service.Service the same way
-// internal/cli/cmd_sandbox.go does and wraps it as a controller.SandboxLifecycle.
-func buildSandboxLifecycle(v vault.Vault) (*sandbox.ServiceLifecycle, error) {
-	root, err := store.DefaultRoot()
-	if err != nil {
-		return nil, fmt.Errorf("resolve state root: %w", err)
-	}
-	st, err := store.NewFileStore(root)
-	if err != nil {
-		return nil, fmt.Errorf("open store: %w", err)
-	}
-
-	drv, serr := cli.SelectSubstrate()
-	if serr != nil {
-		return nil, fmt.Errorf("substrate: %s", serr.Msg)
-	}
-
-	svc := coreservice.New(st, drv, lifecycle.New())
-	svc.WithVolumes(volumestore.New(filepath.Join(root, "volumes")))
-	svc.WithVault(v)
-
-	return sandbox.NewServiceLifecycle(svc), nil
 }
