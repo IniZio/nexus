@@ -29,6 +29,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/portfwd"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
+	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/supervisor"
@@ -1936,8 +1937,8 @@ func herdrPluginSpaceList(ctx context.Context, w io.Writer, storeRoot string) er
 		return nil
 	}
 	for _, b := range bindings {
-		fmt.Fprintf(w, "label=%s\tworkspace_id=%s\thandle=%s\tsandbox_id=%s\tpane_id=%s\n",
-			b.SpaceLabel, b.HerdrWorkspaceID, b.SandboxHandle, b.SandboxID, b.GuestPaneID)
+		fmt.Fprintf(w, "label=%s\tworkspace_id=%s\thandle=%s\tsandbox_id=%s\tpane_id=%s\tprincipal=%s\n",
+			b.SpaceLabel, b.HerdrWorkspaceID, b.SandboxHandle, b.SandboxID, b.GuestPaneID, b.Principal)
 	}
 	return nil
 }
@@ -3806,6 +3807,45 @@ func herdrWorktreeAutoBindDecision(repoBound, hasConfig bool) (bind bool, reason
 }
 
 /**
+ * herdrControllerClaimsDir returns the directory where the controller writes
+ * per-branch marker files before calling `herdr worktree create`.  The hook
+ * (on-worktree-created.sh) and this Go function both check for the marker to
+ * determine whether the worktree is controller-owned and should not be
+ * auto-provisioned by the hook path.
+ */
+func herdrControllerClaimsDir(storeRoot string) string {
+	return filepath.Join(storeRoot, "controller-wt-claims")
+}
+
+/**
+ * herdrIsControllerClaimed reports whether a controller has pre-claimed the
+ * branch by writing a marker in herdrControllerClaimsDir.  A pre-claim means
+ * the controller will call nexus herdr worktree-sandbox explicitly (with
+ * NEXUS_PRINCIPAL set), so the auto hook path must skip.
+ *
+ * branch is the raw git branch name (may contain "/").
+ */
+func herdrIsControllerClaimed(storeRoot, branch string) bool {
+	if storeRoot == "" || branch == "" {
+		return false
+	}
+	safeBranch := strings.ReplaceAll(branch, "/", "-")
+	markerPath := filepath.Join(herdrControllerClaimsDir(storeRoot), safeBranch)
+	_, err := os.Stat(markerPath)
+	return err == nil
+}
+
+func herdrEffectivePrincipal() string {
+	if p := os.Getenv(vault.PrincipalEnv); p != "" {
+		return p
+	}
+	if p, err := vault.LocalPrincipal(); err == nil {
+		return p
+	}
+	return ""
+}
+
+/**
  * herdrWorktreeListTimeout bounds the `herdr worktree list` probe in step 3.
  * A hung herdr daemon must not wedge every new pane on the machine.
  */
@@ -4241,10 +4281,22 @@ func herdrWorktreeVolumeNames(handle string) []string {
 	}
 }
 
-const (
-	herdrDockerDiskSizeBytes  int64 = 20 << 30
-	herdrGoCacheDiskSizeBytes int64 = 10 << 30
-	herdrGoPathDiskSizeBytes  int64 = 10 << 30
+// herdrEnvDiskBytes reads an integer GiB value from env (e.g. "2"), returning
+// defaultGiB converted to bytes when the variable is unset or unparseable.
+// Used by test harnesses to reduce volume sizes via NEXUS_HERDR_*_DISK_GIB.
+func herdrEnvDiskBytes(key string, defaultGiB int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if gib, err := strconv.ParseInt(v, 10, 64); err == nil && gib > 0 {
+			return gib << 30
+		}
+	}
+	return defaultGiB << 30
+}
+
+var (
+	herdrDockerDiskSizeBytes  = herdrEnvDiskBytes("NEXUS_HERDR_DOCKER_DISK_GIB", 20)
+	herdrGoCacheDiskSizeBytes = herdrEnvDiskBytes("NEXUS_HERDR_GOCACHE_DISK_GIB", 10)
+	herdrGoPathDiskSizeBytes  = herdrEnvDiskBytes("NEXUS_HERDR_GOPATH_DISK_GIB", 10)
 )
 
 // wtVolumeResult describes one volume touched during worktree prune.
@@ -4603,20 +4655,6 @@ func herdrResolveWorktreeImage(checkoutPath string) (imageFlag, imageVal string,
  * the file once.
  */
 func herdrResolveWorktreeImageFromConfig(checkoutPath, cfgPath string) (imageFlag, imageVal string) {
-	if cfgPath != "" {
-		/**
-		 * .nexus/config.yaml found: use --file <project root> (NOT the .nexus
-		 * dir) so the build applies the full project config.
-		 */
-		return "--file", config.ProjectDir(cfgPath)
-	}
-	/**
-	 * No .nexus/config.yaml, but a .nexus/Containerfile (or .nexus/Dockerfile) is itself
-	 * a complete build definition — the `--file` build engine reads exactly that
-	 * file from the context dir. So its presence ALONE is enough to build the
-	 * worktree sandbox from it; requiring a separate .nexus/config.yaml sentinel would be
-	 * a surprising extra step (the Containerfile is the thing that matters).
-	 */
 	if dir := nexusContainerfileDir(checkoutPath); dir != "" {
 		return "--file", dir
 	}
@@ -4879,6 +4917,18 @@ func herdrWorktreeSandbox(
 	 */
 	switch {
 	case auto:
+		/**
+		 * Fix (a): if the controller pre-claimed this branch by writing a marker
+		 * before calling `herdr worktree create`, the hook must skip auto-
+		 * provisioning.  The controller will call worktree-sandbox explicitly
+		 * (without --auto) with NEXUS_PRINCIPAL set, creating the sandbox under
+		 * the correct identity.  Skipping here prevents the hook from racing the
+		 * controller and creating a sandbox with the host owner's identity.
+		 */
+		if herdrIsControllerClaimed(storeRoot, info.Branch) {
+			fmt.Fprintf(w, "worktree-sandbox: branch %s is controller-claimed; skipping auto-provision (controller will bind explicitly)\n", info.Branch)
+			return nil
+		}
 		bind, reason := herdrWorktreeAutoBindDecision(
 			herdrWorktreeSandboxRepoCheck(ctx, storeRoot, info),
 			herdrRepoHasNexusConfig(info.Path),
@@ -5009,9 +5059,25 @@ func herdrWorktreeSandbox(
 			 * probe fails open (all alive) when herdr cannot be listed, so an
 			 * unreachable herdr keeps today's reuse behaviour.
 			 */
-			if bound.HerdrWorkspaceID == workspaceID || herdrWorkspaceListedFn(ctx, herdrBin)(bound) {
-				fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
-				return nil
+				if bound.HerdrWorkspaceID == workspaceID || herdrWorkspaceListedFn(ctx, herdrBin)(bound) {
+					/**
+					 * Fix (b) — defence in depth: if NEXUS_PRINCIPAL is set and
+					 * differs from the principal recorded on the existing binding,
+					 * refuse the reuse.  Silently reusing here would assign the
+					 * already-running sandbox to the wrong identity (e.g. the hook
+					 * path created it as local:newman but the controller wants
+					 * slack:T:U123).
+					 *
+					 * bound.Principal == "" means the binding pre-dates this field
+					 * (or was written without a principal, e.g. in tests) — allow
+					 * reuse so we don't break existing deployments.
+					 */
+					envPrincipal := os.Getenv(vault.PrincipalEnv)
+					if envPrincipal != "" && bound.Principal != "" && envPrincipal != bound.Principal {
+						return fmt.Errorf("worktree-sandbox: handle %s: principal mismatch: binding has %q, requested %q — refusing reuse", handle, bound.Principal, envPrincipal)
+					}
+					fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
+					return nil
 			}
 			fmt.Fprintf(w, "worktree-sandbox: handle %s bound to workspace %s, which no longer exists in herdr — rebinding to %s\n", handle, bound.HerdrWorkspaceID, workspaceID)
 			rebindStale = true
@@ -5274,6 +5340,7 @@ func herdrWorktreeSandbox(
 		WorktreeManaged:  true,
 		HerdrSession:     herdrCurrentSession(),
 		WorktreePath:     info.Path,
+		Principal:        herdrEffectivePrincipal(),
 	}
 	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: write binding: %v\n", err)

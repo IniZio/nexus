@@ -251,6 +251,11 @@ func egressFixtureRepo(t *testing.T, mainContent, worktreeContent string) (strin
 	switch {
 	case worktreeContent != "":
 		writeCfg(worktreeDir, worktreeContent)
+		cfPath := filepath.Join(worktreeDir, ".nexus", "Containerfile")
+		if err := os.WriteFile(cfPath, []byte("FROM ghcr.io/inizio/nexus-base:latest\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		gitExec(worktreeDir, "add", ".nexus/Containerfile")
 		gitExec(worktreeDir, "commit", "-m", "config on feature branch")
 	case mainContent != "":
 		gitExec(worktreeDir, "rm", "-q", config.ConfigRelPath)

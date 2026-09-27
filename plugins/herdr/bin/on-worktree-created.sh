@@ -24,6 +24,25 @@ if [ -z "$WS" ]; then
     echo "on-worktree-created.sh: no workspace ID (HERDR_WORKSPACE_ID unset, jq fallback failed)" >&2
     exit 0
 fi
+
+# Fix (a): if the controller pre-claimed this branch, skip auto-provisioning.
+# The controller writes a marker at <nexus-state>/controller-wt-claims/<safe-branch>
+# BEFORE calling `herdr worktree create`, so the hook sees it here.  The Go
+# code in herdrWorktreeSandbox performs the same check as defence in depth.
+if command -v jq >/dev/null 2>&1; then
+    _BRANCH=$(printf '%s' "${HERDR_PLUGIN_EVENT_JSON:-}" \
+        | jq -r '.worktree.branch // empty' 2>/dev/null)
+    if [ -n "$_BRANCH" ]; then
+        _SAFE_BRANCH=$(printf '%s' "$_BRANCH" | tr '/' '-')
+        _STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/nexus"
+        _MARKER="${_STATE_DIR}/controller-wt-claims/${_SAFE_BRANCH}"
+        if [ -f "$_MARKER" ]; then
+            echo "on-worktree-created.sh: branch ${_BRANCH} is controller-claimed; skipping auto-provision" >&2
+            exit 0
+        fi
+    fi
+fi
+
 # PANE-FIRST.  Open the provisioning pane and let the build run inside it,
 # rather than running it here in the hook process where it has no surface.
 #

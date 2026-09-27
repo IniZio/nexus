@@ -104,7 +104,7 @@ func TestHerdrResolveWorktreeImage(t *testing.T) {
 		}
 	})
 
-	t.Run(".nexus/config.yaml alone -> --file <repo root> from a nested cwd", func(t *testing.T) {
+	t.Run(".nexus/config.yaml alone (no Containerfile) -> base image", func(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "repo")
 		mkGitRoot(t, root)
 		writeFile(t, filepath.Join(root, ".nexus", "config.yaml"), "version: 1\n")
@@ -116,8 +116,8 @@ func TestHerdrResolveWorktreeImage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		if flag != "--file" || val != root {
-			t.Errorf("got (%q,%q), want (--file, %q) — must be repo root, not .nexus", flag, val, root)
+		if flag != "--image" || val != herdrDefaultImage {
+			t.Errorf("got (%q,%q), want (--image, %q) — egress-only config.yaml must not force --file", flag, val, herdrDefaultImage)
 		}
 	})
 
