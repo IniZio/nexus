@@ -700,6 +700,9 @@ func testSecondTurn(t *testing.T, ctx context.Context, chat *chattest.Fake, rout
 				if strings.Contains(p, "13*11") {
 					t.Errorf("second_turn: post contains prompt text (pane dump): %q", p)
 				}
+				if strings.Contains(p, "391") {
+					t.Errorf("second_turn: post contains turn-1 answer '391' (transcript bleed): %q", p)
+				}
 			}
 			cur2, _ := store.Get(ctx, ref)
 			if cur2.SandboxID != task.SandboxID {
