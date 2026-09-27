@@ -925,11 +925,29 @@ func setupHarnessPlugin(pluginDir, configHome, nexusBin string) error {
 		}
 		return nil
 	})
+	// Install nexus-guest-shell into a harness-local bin dir so herdr launches
+	// the guest-shell path on worktree panes (matching prod behaviour).
+	harnessLocalBin := filepath.Join(filepath.Dir(configHome), "bin")
+	if err := os.MkdirAll(harnessLocalBin, 0o755); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: mkdir harness bin: %w", err)
+	}
+	guestShellPath := filepath.Join(harnessLocalBin, "nexus-guest-shell")
+	_ = os.Remove(guestShellPath)
+	if err := os.Symlink(nexusBin, guestShellPath); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: symlink nexus-guest-shell: %w", err)
+	}
+	sidecarPath := guestShellPath + ".nexusbin"
+	// Sidecar format: line 1 = real nexus binary path, line 2 = kernel path (empty OK).
+	if err := os.WriteFile(sidecarPath, []byte(nexusBin+"\n\n"), 0o644); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: write nexus-guest-shell sidecar: %w", err)
+	}
+
 	herdrCfgDir := filepath.Join(configHome, "herdr")
 	if err := os.MkdirAll(herdrCfgDir, 0o700); err != nil {
 		return fmt.Errorf("setupHarnessPlugin: mkdir herdr cfg: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(herdrCfgDir, "config.toml"), []byte("onboarding = false\n"), 0o600); err != nil {
+	herdrConfigTOML := "onboarding = false\n\n[terminal]\ndefault_shell = " + fmt.Sprintf("%q", guestShellPath) + "\n"
+	if err := os.WriteFile(filepath.Join(herdrCfgDir, "config.toml"), []byte(herdrConfigTOML), 0o600); err != nil {
 		return fmt.Errorf("setupHarnessPlugin: write config.toml: %w", err)
 	}
 	pluginsJSON, err := buildHarnessPluginsJSON(pluginDir, filepath.Join(pluginDir, "herdr-plugin.toml"))

@@ -24,6 +24,7 @@ channels:
     repo: /home/user/repos/your-repo   # absolute path to local git checkout
     idle_pause: 10m          # pause sandbox after this idle time
     idle_stop:  1h           # stop sandbox after this idle time
+    # permission_mode: auto  # auto (default), default, bypassPermissions, acceptEdits
 
 deployment_mode: laptop      # or "shared" for a team host
 ```

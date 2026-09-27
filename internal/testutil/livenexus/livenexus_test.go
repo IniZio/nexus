@@ -546,3 +546,80 @@ func splitEnv(e string) (key, val string, ok bool) {
 	}
 	return "", "", false
 }
+
+// TestHarnessConfigWritesDefaultShell verifies that setupHarnessPlugin writes a
+// herdr config.toml with [terminal] default_shell pointing to a harness-local
+// nexus-guest-shell symlink, matching the prod setup.
+func TestHarnessConfigWritesDefaultShell(t *testing.T) {
+	base, err := os.MkdirTemp("/var/tmp", "nexus-live-shellcfg-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(base)
+
+	configHome := filepath.Join(base, "config")
+	pluginDir := filepath.Join(base, "plugin")
+	nexusBin := "/usr/local/bin/nexus-fake"
+
+	// setupHarnessPlugin reads worktreeRoot() and copies the plugin; skip if
+	// the source plugin dir isn't available (e.g. NEXUS_BIN points elsewhere).
+	if err := os.MkdirAll(configHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run only the harness config toml part by calling setupHarnessPlugin with
+	// a stub nexus binary so we can inspect the result without a real worktree.
+	// Create a minimal plugin dir to avoid worktreeRoot errors.
+	root, err := worktreeRoot()
+	if err != nil {
+		t.Skipf("worktreeRoot: %v", err)
+	}
+	srcPlugin := filepath.Join(root, "plugins", "herdr")
+	if _, err := os.Stat(srcPlugin); err != nil {
+		t.Skipf("plugin src not available: %v", err)
+	}
+	nexusBinReal, err := resolveNexusBin()
+	if err != nil {
+		t.Skipf("resolveNexusBin: %v", err)
+	}
+
+	if err := setupHarnessPlugin(pluginDir, configHome, nexusBinReal); err != nil {
+		t.Fatalf("setupHarnessPlugin: %v", err)
+	}
+	_ = nexusBin
+
+	cfgPath := filepath.Join(configHome, "herdr", "config.toml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	cfgStr := string(data)
+
+	if !strings.Contains(cfgStr, "default_shell") {
+		t.Errorf("config.toml missing default_shell entry:\n%s", cfgStr)
+	}
+
+	// Verify the symlink was created and points to the nexus binary.
+	harnessLocalBin := filepath.Join(base, "bin")
+	guestShellPath := filepath.Join(harnessLocalBin, "nexus-guest-shell")
+	dest, err := os.Readlink(guestShellPath)
+	if err != nil {
+		t.Fatalf("nexus-guest-shell symlink missing: %v", err)
+	}
+	if dest != nexusBinReal {
+		t.Errorf("nexus-guest-shell -> %q, want %q", dest, nexusBinReal)
+	}
+
+	// Verify sidecar file exists.
+	sidecarPath := guestShellPath + ".nexusbin"
+	sidecarData, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("nexus-guest-shell sidecar missing: %v", err)
+	}
+	if !strings.HasPrefix(string(sidecarData), nexusBinReal) {
+		t.Errorf("sidecar first line = %q, want %q", string(sidecarData), nexusBinReal)
+	}
+}

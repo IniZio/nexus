@@ -3,6 +3,7 @@ package config_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/controller"
@@ -167,5 +168,85 @@ channels:
 func TestErrNoProjectIsControllerAlias(t *testing.T) {
 	if !errors.Is(controller.ErrNoProject, config.ErrNoProject) {
 		t.Fatal("controller.ErrNoProject must be the same error as config.ErrNoProject")
+	}
+}
+
+func TestPermissionModeValidation(t *testing.T) {
+	base := `
+slack:
+  app_token:
+    env: SLACK_APP_TOKEN
+  bot_token:
+    env: SLACK_BOT_TOKEN
+channels:
+  C1:
+    repo: /home/example/app
+    permission_mode: %s
+`
+	for _, valid := range []string{"auto", "default", "bypassPermissions", "acceptEdits"} {
+		t.Run("valid_"+valid, func(t *testing.T) {
+			_, err := config.Parse([]byte(fmt.Sprintf(base, valid)))
+			if err != nil {
+				t.Fatalf("expected no error for permission_mode=%q, got %v", valid, err)
+			}
+		})
+	}
+	t.Run("empty_ok", func(t *testing.T) {
+		const noMode = `
+slack:
+  app_token:
+    env: SLACK_APP_TOKEN
+  bot_token:
+    env: SLACK_BOT_TOKEN
+channels:
+  C1:
+    repo: /home/example/app
+`
+		_, err := config.Parse([]byte(noMode))
+		if err != nil {
+			t.Fatalf("expected no error for omitted permission_mode, got %v", err)
+		}
+	})
+	t.Run("invalid", func(t *testing.T) {
+		_, err := config.Parse([]byte(fmt.Sprintf(base, "superuser")))
+		if !errors.Is(err, config.ErrInvalidPermMode) {
+			t.Fatalf("expected ErrInvalidPermMode, got %v", err)
+		}
+	})
+}
+
+func TestPermModeFromResolver(t *testing.T) {
+	const src = `
+slack:
+  app_token:
+    env: SLACK_APP_TOKEN
+  bot_token:
+    env: SLACK_BOT_TOKEN
+channels:
+  C_AUTO:
+    repo: /home/example/app
+    permission_mode: auto
+  C_DEFAULT:
+    repo: /home/example/app
+    permission_mode: default
+  C_NONE:
+    repo: /home/example/app
+`
+	cfg, err := config.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	r := config.NewResolver(cfg)
+	cases := []struct{ channel, want string }{
+		{"C_AUTO", "auto"},
+		{"C_DEFAULT", "default"},
+		{"C_NONE", ""},
+		{"C_MISSING", ""},
+	}
+	for _, tc := range cases {
+		got := r.PermMode(tc.channel)
+		if got != tc.want {
+			t.Errorf("PermMode(%q) = %q, want %q", tc.channel, got, tc.want)
+		}
 	}
 }

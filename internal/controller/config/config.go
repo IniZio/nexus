@@ -31,9 +31,10 @@ type SlackConfig struct {
 }
 
 type ChannelConfig struct {
-	Repo      string        `yaml:"repo"`
-	IdlePause time.Duration `yaml:"idle_pause"`
-	IdleStop  time.Duration `yaml:"idle_stop"`
+	Repo           string        `yaml:"repo"`
+	IdlePause      time.Duration `yaml:"idle_pause"`
+	IdleStop       time.Duration `yaml:"idle_stop"`
+	PermissionMode string        `yaml:"permission_mode"`
 }
 
 type Config struct {
@@ -48,6 +49,7 @@ var (
 	ErrNonAbsoluteRepo = errors.New("config: channel repo must be an absolute path to a local git checkout")
 	ErrNoProject       = errors.New("controller: channel has no project")
 	ErrUnknownMode     = errors.New("config: unknown deployment_mode; valid values: laptop, shared")
+	ErrInvalidPermMode = errors.New("config: invalid permission_mode; valid values: auto, default, bypassPermissions, acceptEdits")
 )
 
 func (t TokenRef) Validate(name string) error {
@@ -119,6 +121,11 @@ func (c *Config) Validate() error {
 		if !filepath.IsAbs(ch.Repo) {
 			return fmt.Errorf("%w: channel %q repo %q", ErrNonAbsoluteRepo, id, ch.Repo)
 		}
+		switch ch.PermissionMode {
+		case "", "auto", "default", "bypassPermissions", "acceptEdits":
+		default:
+			return fmt.Errorf("%w: channel %q got %q", ErrInvalidPermMode, id, ch.PermissionMode)
+		}
 	}
 	return nil
 }
@@ -134,4 +141,14 @@ func (r *Resolver) Resolve(_ context.Context, channel string) (string, error) {
 		return "", fmt.Errorf("%w: channel %q", ErrNoProject, channel)
 	}
 	return ch.Repo, nil
+}
+
+// PermMode returns the configured permission_mode for the channel, or "" when
+// the channel is not found or no mode is set (callers treat "" as "use default").
+func (r *Resolver) PermMode(channel string) string {
+	ch, ok := r.cfg.Channels[channel]
+	if !ok {
+		return ""
+	}
+	return ch.PermissionMode
 }

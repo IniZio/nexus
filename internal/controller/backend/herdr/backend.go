@@ -406,15 +406,6 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 			return "", "", fmt.Errorf("nexus herdr space-open-pane after pane-only failure: %w\n%s", reopenErr, reopenOut)
 		}
 	}
-	// Binding written with correct principal — marker is no longer needed.
-	// Remove it now so the hook pane (if still starting) skips via the
-	// step-1 idempotency check (binding already exists) rather than via the
-	// file-system marker, which cannot be held past Provision's return.
-	if markerPath != "" {
-		os.Remove(markerPath) //nolint:errcheck
-		markerPath = ""
-	}
-
 	listOut, err := b.nexusRun(ctx, nil, "herdr", "list")
 	if err != nil {
 		return "", "", fmt.Errorf("nexus herdr list: %w\n%s", err, listOut)
@@ -453,7 +444,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	}
 
 	agentName := agentNameFromWsID(wsID)
-	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID)
+	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID, controller.PermModeFromCtx(ctx))
 	if err != nil {
 		return "", "", fmt.Errorf("start agent: %w", err)
 	}
@@ -609,16 +600,21 @@ func (b *Backend) verifyClaudeInGuest(ctx context.Context, sbID string) error {
 	return nil
 }
 
-func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID string) (string, error) {
+// startAgent launches the claude agent in paneID. permMode overrides the
+// backend-default permission mode when non-empty; "" uses b.permMode().
+func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, permMode string) (string, error) {
 	// Safety gate: verify the pane is inside the guest before starting the agent.
 	// On mismatch the agent would run on the host; fail closed.
 	if err := b.verifyPaneInGuest(ctx, paneID, nexusSandboxID); err != nil {
 		return "", fmt.Errorf("guest pane verification failed — refusing to start agent: %w", err)
 	}
+	if permMode == "" {
+		permMode = b.permMode()
+	}
 
 	out, err := b.herdrRun(ctx, nil, "agent", "start", name, "--kind", "claude", "--pane", paneID,
 		"--timeout", "300000",
-		"--", "--model", b.cfg.Model, "--permission-mode", b.permMode(), "--max-turns", "1")
+		"--", "--model", b.cfg.Model, "--permission-mode", permMode, "--max-turns", "1")
 	if err == nil {
 		if err := b.waitForAgentReady(ctx, name, 5*time.Minute); err != nil {
 			return "", fmt.Errorf("agent not ready: %w", err)
@@ -656,7 +652,7 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID s
 			break
 		}
 	}
-	claudeCmd := "claude --model " + b.cfg.Model + " --permission-mode " + b.permMode() + " --max-turns 1"
+	claudeCmd := "claude --model " + b.cfg.Model + " --permission-mode " + permMode + " --max-turns 1"
 	if renameErr == nil {
 		if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
 			return "", fmt.Errorf("herdr pane run: %w\n%s", runErr, runOut)
@@ -917,7 +913,7 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 	}
 
 	newAgentName := agentNameFromWsID(e.wsID)
-	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID)
+	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID, "")
 	if err != nil {
 		return "", fmt.Errorf("restart %s: start agent: %w", sandboxID, err)
 	}

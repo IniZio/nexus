@@ -30,6 +30,11 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 		_ = c.deps.Chat.React(ctx, t.ThreadRef, "eyes")
 		_ = c.deps.Chat.Post(ctx, t.ThreadRef, "provisioning a sandbox — first run can take several minutes")
 		principal := vault.SlackPrincipal(t.ThreadRef.Team(), ev.User)
+		if c.deps.PermMode != nil {
+			if pm := c.deps.PermMode(t.ThreadRef.Channel()); pm != "" {
+				ctx = WithPermMode(ctx, pm)
+			}
+		}
 		sbID, agRef, provErr := c.deps.Backend.Provision(ctx, project, t.ThreadRef, principal)
 		if provErr != nil {
 			if sbID != "" {

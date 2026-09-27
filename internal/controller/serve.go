@@ -92,6 +92,9 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 	if deps.IdleFor == nil {
 		deps.IdleFor = IdleForFromConfig(cfg)
 	}
+	if deps.PermMode == nil {
+		deps.PermMode = PermModeFromConfig(cfg)
+	}
 
 	var routerOpts []RouterOption
 	if linkHandler != nil {
@@ -133,6 +136,18 @@ func Serve(ctx context.Context, cfgPath string, opts ...ServeOpt) error {
 
 	slog.Info("nexus-controller: ready", "channels", len(cfg.Channels))
 	return deps.Chat.Run(ctx, router.Handle)
+}
+
+// PermModeFromConfig returns the permission_mode for a channel from cfg, or ""
+// when the channel is not configured or has no permission_mode set.
+func PermModeFromConfig(cfg *controllerconfig.Config) func(string) string {
+	return func(channel string) string {
+		ch, ok := cfg.Channels[channel]
+		if !ok {
+			return ""
+		}
+		return ch.PermissionMode
+	}
 }
 
 // IdleForFromConfig maps channel name to IdleThresholds, falling back to DefaultIdle.

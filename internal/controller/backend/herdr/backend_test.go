@@ -1498,3 +1498,134 @@ func TestTeardownRemovesVolumesAndBranch(t *testing.T) {
 		t.Errorf("git branch -D argument = %q; want ctrl/... prefix", branchArg)
 	}
 }
+
+// TestProvisionMarkerPresentDuringVerify verifies that the controller marker
+// persists through verifyPaneInGuest (i.e. it is NOT removed right after bind).
+func TestProvisionMarkerPresentDuringVerify(t *testing.T) {
+	stateDir := setupTestStore(t, "sb-abc123", testPrincipal)
+
+	var markerDuringVerify bool
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wV"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wV","agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+
+	// Intercept the nexus runner to check for the marker during exec (hostname).
+	nexusRunner := func(ctx context.Context, extraEnv []string, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "exec" {
+			claimsDir := filepath.Join(stateDir, "nexus", "controller-wt-claims")
+			entries, _ := os.ReadDir(claimsDir)
+			markerDuringVerify = len(entries) > 0
+		}
+		n := newFakeCmd(map[string]fakeReply{
+			"herdr worktree-sandbox": {out: ""},
+			"herdr list":             {out: herdrListLine("wV", "wV:p1")},
+			"exec":                   {out: "nexus-fake-guest\n"},
+		})
+		return n.run(ctx, extraEnv, argv...)
+	}
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, nexusRunner)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "V"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if !markerDuringVerify {
+		t.Error("controller marker was absent during verifyPaneInGuest — must be kept until verification completes")
+	}
+	// Marker must be cleaned up after Provision returns.
+	claimsDir := filepath.Join(stateDir, "nexus", "controller-wt-claims")
+	entries, _ := os.ReadDir(claimsDir)
+	if len(entries) != 0 {
+		t.Errorf("controller marker not cleaned up after Provision; remaining: %v", entries)
+	}
+}
+
+// TestProvisionMarkerRemovedOnRollback verifies that the claim marker is cleaned
+// up when Provision fails (rolls back) after binding.
+func TestProvisionMarkerRemovedOnRollback(t *testing.T) {
+	stateDir := setupTestStore(t, "sb-abc123", testPrincipal)
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wR"}}}`},
+		"worktree remove": {out: ""},
+		// pane read returns a prompt with a hostname that differs from exec output
+		"pane read": {out: "root@wrong-host:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wR", "wR:p1")},
+		// exec returns a different hostname to trigger verifyPaneInGuest mismatch
+		"exec":       {out: "right-host\n"},
+		"sandbox rm": {out: ""},
+	})
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "R"), testPrincipal)
+	// Provision must fail (hostname mismatch)
+	if err == nil {
+		t.Fatal("expected Provision to fail on hostname mismatch, got nil")
+	}
+	claimsDir := filepath.Join(stateDir, "nexus", "controller-wt-claims")
+	entries, _ := os.ReadDir(claimsDir)
+	if len(entries) != 0 {
+		t.Errorf("controller marker not cleaned up after rollback; remaining: %v", entries)
+	}
+}
+
+// TestPermModeFromContextReachesAgentStart verifies that a permission mode set
+// in the context via WithPermMode is passed to `herdr agent start` argv.
+func TestPermModeFromContextReachesAgentStart(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wPM"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wPM","agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wPM", "wPM:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	ctx := controller.WithPermMode(context.Background(), "bypassPermissions")
+	_, _, err := b.Provision(ctx, "/repo", controller.NewThreadRef("T", "C", "PM"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	// Find the agent start call and verify --permission-mode bypassPermissions is present.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+			for i, arg := range c.argv {
+				if arg == "--permission-mode" && i+1 < len(c.argv) {
+					if c.argv[i+1] != "bypassPermissions" {
+						t.Errorf("agent start --permission-mode = %q, want bypassPermissions", c.argv[i+1])
+					}
+					return
+				}
+			}
+			t.Errorf("agent start call missing --permission-mode flag: %v", c.argv)
+			return
+		}
+	}
+	t.Error("no agent start call found")
+}
