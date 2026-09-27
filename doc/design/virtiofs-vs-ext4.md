@@ -50,7 +50,7 @@ reported here.)
 
 All figures in this table are the **always-writeback** run (see Method above). The `auto`-mode
 run measures **~12.8×** on the same total; `auto` is what production uses — see
-`docs/site/security/accepted-risks.md`.
+`doc/site/security/accepted-risks.md`.
 
 Raw round data (ns) from `2026-08-18-gitstatus-redo-always-writeback-bench_lines.txt` (local-only capture file, not in repo; 10 rounds, `cp -a`-equalised legs):
 

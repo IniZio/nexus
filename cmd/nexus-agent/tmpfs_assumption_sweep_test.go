@@ -119,7 +119,7 @@ func TestNoTmpfsAssumptionOnSlashTmp(t *testing.T) {
 
 	// ── 2. Image-baked scripts and Containerfiles ─────────────────────────────
 	//
-	// spike/ and docs/ are not baked into the image and are excluded.
+	// spike/ and doc/ are not baked into the image and are excluded.
 	imageFiles := []string{
 		filepath.Join(repoRoot, "images", "base", "Containerfile"),
 		filepath.Join(repoRoot, ".nexus", "Containerfile"),

@@ -8,7 +8,7 @@
 # AUTHORING DISCIPLINE
 #
 #   target_only_verbs, target_only_flags, partial_flags:
-#     Each entry carries a `page` field (relative to docs/site/) naming the doc
+#     Each entry carries a `page` field (relative to doc/site/) naming the doc
 #     where the required <Badge> lives.  The validator enforces bidirectional
 #     consistency:
 #       manifest → docs : every entry must resolve to an actual badge in a
@@ -35,7 +35,7 @@
 removed_verbs = ["up", "shell"]
 
 # ── Target-only verbs (not yet built) ────────────────────────────────────────
-# Each entry: { verb, page }  — page is relative to docs/site/.
+# Each entry: { verb, page }  — page is relative to doc/site/.
 # Any code-block invocation of these verbs requires a <Badge type="danger">
 # in the same heading-delimited section as the code block.
 
@@ -54,7 +54,7 @@ page = "cli/index.md"   # verb index table: `secret` <Badge type="danger" text="
 # ── Target-only flags (not yet built) ────────────────────────────────────────
 # Each entry: { key, page, flags }
 #   key   — "verb" or "verb/subverb" (matches parse_invocation output)
-#   page  — relative to docs/site/
+#   page  — relative to doc/site/
 #   flags — flag tokens that require <Badge type="danger"> in the same
 #            heading-delimited section as the code block that uses them.
 

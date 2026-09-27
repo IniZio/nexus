@@ -30,7 +30,7 @@ export default withMermaid({
   // A broken internal link is a docs bug — fail the build rather than ship it.
   ignoreDeadLinks: false,
 
-  // Favicon served from docs/site/public/favicon.svg (VitePress copies public/
+  // Favicon served from doc/site/public/favicon.svg (VitePress copies public/
   // to the site root at both build and dev time). head[] hrefs are emitted
   // verbatim — VitePress does not prefix them — so `base` is applied by hand.
   head: [

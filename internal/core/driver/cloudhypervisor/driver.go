@@ -43,7 +43,7 @@ const (
 	// memHotplugCmdline is appended to the guest cmdline when a virtio-mem
 	// hotplug region is reserved (Config.MemoryMaxMiB > Config.MemoryMiB).
 	// Both tokens are REQUIRED, not optional — confirmed by
-	// docs/design/auto-resize.md Leg 6 (negative control): without them
+	// doc/design/auto-resize.md Leg 6 (negative control): without them
 	// PUT /api/v1/vm.resize returns 204 but MemTotal does not grow.
 	//   memhp_default_state=online: auto-online hotplugged memory blocks.
 	//   memory_hotplug.online_policy=auto-movable: zone blocks as MOVABLE so
@@ -230,7 +230,7 @@ type Config struct {
 	// no virtio-mem hotplug region is reserved at vm.create. When > MemoryMiB,
 	// the driver reserves a (MemoryMaxMiB − MemoryMiB) MiB hotplug region using
 	// VirtioMem and adds the required cmdline tokens (confirmed by spike
-	// docs/design/auto-resize.md Legs 1–7):
+	// doc/design/auto-resize.md Legs 1–7):
 	//
 	//	memhp_default_state=online memory_hotplug.online_policy=auto-movable
 	//

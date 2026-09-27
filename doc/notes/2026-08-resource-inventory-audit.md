@@ -3,7 +3,7 @@
 **Date:** 2026-08-15  
 **Branch:** milestone-a-agent-sandbox  
 **Scope:** R0-AC1, R0-AC2, R0-AC3 (read-only; no code changes)  
-**Covers:** `docs/site/operations/resource-lifecycle.md` inputs  
+**Covers:** `doc/site/operations/resource-lifecycle.md` inputs  
 
 ---
 
@@ -209,4 +209,4 @@ Evidence:
 
 ---
 
-*This document is the input for `docs/site/operations/resource-lifecycle.md` and is the evidence of record for TBD-PD-10, TBD-PD-12 (baseline), and TBR-PD-9.*
+*This document is the input for `doc/site/operations/resource-lifecycle.md` and is the evidence of record for TBD-PD-10, TBD-PD-12 (baseline), and TBR-PD-9.*
