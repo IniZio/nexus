@@ -3,6 +3,7 @@ package herdragent_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -447,4 +448,59 @@ func TestState_FieldSet(t *testing.T) {
 			t.Errorf("State missing expected field %q", w)
 		}
 	}
+}
+
+func TestExtractQuestion(t *testing.T) {
+	t.Run("live blocked pane fixture", func(t *testing.T) {
+		data, err := os.ReadFile("/var/tmp/live-blocked-pane.txt")
+		if err != nil {
+			t.Skipf("live-blocked-pane.txt not available: %v", err)
+		}
+		got := herdragent.ExtractQuestion(string(data))
+		if !strings.Contains(got, "requires approval") {
+			t.Errorf("output missing 'requires approval': %q", got)
+		}
+		if !strings.Contains(got, "1. Yes") {
+			t.Errorf("output missing '1. Yes': %q", got)
+		}
+		if !strings.Contains(got, "3. No") {
+			t.Errorf("output missing '3. No': %q", got)
+		}
+		if strings.Contains(got, "bun: not found") {
+			t.Errorf("output contains hook noise 'bun: not found': %q", got)
+		}
+		if strings.Contains(got, "⎿") {
+			t.Errorf("output contains box char ⎿: %q", got)
+		}
+	})
+
+	t.Run("strips hook errors only", func(t *testing.T) {
+		input := "  ⎿  PreToolUse:Bash hook error\n  ⎿  Failed with non-blocking status code: bun not found\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"
+		got := herdragent.ExtractQuestion(input)
+		if strings.Contains(got, "bun") {
+			t.Errorf("hook error line not stripped: %q", got)
+		}
+		if !strings.Contains(got, "1. Yes") {
+			t.Errorf("dialog options stripped: %q", got)
+		}
+	})
+
+	t.Run("last 30 non-empty lines", func(t *testing.T) {
+		var lines []string
+		for i := 0; i < 40; i++ {
+			lines = append(lines, fmt.Sprintf("line%d", i))
+		}
+		input := strings.Join(lines, "\n")
+		got := herdragent.ExtractQuestion(input)
+		gotLines := strings.Split(got, "\n")
+		if len(gotLines) > 30 {
+			t.Errorf("got %d lines, want ≤30", len(gotLines))
+		}
+		if !strings.Contains(got, "line39") {
+			t.Errorf("last line missing: %q", got)
+		}
+		if strings.Contains(got, "line9\n") && strings.Contains(got, "line10") {
+			// both are present only if >30 lines retained
+		}
+	})
 }

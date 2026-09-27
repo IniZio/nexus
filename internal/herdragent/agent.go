@@ -158,10 +158,42 @@ func tailBounded(s string, max int) string {
 	return s
 }
 
+// ExtractQuestion strips noise from a blocked-dialog pane dump:
+// removes box-drawing characters, drops ⎿ hook-error lines and
+// "Failed with non-blocking status code" / "hook error" lines,
+// and returns the last 30 non-empty lines.
+func ExtractQuestion(screen string) string {
+	var kept []string
+	for _, line := range strings.Split(screen, "\n") {
+		// Drop hook-error lines.
+		if strings.Contains(line, "⎿") ||
+			strings.Contains(line, "hook error") ||
+			strings.Contains(line, "Failed with non-blocking status code") {
+			continue
+		}
+		// Strip box-drawing characters (U+2500–U+257F range).
+		var b strings.Builder
+		for _, r := range line {
+			if r >= 0x2500 && r <= 0x257F {
+				continue
+			}
+			b.WriteRune(r)
+		}
+		cleaned := strings.TrimRight(b.String(), " \t")
+		if cleaned != "" {
+			kept = append(kept, cleaned)
+		}
+	}
+	if len(kept) > 30 {
+		kept = kept[len(kept)-30:]
+	}
+	return strings.Join(kept, "\n")
+}
+
 func (c *Client) readQuestion(ctx context.Context, target string, st State) State {
 	out, err := c.run(ctx, "agent", "read", target, "--source", "recent-unwrapped", "--lines", "40")
 	if err == nil {
-		st.Question = tailBounded(strings.TrimSpace(out), 4000)
+		st.Question = tailBounded(ExtractQuestion(out), 4000)
 	}
 	st.Settled = true
 	return st
