@@ -27,6 +27,7 @@ func (c *Controller) OnMention(ctx context.Context, t Task, ev Event) error {
 		sbID, agRef, provErr := c.deps.Backend.Provision(ctx, project, t.ThreadRef, principal)
 		if provErr != nil {
 			_ = c.deps.Chat.React(ctx, t.ThreadRef, "warning")
+			_ = c.deps.Chat.Post(ctx, t.ThreadRef, "provision error: "+provErr.Error())
 			return provErr
 		}
 		t.SandboxID = sbID
@@ -77,8 +78,8 @@ func (c *Controller) runObserveLoop(ctx context.Context, t Task) error {
 					return pErr
 				}
 			}
-			_ = c.deps.Chat.React(ctx, t.ThreadRef, "white_check_mark")
 			_ = c.deps.Store.Transition(ctx, t.ThreadRef, StatusWorking, StatusIdle, t.StateChangeSeq+1)
+			_ = c.deps.Chat.React(ctx, t.ThreadRef, "white_check_mark")
 			return nil
 		case herdragent.StatusBlocked:
 			return c.handleBlocked(ctx, t, st)

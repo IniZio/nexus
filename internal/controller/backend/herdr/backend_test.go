@@ -134,10 +134,12 @@ func TestBackendMapsHerdrState(t *testing.T) {
 				"agent start":    {out: ""},
 				"agent get": {out: fmt.Sprintf(`{"result":{"agent":{"agent":"ctrl-w2","agent_status":%q,"state_change_seq":1}}}`, tc.status)},
 				"agent wait": {out: ""},
+				"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
 			})
 			n := newFakeCmd(map[string]fakeReply{
 				"herdr worktree-sandbox": {out: ""},
 				"herdr list":             {out: herdrListLine("w2", "w2:p1")},
+				"exec":                   {out: "nexus-fake-guest\n"},
 			})
 			b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 			b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
@@ -163,10 +165,13 @@ func TestProvisionSetsPrincipalEnv(t *testing.T) {
 		"agent start":     {out: ""},
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w3","agent_status":"idle","state_change_seq":1}}}`},
 		"agent wait":      {out: ""},
+		"pane run":        {out: ""},
+		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
 		"herdr list":             {out: herdrListLine("w3", "w3:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
@@ -200,12 +205,14 @@ func TestStartAgentHandlesAutoTaggedPane(t *testing.T) {
 		"agent start":     {out: `{"error":{"code":"agent_pane_busy","message":"pane already detected as agent"}}`, err: busyErr},
 		"agent rename":    {out: ""},
 		"pane run":        {out: ""},
+		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w4","agent_status":"idle","state_change_seq":1}}}`},
 		"agent wait":      {out: ""},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
 		"herdr list":             {out: herdrListLine("w4", "w4:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
@@ -229,12 +236,15 @@ func TestTeardownAlwaysRemovesSandbox(t *testing.T) {
 		"agent start":     {out: ""},
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w6","agent_status":"idle","state_change_seq":1}}}`},
 		"worktree remove": {out: ""},
+		"pane run":        {out: ""},
+		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
 		"herdr list":             {out: herdrListLine("w6", "w6:p1")},
 		"ps":                     {out: nexusPSLine("test-handle", "sb-abc123")},
 		"sandbox rm":             {out: ""},
+		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
@@ -251,8 +261,8 @@ func TestTeardownAlwaysRemovesSandbox(t *testing.T) {
 	if !n.calledWith("sandbox", "rm", "sb-abc123") {
 		t.Errorf("expected nexus sandbox rm sb-abc123 (exact id); calls: %v", n.calls)
 	}
-	if !h.calledWith("worktree", "remove", "--workspace", sandboxID) {
-		t.Error("expected herdr worktree remove --workspace called")
+	if !h.calledWith("worktree", "remove", "--workspace", "w6") {
+		t.Error("expected herdr worktree remove --workspace called with herdr wsID")
 	}
 }
 
@@ -263,12 +273,15 @@ func TestTeardownRemovesByExactSandboxID(t *testing.T) {
 		"agent start":     {out: ""},
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w7","agent_status":"idle","state_change_seq":1}}}`},
 		"worktree remove": {out: ""},
+		"pane run":        {out: ""},
+		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
 		"herdr list":             {out: herdrListLine("w7", "w7:p1")},
 		"ps":                     {out: nexusPSLine("test-handle", "sb-abc123")},
 		"sandbox rm":             {out: ""},
+		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
@@ -320,12 +333,15 @@ func TestTeardownIdempotentWhenIDAbsent(t *testing.T) {
 		"agent start":     {out: ""},
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w8","agent_status":"idle","state_change_seq":1}}}`},
 		"worktree remove": {out: `{"error":{"code":"workspace_not_found"}}`, err: fmt.Errorf("exit status 1")},
+		"pane run":        {out: ""},
+		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
 		"herdr list":             {out: herdrListLine("w8", "w8:p1")},
 		"ps":                     {out: "HANDLE\tSTATE\tID\n0 sandbox(es)\n"},
 		"sandbox rm":             {out: ""},
+		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
@@ -352,10 +368,13 @@ func TestAnswerDigitUsesSendKeys(t *testing.T) {
 		"agent prompt":    {out: ""},
 		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-w5","agent_status":"idle","state_change_seq":1}}}`},
 		"agent wait":      {out: ""},
+		"pane run":        {out: ""},
+		"pane read": {out: "root@nexus-fake-guest:/workspace#\n"},
 	})
 	n := newFakeCmd(map[string]fakeReply{
 		"herdr worktree-sandbox": {out: ""},
 		"herdr list":             {out: herdrListLine("w5", "w5:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
 	})
 	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
 	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
@@ -411,5 +430,92 @@ func TestAnswerDigitUsesSendKeys(t *testing.T) {
 	h.mu.Unlock()
 	if afterSendKeys != prevSendKeys {
 		t.Error("Text Answer should use prompt, not send-keys")
+	}
+}
+
+// TestStartAgentRefusesHostPane verifies that startAgent fails when pane hostname
+// does not match the nexus exec hostname — i.e., the pane is on the host, not the guest.
+func TestStartAgentRefusesHostPane(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"whost"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-whost","agent_status":"idle","state_change_seq":1}}}`},
+		// Pane shows host prompt "engine-03", but nexus exec says "nexus-e2e-abc".
+		"pane read": {out: "root@engine-03:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("whost", "whost:p1")},
+		// nexus exec returns guest hostname — different from what the pane shows.
+		"exec": {out: "nexus-e2e-abc\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "host"), "u:a")
+	if err == nil {
+		t.Fatal("Provision must fail when pane hostname != guest hostname")
+	}
+	if !strings.Contains(err.Error(), "not running inside the guest VM") {
+		t.Errorf("error should mention guest VM mismatch; got: %v", err)
+	}
+	if h.calledWith("agent", "start") {
+		t.Error("agent start must NOT be called when guest verification fails")
+	}
+}
+
+// TestStartAgentRefusesFallbackMarker verifies that startAgent fails when the pane
+// output contains the nexus-guest-shell FALLBACK marker (host shell opened instead of guest).
+func TestStartAgentRefusesFallbackMarker(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wfb"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wfb","agent_status":"idle","state_change_seq":1}}}`},
+		"pane run":        {out: ""},
+		// Initial pane read contains the FALLBACK marker.
+		"pane read": {out: "nexus-guest-shell: FALLBACK host shell: /bin/bash\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wfb", "wfb:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "fb"), "u:b")
+	if err == nil {
+		t.Fatal("Provision must fail when pane shows FALLBACK marker")
+	}
+	if !strings.Contains(err.Error(), "FALLBACK") {
+		t.Errorf("error should mention FALLBACK marker; got: %v", err)
+	}
+	if h.calledWith("agent", "start") {
+		t.Error("agent start must NOT be called when fallback marker is detected")
+	}
+}
+
+// TestStartAgentAcceptsGuestHostnameMatch verifies that startAgent succeeds when
+// the pane hostname matches nexus exec hostname (pane is in the guest).
+func TestStartAgentAcceptsGuestHostnameMatch(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wmatch"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wmatch","agent_status":"idle","state_change_seq":1}}}`},
+		// Pane shows same hostname as nexus exec.
+		"pane read": {out: "root@nexus-e2e-abc:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wmatch", "wmatch:p1")},
+		"exec":                   {out: "nexus-e2e-abc\n"},
+	})
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	_, _, err := b.Provision(context.Background(), "proj", controller.NewThreadRef("T", "C", "match"), "u:c")
+	if err != nil {
+		t.Fatalf("Provision must succeed when pane hostname matches guest hostname: %v", err)
+	}
+	if !h.calledWith("agent", "start") {
+		t.Error("agent start must be called when guest verification passes")
 	}
 }

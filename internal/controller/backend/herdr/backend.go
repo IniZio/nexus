@@ -29,6 +29,7 @@ type runner func(ctx context.Context, extraEnv []string, argv ...string) (string
 type Config struct {
 	RepoPath        string
 	Model           string
+	PermissionMode  string
 	HerdrSocketPath string
 	NexusBin        string
 	ExtraEnv        []string
@@ -39,27 +40,30 @@ type entry struct {
 	paneID         string
 	nexusHandle    string
 	nexusSandboxID string
+	wsID           string
 	tornDown       bool
 }
 
 // Backend implements controller.AgentBackend.
 type Backend struct {
-	cfg       Config
-	herdrRun  runner
-	nexusRun  runner
-	agentOpts []herdragent.Option
+	cfg              Config
+	herdrRun         runner
+	nexusRun         runner
+	agentOpts        []herdragent.Option
+	agentReadyTimeout time.Duration // 0 = skip idle-wait in waitForAgentReady (tests)
 
 	mu        sync.Mutex
 	entries   map[string]*entry // agentRef → pane/torn state
-	sandboxes map[string]string // sandboxID(=wsID) → agentRef
+	sandboxes map[string]string
 }
 
 // New returns a Backend using real herdr and nexus binaries.
 func New(cfg Config) *Backend {
 	b := &Backend{
-		cfg:       cfg,
-		entries:   make(map[string]*entry),
-		sandboxes: make(map[string]string),
+		cfg:              cfg,
+		entries:          make(map[string]*entry),
+		sandboxes:        make(map[string]string),
+		agentReadyTimeout: 90 * time.Second,
 	}
 	b.herdrRun = b.defaultHerdrRun
 	b.nexusRun = b.defaultNexusRun
@@ -213,10 +217,21 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	}
 	nexusHandle := parseNexusHandle(listOut, wsID)
 	nexusSandboxID := parseSandboxID(listOut, wsID)
+	if nexusSandboxID == "" {
+		return "", "", fmt.Errorf("nexus herdr list: no sandbox_id for workspace %s", wsID)
+	}
+
+	if err := b.waitForWorkspaceMount(ctx, nexusSandboxID); err != nil {
+		return "", "", fmt.Errorf("workspace mount: %w", err)
+	}
 
 	agentName := "ctrl-" + wsID
-	agentRef, err := b.startAgent(ctx, agentName, paneID)
+	agentRef, err := b.startAgent(ctx, agentName, paneID, nexusSandboxID)
 	if err != nil {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cleanCancel()
+		_, _ = b.nexusRun(cleanCtx, nil, "sandbox", "rm", nexusSandboxID)
+		_, _ = b.herdrRun(cleanCtx, nil, "worktree", "remove", wsID)
 		return "", "", fmt.Errorf("start agent: %w", err)
 	}
 
@@ -225,11 +240,12 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		paneID:         paneID,
 		nexusHandle:    nexusHandle,
 		nexusSandboxID: nexusSandboxID,
+		wsID:           wsID,
 	}
-	b.sandboxes[wsID] = agentRef
+	b.sandboxes[nexusSandboxID] = agentRef
 	b.mu.Unlock()
 
-	return wsID, agentRef, nil
+	return nexusSandboxID, agentRef, nil
 }
 
 func (b *Backend) findOrCreateWorkspace(ctx context.Context) (string, error) {
@@ -254,15 +270,132 @@ func (b *Backend) findOrCreateWorkspace(ctx context.Context) (string, error) {
 // startAgent starts the claude agent in paneID and returns the effective agent identifier.
 // For untagged panes: uses herdr agent start (returns name).
 // For auto-tagged panes (agent_pane_busy): tries rename; falls back to pane run + detect.
-func (b *Backend) startAgent(ctx context.Context, name, paneID string) (string, error) {
+func (b *Backend) permMode() string {
+	if b.cfg.PermissionMode != "" {
+		return b.cfg.PermissionMode
+	}
+	return "auto"
+}
+
+// fallbackMarkers are strings emitted by nexus-guest-shell when it falls back to the host.
+var fallbackMarkers = []string{
+	"nexus-guest-shell: FALLBACK host shell:",
+	"not a nexus space",
+	"no nexus sandbox binding",
+}
+
+// checkNoFallbackMarkers returns an error if out contains any fallback marker.
+func checkNoFallbackMarkers(out string) error {
+	for _, m := range fallbackMarkers {
+		if strings.Contains(out, m) {
+			return fmt.Errorf("fallback marker %q detected: pane is not in guest", m)
+		}
+	}
+	return nil
+}
+
+// shellPromptVisible returns true when out contains a line ending with "# " or "$ "
+// which indicates an interactive shell prompt is ready for input.
+func shellPromptVisible(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, " \t")
+		if strings.HasSuffix(line, "#") || strings.HasSuffix(line, "$") {
+			return true
+		}
+	}
+	return false
+}
+
+// extractHostnameFromPrompt returns the hostname embedded in a bash prompt line
+// of the form "user@HOSTNAME:PATH#" or "user@HOSTNAME:PATH$". Returns "" when
+// no such line is found.
+func extractHostnameFromPrompt(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, " \t")
+		if !strings.HasSuffix(line, "#") && !strings.HasSuffix(line, "$") {
+			continue
+		}
+		atIdx := strings.Index(line, "@")
+		if atIdx < 0 {
+			continue
+		}
+		rest := line[atIdx+1:]
+		colonIdx := strings.Index(rest, ":")
+		if colonIdx < 0 {
+			continue
+		}
+		h := rest[:colonIdx]
+		if h != "" {
+			return h
+		}
+	}
+	return ""
+}
+
+// verifyPaneInGuest confirms the pane is running inside the sandbox guest VM.
+// It waits for a bash prompt of the form "user@HOSTNAME:PATH#", extracts the
+// hostname from the prompt, then cross-checks with "nexus exec <sandbox> -- hostname".
+// Returns an error if the pane is on the host or shows fallback markers.
+func (b *Backend) verifyPaneInGuest(ctx context.Context, paneID, nexusSandboxID string) error {
+	// Wait for the guest bash prompt. The prompt embeds the hostname in
+	// "user@HOSTNAME:PATH# " form so we can read it without sending keys.
+	// bash -l takes time to run login scripts; 120s covers slow VM boots.
+	promptDeadline := time.Now().Add(120 * time.Second)
+	var paneHostname string
+	for time.Now().Before(promptDeadline) {
+		out, _ := b.herdrRun(ctx, nil, "pane", "read", paneID, "--source", "recent-unwrapped", "--lines", "150")
+		if err := checkNoFallbackMarkers(out); err != nil {
+			return fmt.Errorf("pane %s initial output: %w", paneID, err)
+		}
+		if h := extractHostnameFromPrompt(out); h != "" {
+			paneHostname = h
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	if paneHostname == "" {
+		return fmt.Errorf("pane %s: no user@HOSTNAME prompt within 120s — bash login may be hung or prompt format unexpected", paneID)
+	}
+
+	// Cross-check against the canonical guest hostname.
+	guestOut, err := b.nexusRun(ctx, nil, "exec", nexusSandboxID, "--", "hostname")
+	if err != nil {
+		return fmt.Errorf("nexus exec %s hostname: %w", nexusSandboxID, err)
+	}
+	guestHostname := strings.TrimSpace(guestOut)
+	if paneHostname != guestHostname {
+		return fmt.Errorf("pane %s hostname %q != guest %q: pane is not running inside the guest VM", paneID, paneHostname, guestHostname)
+	}
+	return nil
+}
+
+func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID string) (string, error) {
+	// Safety gate: verify the pane is inside the guest before starting the agent.
+	// On mismatch the agent would run on the host; fail closed.
+	if err := b.verifyPaneInGuest(ctx, paneID, nexusSandboxID); err != nil {
+		return "", fmt.Errorf("guest pane verification failed — refusing to start agent: %w", err)
+	}
+
 	out, err := b.herdrRun(ctx, nil, "agent", "start", name, "--kind", "claude", "--pane", paneID,
-		"--", "--model", b.cfg.Model, "--permission-mode", "auto", "--max-turns", "1")
+		"--", "--model", b.cfg.Model, "--permission-mode", b.permMode(), "--max-turns", "1")
 	if err == nil {
 		b.waitForAgentReady(ctx, name, 90*time.Second)
 		return name, nil
 	}
 	code, _, ok := herdrout.ParseHerdrErrorCode(out)
 	if ok && code == "agent_not_ready" {
+		// herdr could not confirm the agent is ready — verify the pane is still
+		// running claude (prompt absent) rather than silently succeeding when
+		// claude exited immediately (e.g. command not found).
+		time.Sleep(2 * time.Second)
+		paneOut, _ := b.herdrRun(ctx, nil, "pane", "read", paneID, "--source", "recent-unwrapped", "--lines", "50")
+		if shellPromptVisible(paneOut) {
+			return "", fmt.Errorf("agent_not_ready and shell prompt visible: claude exited immediately (command not found, crash, or permission error)\npane tail:\n%s", paneOut)
+		}
 		return name, nil
 	}
 	if !ok || code != "agent_pane_busy" {
@@ -281,7 +414,7 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID string) (string, 
 			break
 		}
 	}
-	claudeCmd := "claude --model " + b.cfg.Model + " --permission-mode auto --max-turns 1"
+	claudeCmd := "claude --model " + b.cfg.Model + " --permission-mode " + b.permMode() + " --max-turns 1"
 	if renameErr == nil {
 		if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
 			return "", fmt.Errorf("herdr pane run: %w\n%s", runErr, runOut)
@@ -294,19 +427,41 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID string) (string, 
 	}
 	agentName, detectErr := b.waitForAgentDetection(ctx, paneID, 30*time.Second)
 	if detectErr != nil {
-		return paneID, nil
+		return "", fmt.Errorf("agent detection failed after pane run — pane may not be running claude: %w", detectErr)
 	}
 	b.waitForAgentReady(ctx, agentName, 90*time.Second)
 	return agentName, nil
 }
 
+// waitForWorkspaceMount polls until /workspace is accessible inside the sandbox.
+func (b *Backend) waitForWorkspaceMount(ctx context.Context, sandboxID string) error {
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, err := b.nexusRun(ctx, nil, "exec", sandboxID, "--", "sh", "-c", "test -e /workspace/.git || test -f /workspace/README.md"); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return fmt.Errorf("workspace mount not ready in sandbox %s after 120s", sandboxID)
+}
+
 // waitForAgentReady waits until the agent is idle (ready to accept prompts).
-func (b *Backend) waitForAgentReady(ctx context.Context, agentRef string, timeout time.Duration) {
+func (b *Backend) waitForAgentReady(ctx context.Context, agentRef string, _ time.Duration) {
+	if b.agentReadyTimeout == 0 {
+		return
+	}
 	agentRunner := func(ctx context.Context, argv ...string) (string, error) {
 		return b.herdrRun(ctx, nil, argv...)
 	}
 	client := herdragent.New(agentRunner, b.agentOpts...)
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(b.agentReadyTimeout)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
 		st := client.Observe(ctx, agentRef, 0)
 		if st.Status == herdragent.StatusIdle && st.Settled {
@@ -414,7 +569,18 @@ func (b *Backend) Answer(ctx context.Context, agentRef string, in controller.Age
 		return err
 	}
 	if in.Key != "" {
-		out, err := b.herdrRun(ctx, nil, "agent", "send-keys", agentRef, in.Key)
+		key := strings.TrimSuffix(in.Key, "\r")
+		sendEnter := key != in.Key
+		var argv []string
+		if key != "" {
+			argv = []string{"agent", "send-keys", agentRef, key}
+			if sendEnter {
+				argv = append(argv, "Enter")
+			}
+		} else {
+			argv = []string{"agent", "send-keys", agentRef, "Enter"}
+		}
+		out, err := b.herdrRun(ctx, nil, argv...)
 		if err != nil {
 			return fmt.Errorf("herdr agent send-keys: %w\n%s", err, out)
 		}
@@ -451,7 +617,7 @@ func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, erro
 }
 
 // Teardown removes the nexus sandbox and then the herdr worktree.
-// sandboxID is the workspace ID returned by Provision.
+// sandboxID is the nexus sb-... id returned by Provision.
 //
 // Safety contract: sandbox rm is ONLY called with the exact sb-... id recorded
 // at provision time. Workspace ids, handle prefixes, or guessed ids are never
@@ -463,7 +629,7 @@ func (b *Backend) ReadAnswer(ctx context.Context, agentRef string) (string, erro
 func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 	b.mu.Lock()
 	agRef, known := b.sandboxes[sandboxID]
-	var nexusSandboxID, nexusHandle string
+	var nexusSandboxID, nexusHandle, wsID string
 	if known {
 		if e, ok := b.entries[agRef]; ok {
 			if !e.tornDown {
@@ -471,6 +637,7 @@ func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 			}
 			nexusSandboxID = e.nexusSandboxID
 			nexusHandle = e.nexusHandle
+			wsID = e.wsID
 		}
 	}
 	b.mu.Unlock()
@@ -493,7 +660,7 @@ func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 		}
 	}
 
-	return b.removeWorktree(ctx, sandboxID)
+	return b.removeWorktree(ctx, wsID)
 }
 
 // removeWorktree removes the herdr worktree for sandboxID. workspace_not_found

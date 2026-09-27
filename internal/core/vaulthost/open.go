@@ -35,17 +35,22 @@ func Open() (*vault.VaultImpl, error) {
 	return vault.NewVaultImpl(st, reg), nil
 }
 
-func defaultDir() (string, error) {
-	xdg := os.Getenv("XDG_CONFIG_HOME")
+// DefaultDir returns the canonical vault directory: $XDG_DATA_HOME/nexus/vault
+// (default ~/.local/share/nexus/vault). Call this instead of duplicating the
+// resolution in cmd_vault.go or the supervisor.
+func DefaultDir() (string, error) {
+	xdg := os.Getenv("XDG_DATA_HOME")
 	if xdg == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("vaulthost: home dir: %w", err)
 		}
-		xdg = filepath.Join(home, ".config")
+		xdg = filepath.Join(home, ".local", "share")
 	}
 	return filepath.Join(xdg, "nexus", "vault"), nil
 }
+
+func defaultDir() (string, error) { return DefaultDir() }
 
 func defaultAppConfig() (vault.AppConfig, error) {
 	xdg := os.Getenv("XDG_CONFIG_HOME")

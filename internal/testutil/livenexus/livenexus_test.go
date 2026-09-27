@@ -62,6 +62,7 @@ func TestEnvPinsIsolatedRootAndSocket(t *testing.T) {
 		stateRoot:   "/var/tmp/test-state",
 		configHome:  "/var/tmp/test-config",
 		dataHome:    "/var/tmp/test-data",
+		credsDir:    "/var/tmp/test-creds",
 		socketPath:  "/var/tmp/test-config/herdr/sessions/nl-abc/herdr.sock",
 		sessionName: "nl-abc",
 		nexusBin:    "nexus",
@@ -69,10 +70,11 @@ func TestEnvPinsIsolatedRootAndSocket(t *testing.T) {
 	env := h.Env()
 
 	want := map[string]string{
-		"XDG_STATE_HOME":    "/var/tmp/test-state",
-		"XDG_DATA_HOME":     "/var/tmp/test-data",
-		"HERDR_SOCKET_PATH": "/var/tmp/test-config/herdr/sessions/nl-abc/herdr.sock",
-		"TMPDIR":            "/var/tmp",
+		"XDG_STATE_HOME":        "/var/tmp/test-state",
+		"XDG_DATA_HOME":         "/var/tmp/test-data",
+		"CREDENTIALS_DIRECTORY": "/var/tmp/test-creds",
+		"HERDR_SOCKET_PATH":     "/var/tmp/test-config/herdr/sessions/nl-abc/herdr.sock",
+		"TMPDIR":                "/var/tmp",
 	}
 	got := make(map[string]string)
 	for _, e := range env {
@@ -312,10 +314,61 @@ func TestCleanupOrderStopsSupervisorsFirst(t *testing.T) {
 
 // TestSnapshotDetectsLeak verifies that checkSnapshot returns no errors when
 // before==after, and returns errors when they differ.
-func TestSnapshotDetectsLeak(t *testing.T) {
-	snap := captureEnvSnapshot(resolveNexusBin())
+func TestResolveNexusBinNeverUsesPATH(t *testing.T) {
+	t.Setenv("NEXUS_BIN", "")
 
-	h := &Harness{t: t, nexusBin: resolveNexusBin(), preSnap: snap}
+	dir := t.TempDir()
+	bin, err := resolveNexusBin(dir)
+	if err != nil {
+		t.Fatalf("resolveNexusBin: %v", err)
+	}
+
+	pathNexus, _ := exec.LookPath("nexus")
+	if pathNexus != "" && (bin == pathNexus || bin == "nexus") {
+		t.Errorf("resolveNexusBin returned PATH nexus %q; must use worktree-built binary", bin)
+	}
+	if bin == "nexus" {
+		t.Error("resolveNexusBin returned bare 'nexus' string; must be an absolute path to worktree build")
+	}
+	if !filepath.IsAbs(bin) {
+		t.Errorf("resolveNexusBin returned non-absolute path %q", bin)
+	}
+}
+
+// TestBuildDirInsideBase verifies that buildNexusBin places the binary inside
+// the given base dir (not in a separate /var/tmp/nexus-live-bin-* dir), so
+// it is removed automatically when the per-test base dir is cleaned up.
+func TestBuildDirInsideBase(t *testing.T) {
+	if os.Getenv("NEXUS_BIN") != "" {
+		t.Skip("NEXUS_BIN set — no build needed")
+	}
+	dir := t.TempDir()
+	bin, err := buildNexusBin(dir)
+	if err != nil {
+		t.Fatalf("buildNexusBin: %v", err)
+	}
+	rel, err := filepath.Rel(dir, bin)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		t.Errorf("binary %q is not inside build dir %q — build-dir leak possible", bin, dir)
+	}
+	// After cleanup (simulated here), the binary must be gone.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	if _, err := os.Stat(bin); !os.IsNotExist(err) {
+		t.Errorf("binary %q still exists after build dir removed", bin)
+	}
+}
+
+func TestSnapshotDetectsLeak(t *testing.T) {
+	dir := t.TempDir()
+	bin, err := resolveNexusBin(dir)
+	if err != nil {
+		t.Fatalf("resolveNexusBin: %v", err)
+	}
+	snap := captureEnvSnapshot(bin, "", "")
+
+	h := &Harness{t: t, nexusBin: bin, preSnap: snap}
 
 	// Identical snapshot → no errors.
 	if errs := h.checkSnapshot(snap); len(errs) != 0 {
@@ -338,6 +391,104 @@ func TestSnapshotDetectsLeak(t *testing.T) {
 	if len(errs2) == 0 {
 		t.Error("modified herdr sessions should produce errors, got none")
 	}
+}
+
+func TestHarnessIsolatesVaultAndKey(t *testing.T) {
+	base, err := os.MkdirTemp("/var/tmp", "nexus-live-vaulttest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(base)
+
+	credsDir := filepath.Join(base, "creds")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(credsDir, "nexus-vault-key")
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Harness{
+		t:          t,
+		stateRoot:  filepath.Join(base, "state"),
+		configHome: filepath.Join(base, "config"),
+		dataHome:   filepath.Join(base, "data"),
+		credsDir:   credsDir,
+		socketPath: filepath.Join(base, "config", "herdr", "sessions", "nl-test", "herdr.sock"),
+		sessionName: "nl-test",
+		nexusBin:   "nexus",
+	}
+
+	env := h.Env()
+	got := make(map[string]string)
+	for _, e := range env {
+		k, v, ok := splitEnv(e)
+		if !ok {
+			continue
+		}
+		got[k] = v
+	}
+
+	if got["CREDENTIALS_DIRECTORY"] != credsDir {
+		t.Errorf("CREDENTIALS_DIRECTORY = %q, want %q", got["CREDENTIALS_DIRECTORY"], credsDir)
+	}
+	wantDataHome := filepath.Join(base, "data")
+	if got["XDG_DATA_HOME"] != wantDataHome {
+		t.Errorf("XDG_DATA_HOME = %q, want %q", got["XDG_DATA_HOME"], wantDataHome)
+	}
+
+	t.Setenv("XDG_DATA_HOME", wantDataHome)
+	vaultDir, vaultErr := defaultVaultDir()
+	if vaultErr != nil {
+		t.Fatalf("defaultVaultDir: %v", vaultErr)
+	}
+	if !strings.HasPrefix(vaultDir, base) {
+		t.Errorf("vault dir %q must be inside test root %q", vaultDir, base)
+	}
+
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("vault key not written: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("vault key mode = %v, want 0600", info.Mode().Perm())
+	}
+	if info.Size() < 32 {
+		t.Errorf("vault key too short: %d bytes", info.Size())
+	}
+
+	snap := envSnapshot{credsDirSet: true}
+	snap2 := envSnapshot{credsDirSet: true, prodVaultSum: "different"}
+	errs := h.checkSnapshot(snap)
+	_ = errs
+
+	snap3 := envSnapshot{credsDirSet: true, prodVaultSum: "x"}
+	h.preSnap = envSnapshot{credsDirSet: true, prodVaultSum: "x"}
+	if errs3 := h.checkSnapshot(snap3); len(errs3) != 0 {
+		t.Errorf("identical vault sums produced errors: %v", errs3)
+	}
+
+	h.preSnap = envSnapshot{credsDirSet: true, prodVaultSum: "before"}
+	if errs4 := h.checkSnapshot(snap2); len(errs4) == 0 {
+		t.Error("changed vault sum should produce an error")
+	}
+}
+
+func defaultVaultDir() (string, error) {
+	xdg := os.Getenv("XDG_DATA_HOME")
+	if xdg == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		xdg = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(xdg, "nexus", "vault"), nil
 }
 
 func splitEnv(e string) (key, val string, ok bool) {

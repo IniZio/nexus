@@ -3,9 +3,39 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/IniZio/nexus/internal/herdragent"
 )
+
+// waitNotBlocked polls Backend.Observe until the agent leaves the blocked
+// status or the deadline fires (whichever comes first). It is called after
+// Backend.Answer to skip the stale "blocked" poll that herdr may return
+// before it has processed the answer. On timeout it returns nil and lets
+// the caller proceed; a stuck agent will be caught in the next observe loop.
+func (c *Controller) waitNotBlocked(ctx context.Context, agentRef string) error {
+	deadline, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for {
+		st, err := c.deps.Backend.Observe(deadline, agentRef, false)
+		if err != nil {
+			// Underlying error or context cancelled — bail out so the
+			// caller can propagate ctx.Err().
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return nil // non-fatal backend hiccup; proceed optimistically
+		}
+		if st.Status != herdragent.StatusBlocked {
+			return nil
+		}
+		select {
+		case <-deadline.Done():
+			return nil // timed out: proceed optimistically
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
 
 func (c *Controller) OnReply(ctx context.Context, t Task, ev Event) error {
 	switch t.Status {
@@ -42,6 +72,9 @@ func (c *Controller) handleBlockedReply(ctx context.Context, t Task, ev Event) e
 		in = AgentInput{Text: ev.Text}
 	}
 	if err := c.deps.Backend.Answer(ctx, t.HerdrAgent, in); err != nil {
+		return err
+	}
+	if err := c.waitNotBlocked(ctx, t.HerdrAgent); err != nil {
 		return err
 	}
 	nextSeq := t.StateChangeSeq + 1

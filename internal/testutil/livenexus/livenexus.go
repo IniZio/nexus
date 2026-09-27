@@ -23,8 +23,11 @@
 // the real kernel binary is reused read-only. All other nexus data (store,
 // bindings, caches) starts empty inside the isolated state root.
 //
-// Herdr config: XDG_CONFIG_HOME is set to <isolated>/config; the herdr session
-// socket lives at <isolated>/config/herdr/sessions/<session>/herdr.sock.
+// Herdr config: XDG_CONFIG_HOME is overridden to <base>/config so that the
+// harness herdr server loads a harness-owned copy of the nexus plugin built
+// from this worktree. Its shim respects NEXUS_BIN, ensuring panes run inside
+// the guest VM rather than on the host. The session socket lives at
+// <base>/config/herdr/sessions/<session>/herdr.sock.
 package livenexus
 
 import (
@@ -32,12 +35,14 @@ import (
 	"crypto/rand"
 	sha256pkg "crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,19 +101,74 @@ type envSnapshot struct {
 	herdrWorktrees string // sorted names under ~/.herdr/worktrees/nexus
 	gitBranches    string // output of `git -C <nexus-repo> branch --list`
 	systemdUnits   string // output of `systemctl --user list-units --all nl-* --no-legend`
-	liveProcs      string // output of `pgrep -af /var/tmp/nexus-live`
+	liveProcs      string // PIDs referencing the harness base dir (per-harness, not global)
+	prodVaultSum   string // sha256 checksum listing of ~/.local/share/nexus/vault
+	credsDirSet    bool   // true when CREDENTIALS_DIRECTORY was pinned before any nexus call
+}
+
+// prodVaultDir returns the prod vault directory path.
+func prodVaultDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "nexus", "vault")
+}
+
+// checksumDir returns a sorted newline-separated listing of "<name> <sha256>" for
+// every regular file under dir. Used to detect prod-vault mutations.
+func checksumDir(dir string) string {
+	var lines []string
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		h := sha256pkg.Sum256(data)
+		rel, _ := filepath.Rel(dir, path)
+		lines = append(lines, fmt.Sprintf("%s %s", rel, hex.EncodeToString(h[:])))
+		return nil
+	})
+	// WalkDir already returns entries in lexical order; no sort needed.
+	return strings.Join(lines, "\n")
 }
 
 // captureEnvSnapshot records current prod-side environment state.
-func captureEnvSnapshot(nexusBin string) envSnapshot {
+// base and session scope the per-harness fields to avoid false-positive
+// violations caused by concurrent harnesses running in parallel.
+// base="" → liveProcs not checked; session="" → session fields not checked.
+func captureEnvSnapshot(nexusBin, base, session string) envSnapshot {
 	home, _ := os.UserHomeDir()
+	var liveProcs string
+	if base != "" {
+		pids := findProcsReferencingPath(base)
+		if len(pids) > 0 {
+			parts := make([]string, len(pids))
+			for i, p := range pids {
+				parts[i] = strconv.Itoa(p)
+			}
+			liveProcs = strings.Join(parts, " ")
+		}
+	}
+	var herdrSessions, systemdUnits string
+	if session != "" {
+		sessDir := filepath.Join(home, ".config", "herdr", "sessions", session)
+		if _, err := os.Stat(sessDir); err == nil {
+			herdrSessions = "exists"
+		}
+		out := runCapture("systemctl", "--user", "list-units", "--all", session+".service", "--no-legend")
+		if strings.TrimSpace(out) != "" {
+			systemdUnits = out
+		}
+	}
 	return envSnapshot{
 		prodPS:         runCapture(nexusBin, "ps"),
-		herdrSessions:  listDirEntries(filepath.Join(home, ".config", "herdr", "sessions")),
+		herdrSessions:  herdrSessions,
 		herdrWorktrees: listDirEntries(filepath.Join(home, ".herdr", "worktrees", "nexus")),
 		gitBranches:    runCapture("git", "-C", "/home/newman/magic/nexus", "branch", "--list"),
-		systemdUnits:   runCapture("systemctl", "--user", "list-units", "--all", "nl-*", "--no-legend"),
-		liveProcs:      runCapture("pgrep", "-af", "/var/tmp/nexus-live"),
+		systemdUnits:   systemdUnits,
+		liveProcs:      liveProcs,
+		prodVaultSum:   checksumDir(prodVaultDir()),
 	}
 }
 
@@ -127,6 +187,7 @@ func (h *Harness) checkSnapshot(after envSnapshot) []string {
 	diff("git branches in /home/newman/magic/nexus", h.preSnap.gitBranches, after.gitBranches)
 	diff("systemd nl-* units", h.preSnap.systemdUnits, after.systemdUnits)
 	diff("live procs /var/tmp/nexus-live-*", h.preSnap.liveProcs, after.liveProcs)
+	diff("prod vault dir checksum", h.preSnap.prodVaultSum, after.prodVaultSum)
 	return errs
 }
 
@@ -281,21 +342,23 @@ func waitProcsExit(path string, timeout time.Duration) {
 
 // Harness is an isolated nexus+herdr environment for one test.
 type Harness struct {
-	t           *testing.T
-	stateRoot   string // XDG_STATE_HOME — <isolated>/state
-	configHome  string // XDG_CONFIG_HOME — <isolated>/config
-	dataHome    string // XDG_DATA_HOME  — <isolated>/data
-	kernelPath  string
-	sessionName string
-	socketPath  string
-	nexusBin    string
-	base        string // /var/tmp/nexus-live-* root, for leak scanning
-	worktreeDir string // <base>/worktrees — herdr worktree checkouts go here
+	t              *testing.T
+	stateRoot      string // XDG_STATE_HOME — <isolated>/state
+	configHome     string // XDG_CONFIG_HOME — <isolated>/config
+	dataHome       string // XDG_DATA_HOME  — <isolated>/data
+	credsDir       string
+	kernelPath     string
+	sessionName    string
+	socketPath     string
+	nexusBin       string
+	base           string // /var/tmp/nexus-live-* root, for leak scanning
+	worktreeDir    string // <base>/worktrees — herdr worktree checkouts go here
+	herdrPluginDir string
 
 	mu      sync.Mutex
 	handles []string
 
-	preSnap        envSnapshot       // captured before harness starts; compared after cleanup
+	preSnap        envSnapshot
 	linkedProdSums map[string]string
 }
 
@@ -309,24 +372,39 @@ type Harness struct {
 func New(t *testing.T) *Harness {
 	t.Helper()
 
-	// Capture prod environment BEFORE anything changes; compared in cleanup.
-	nexusBin := resolveNexusBin()
-	preSnap := captureEnvSnapshot(nexusBin)
-
 	base, err := os.MkdirTemp("/var/tmp", "nexus-live-")
 	if err != nil {
 		t.Fatalf("livenexus: create base dir: %v", err)
 	}
 
+	// Resolve (or build) the nexus binary inside base so it is cleaned up with it.
+	nexusBin, resolveErr := resolveNexusBin(base)
+	if resolveErr != nil {
+		_ = os.RemoveAll(base)
+		t.Fatalf("livenexus: %v", resolveErr)
+	}
+
 	stateRoot := filepath.Join(base, "state")
 	configHome := filepath.Join(base, "config")
 	dataHome := filepath.Join(base, "data")
+	credsDir := filepath.Join(base, "creds")
 	worktreeDir := filepath.Join(base, "worktrees")
-	for _, d := range []string{stateRoot, configHome, dataHome, worktreeDir} {
+	for _, d := range []string{stateRoot, configHome, dataHome, credsDir, worktreeDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			_ = os.RemoveAll(base)
 			t.Fatalf("livenexus: mkdir %s: %v", d, err)
 		}
+	}
+
+	vaultKey := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, vaultKey); err != nil {
+		_ = os.RemoveAll(base)
+		t.Fatalf("livenexus: generate vault key: %v", err)
+	}
+	vaultKeyPath := filepath.Join(credsDir, "nexus-vault-key")
+	if err := os.WriteFile(vaultKeyPath, vaultKey, 0o600); err != nil {
+		_ = os.RemoveAll(base)
+		t.Fatalf("livenexus: write vault key: %v", err)
 	}
 
 	if err := validateStateRoot(filepath.Join(stateRoot, "nexus")); err != nil {
@@ -335,12 +413,17 @@ func New(t *testing.T) *Harness {
 	}
 
 	session := "nl-" + randHex(8)
-	home, _ := os.UserHomeDir()
-	socketPath := filepath.Join(home, ".config", "herdr", "sessions", session, "herdr.sock")
+	socketPath := filepath.Join(configHome, "herdr", "sessions", session, "herdr.sock")
 
 	if err := validateSocket(socketPath); err != nil {
 		_ = os.RemoveAll(base)
 		t.Fatalf("%v", err)
+	}
+
+	herdrPluginDir := filepath.Join(base, "herdr-plugin")
+	if pluginErr := setupHarnessPlugin(herdrPluginDir, configHome, nexusBin); pluginErr != nil {
+		_ = os.RemoveAll(base)
+		t.Fatalf("livenexus: setup harness plugin: %v", pluginErr)
 	}
 
 	kernelPath := resolveProdKernelPath()
@@ -372,17 +455,22 @@ func New(t *testing.T) *Harness {
 	prodSha256Dir := filepath.Join(prodNexusState, "images", "sha256")
 	linkedSums := checksumLinkedProdFiles(prodSha256Dir)
 
+	preSnap := captureEnvSnapshot(nexusBin, base, session)
+	preSnap.credsDirSet = true
+
 	h := &Harness{
 		t:              t,
 		stateRoot:      stateRoot,
 		configHome:     configHome,
 		dataHome:       dataHome,
+		credsDir:       credsDir,
 		kernelPath:     kernelPath,
 		sessionName:    session,
 		socketPath:     socketPath,
 		nexusBin:       nexusBin,
 		base:           base,
 		worktreeDir:    worktreeDir,
+		herdrPluginDir: herdrPluginDir,
 		preSnap:        preSnap,
 		linkedProdSums: linkedSums,
 	}
@@ -403,21 +491,17 @@ func (h *Harness) startHerdr(t *testing.T, base string) {
 		t.Fatalf("livenexus: %v", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	localBin := filepath.Join(home, ".local", "bin")
-	path := os.Getenv("PATH")
-	if !strings.Contains(path, localBin) {
-		path = localBin + ":" + path
+	// Build --setenv flags from the full isolated env (h.Env()) so the herdr
+	// server inherits XDG_STATE_HOME, XDG_DATA_HOME, CREDENTIALS_DIRECTORY,
+	// NEXUS_KERNEL_PATH, NEXUS_BIN, PATH, TMPDIR, etc. without duplicating the list.
+	setenvArgs := make([]string, 0, len(h.Env())+4)
+	setenvArgs = append(setenvArgs, "--user", "--unit="+h.sessionName, "-p", "StandardInput=null")
+	for _, kv := range h.Env() {
+		setenvArgs = append(setenvArgs, "--setenv="+kv)
 	}
+	setenvArgs = append(setenvArgs, herdrBin, "--session", h.sessionName, "server")
 
-	cmd := exec.Command("systemd-run", "--user",
-		"--unit="+h.sessionName,
-		"-p", "StandardInput=null",
-		"--setenv=HOME="+home,
-		"--setenv=PATH="+path,
-		"--setenv=TMPDIR=/var/tmp",
-		herdrBin, "--session", h.sessionName, "server",
-	)
+	cmd := exec.Command("systemd-run", setenvArgs...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.RemoveAll(base)
 		t.Fatalf("livenexus: systemd-run herdr server: %v\n%s", err, out)
@@ -489,14 +573,17 @@ func (h *Harness) cleanup(base string) {
 	// 3. Stop herdr unit and remove its session directory.
 	_ = exec.Command("systemctl", "--user", "stop", h.sessionName+".service").Run()
 	_ = exec.Command("herdr", "--session", h.sessionName, "session", "delete", h.sessionName).Run()
-	home, _ := os.UserHomeDir()
-	sessionDir := filepath.Join(home, ".config", "herdr", "sessions", h.sessionName)
+	sessionDir := filepath.Join(h.configHome, "herdr", "sessions", h.sessionName)
 	_ = os.RemoveAll(sessionDir)
 
-	// 4. Remove the test root.
+	// 4. Capture after-snapshot before removing base: the nexus binary lives
+	// inside base, so it must still exist when we run `nexus ps`.
+	after := captureEnvSnapshot(h.nexusBin, base, h.sessionName)
+
+	// 5. Remove the test root.
 	_ = os.RemoveAll(base)
 
-	// 5. Kill+report any process still referencing our root path.
+	// 6. Kill+report any process still referencing our root path.
 	leakedPIDs := findProcsReferencingPath(base)
 	for _, pid := range leakedPIDs {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
@@ -506,8 +593,7 @@ func (h *Harness) cleanup(base string) {
 			len(leakedPIDs), base, leakedPIDs)
 	}
 
-	// 6. Compare before/after prod invariants.
-	after := captureEnvSnapshot(h.nexusBin)
+	// 7. Compare before/after prod invariants.
 	for _, e := range h.checkSnapshot(after) {
 		h.t.Errorf("livenexus: prod isolation violation — %s", e)
 	}
@@ -543,13 +629,15 @@ func (h *Harness) Env() []string {
 	}
 
 	skipKeys := map[string]bool{
-		"XDG_STATE_HOME": true, "XDG_DATA_HOME": true,
+		"XDG_STATE_HOME": true, "XDG_DATA_HOME": true, "XDG_CONFIG_HOME": true,
 		"HERDR_SOCKET_PATH": true, "TMPDIR": true, "PATH": true,
+		"CREDENTIALS_DIRECTORY": true,
+		"NEXUS_BIN":             true,
 	}
 	if h.kernelPath != "" {
 		skipKeys["NEXUS_KERNEL_PATH"] = true
 	}
-	base := make([]string, 0, len(os.Environ())+8)
+	base := make([]string, 0, len(os.Environ())+10)
 	for _, e := range os.Environ() {
 		k, _, _ := strings.Cut(e, "=")
 		if skipKeys[k] {
@@ -559,16 +647,24 @@ func (h *Harness) Env() []string {
 	}
 	env := append(base,
 		"XDG_STATE_HOME="+h.stateRoot,
+		"XDG_CONFIG_HOME="+h.configHome,
 		"XDG_DATA_HOME="+h.dataHome,
 		"HERDR_SOCKET_PATH="+h.socketPath,
 		"TMPDIR=/var/tmp",
 		"PATH="+path,
+		"NEXUS_BIN="+h.nexusBin,
 	)
+	if h.credsDir != "" {
+		env = append(env, "CREDENTIALS_DIRECTORY="+h.credsDir)
+	}
 	if h.kernelPath != "" {
 		env = append(env, "NEXUS_KERNEL_PATH="+h.kernelPath)
 	}
 	return env
 }
+
+func (h *Harness) CredsDir() string    { return h.credsDir }
+func (h *Harness) VaultKeyPath() string { return filepath.Join(h.credsDir, "nexus-vault-key") }
 
 // Run executes nexusBin with args inside the isolated environment.
 // It refuses any argv containing "prune" and refuses to run when the
@@ -623,6 +719,7 @@ func (h *Harness) SocketPath() string { return h.socketPath }
 
 // StateRoot returns XDG_STATE_HOME for this harness.
 func (h *Harness) StateRoot() string { return h.stateRoot }
+func (h *Harness) DataHome() string  { return h.dataHome }
 
 // NexusBin returns the nexus binary path.
 func (h *Harness) NexusBin() string { return h.nexusBin }
@@ -642,27 +739,54 @@ func resolveHerdrBin() (string, error) {
 	return "", fmt.Errorf("herdr binary not found (HERDR_BIN_PATH unset, not in PATH)")
 }
 
-func resolveNexusBin() string {
+func worktreeRoot() (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("runtime.Caller failed")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		return "", fmt.Errorf("livenexus: worktree root %s: no go.mod: %w", root, err)
+	}
+	return root, nil
+}
+
+func probeVaultSupport(bin string) bool {
+	out, _ := exec.Command(bin, "vault", "ls").CombinedOutput()
+	return !strings.Contains(string(out), "unknown command") && !strings.Contains(string(out), "command not found")
+}
+
+// buildNexusBin builds the nexus binary into base (which is the per-test
+// isolated root). It returns the path to the binary. The binary is cleaned
+// up automatically when base is removed in t.Cleanup.
+func buildNexusBin(base string) (string, error) {
+	root, err := worktreeRoot()
+	if err != nil {
+		return "", err
+	}
+	out := filepath.Join(base, "nexus")
+	cmd := exec.Command("go", "build", "-o", out, "./cmd/nexus")
+	cmd.Dir = root
+	if buildOut, buildErr := cmd.CombinedOutput(); buildErr != nil {
+		return "", fmt.Errorf("livenexus: go build nexus: %w\n%s", buildErr, buildOut)
+	}
+	if !probeVaultSupport(out) {
+		return "", fmt.Errorf("livenexus: built nexus binary at %s lacks vault support", out)
+	}
+	return out, nil
+}
+
+// resolveNexusBin returns the nexus binary path. When NEXUS_BIN is set it
+// is used directly (no build). Otherwise the binary is built into base so
+// it is cleaned up automatically with the per-test harness dir.
+func resolveNexusBin(base string) (string, error) {
 	if p := os.Getenv("NEXUS_BIN"); p != "" {
-		return p
-	}
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		filepath.Join(home, ".local", "bin", "nexus"),
-		"/usr/local/bin/nexus",
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c
+		if !probeVaultSupport(p) {
+			return "", fmt.Errorf("livenexus: NEXUS_BIN=%s lacks vault support", p)
 		}
+		return p, nil
 	}
-	if p, err := exec.LookPath("nexus"); err == nil {
-		return p
-	}
-	if exe, err := os.Executable(); err == nil {
-		return exe
-	}
-	return "nexus"
+	return buildNexusBin(base)
 }
 
 func resolveProdKernelPath() string {
@@ -687,4 +811,74 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func setupHarnessPlugin(pluginDir, configHome, nexusBin string) error {
+	root, err := worktreeRoot()
+	if err != nil {
+		return fmt.Errorf("setupHarnessPlugin: %w", err)
+	}
+	srcPlugin := filepath.Join(root, "plugins", "herdr")
+	if _, err := os.Stat(srcPlugin); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: plugin src %s: %w", srcPlugin, err)
+	}
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: mkdir: %w", err)
+	}
+	if err := os.CopyFS(pluginDir, os.DirFS(srcPlugin)); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: copy: %w", err)
+	}
+	shimContent := fmt.Sprintf("#!/bin/sh\nexec \"${NEXUS_BIN:-%s}\" \"$@\"\n", nexusBin)
+	if err := os.WriteFile(filepath.Join(pluginDir, "nexus-shim.sh"), []byte(shimContent), 0o755); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: write shim: %w", err)
+	}
+	binDir := filepath.Join(pluginDir, "bin")
+	_ = filepath.WalkDir(binDir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			_ = os.Chmod(p, 0o755)
+		}
+		return nil
+	})
+	herdrCfgDir := filepath.Join(configHome, "herdr")
+	if err := os.MkdirAll(herdrCfgDir, 0o700); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: mkdir herdr cfg: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(herdrCfgDir, "config.toml"), []byte("onboarding = false\n"), 0o600); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: write config.toml: %w", err)
+	}
+	pluginsJSON, err := buildHarnessPluginsJSON(pluginDir, filepath.Join(pluginDir, "herdr-plugin.toml"))
+	if err != nil {
+		return fmt.Errorf("setupHarnessPlugin: build plugins.json: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(herdrCfgDir, "plugins.json"), pluginsJSON, 0o600); err != nil {
+		return fmt.Errorf("setupHarnessPlugin: write plugins.json: %w", err)
+	}
+	return nil
+}
+
+func buildHarnessPluginsJSON(pluginDir, manifestPath string) ([]byte, error) {
+	home, _ := os.UserHomeDir()
+	data, err := os.ReadFile(filepath.Join(home, ".config", "herdr", "plugins.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read real plugins.json: %w", err)
+	}
+	var plugins []map[string]any
+	if err := json.Unmarshal(data, &plugins); err != nil {
+		return nil, fmt.Errorf("parse plugins.json: %w", err)
+	}
+	var nexusEntry map[string]any
+	for _, p := range plugins {
+		if id, _ := p["plugin_id"].(string); id == "nexus" {
+			nexusEntry = p
+			break
+		}
+	}
+	if nexusEntry == nil {
+		return nil, fmt.Errorf("nexus plugin not found in plugins.json; install: herdr plugin install IniZio/nexus/plugins/herdr")
+	}
+	nexusEntry["plugin_root"] = pluginDir
+	nexusEntry["manifest_path"] = manifestPath
+	nexusEntry["source"] = map[string]any{"kind": "local"}
+	delete(nexusEntry, "startup")
+	return json.MarshalIndent([]map[string]any{nexusEntry}, "", "  ")
 }

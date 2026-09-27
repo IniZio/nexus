@@ -12,6 +12,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/vault/connectors"
 	"github.com/IniZio/nexus/internal/core/vault/linkflow"
+	"github.com/IniZio/nexus/internal/core/vaulthost"
 )
 
 func init() {
@@ -190,17 +191,7 @@ func runVaultRm(ctx context.Context, args []string, out *Output) error {
 	return nil
 }
 
-func vaultStoreDir() (string, error) {
-	xdg := os.Getenv("XDG_CONFIG_HOME")
-	if xdg == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("vault: home dir: %w", err)
-		}
-		xdg = filepath.Join(home, ".config")
-	}
-	return filepath.Join(xdg, "nexus", "vault"), nil
-}
+func vaultStoreDir() (string, error) { return vaulthost.DefaultDir() }
 
 func vaultStore() (vault.Store, error) {
 	dir, err := vaultStoreDir()

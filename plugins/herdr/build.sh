@@ -132,7 +132,7 @@ if [ "$OS" != "Linux" ] || [ "$ARCH" != "x86_64" ]; then
         echo "Reinstall: herdr plugin install ${GITHUB_OWNER}/${GITHUB_REPO}/plugins/herdr" >&2
         exit 1
     fi
-    printf '#!/bin/sh\nexec "%s" "$@"\n' "$CLIENT" > "$SHIM"
+    printf '#!/bin/sh\nexec "${NEXUS_BIN:-%s}" "$@"\n' "$CLIENT" > "$SHIM"
     chmod +x "$SHIM"
     echo "nexus plugin: remote client — shim written -> $SHIM (nexus-client)"
     exit 0
@@ -271,7 +271,7 @@ if [ -n "$HERDR_VER" ]; then
 fi
 
 # ── Write the shim (absolute path so herdr's minimal launchd PATH doesn't matter) ──
-printf '#!/bin/sh\nexec "%s" "$@"\n' "$NEXUS" > "$SHIM"
+printf '#!/bin/sh\nexec "${NEXUS_BIN:-%s}" "$@"\n' "$NEXUS" > "$SHIM"
 chmod +x "$SHIM"
 
 echo "nexus plugin: shim written -> $SHIM"
