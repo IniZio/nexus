@@ -5205,6 +5205,8 @@ func herdrWorktreeSandbox(
 	} else {
 		fmt.Fprintf(w, "worktree-sandbox: %s absent in checkout; no egress policy or nested opt-in\n", config.ConfigRelPath)
 	}
+	sbProject, _, _ := domain.ParseHandle(handle)
+	egressSecrets, egressPathPolicies = herdrApplyGitHubAutoBind(ctx, w, info.Path, sbProject, checkoutCfg, egressSecrets, egressPathPolicies)
 	/**
 	 * Step 7: create sandbox. A 240 s context covers image pull, ext4 setup,
 	 * and VM boot on typical hardware. Explicit mode failures are real errors;
