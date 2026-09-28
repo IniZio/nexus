@@ -69,9 +69,6 @@ func TestResolveKernelPath_XDGDataHome_FoundFromForeignCwd(t *testing.T) {
 }
 
 func TestResolveKernelPath_EnvUnset_NoCandidates_AutoFetchFails(t *testing.T) {
-	// With NEXUS_KERNEL_PATH unset and no local kernel, resolveKernelPath
-	// attempts auto-download. Point at a closed server to simulate offline;
-	// the error must mention `nexus kernel install`.
 	t.Setenv("NEXUS_KERNEL_PATH", "")
 	xdgDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDir)
