@@ -19,12 +19,12 @@ import (
 
 const kernelPinName = "vmlinux"
 
-// kernelPins returns the pin table. Tests may replace this var to inject a fake pin.
-var kernelPins func() map[string]pin.Pin = hostbin.Pins
+// kernelPins returns the kernel pin. Tests may replace this var to inject a fake pin.
+var kernelPins func() pin.Pin = hostbin.KernelPin
 
 func activeKernelPin() (pin.Pin, bool) {
-	p, ok := kernelPins()[kernelPinName]
-	return p, ok
+	p := kernelPins()
+	return p, p.Name != ""
 }
 
 // kernelURL constructs the download URL for the given version and goarch.

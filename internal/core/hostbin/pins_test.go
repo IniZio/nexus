@@ -82,6 +82,22 @@ func TestE2fsprogsNotDownloadable(t *testing.T) {
 	}
 }
 
+func TestPinsNoKernel(t *testing.T) {
+	if _, ok := Pins()["vmlinux"]; ok {
+		t.Error("Pins() must not contain vmlinux: kernel is download-only, use KernelPin()")
+	}
+}
+
+func TestKernelPinDownloadable(t *testing.T) {
+	p := KernelPin()
+	if !p.Downloadable("amd64") {
+		t.Error("KernelPin amd64 should be downloadable")
+	}
+	if p.Downloadable("arm64") {
+		t.Error("KernelPin arm64 should not be downloadable (no upstream asset)")
+	}
+}
+
 func TestPinsFreshMap(t *testing.T) {
 	m1 := Pins()
 	m2 := Pins()

@@ -15,18 +15,14 @@ import (
 	"github.com/IniZio/nexus/internal/core/hostbin/pin"
 )
 
-// fakeKernelPins returns a kernelPins func that serves the given sha as the
-// amd64 sha, downloadable from NEXUS_RELEASE_BASE_URL.
-func fakeKernelPins(sha string) func() map[string]pin.Pin {
-	return func() map[string]pin.Pin {
-		return map[string]pin.Pin{
-			kernelPinName: {
-				Name:    kernelPinName,
-				Version: "1.0.0",
-				SHA256ByGoArch: map[string]string{
-					"amd64": sha,
-					"arm64": sha,
-				},
+func fakeKernelPins(sha string) func() pin.Pin {
+	return func() pin.Pin {
+		return pin.Pin{
+			Name:    kernelPinName,
+			Version: "1.0.0",
+			SHA256ByGoArch: map[string]string{
+				"amd64": sha,
+				"arm64": sha,
 			},
 		}
 	}

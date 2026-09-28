@@ -57,16 +57,22 @@ func Pins() map[string]pin.Pin {
 			Version: E2fsprogsVersion,
 			Note:    "TODO(S3): no upstream static e2fsprogs binary; built by release CI (musl static), pin filled when that artifact exists",
 		},
-		"vmlinux": {
-			Name:    "vmlinux",
-			Version: "0.24.0",
-			URLByGoArch: map[string]string{
-				"amd64": "https://github.com/IniZio/nexus/releases/download/v{VERSION}/vmlinux-x86_64",
-			},
-			SHA256ByGoArch: map[string]string{
-				"amd64": "ebc744eded3ccc69c404b9cd3c380f28b127b04b2741cc90f2c84aad687d975d",
-			},
-			Note: "guest kernel (raw); arm64 TODO: no upstream asset in releases",
+	}
+}
+
+// KernelPin returns the pinned guest kernel descriptor.
+// It is intentionally separate from Pins() so the artifact embedder does not
+// pick it up: the kernel is download-only, never embedded in the binary.
+func KernelPin() pin.Pin {
+	return pin.Pin{
+		Name:    "vmlinux",
+		Version: "0.24.0",
+		URLByGoArch: map[string]string{
+			"amd64": "https://github.com/IniZio/nexus/releases/download/v{VERSION}/vmlinux-x86_64",
 		},
+		SHA256ByGoArch: map[string]string{
+			"amd64": "ebc744eded3ccc69c404b9cd3c380f28b127b04b2741cc90f2c84aad687d975d",
+		},
+		Note: "guest kernel (raw); arm64 TODO: no upstream asset in releases",
 	}
 }
