@@ -1,18 +1,19 @@
 ---
 id: CRED-R-002
 concept: C-CRED
-summary: "Guest Claude runs in auto permission mode: no process in the guest carries --dangerously-skip-permissions, no seeded file sets bypassPermissions or skipDangerousModePermissionPrompt, and the agent completes a delegated brief unattended via delegate_agent_dispatch."
+summary: "Controller-launched guests run in bypassPermissions mode with IS_SANDBOX=1. Delegate guests (delegate_agent_dispatch) run in auto mode. The sandboxed egress policy (default-deny passt; only allowlisted and brokered hosts reachable) is the security boundary."
 criticality: must
 verification: automated
 status: active
 trace: AC-2
 ---
 
-In every claude-code sandbox, no process **shall** carry `--dangerously-skip-permissions` and no seeded file **shall** set `bypassPermissions` or `skipDangerousModePermissionPrompt`. The guest agent **shall** run in Claude Code `auto` permission mode (derived from the host `~/.claude/settings.json` which is overlay-projected via the MountAllowlist). The `claudeReadyMatch` detector **shall** match the auto-mode ready footer (`"auto mode on"`) and **shall not** match the bypass-mode footer.
+**Controller path** (`nexus-controller`): guest Claude **shall** run with `--permission-mode bypassPermissions`, `IS_SANDBOX=1` in the pane environment, and `skipDangerousModePermissionPrompt = true` in the flagSettings file. The sandboxed egress policy (default-deny passt; only allowlisted and explicitly brokered hosts reachable) is the real security boundary. Permission-mode confirmation dialogs are suppressed so controller agents can complete briefs unattended.
 
-The agent **shall** complete a delegated brief unattended via `delegate_agent_dispatch` / `nexus herdr agent` without any bypass flag.
+**Delegate path** (`delegate_agent_dispatch` / `nexus herdr agent`): guest Claude **shall** run in `auto` permission mode (derived from the host `~/.claude/settings.json` overlay). The `claudeReadyMatch` detector **shall** match the auto-mode ready footer (`"auto mode on"`) and **shall not** match the bypass-mode footer. A delegated brief **shall** complete unattended without any bypass flag.
 
-- **Why** — `--dangerously-skip-permissions` grants the agent unconstrained tool use without any confirmation surface. Auto mode retains Claude Code's built-in safety confirmation layer while still allowing unattended operation within the configured rules.
-- **Fit criterion** — `grep -rn 'dangerously-skip-permissions\|bypassPermissions\|skipDangerousModePermissionPrompt' --include=*.go` (excluding test assertions of absence) returns 0 hits; in guest `grep -c dangerously /proc/$(pgrep -n claude)/cmdline` = 0; a delegated brief completes without human intervention.
+- **Why bypassPermissions for controller** — `auto` mode blocks unattended tool execution behind confirmation dialogs, stalling controller-spawned agents. The egress gate (not the permission mode) enforces the network boundary.
+- **Fit criterion (controller)** — `--permission-mode bypassPermissions` in agent start argv; `IS_SANDBOX=1` in pane env before start; `skipDangerousModePermissionPrompt:true` in settings JSON.
+- **Fit criterion (delegate)** — `--permission-mode auto` in delegate argv; `claudeReadyMatch` matches `"auto mode on"`.
 - **Verification** automated · **Criticality** must · **Source** nexus-mount-creds-ssh-relay#AC-2
-- **Tests** `TestClaudeReadyMatch_AutoModeFooter` (`internal/cli/claude_ready_match_test.go:19`); `TestClaudeReadyMatch_MatchesAutoTranscript` (`claude_ready_match_test.go:33`); `TestClaudeReadyMatch_DoesNotMatchBypassFooter` (`claude_ready_match_test.go:42`)
+- **Tests** `TestDefaultPermModeIsBypassPermissions`, `TestProvisionBypassSetsIsSandbox`, `TestRestartBypassSetsIsSandbox`, `TestControllerSettingsJSONBypassIncludesSkipPrompt`, `TestPaneRunFallbackBypassHasIsSandbox` (`internal/controller/backend/herdr/backend_test.go`); `TestClaudeReadyMatch_AutoModeFooter`, `TestClaudeReadyMatch_MatchesAutoTranscript`, `TestClaudeReadyMatch_DoesNotMatchBypassFooter` (`internal/cli/claude_ready_match_test.go`)

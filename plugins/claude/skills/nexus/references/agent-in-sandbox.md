@@ -97,7 +97,7 @@ Start the brief with the standing orders from `delegate-briefs.md` (the VM is th
 Three traps, each of which produces something that looks like a working agent:
 
 - **`herdr pane run` is wrong for a TUI.** It sends the text and Enter in one call. Against a shell that is fine; against claude the text lands in the input box and *sits there unsubmitted*. Send the text, pause, then send `Enter` separately.
-- **The "agent is ready" token is `auto mode on`.** Guests always launch with `--permission-mode auto`; the manual-mode footer (`? for shortcuts`) never appears. Do **not** match the prompt glyph `❯`: it is also every wizard's selector glyph, so it reports ready mid-dialog.
+- **The "agent is ready" token depends on the launch path.** Controller guests (`nexus-controller`) launch with `--permission-mode bypassPermissions` and `IS_SANDBOX=1`. Delegate guests (`delegate_agent_dispatch`, `nexus herdr agent`) launch with `--permission-mode auto`; the ready token is `auto mode on`. The manual-mode footer (`? for shortcuts`) never appears in either path. Do **not** match the prompt glyph `❯`: it is also every wizard's selector glyph, so it reports ready mid-dialog.
 - **`send-keys` key names**: `ctrl+c` and `C-c` work; `ctrl-c` and `^C` are rejected as invalid.
 
 ---

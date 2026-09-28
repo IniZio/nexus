@@ -83,14 +83,18 @@ func wrapPromptText(text, turnID string) string {
 }
 
 // controllerSettingsJSON returns the minimal claude settings JSON for isolation.
-// permMode is the claude permission mode (e.g. "auto", "default").
+// permMode is the claude permission mode (e.g. "bypassPermissions", "default").
 func controllerSettingsJSON(permMode string) string {
 	if permMode == "" {
 		permMode = "default"
 	}
-	b, _ := json.Marshal(map[string]any{
+	settings := map[string]any{
 		"permissions": map[string]any{"defaultMode": permMode},
-	})
+	}
+	if permMode == "bypassPermissions" {
+		settings["skipDangerousModePermissionPrompt"] = true
+	}
+	b, _ := json.Marshal(settings)
 	return string(b)
 }
 
@@ -470,6 +474,9 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 
 	sessionID := deterministicSessionID(nexusSandboxID)
 	permMode := controller.PermModeFromCtx(ctx)
+	if permMode == "" {
+		permMode = b.permMode()
+	}
 	model := controller.ModelFromCtx(ctx)
 	if model == "" {
 		model = b.cfg.Model
@@ -529,7 +536,7 @@ func (b *Backend) permMode() string {
 	if b.cfg.PermissionMode != "" {
 		return b.cfg.PermissionMode
 	}
-	return "auto"
+	return "bypassPermissions"
 }
 
 // fallbackMarkers are strings emitted by nexus-guest-shell when it falls back to the host.
@@ -678,6 +685,11 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, 
 	if model == "" {
 		model = b.cfg.Model
 	}
+	if permMode == "bypassPermissions" {
+		if _, envErr := b.herdrRun(ctx, nil, "pane", "run", paneID, "export IS_SANDBOX=1"); envErr != nil {
+			slog.Warn("startAgent: export IS_SANDBOX=1", "pane", paneID, "err", envErr)
+		}
+	}
 
 	isoArgs := isolationArgs(sessionID, settingsPath, resume)
 	claudeArgs := append([]string{"--model", model, "--permission-mode", permMode, "--max-turns", "1"}, isoArgs...)
@@ -728,6 +740,9 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, 
 	claudeCmd := "claude --model " + model + " --permission-mode " + permMode + " --max-turns 1" +
 		` --setting-sources "" --strict-mcp-config --settings ` + settingsPath +
 		" " + sessionFlag + " " + sessionID
+	if permMode == "bypassPermissions" {
+		claudeCmd = "IS_SANDBOX=1 " + claudeCmd
+	}
 	if renameErr == nil {
 		if runOut, runErr := b.herdrRun(ctx, nil, "pane", "run", paneID, claudeCmd); runErr != nil {
 			return "", fmt.Errorf("herdr pane run: %w\n%s", runErr, runOut)

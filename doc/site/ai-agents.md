@@ -128,9 +128,11 @@ For `claude-code`, `CLAUDE_CODE_OAUTH_TOKEN` is set to a broker placeholder in t
 
 ## Permission mode
 
-Claude Code sandboxes run in `auto` permission mode. No process in a sandbox carries `--dangerously-skip-permissions`, and no seeded file sets `bypassPermissions` or `skipDangerousModePermissionPrompt`. The host's `~/.claude/settings.json` is overlay-projected via the MountAllowlist and already declares `permissions.defaultMode = "auto"`.
+There are two distinct launch paths with different permission modes:
 
-The `claudeReadyMatch` detector that drives `delegate_agent_dispatch` is calibrated for the auto-mode footer (`"auto mode on"`), not the manual-mode (`"? for shortcuts"`) or bypass-mode footer. Every guest launch passes `--permission-mode auto` explicitly, because a bare `claude` starts in whatever mode the mounted host `settings.json` selects.
+**Controller path** (`nexus-controller`, Slack-triggered): sandboxes run in `bypassPermissions` mode. The sandboxed egress policy (default-deny passt) is the security boundary; only allowlisted and brokered hosts are reachable. `IS_SANDBOX=1` is set in the pane environment so Claude accepts bypass mode as root. Every controller guest launch passes `--permission-mode bypassPermissions` and writes `permissions.defaultMode = "bypassPermissions"` + `skipDangerousModePermissionPrompt = true` into the guest settings file.
+
+**Delegate path** (`delegate_agent_dispatch`, `nexus herdr agent`): sandboxes run in `auto` permission mode, derived from the host `~/.claude/settings.json` overlaid via the MountAllowlist. The `claudeReadyMatch` detector is calibrated for the auto-mode ready footer (`"auto mode on"`); the bypass-mode footer is distinct and must not be used here.
 
 ---
 

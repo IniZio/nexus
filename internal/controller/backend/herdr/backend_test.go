@@ -2035,8 +2035,11 @@ func TestStartAgentIsolationFlags(t *testing.T) {
 				}
 				return
 			}
-			// Check pane run path
+			// Check pane run path; skip IS_SANDBOX=1 export which precedes the claude cmd.
 			if len(c.argv) >= 2 && c.argv[0] == "pane" && c.argv[1] == "run" {
+				if len(c.argv) >= 3 && c.argv[len(c.argv)-1] == "export IS_SANDBOX=1" {
+					continue
+				}
 				cmd := strings.Join(c.argv, " ")
 				if !strings.Contains(cmd, "--setting-sources") {
 					t.Errorf("%s: pane run missing --setting-sources: %v", label, c.argv)
@@ -3094,5 +3097,322 @@ func TestRestart_UsesCtxModelAndPermMode_NameTakenRetryAlsoUsesCtx(t *testing.T)
 	joined := strings.Join(retryArgvs[0], " ")
 	if !strings.Contains(joined, "--model sonnet") {
 		t.Errorf("retry agent start missing --model sonnet: %v", retryArgvs[0])
+	}
+}
+
+// TestDefaultPermModeIsBypassPermissions verifies that when no PermissionMode is
+// configured and no permMode is set in the context, the agent starts with
+// --permission-mode bypassPermissions (sandbox egress policy is the boundary).
+func TestDefaultPermModeIsBypassPermissions(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wDEF"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wDEF","agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wDEF", "wDEF:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+
+	// No PermissionMode in config, no permMode in context — fallback is bypassPermissions.
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "DEF"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+			joined := strings.Join(c.argv, " ")
+			if !strings.Contains(joined, "--permission-mode bypassPermissions") {
+				t.Errorf("default agent start: want --permission-mode bypassPermissions, got: %v", c.argv)
+			}
+			return
+		}
+	}
+	t.Error("no agent start call found")
+}
+
+// TestProvisionBypassSetsIsSandbox verifies that Provision with bypassPermissions
+// exports IS_SANDBOX=1 in the pane shell before starting the agent.
+func TestProvisionBypassSetsIsSandbox(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wBYP"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wBYP","agent_status":"idle","state_change_seq":1}}}`},
+		"agent wait":      {out: ""},
+		"pane run":        {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wBYP", "wBYP:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	ctx := controller.WithPermMode(context.Background(), "bypassPermissions")
+	_, _, err := b.Provision(ctx, "/repo", controller.NewThreadRef("T", "C", "BYP"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var hasExport bool
+	var startFound bool
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "pane" && c.argv[1] == "run" &&
+			len(c.argv) >= 3 && c.argv[len(c.argv)-1] == "export IS_SANDBOX=1" {
+			hasExport = true
+		}
+		if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+			startFound = true
+			joined := strings.Join(c.argv, " ")
+			if !strings.Contains(joined, "--permission-mode bypassPermissions") {
+				t.Errorf("agent start missing --permission-mode bypassPermissions: %v", c.argv)
+			}
+		}
+	}
+	if !hasExport {
+		t.Errorf("bypassPermissions Provision: want pane run 'export IS_SANDBOX=1'; calls: %v", h.calls)
+	}
+	if !startFound {
+		t.Error("no agent start call found")
+	}
+}
+
+// TestRestartBypassSetsIsSandbox verifies that Restart with bypassPermissions
+// exports IS_SANDBOX=1 in the pane shell before restarting the agent.
+func TestRestartBypassSetsIsSandbox(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent start": {out: ""},
+		"agent get":   {out: `{"result":{"agent":{"agent":"ctrl-wRBP","agent_status":"idle","state_change_seq":1}}}`},
+		"pane run":    {out: ""},
+		"pane read":   {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"exec": {out: "nexus-fake-guest\n"},
+	})
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.mu.Lock()
+	b.entries["ctrl-wRBP"] = &entry{paneID: "wRBP:p1", nexusSandboxID: "sb-rbp1", wsID: "wRBP"}
+	b.sandboxes["sb-rbp1"] = "ctrl-wRBP"
+	b.mu.Unlock()
+
+	ctx := controller.WithPermMode(context.Background(), "bypassPermissions")
+	if _, err := b.Restart(ctx, "sb-rbp1", "ctrl-wRBP"); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var hasExport, startFound bool
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "pane" && c.argv[1] == "run" &&
+			len(c.argv) >= 3 && c.argv[len(c.argv)-1] == "export IS_SANDBOX=1" {
+			hasExport = true
+		}
+		if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+			startFound = true
+			joined := strings.Join(c.argv, " ")
+			if !strings.Contains(joined, "--permission-mode bypassPermissions") {
+				t.Errorf("agent start missing --permission-mode bypassPermissions: %v", c.argv)
+			}
+		}
+	}
+	if !hasExport {
+		t.Errorf("bypassPermissions Restart: want pane run 'export IS_SANDBOX=1'; calls: %v", h.calls)
+	}
+	if !startFound {
+		t.Error("no agent start call found")
+	}
+}
+
+// TestNonBypassPermModeNoIsSandbox verifies that non-bypass permission modes
+// do NOT set IS_SANDBOX=1 in the pane environment.
+func TestNonBypassPermModeNoIsSandbox(t *testing.T) {
+	h := newFakeCmd(map[string]fakeReply{
+		"agent start": {out: ""},
+		"agent get":   {out: `{"result":{"agent":{"agent":"ctrl-wNBP","agent_status":"idle","state_change_seq":1}}}`},
+		"pane run":    {out: ""},
+		"pane read":   {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"exec": {out: "nexus-fake-guest\n"},
+	})
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.mu.Lock()
+	b.entries["ctrl-wNBP"] = &entry{paneID: "wNBP:p1", nexusSandboxID: "sb-nbp1", wsID: "wNBP"}
+	b.sandboxes["sb-nbp1"] = "ctrl-wNBP"
+	b.mu.Unlock()
+
+	ctx := controller.WithPermMode(context.Background(), "auto")
+	if _, err := b.Restart(ctx, "sb-nbp1", "ctrl-wNBP"); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "pane" && c.argv[1] == "run" {
+			cmd := c.argv[len(c.argv)-1]
+			if strings.Contains(cmd, "IS_SANDBOX") {
+				t.Errorf("non-bypass mode: unexpected IS_SANDBOX in pane run cmd: %q", cmd)
+			}
+		}
+	}
+}
+
+// TestProvisionSettingsConsistency verifies that the settings JSON written to the
+// guest and the --permission-mode CLI flag both use the same resolved permMode
+// (fallback applied before both).
+func TestProvisionSettingsConsistency(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wSC"}}}`},
+		"agent start":     {out: ""},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wSC","agent_status":"idle","state_change_seq":1}}}`},
+		"pane run":        {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wSC", "wSC:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+
+	// No permMode in context — fallback should apply to BOTH settings and CLI flag.
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _, err := b.Provision(context.Background(), "/repo", controller.NewThreadRef("T", "C", "SC"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// settings JSON written via nexus exec must contain "bypassPermissions".
+	var settingsFound bool
+	for _, c := range n.calls {
+		if c.argv[0] == "exec" {
+			joined := strings.Join(c.argv, " ")
+			if strings.Contains(joined, "defaultMode") && strings.Contains(joined, "bypassPermissions") {
+				settingsFound = true
+				break
+			}
+		}
+	}
+	if !settingsFound {
+		t.Errorf("settings exec did not contain defaultMode:bypassPermissions; exec calls: %v", n.calls)
+	}
+
+	// CLI flag must also use bypassPermissions.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "agent" && c.argv[1] == "start" {
+			joined := strings.Join(c.argv, " ")
+			if !strings.Contains(joined, "--permission-mode bypassPermissions") {
+				t.Errorf("agent start missing --permission-mode bypassPermissions: %v", c.argv)
+			}
+			return
+		}
+	}
+	t.Error("no agent start call found")
+}
+
+// TestControllerSettingsJSONBypassIncludesSkipPrompt verifies that settings JSON for
+// bypassPermissions includes skipDangerousModePermissionPrompt=true (suppresses the
+// blocking dialog in claude 2.1.283+), and that other modes do not include it.
+func TestControllerSettingsJSONBypassIncludesSkipPrompt(t *testing.T) {
+	got := controllerSettingsJSON("bypassPermissions")
+	if !strings.Contains(got, `"skipDangerousModePermissionPrompt":true`) {
+		t.Errorf("bypassPermissions settings missing skipDangerousModePermissionPrompt:true; got: %s", got)
+	}
+	if !strings.Contains(got, `"bypassPermissions"`) {
+		t.Errorf("bypassPermissions settings missing defaultMode:bypassPermissions; got: %s", got)
+	}
+
+	for _, mode := range []string{"auto", "default", "acceptEdits", ""} {
+		s := controllerSettingsJSON(mode)
+		if strings.Contains(s, "skipDangerousModePermissionPrompt") {
+			t.Errorf("mode %q: unexpected skipDangerousModePermissionPrompt in settings: %s", mode, s)
+		}
+	}
+}
+
+// TestPaneRunFallbackBypassHasIsSandbox verifies that when herdr agent start returns
+// agent_pane_busy and falls back to herdr pane run (the prod path for guest panes),
+// the pane run command starts with IS_SANDBOX=1 claude when permMode is bypassPermissions.
+func TestPaneRunFallbackBypassHasIsSandbox(t *testing.T) {
+	setupTestStore(t, "sb-abc123", testPrincipal)
+
+	busyErr := fmt.Errorf("exit status 1")
+	h := newFakeCmd(map[string]fakeReply{
+		"workspace list":  {out: `{"result":{"workspaces":[{"workspace_id":"w1","worktree":{"checkout_path":"/repo"}}]}}`},
+		"worktree create": {out: `{"result":{"workspace":{"workspace_id":"wFB"}}}`},
+		"agent start":     {out: `{"error":{"code":"agent_pane_busy","message":"busy"}}`, err: busyErr},
+		"agent rename":    {out: ""},
+		"pane run":        {out: ""},
+		"pane read":       {out: "root@nexus-fake-guest:/workspace#\n"},
+		"agent get":       {out: `{"result":{"agent":{"agent":"ctrl-wFB","agent_status":"idle","state_change_seq":1}}}`},
+	})
+	n := newFakeCmd(map[string]fakeReply{
+		"herdr worktree-sandbox": {out: ""},
+		"herdr list":             {out: herdrListLine("wFB", "wFB:p1")},
+		"exec":                   {out: "nexus-fake-guest\n"},
+	})
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, h.run, n.run)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	ctx := controller.WithPermMode(context.Background(), "bypassPermissions")
+	_, _, err := b.Provision(ctx, "/repo", controller.NewThreadRef("T", "C", "FB"), testPrincipal)
+	if err != nil {
+		t.Fatalf("Provision pane-run fallback: %v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var claudePaneRunFound bool
+	for _, c := range h.calls {
+		if len(c.argv) >= 2 && c.argv[0] == "pane" && c.argv[1] == "run" {
+			cmd := c.argv[len(c.argv)-1]
+			if strings.HasPrefix(cmd, "claude") || strings.HasPrefix(cmd, "IS_SANDBOX") {
+				claudePaneRunFound = true
+				if !strings.HasPrefix(cmd, "IS_SANDBOX=1 claude") {
+					t.Errorf("pane run fallback cmd must start 'IS_SANDBOX=1 claude'; got: %q", cmd)
+				}
+			}
+		}
+	}
+	if !claudePaneRunFound {
+		t.Error("no claude pane run found after agent_pane_busy fallback")
 	}
 }
