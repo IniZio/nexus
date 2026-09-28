@@ -7,7 +7,7 @@ const (
 	// CloudHypervisor is the canonical binary name for the cloud-hypervisor VMM.
 	CloudHypervisor        = "cloud-hypervisor"
 	CloudHypervisorVersion = "53.0"
-	VirtiofsdVersion       = "1.14.0"
+	VirtiofsdVersion       = "1.13.3-fakeowner"
 	E2fsprogsVersion       = "1.47.2"
 
 	// Mke2fs, E2fsck, and Resize2fs are canonical names for the static musl
@@ -38,16 +38,15 @@ func Pins() map[string]pin.Pin {
 			Name:    "virtiofsd",
 			Version: VirtiofsdVersion,
 			URLByGoArch: map[string]string{
-				"amd64": "https://gitlab.com/-/project/21523468/uploads/f505704014ae7a816e515f2a05a93d8b/virtiofsd-v1.14.0.zip",
+				"amd64": "https://github.com/IniZio/nexus/releases/download/virtiofsd-v1.13.3-fakeowner/virtiofsd-amd64",
 			},
 			SHA256ByGoArch: map[string]string{
-				"amd64": "2e4fe9571f492b00baa34bc4e708e950039c5da05b830b31a8d179cb6ac8978e",
+				"amd64": "6ec8fd513874e28825c18b0107fc43599350c4166bf6fe9dd0adc97f4bde3e6e",
 			},
-			ArchiveMember: "target/{ARCH}-unknown-linux-musl/release/virtiofsd",
 			BinarySHA256ByGoArch: map[string]string{
-				"amd64": "15b2e72a78cc08a9bd8a6943e89fb69c88cb3cbeb63069efceade835342ac7d4",
+				"amd64": "6ec8fd513874e28825c18b0107fc43599350c4166bf6fe9dd0adc97f4bde3e6e",
 			},
-			Note: "upstream release zip ships x86_64 musl static only; arm64 TODO: build in release CI",
+			Note: "nexus patched build (v1.13.3 + fakeowner.patch); musl static amd64; arm64 TODO: build in release CI",
 		},
 		Mke2fs: {
 			Name:    Mke2fs,

@@ -55,9 +55,25 @@ Creator ownership is in-memory only: after dentry-cache eviction (`echo 3 > /pro
 
 ## Build
 
+### Dynamic binary (host PATH install)
+
 ```
 bash scripts/virtiofsd/build.sh --no-install   # returns binary path
 bash scripts/virtiofsd/build.sh                # installs to ~/.local/bin/virtiofsd
 ```
 
-Set `NEXUS_VIRTIOFSD_PATH` to override the binary nexus uses.
+### Static musl binary (hostbin embed)
+
+Build inside a nexus Alpine 3.20 sandbox with the Rust musl toolchain. See `PINNED.md`
+for the exact build environment and reproducibility notes.
+
+```
+make artifacts VIRTIOFSD_DIR=/path/to/dir/containing/virtiofsd
+```
+
+`make artifacts` reads the pre-built binary from `VIRTIOFSD_DIR`, verifies the SHA256
+against the pinned value in `internal/core/hostbin/pins.go`, and compresses it into
+the go:embed artifact directory.
+
+Set `NEXUS_VIRTIOFSD_PATH` to override the resolved binary at runtime (takes priority
+over the embedded artifact).

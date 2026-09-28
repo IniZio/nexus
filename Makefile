@@ -110,8 +110,9 @@ build:
 
 HOSTBIN_GOARCH ?= $(shell go env GOARCH)
 E2FS_DIR ?=
+VIRTIOFSD_DIR ?=
 artifacts:
-	$(call CAPPED,go run ./internal/core/hostbin/internal/genartifacts -goarch $(HOSTBIN_GOARCH) -out internal/core/hostbin/embedded/$(HOSTBIN_GOARCH) -agent-tag $(AGENT_BUILD_TAG) $(if $(E2FS_DIR),-local-dir $(E2FS_DIR)))
+	$(call CAPPED,go run ./internal/core/hostbin/internal/genartifacts -goarch $(HOSTBIN_GOARCH) -out internal/core/hostbin/embedded/$(HOSTBIN_GOARCH) -agent-tag $(AGENT_BUILD_TAG) $(if $(E2FS_DIR),-local-dir $(E2FS_DIR)) $(if $(VIRTIOFSD_DIR),-virtiofsd-dir $(VIRTIOFSD_DIR)))
 
 # install-agent compiles the on-PATH nexus-agent (CGO_ENABLED=0, static) and
 # installs it at NEXUS_AGENT_INSTALL_DIR/nexus-agent (default: ~/.local/bin).

@@ -30,6 +30,7 @@ func main() {
 	agentPkg := flag.String("agent-pkg", "./cmd/nexus-agent", "Go package path for nexus-agent")
 	skipAgent := flag.Bool("skip-agent", false, "skip building nexus-agent (leave existing files untouched)")
 	localDir := flag.String("local-dir", "", "directory of locally-built binaries; <dir>/<goarch>/<name> or <dir>/<name> used instead of network fetch")
+	virtiofsdDir := flag.String("virtiofsd-dir", os.Getenv("VIRTIOFSD_DIR"), "local dir with pre-built virtiofsd (verified against pin sha256)")
 	flag.Parse()
 
 	if *out == "" {
@@ -51,12 +52,22 @@ func main() {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	ctx := context.Background()
 
+	binLocalDirs := map[string]string{
+		"mke2fs":    *localDir,
+		"e2fsck":    *localDir,
+		"resize2fs": *localDir,
+		"virtiofsd": *virtiofsdDir,
+	}
+
 	downloadable := make(map[string]bool, len(pins))
 	exitCode := 0
 
 	for _, name := range names {
 		p := pins[name]
-		if !p.Downloadable(*goarch) {
+		binDir := binLocalDirs[name]
+		hasLocal := binDir != ""
+
+		if !hasLocal && !p.Downloadable(*goarch) {
 			fmt.Fprintf(os.Stderr, "skip %s %s (%s): %s\n", name, p.Version, *goarch, p.Note)
 			continue
 		}
@@ -64,7 +75,6 @@ func main() {
 
 		zstPath := filepath.Join(*out, name+".zst")
 
-		// Check cache: decode existing .zst and compare sha256 before hitting the network.
 		if cached, err := readAndDecodeZst(zstPath); err == nil {
 			want, _ := p.BinarySHA256(*goarch)
 			if sha256hex(cached) == want {
@@ -78,8 +88,8 @@ func main() {
 			err  error
 		)
 		useLocal := false
-		if *localDir != "" {
-			data, err = readLocalBinary(*localDir, *goarch, name)
+		if binDir != "" {
+			data, err = readLocalBinary(binDir, *goarch, name)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				fmt.Fprintf(os.Stderr, "genartifacts: local read %s: %v\n", name, err)
 				exitCode = 1
@@ -115,7 +125,6 @@ func main() {
 			continue
 		}
 
-		// Re-decode and re-verify before committing to disk.
 		decoded, err := decodeZst(compressed)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "genartifacts: re-decode %s: %v\n", name, err)
@@ -135,9 +144,9 @@ func main() {
 			continue
 		}
 		if useLocal {
-			localPath := filepath.Join(*localDir, *goarch, name)
+			localPath := filepath.Join(binDir, *goarch, name)
 			if _, statErr := os.Stat(localPath); statErr != nil {
-				localPath = filepath.Join(*localDir, name)
+				localPath = filepath.Join(binDir, name)
 			}
 			fmt.Printf("local %s from %s raw=%d zst=%d\n", name, localPath, len(data), len(compressed))
 		} else {
@@ -152,8 +161,6 @@ func main() {
 		}
 	}
 
-	// Remove stale .zst files whose pin is no longer downloadable for this arch.
-	// "nexus-agent" is always kept (built above or left alone when -skip-agent).
 	entries, err := os.ReadDir(*out)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "genartifacts: readdir %s: %v\n", *out, err)
@@ -270,7 +277,6 @@ func decodeZst(data []byte) ([]byte, error) {
 	return dec.DecodeAll(data, nil)
 }
 
-// readAndDecodeZst reads a .zst file from disk and decompresses it.
 func readAndDecodeZst(path string) ([]byte, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -279,7 +285,6 @@ func readAndDecodeZst(path string) ([]byte, error) {
 	return decodeZst(raw)
 }
 
-// atomicWrite writes data to dst via a temp file in dir, syncing before rename.
 func atomicWrite(dir, dst string, data []byte) (retErr error) {
 	tmp, err := os.CreateTemp(dir, ".tmp-genartifacts-")
 	if err != nil {
