@@ -1297,8 +1297,12 @@ func (b *Backend) Teardown(ctx context.Context, sandboxID string) error {
 		}
 	}
 
-	if err := b.removeWorktree(ctx, wsID); err != nil {
-		return err
+	if wsID == "" {
+		slog.Warn("teardown: empty wsID, skipping worktree removal", "sandbox", sandboxID)
+	} else {
+		if err := b.removeWorktree(ctx, wsID); err != nil {
+			return err
+		}
 	}
 	b.removeVolumes(ctx, nexusHandle)
 	// Retrieve branch from entry for deletion (safe: tornDown is set, entry still present).
@@ -1362,7 +1366,15 @@ func (b *Backend) rediscoverEntry(ctx context.Context, agentRef string) (*entry,
 	}
 	wsID := parseWorkspaceIDByAgentName(listOut, agentRef)
 	if wsID == "" {
-		return nil, fmt.Errorf("herdr backend: agentRef %q not found in nexus herdr list", agentRef)
+		// Binding may have lost workspace_id; iterate herdr workspace list to find wsID by derived name.
+		wsListOut, wsListErr := b.herdrRun(ctx, nil, "workspace", "list")
+		if wsListErr != nil {
+			return nil, fmt.Errorf("herdr backend: agentRef %q not found in nexus herdr list", agentRef)
+		}
+		wsID = parseWorkspaceByAgentRef(wsListOut, agentRef)
+		if wsID == "" {
+			return nil, fmt.Errorf("herdr backend: agentRef %q not found in nexus herdr list", agentRef)
+		}
 	}
 	paneID := parsePaneID(listOut, wsID)
 	if paneID == "" {
@@ -1386,19 +1398,42 @@ func (b *Backend) rediscoverEntry(ctx context.Context, agentRef string) (*entry,
 }
 
 // rediscoverBySandboxID reconstructs an entry from nexus herdr list on map miss.
+// When the list row exists but workspace_id is empty (broken binding), it recovers
+// the workspace via herdr workspace list label lookup and reopens the pane.
 func (b *Backend) rediscoverBySandboxID(ctx context.Context, sandboxID string) (agRef string, e *entry, err error) {
 	listOut, listErr := b.nexusRun(ctx, nil, "herdr", "list")
 	if listErr != nil {
 		return "", nil, fmt.Errorf("herdr backend: rediscover sandbox %q: nexus herdr list: %w", sandboxID, listErr)
 	}
-	wsID := parseWorkspaceIDBySandboxID(listOut, sandboxID)
-	if wsID == "" {
-		return "", nil, fmt.Errorf("herdr backend: sandbox %q not found in nexus herdr list; never provisioned or already torn down", sandboxID)
+	rowFields, rowFound := findListRowBySandboxID(listOut, sandboxID)
+	if !rowFound {
+		return "", nil, fmt.Errorf("herdr backend: sandbox %q not in nexus herdr list; never provisioned or already torn down", sandboxID)
 	}
+	wsID := fieldValue(rowFields, "workspace_id=")
+	handle := fieldValue(rowFields, "handle=")
+	paneID := fieldValue(rowFields, "pane_id=")
+
+	if wsID == "" {
+		// Binding lost workspace_id; recover from herdr workspace list by label.
+		wsID, err = b.recoverWorkspaceByHandle(ctx, handle)
+		if err != nil {
+			return "", nil, fmt.Errorf("herdr backend: sandbox %q binding has no herdr workspace/pane; recovery failed: %w", sandboxID, err)
+		}
+		// Reopen pane since the binding was incomplete.
+		reopenOut, reopenErr := b.nexusRun(ctx, nil, "herdr", "space-open-pane", wsID)
+		if reopenErr != nil {
+			return "", nil, fmt.Errorf("herdr backend: sandbox %q binding has no herdr workspace/pane; recovery failed: space-open-pane: %w\n%s", sandboxID, reopenErr, reopenOut)
+		}
+		newListOut, newListErr := b.nexusRun(ctx, nil, "herdr", "list")
+		if newListErr == nil {
+			paneID = parsePaneID(newListOut, wsID)
+		}
+	}
+
 	agRef = agentNameFromWsID(wsID)
 	e = &entry{
-		paneID:         parsePaneID(listOut, wsID),
-		nexusHandle:    parseNexusHandle(listOut, wsID),
+		paneID:         paneID,
+		nexusHandle:    handle,
 		nexusSandboxID: sandboxID,
 		wsID:           wsID,
 		agentSessionID: deterministicSessionID(sandboxID),
@@ -1408,6 +1443,25 @@ func (b *Backend) rediscoverBySandboxID(ctx context.Context, sandboxID string) (
 	b.sandboxes[sandboxID] = agRef
 	b.mu.Unlock()
 	return agRef, e, nil
+}
+
+// recoverWorkspaceByHandle resolves a herdr workspace ID from the handle basename
+// by matching the workspace label ("nexus:<basename>") in herdr workspace list JSON.
+func (b *Backend) recoverWorkspaceByHandle(ctx context.Context, handle string) (string, error) {
+	base := filepath.Base(handle)
+	label := "nexus:" + base
+	wsListOut, wsListErr := b.herdrRun(ctx, nil, "workspace", "list")
+	if wsListErr != nil {
+		return "", fmt.Errorf("herdr workspace list: %w", wsListErr)
+	}
+	if wsID := parseWorkspaceByLabel(wsListOut, label); wsID != "" {
+		return wsID, nil
+	}
+	// Fallback: match by checkout_path suffix.
+	if wsID := parseWorkspaceByPathSuffix(wsListOut, base); wsID != "" {
+		return wsID, nil
+	}
+	return "", fmt.Errorf("workspace with label %q not found in herdr workspace list", label)
 }
 
 func (b *Backend) checkAgent(ctx context.Context, agentRef string) error {
@@ -1607,6 +1661,107 @@ func parseWorkspaceForPath(out, repoPath string) string {
 	}
 	for _, ws := range parsed.Result.Workspaces {
 		if strings.TrimRight(ws.Worktree.CheckoutPath, "/") == strings.TrimRight(repoPath, "/") {
+			return ws.WorkspaceID
+		}
+	}
+	return ""
+}
+
+// findListRowBySandboxID returns the tab-split fields of the nexus herdr list row
+// matching sandboxID, and whether any such row was found.
+func findListRowBySandboxID(out, sandboxID string) (fields []string, found bool) {
+	needle := "sandbox_id=" + sandboxID
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		fs := strings.Split(line, "\t")
+		if containsField(fs, needle) {
+			return fs, true
+		}
+	}
+	return nil, false
+}
+
+// fieldValue extracts the value after prefix from a slice of tab-split fields.
+func fieldValue(fields []string, prefix string) string {
+	for _, f := range fields {
+		if v, ok := strings.CutPrefix(f, prefix); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// parseWorkspaceByLabel finds the workspace_id in herdr workspace list JSON
+// where the workspace label equals label.
+func parseWorkspaceByLabel(out, label string) string {
+	var parsed struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+				Label       string `json:"label"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil && len(parsed.Result.Workspaces) > 0 {
+			break
+		}
+	}
+	for _, ws := range parsed.Result.Workspaces {
+		if ws.Label == label {
+			return ws.WorkspaceID
+		}
+	}
+	return ""
+}
+
+// parseWorkspaceByPathSuffix finds the workspace_id in herdr workspace list JSON
+// where the checkout_path ends with suffix (after trimming trailing slashes).
+func parseWorkspaceByPathSuffix(out, suffix string) string {
+	var parsed struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+				Worktree    struct {
+					CheckoutPath string `json:"checkout_path"`
+				} `json:"worktree"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil && len(parsed.Result.Workspaces) > 0 {
+			break
+		}
+	}
+	for _, ws := range parsed.Result.Workspaces {
+		cp := strings.TrimRight(ws.Worktree.CheckoutPath, "/")
+		if strings.HasSuffix(cp, "/"+suffix) || cp == suffix {
+			return ws.WorkspaceID
+		}
+	}
+	return ""
+}
+
+// parseWorkspaceByAgentRef finds the workspace_id in herdr workspace list JSON
+// where agentNameFromWsID(workspace_id) == agentRef.
+func parseWorkspaceByAgentRef(out, agentRef string) string {
+	var parsed struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil && len(parsed.Result.Workspaces) > 0 {
+			break
+		}
+	}
+	for _, ws := range parsed.Result.Workspaces {
+		if agentNameFromWsID(ws.WorkspaceID) == agentRef {
 			return ws.WorkspaceID
 		}
 	}
