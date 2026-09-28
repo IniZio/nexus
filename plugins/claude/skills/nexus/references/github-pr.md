@@ -1,14 +1,21 @@
 # GitHub pull requests from inside a nexus sandbox
 
-## MITM perimeter: GraphQL is denied fail-closed
+## MITM perimeter: PR commands work for the policy repo
 
 The MITM egress perimeter is the only boundary for in-guest GitHub traffic.
-It allowlists REST endpoints and **denies GraphQL fail-closed (HTTP 403)**.
+It enforces a REST path ACL and an AST-shape GraphQL allowlist.
+The allowlist covers every GraphQL document issued by `gh pr create`,
+`gh pr view`, `gh pr list`, `gh pr status`, and `gh pr checkout` against
+the sandbox's **policy repo** (the repo bound at sandbox-create time).
 
-**`gh pr create` uses a GraphQL mutation. Do not use it — it returns 403.**
+**Only the policy repo is covered.** Commands targeting any other repo return 403.
 
-Other `gh` subcommands that use GraphQL are also blocked. Notably,
-`gh repo view --json` returns 403. Use REST alternatives instead:
+`gh auth status` works: the perimeter admits its two probes (`GET /` on
+`api.github.com` and the `viewer{login}` GraphQL document) regardless of how the
+repo's `egress.policy` is written.
+
+GraphQL documents outside the allowlist return 403. Notably, `gh repo view --json`
+is not in the allowlist — use REST for repo metadata:
 
 ```sh
 # Read repo context over REST (not gh repo view --json)
@@ -18,10 +25,6 @@ gh api repos/{owner}/{repo} --jq .name
 ```
 
 `gh api` expands `{owner}` and `{repo}` from the local git remote automatically.
-
-`gh auth status` works: the perimeter admits its two probes (`GET /` on
-`api.github.com` and the `viewer{login}` GraphQL document) regardless of how the
-repo's `egress.policy` is written. Any other GraphQL document is still 403.
 
 ## Push first
 
@@ -34,21 +37,48 @@ git push origin HEAD
 The perimeter allows pushing to the worktree's own branch; the push allowlist is
 derived from the bound worktree, not a fixed pattern.
 
-## Create the PR over REST
+## Create, view, list, check out
+
+Use the `gh` commands directly — no REST workarounds needed for the policy repo:
 
 ```sh
-gh api -X POST repos/{owner}/{repo}/pulls \
-  -f title="<title>" \
-  -f head="<branch>" \
-  -f base="<base-branch>" \
-  -f body="<body>"
+git push origin HEAD   # branch must exist on the remote first
+
+gh pr create --base <base-branch> --head <branch> --title "<title>" --body "<body>"
+gh pr view <number>
+gh pr list
+gh pr status
+gh pr checkout <number>
 ```
 
-A successful call returns HTTP 201 with an `html_url` field pointing to the new PR.
+**Draft PRs**: pass `--draft` only if the target repo supports drafts. Some private
+repos do not — `--draft` returns HTTP 422 there. Omit it for a regular PR.
 
-**Draft PRs**: add `-F draft=true` only if the target repo supports drafts.
-Some private repos do not — a hardcoded `draft=true` returns HTTP 422 there.
-Omit it for a regular PR.
+### Flags that remain denied
+
+`gh pr create --reviewer`, `--label`, `--assignee`, `--project`, and `--milestone`
+send follow-up GraphQL mutations (`requestReviews`, `updatePullRequest`, etc.) that
+are not in the allowlist. Those flags return 403 after the PR is created. Use REST
+or run them from the host:
+
+```sh
+# Add a label over REST (from inside the sandbox, if the REST path is allowed)
+gh api -X POST repos/{owner}/{repo}/issues/<number>/labels -f labels[]="<label>"
+```
+
+`gh pr merge`, `gh pr edit`, `gh pr comment`, and `gh pr review` use GraphQL
+operations not in the allowlist and remain denied (403).
+
+### Error messages
+
+A denied GraphQL document returns HTTP 403 with error code `D-PD-36: request path
+not in allowlist`. The proxy logs `mitm: GraphQL denied` with a reason field.
+
+### Newer gh versions
+
+If a newer `gh` release adds fields to any PR document, those requests may 403
+until the shape allowlist is extended. Recapture the corpus and update
+`graphql_shapes.go` (see the R30 design doc at `doc/design/mitm-graphql-allowlist.md`).
 
 ## Stacked PRs
 
@@ -98,8 +128,8 @@ nexus create myproject/sandbox \
 
 ### Verification
 
-Four checks exist (own-repo REST 200, cross-repo 403, GraphQL 403, placeholder
-check). Details in `egress.md`.
+Four checks exist (own-repo REST 200, cross-repo 403, GraphQL two-direction probe,
+placeholder check). Details in `egress.md`.
 
 ---
 
@@ -120,8 +150,9 @@ egress:
       hosts: [github.com, api.github.com, uploads.github.com]
 ```
 
-Cross-repo API calls and `gh api graphql` (GraphQL) are denied (403) by default
-because they are not listed in the path allowlist.
+Cross-repo API calls are denied by the REST path allowlist. GraphQL is controlled
+by the shape allowlist, not the path list — PR operations for this repo work;
+documents outside the allowlist (cross-repo queries, non-PR mutations) return 403.
 
 > **SECURITY WARNING — GitHub glob tightness is the author's responsibility.**
 > The `egress.policy` layer is generic default-deny globs; the system cannot

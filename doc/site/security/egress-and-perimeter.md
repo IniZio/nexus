@@ -103,17 +103,19 @@ Rotating a credential used via `--secret` takes effect for any sandbox created a
 
 On `github.com` itself, git smart-HTTP (`info/refs`, `git-upload-pack`, `git-receive-pack`) is permitted only for the bound repo. Public artifact downloads — `GET`/`HEAD` on `/<owner>/<repo>/archive/*` and `/<owner>/<repo>/releases/download/*` — are permitted for any repository, the same trust level as `codeload.github.com` they redirect to. Those requests carry no credential upstream: the MITM strips the `GH_TOKEN` placeholder instead of swapping it, so `curl -L https://github.com/<org>/<repo>/archive/<tag>.zip` works from inside the guest without exposing the host token to a foreign repository.
 
-These GitHub carve-outs are scoped to the host, not to the policy kind: they apply identically whether `github.com` / `api.github.com` are gated by the `--repo` built-in policy or by generic `paths` patterns from `.nexus/config.yaml` `egress.policy`. On `api.github.com` the carve-outs are `GET /` (the API root) and `POST /graphql` when the request body's `query` is exactly a `viewer { login }` selection — the two probes `gh auth status` makes — so `gh auth status` reports logged in from any policy-gated sandbox without the config listing `/graphql`. Every other GraphQL document, `POST` to an archive path, and smart-HTTP on a foreign repo remain 403.
+These GitHub carve-outs are scoped to the host, not to the policy kind: they apply identically whether `github.com` / `api.github.com` are gated by the `--repo` built-in policy or by generic `paths` patterns from `.nexus/config.yaml` `egress.policy`. On `api.github.com` the carve-outs are `GET /` (the API root) and `POST /graphql`. A `/graphql` request is admitted only if the GraphQL allowlist accepts its body, so you do not need to list `/graphql` in the config. The allowlist is described below. A `POST` to an archive path and smart-HTTP on a foreign repo remain 403.
 
 A host is either open or policy-gated, never both. `.nexus/config.yaml` may not list the same host under `egress.allow` (open passthrough) and under `egress.policy` or `egress.secrets[].hosts` (default-deny path allowlist, credential brokered). The policy layer takes precedence, so such an `allow` entry would be inert while the file claims open access; the config loader rejects it at parse time, case-insensitively, with `nexus config: host "<host>" is listed under egress.allow and egress.policy; a host can be open (allow) or policy-gated (policy/secrets), not both — remove it from egress.allow`. Because public archive and release downloads are already permitted on policy-gated `github.com`, no `allow` entry is needed for release tarballs; `codeload.github.com` may still be listed under `allow` since it is never policy-gated.
 
-:::warning `gh pr create` is refused
-`gh pr create` uses GitHub's GraphQL API, which the perimeter denies (GraphQL default-deny). Create PRs with the REST form:
+:::note GraphQL allowlist (`gh pr` commands)
+`gh pr create`, `gh pr view`, `gh pr list`, `gh pr status`, and `gh pr checkout` work for the sandbox's policy repo. The MITM parses each `api.github.com/graphql` body and admits only a fixed set of shapes, which are the documents gh sends for these commands:
+- `repository(owner, name)` queries, where owner/name must equal the policy repo.
+- `search` queries, where the query string must contain exactly one `repo:<policy repo>` qualifier.
+- `viewer { login }`.
+- A small set of schema-introspection probes.
+- `createPullRequest`, where `repositoryId` must be a node ID that GitHub returned earlier in the same sandbox for the policy repo.
 
-```sh
-gh api -X POST /repos/<owner>/<repo>/pulls \
-  -f title="..." -f head="<branch>" -f base="main" -f body="..."
-```
+The proxy denies all other documents with 403 before it swaps in the credential. This includes other repos, extra root fields, batches, `GET /graphql`, and other mutations such as `updatePullRequest` (sent by `gh pr create --reviewer/--label/...`), merge, and comment. For the full rule set, see `doc/design/mitm-graphql-allowlist.md`.
 :::
 
 **git over SSH** to GitHub remotes uses a separate path that does not go through the MITM (see below). The MITM and GH_TOKEN broker are retained for all HTTPS API traffic.
@@ -148,7 +150,7 @@ Only `git-upload-pack` (fetch/clone) and `git-receive-pack` (push) are forwarded
 
 ### `gh` / HTTPS API
 
-`gh api` and any HTTPS GitHub traffic continue to route through the MITM + brokered `GH_TOKEN` path. The SSH relay does not affect HTTPS. Note that `gh pr create` is refused because it uses GitHub's GraphQL API, which the MITM denies by default; use `gh api -X POST /repos/<owner>/<repo>/pulls` for PR creation from inside the sandbox.
+`gh api` and any HTTPS GitHub traffic continue to route through the MITM + brokered `GH_TOKEN` path. The SSH relay does not affect HTTPS. The `gh pr create|view|list|status|checkout` GraphQL documents for the policy repo pass the GraphQL allowlist above. All other GraphQL requests are denied.
 
 ## SSH identity (Orca workspace)
 

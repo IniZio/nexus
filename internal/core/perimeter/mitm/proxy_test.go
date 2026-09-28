@@ -978,15 +978,15 @@ func TestD36_NoTokenEmittedOnDenied(t *testing.T) {
 
 // TestS1c_GraphQLTokenValidationQuery is the regression guard for the
 // `gh auth status` false-negative: gh validates GH_TOKEN with the read-only
-// GraphQL POST `query UserCurrent{viewer{login}}`. Before the carve-out this
-// was default-denied (403) → gh reported "The token in GH_TOKEN is invalid"
+// GraphQL POST `query UserCurrent{viewer{login}}`. Before the GraphQL allowlist
+// this was default-denied (403) → gh reported "The token in GH_TOKEN is invalid"
 // even though the token was valid (REST GET /user succeeded and swapped).
 //
-// The allowed sub-test bites: revert the isGitHubTokenValidationQuery carve-out
-// in New's S1c handler → the request is 403'd, upstream never receives it, and
-// the real-token assertion fails. The denied sub-tests bite in the opposite
-// direction: widen the carve-out to any /graphql body → they start returning
-// 200 and leaking the real token upstream.
+// The allowed sub-test bites: remove viewer{login} from the GraphQL shape
+// allowlist → the request is 403'd, upstream never receives it, and the
+// real-token assertion fails. The denied sub-tests bite in the opposite
+// direction: widen the allowlist to accept any /graphql body → they start
+// returning 200 and leaking the real token upstream.
 func TestS1c_GraphQLTokenValidationQuery(t *testing.T) {
 	t.Parallel()
 
@@ -1000,6 +1000,7 @@ func TestS1c_GraphQLTokenValidationQuery(t *testing.T) {
 		body := `{"query":"query UserCurrent{viewer{login}}"}`
 		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+recAPI.Placeholder)
+		req.Header.Set("Content-Type", "application/json; charset=utf-8") // gh's header; the allowlist requires application/json
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1019,20 +1020,15 @@ func TestS1c_GraphQLTokenValidationQuery(t *testing.T) {
 		}
 	})
 
-	// Every non-validation GraphQL document must stay default-denied and never
-	// emit the real token — the GraphQL allowlist is otherwise TBR-GRAPHQL/R5.
+	// Every non-allowlisted GraphQL document must be denied and never emit the
+	// real token — the allowlist (TBR-GRAPHQL/R30) is shape+repo-pinned.
 	denied := []struct {
 		name string
 		body string
 	}{
 		{"empty body", ""},
-		{"mutation", `{"query":"mutation{deleteRepository(input:{repositoryId:\"x\"}){clientMutationId}}"}`},
+		{"mutation deleteRepository", `{"query":"mutation{deleteRepository(input:{repositoryId:\"x\"}){clientMutationId}}"}`},
 		{"extra fields beyond login", `{"query":"query{viewer{login repositories(first:100){nodes{nameWithOwner}}}}"}`},
-		{"viewer with variables", `{"query":"query UserCurrent{viewer{login}}","variables":{"x":1}}`},
-		{"aliased viewer", `{"query":"query{me:viewer{login}}"}`},
-		// Duplicate top-level key: Go's json.Unmarshal would see the second (allowlisted)
-		// query, but a differently-behaving parser might execute the first (malicious) one.
-		// The duplicate-key check must fire and deny before any value is trusted.
 		{"duplicate query key", `{"query":"mutation{evil}","query":"query UserCurrent{viewer{login}}"}`},
 	}
 	for _, tc := range denied {
@@ -1093,14 +1089,13 @@ func TestD36_AllowedUploadsPath(t *testing.T) {
 	}
 }
 
-// TestD36_GraphQLDeniedUnconditionally verifies D-PD-36 §3: /graphql is always
-// denied — the target repo lives in the POST body and cannot be validated
-// without a GraphQL AST parser.
+// TestD36_GraphQLEmptyBodyDenied verifies that POST /graphql with an empty body
+// is denied with 403 — the GraphQL allowlist envelope check requires a non-empty
+// JSON object with a "query" field; an empty body fails immediately.
 //
-// Mutation evidence: change the /graphql check in gitHubPathAllowed to return
-// true → the test fails because the proxy returns 200 and upstream sees the
-// request.
-func TestD36_GraphQLDeniedUnconditionally(t *testing.T) {
+// Mutation evidence: remove the empty-body check in the GraphQL OnRequest handler
+// → the proxy returns 200 and upstream sees the request.
+func TestD36_GraphQLEmptyBodyDenied(t *testing.T) {
 	t.Parallel()
 
 	upstream, authCh := captureAuthUpstream(t)
@@ -2334,59 +2329,104 @@ func TestD38_GraphQL_OwnerNameMismatchDenied(t *testing.T) {
 	}
 }
 
-// TestD38_GraphQL_MutationWithWrongRepoIDDenied verifies that a GraphQL mutation
-// specifying a repositoryId that doesn't match the allowed repo is denied with 403.
+// TestD38_GraphQL_MutationWithWrongRepoIDDenied verifies the two-step pin-then-
+// check logic of the GraphQL allowlist (TBR-GRAPHQL/R30):
+//  1. A repository(owner,name){id} query for the pinned repo is ALLOWED (200)
+//     and its id is cached by the response handler.
+//  2. The same query for a different repo is denied (403).
+//  3. A createPullRequest mutation with a repositoryId NOT in the node-ID cache
+//     is denied (403) even though the document shape is otherwise valid.
 //
-// Updated for the S1c default-deny stub (advisor CORRECTION, TBR-GRAPHQL/R5):
-// ALL GraphQL requests are now denied — both the probe query and the mutation
-// return 403. The old two-step pin-then-check logic is gone; the deny fires
-// unconditionally at the OnRequest layer before any credential swap or upstream
-// call occurs.
+// Mutation evidence for (1): remove the repo-pinning check from the allowlist
+// → the different-repo query also returns 200. Mutation evidence for (3): widen
+// the node-ID cache check to accept any string → the mutation returns 200 and
+// upstream receives the real token.
 func TestD38_GraphQL_MutationWithWrongRepoIDDenied(t *testing.T) {
 	t.Parallel()
 
+	authCh := make(chan string, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		authCh <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		// Return a minimal response so the proxy response-handler can cache
+		// data["repository"]["id"] → "acme/myrepo" for subsequent mutations.
+		_, _ = w.Write([]byte(`{"data":{"repository":{"id":"R_acme_myrepo"}}}`))
 	}))
 	t.Cleanup(upstream.Close)
 
+	broker := cred.NewBroker()
+	sid := newSandboxID(66)
+	const realToken = "ghp_acme_myrepo_real"
+
+	rec, err := broker.RegisterPlaceholder(sid, "api.github.com", realToken)
+	if err != nil {
+		t.Fatalf("RegisterPlaceholder: %v", err)
+	}
+
 	proxyServer := newTestProxy(t, mitm.Config{
-		SandboxID:    newSandboxID(66),
+		SandboxID:    sid,
 		AllowedHosts: []string{"api.github.com"},
-		Broker:       cred.NewBroker(),
+		Broker:       broker,
 		AllowedRepo:  "acme/myrepo",
 	}, upstream.Listener.Addr().String())
 	defer proxyServer.Close()
 
 	client := proxyClient(proxyServer.URL)
 
-	// S1c deny-all: even a query with correct owner/name is denied.
-	pinBody := strings.NewReader(`{"query":"query { repository(owner: \"acme\", name: \"myrepo\") { id } }","variables":{"owner":"acme","name":"myrepo"}}`)
+	// (1) Probe for pinned repo: must be allowed, credential must swap.
+	pinBody := strings.NewReader(`{"query":"query { repository(owner: \"acme\", name: \"myrepo\") { id } }"}`)
 	pinReq, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", pinBody)
 	pinReq.Header.Set("Content-Type", "application/json")
+	pinReq.Header.Set("Authorization", "Bearer "+rec.Placeholder)
 	pinResp, err := client.Do(pinReq)
 	if err != nil {
 		t.Fatalf("probe query: client.Do: %v", err)
 	}
 	io.Copy(io.Discard, pinResp.Body) //nolint:errcheck
 	pinResp.Body.Close()
-	if pinResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("probe query: want 403 (S1c default-deny stub), got %d", pinResp.StatusCode)
+	if pinResp.StatusCode != http.StatusOK {
+		t.Fatalf("probe query: want 200 (allowlisted for pinned repo), got %d", pinResp.StatusCode)
+	}
+	if gotAuth, ok := receiveOrTimeout(authCh); !ok {
+		t.Fatal("probe query: upstream never received request (allowlist denied it)")
+	} else if want := "Bearer " + realToken; gotAuth != want {
+		t.Errorf("probe query: upstream Authorization = %q, want %q (real token must swap)", gotAuth, want)
 	}
 
-	// Mutation with wrong repositoryId is also denied by the same deny-all.
-	mutBody := strings.NewReader(`{"query":"mutation CreatePR($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { id } } }","variables":{"input":{"repositoryId":"R_WRONG","title":"test"}}}`)
+	// (2) Same query shape for a different repo must be denied — repo pinning.
+	otherBody := strings.NewReader(`{"query":"query { repository(owner: \"evil\", name: \"repo\") { id } }"}`)
+	otherReq, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", otherBody)
+	otherReq.Header.Set("Content-Type", "application/json")
+	otherReq.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+	otherResp, err := client.Do(otherReq)
+	if err != nil {
+		t.Fatalf("other-repo query: client.Do: %v", err)
+	}
+	io.Copy(io.Discard, otherResp.Body) //nolint:errcheck
+	otherResp.Body.Close()
+	if otherResp.StatusCode != http.StatusForbidden {
+		t.Errorf("other-repo query: want 403 (repo pinning), got %d", otherResp.StatusCode)
+	}
+	if got, ok := receiveOrTimeout(authCh); ok {
+		t.Errorf("other-repo query: upstream received denied request (Authorization=%q)", got)
+	}
+
+	// (3) Mutation with repositoryId not in the node-ID cache is denied.
+	mutBody := strings.NewReader(`{"query":"mutation CreatePR($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { id url } } }","variables":{"input":{"repositoryId":"R_WRONG","baseRefName":"main","headRefName":"feat","title":"test"}}}`)
 	mutReq, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql", mutBody)
 	mutReq.Header.Set("Content-Type", "application/json")
+	mutReq.Header.Set("Authorization", "Bearer "+rec.Placeholder)
 	mutResp, err := client.Do(mutReq)
 	if err != nil {
 		t.Fatalf("mutation: client.Do: %v", err)
 	}
 	io.Copy(io.Discard, mutResp.Body) //nolint:errcheck
 	mutResp.Body.Close()
-
 	if mutResp.StatusCode != http.StatusForbidden {
-		t.Errorf("mutation wrong repoID: want 403, got %d", mutResp.StatusCode)
+		t.Errorf("mutation wrong repoID: want 403 (ID not in node-ID cache), got %d", mutResp.StatusCode)
+	}
+	if got, ok := receiveOrTimeout(authCh); ok {
+		t.Errorf("mutation: upstream received denied request (Authorization=%q)", got)
 	}
 }
 
@@ -2461,16 +2501,17 @@ func TestRefMatchesGlob_SingleStarKeptPathMatchSemantics(t *testing.T) {
 	}
 }
 
-// TestProxy_GraphQL_DefaultDeny verifies the S1c safe default-deny stub
-// (advisor CORRECTION): any POST to a /graphql path on api.github.com or
-// github.com is denied with 403 and NO credential swap occurs — regardless of
-// whether the body targets a cross-repo or same-repo operation.
+// TestProxy_GraphQL_AllowlistEnforcement verifies the GraphQL AST-shape allowlist
+// (TBR-GRAPHQL/R30): allowlisted queries for the pinned repo pass through with
+// the real token; documents outside the allowlist (unknown mutations, cross-repo
+// operations) return 403 with no credential swap.
 //
-// Mutation-proof rationale: if the return in the GraphQL OnRequest handler is
-// changed back to (req, nil), the proxy forwards the request to the upstream
-// and swaps the credential; authCh receives a value, and the "upstream must
-// not be called" assertion fails. The test is therefore mutation-proven.
-func TestProxy_GraphQL_DefaultDeny(t *testing.T) {
+// Mutation-proof rationale:
+//   - Remove the OnRequest GraphQL handler → all sub-tests that assert 403 now
+//     return 200 and authCh receives the real token (fail).
+//   - Remove the repo-pinning check → the different-repo sub-test returns 200 (fail).
+//   - Remove the shape check → the createCommitOnBranch sub-test returns 200 (fail).
+func TestProxy_GraphQL_AllowlistEnforcement(t *testing.T) {
 	t.Parallel()
 
 	upstream, authCh := captureAuthUpstream(t)
@@ -2495,62 +2536,87 @@ func TestProxy_GraphQL_DefaultDeny(t *testing.T) {
 
 	client := proxyClient(proxyServer.URL)
 
-	cases := []struct {
-		name string
-		body string
-	}{
-		{
-			// Cross-repo GraphQL mutation: repositoryId points at a foreign repo.
-			// The old partial guards would only deny if repositoryId mismatched the
-			// pinned ID, but the pin was empty (no prior query), so this passed the
-			// old check and reached the credential swap. The new deny-all blocks it.
-			name: "cross-repo mutation (createCommitOnBranch)",
-			body: `{"query":"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}","variables":{"input":{"repositoryId":"MDEwOlJlcG9zaXRvcnk5OTk5OTk=","branch":{"repositoryNameWithOwner":"evil/evil","branchName":"main"},"expectedHeadOid":"abc123","fileChanges":{},"message":{"headline":"pwn"}}}}`,
-		},
-		{
-			// Same-repo query with matching owner/name variables: the old owner/name
-			// guard would ALLOW this through because owner=="owner" and name=="repo"
-			// match the configured AllowedRepo. The new deny-all blocks it.
-			name: "same-repo query with matching owner/name variables",
-			body: `{"query":"query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}","variables":{"owner":"owner","name":"repo"}}`,
-		},
-	}
+	t.Run("denied cross-repo mutation createCommitOnBranch", func(t *testing.T) {
+		// createCommitOnBranch is not in the mutation allowlist; must be 403
+		// with no upstream call regardless of repositoryId.
+		body := `{"query":"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}","variables":{"input":{"repositoryId":"MDEwOlJlcG9zaXRvcnk5OTk5OTk=","branch":{"repositoryNameWithOwner":"evil/evil","branchName":"main"},"expectedHeadOid":"abc123","fileChanges":{},"message":{"headline":"pwn"}}}}`
+		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql",
+			strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		req.Header.Set("Content-Type", "application/json")
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql",
-				strings.NewReader(tc.body))
-			req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
-			req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
 
-			resp, err := client.Do(req)
-			if err != nil {
-				t.Fatalf("client.Do: %v", err)
-			}
-			io.Copy(io.Discard, resp.Body) //nolint:errcheck
-			resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("createCommitOnBranch: status = %d, want 403 (not in mutation allowlist)", resp.StatusCode)
+		}
+		select {
+		case auth := <-authCh:
+			t.Errorf("upstream was called (auth=%q) — denied mutation must not reach upstream", auth)
+		case <-time.After(200 * time.Millisecond):
+			// Good.
+		}
+	})
 
-			// Assert 403 — the deny must be real, not advisory.
-			if resp.StatusCode != http.StatusForbidden {
-				t.Errorf("S1c-GQL %s: status = %d, want 403 (default-deny stub broken)", tc.name, resp.StatusCode)
-			}
+	t.Run("allowed same-repo repository query", func(t *testing.T) {
+		// repository(owner,name){id} for the pinned repo is in the shape allowlist
+		// and must be forwarded with the real token.
+		body := `{"query":"query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}","variables":{"owner":"owner","name":"repo"}}`
+		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql",
+			strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		req.Header.Set("Content-Type", "application/json")
 
-			// Assert no credential swap: upstream must never have been called.
-			// If the OnRequest handler returned (req, nil) instead of (req, denyResponse),
-			// goproxy forwards the request, the swap handler fires, and authCh receives
-			// a value here — failing this assertion.
-			select {
-			case auth := <-authCh:
-				if auth == "Bearer "+realToken {
-					t.Errorf("S1c-GQL %s: real token leaked to upstream — credential swap occurred despite GraphQL deny", tc.name)
-				} else {
-					t.Errorf("S1c-GQL %s: upstream was called (auth=%q) — GraphQL deny did not short-circuit the proxy pipeline", tc.name, auth)
-				}
-			case <-time.After(200 * time.Millisecond):
-				// Good: upstream was not called; no swap occurred.
-			}
-		})
-	}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("same-repo query: status = %d, want 200 (allowlisted)", resp.StatusCode)
+		}
+		got, ok := receiveOrTimeout(authCh)
+		if !ok {
+			t.Fatal("upstream never received same-repo query (allowlist denied it)")
+		}
+		if want := "Bearer " + realToken; got != want {
+			t.Errorf("upstream Authorization = %q, want %q (real token must swap for allowlisted query)", got, want)
+		}
+	})
+
+	t.Run("denied different-repo repository query", func(t *testing.T) {
+		// Same document shape but targeting a repo not in AllowedRepo — must be
+		// denied to enforce repo pinning.
+		body := `{"query":"query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}","variables":{"owner":"evil","name":"evil"}}`
+		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/graphql",
+			strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("different-repo query: status = %d, want 403 (repo pinning)", resp.StatusCode)
+		}
+		select {
+		case auth := <-authCh:
+			t.Errorf("upstream was called (auth=%q) — cross-repo query must not reach upstream", auth)
+		case <-time.After(200 * time.Millisecond):
+			// Good.
+		}
+	})
 }
 
 // ============================================================
@@ -3167,13 +3233,13 @@ func TestD_PDE16_GlobStarStar(t *testing.T) {
 	})
 }
 
-// TestD_PDE16_GraphQLClosedViaPathPolicies verifies that /graphql is denied
-// when using the PathPolicies GitHub policy (belt-and-suspenders closure):
-// gitHubPathAllowed returns true for /graphql, but the subsequent GraphQL
-// deny-all handler catches it before the credential swap.
+// TestD_PDE16_GraphQLClosedViaPathPolicies verifies that POST /graphql with an
+// empty body is denied under PathPolicies (belt-and-suspenders closure):
+// gitHubPathAllowed returns true for /graphql, but the GraphQL allowlist
+// envelope check immediately rejects the empty body before any credential swap.
 //
 // Mutation evidence: remove the hasAnyGitHubPolicy guard that registers the
-// GraphQL deny-all handler → /graphql returns 200 and upstream receives the
+// GraphQL allowlist handler → /graphql returns 200 and upstream receives the
 // request (fail).
 func TestD_PDE16_GraphQLClosedViaPathPolicies(t *testing.T) {
 	t.Parallel()

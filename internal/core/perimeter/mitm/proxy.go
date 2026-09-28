@@ -35,6 +35,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"mime"
 	"net"
 	"net/http"
 	"path"
@@ -47,6 +48,22 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
+
+// graphqlHarvestCtx is stored in goproxy.ProxyCtx.UserData on an allowed GraphQL
+// request that selects a repository id field. The OnResponse handler reads it
+// to cache the returned node ID in the per-proxy repoIDCache.
+type graphqlHarvestCtx struct {
+	harvest []gqlHarvest
+}
+
+// connectTarget is stored in goproxy.ProxyCtx.UserData by the HandleConnect
+// handler for every ConnectMitm action, and consumed by the host-bind DoFunc
+// (the first OnRequest handler registered). It records the hostname that
+// goproxy will actually dial — the CONNECT target — so the host-bind DoFunc
+// can enforce that the inner request's URL host and Host header both agree with
+// it, preventing a guest from CONNECTing to an allowed host and then spoofing
+// "Host: api.github.com" to misdirect the credential swap.
+type connectTarget struct{ host string }
 
 // Proxy is the per-sandbox L7 TLS-MITM proxy. It wraps a goproxy.ProxyHttpServer
 // with:
@@ -312,6 +329,8 @@ func New(cfg Config) (*Proxy, error) {
 		return nil, err
 	}
 
+	ghRepoIDs := newRepoIDCache(256)
+
 	// hasAnyGitHubPolicy is true when at least one policy — built-in
 	// AllowedRepo OR generic pattern — is keyed on a GitHub host; used to
 	// gate the belt-and-suspenders GraphQL deny-all handler. The path handler
@@ -350,6 +369,7 @@ func New(cfg Config) (*Proxy, error) {
 		log.Debug("mitm: CONNECT received", "sandbox", sandboxID, "host", hostname, "secretSuffixes", secretSuffixes)
 		if _, ok := secretSet[lh]; ok {
 			log.Info("mitm: CONNECT allowed (secret host)", "sandbox", sandboxID, "host", hostname)
+			ctx.UserData = &connectTarget{lh}
 			return mitmAction, host
 		}
 		if matchesDotSuffix(lh, secretSuffixes) {
@@ -372,6 +392,7 @@ func New(cfg Config) (*Proxy, error) {
 		}
 		if allowSet.Has(lh) {
 			log.Info("mitm: CONNECT allowed", "sandbox", sandboxID, "host", hostname)
+			ctx.UserData = &connectTarget{lh}
 			return mitmAction, host
 		}
 		log.Info("mitm: CONNECT rejected", "sandbox", sandboxID, "host", hostname)
@@ -380,6 +401,38 @@ func New(cfg Config) (*Proxy, error) {
 		}
 		return goproxy.RejectConnect, host
 	}))
+
+	inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+		urlHost := strings.ToLower(strings.TrimSuffix(stripHost(req.URL.Host), "."))
+		hdrRaw := req.Host
+		if hdrRaw == "" {
+			hdrRaw = req.URL.Host
+		}
+		hdrHost := strings.ToLower(strings.TrimSuffix(stripHost(hdrRaw), "."))
+
+		denyMismatch := func(reason string) (*http.Request, *http.Response) {
+			log.Info("mitm: host mismatch denied", "sandbox", sandboxID, "reason", reason,
+				"url_host", urlHost, "hdr_host", hdrHost)
+			if cfg.OnEgress != nil {
+				cfg.OnEgress(urlHost, "deny", reason, time.Now())
+			}
+			return req, denyResponse(req)
+		}
+
+		if ct, ok := ctx.UserData.(*connectTarget); ok {
+			if urlHost != ct.host || hdrHost != ct.host {
+				ctx.UserData = nil
+				return denyMismatch("CONNECT host mismatch: URL or Host header differs from CONNECT target")
+			}
+			ctx.UserData = nil
+			return req, nil
+		}
+		// Plain proxy request: URL host and Host header must agree.
+		if hdrHost != urlHost {
+			return denyMismatch("plain-proxy host mismatch: Host header differs from URL host")
+		}
+		return req, nil
+	})
 
 	// D-PDE-16: generic per-(placeholder, host) path policy enforcer.
 	//
@@ -579,34 +632,103 @@ func New(cfg Config) (*Proxy, error) {
 	})
 
 	if hasAnyGitHubPolicy {
-		// S1c SAFE default-deny stub (advisor CORRECTION, belt-and-suspenders).
-		// gitHubPathAllowed returns true for /graphql to preserve its existing
-		// call structure; this handler catches it afterwards and denies it.
-		// Together they ensure /graphql is denied before any credential swap
-		// even if the path policy handler passes it through.
-		// Full gh/gh-stack GraphQL allowlist is TBR-GRAPHQL/R5.
+		// GraphQL allowlist: doc/design/mitm-graphql-allowlist.md (R30 S3).
 		inner.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-			h := reqHost(req)
+			h := strings.ToLower(reqHost(req))
 			if (h != "api.github.com" && h != "github.com") || !strings.HasPrefix(req.URL.Path, "/graphql") {
 				return req, nil
 			}
-			// Narrow carve-out: the read-only token-validation query that
-			// `gh auth status` sends (query UserCurrent{viewer{login}}) is
-			// permitted. Its selection set is exactly viewer.login — strictly a
-			// subset of the already-allowed REST GET /user — so allowing it
-			// grants NO capability beyond the existing D-PDE-16 allowlist and
-			// does not widen the full-scope token's blast radius. The body is
-			// read (capped) and restored so the swap handler and upstream still
-			// see it. Every other GraphQL document remains default-denied; the
-			// general gh/gh-stack GraphQL allowlist is still TBR-GRAPHQL/R5.
-			if isGitHubTokenValidationQuery(req) {
-				log.Info("mitm: S1c-GQL token-validation query allowed (viewer.login; ⊆ GET /user)",
-					"sandbox", sandboxID, "host", h)
-				return req, nil
+			deny := func(reason string) (*http.Request, *http.Response) {
+				log.Info("mitm: GraphQL denied", "sandbox", sandboxID, "host", h, "reason", reason)
+				if cfg.OnEgress != nil {
+					cfg.OnEgress(reqHost(req), "deny", "GraphQL: "+reason, time.Now())
+				}
+				return req, denyResponse(req)
 			}
-			log.Info("mitm: S1c-GQL default-deny stub (R5 pending) — GraphQL denied before any credential swap",
-				"sandbox", sandboxID, "host", h, "path", req.URL.Path)
-			return req, denyResponse(req)
+			if h == "github.com" {
+				return deny("not api.github.com")
+			}
+			if req.Method != http.MethodPost || req.URL.Path != "/graphql" {
+				return deny("method/path mismatch")
+			}
+			if req.URL.RawQuery != "" || req.URL.ForceQuery {
+				return deny("query string not permitted on /graphql")
+			}
+			ctHeader := req.Header.Get("Content-Type")
+			if ctHeader == "" {
+				return deny("missing Content-Type")
+			}
+			mediaType, ctParams, ctErr := mime.ParseMediaType(ctHeader)
+			if ctErr != nil || mediaType != "application/json" {
+				return deny("Content-Type must be application/json")
+			}
+			if charset, hasCharset := ctParams["charset"]; hasCharset && strings.ToLower(charset) != "utf-8" {
+				return deny("Content-Type charset must be utf-8")
+			}
+			if req.Body == nil {
+				return deny("nil body")
+			}
+			const maxBody = 1 << 20
+			limited := io.LimitReader(req.Body, maxBody+1)
+			buf, readErr := io.ReadAll(limited)
+			req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), req.Body))
+			if readErr != nil || int64(len(buf)) > maxBody {
+				return deny("body too large")
+			}
+			placeholder := extractPlaceholder(req.Header.Get("Authorization"))
+			pol, ok := lookupPolicy(policies, placeholder, h)
+			var repos []allowedRepo
+			if ok {
+				repos = allowedReposFromPolicy(pol)
+			}
+			d := evaluateGitHubGraphQL(buf, repos, ghRepoIDs)
+			if !d.Allowed {
+				return deny(d.Reason)
+			}
+			log.Info("mitm: GraphQL allowed", "sandbox", sandboxID, "host", h)
+			if len(d.Harvest) > 0 {
+				ctx.UserData = &graphqlHarvestCtx{harvest: d.Harvest}
+			}
+			return req, nil
+		})
+
+		inner.OnResponse().DoFunc(func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+			hc, ok := ctx.UserData.(*graphqlHarvestCtx)
+			if !ok || resp == nil || resp.StatusCode != http.StatusOK || resp.Body == nil {
+				return resp
+			}
+			const maxResp = 2 << 20
+			buf, _ := io.ReadAll(io.LimitReader(resp.Body, maxResp+1))
+			resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), resp.Body))
+			if int64(len(buf)) > maxResp {
+				return resp
+			}
+			var envelope struct {
+				Data map[string]json.RawMessage `json:"data"`
+			}
+			if json.Unmarshal(buf, &envelope) != nil || envelope.Data == nil {
+				return resp
+			}
+			for _, h := range hc.harvest {
+				rootRaw, ok := envelope.Data[h.RootKey]
+				if !ok {
+					continue
+				}
+				var rootMap map[string]json.RawMessage
+				if json.Unmarshal(rootRaw, &rootMap) != nil {
+					continue
+				}
+				idRaw, ok := rootMap[h.IDKey]
+				if !ok {
+					continue
+				}
+				var id string
+				if json.Unmarshal(idRaw, &id) != nil || id == "" {
+					continue
+				}
+				ghRepoIDs.add(id, h.Owner, h.Name)
+			}
+			return resp
 		})
 	}
 
@@ -1120,8 +1242,8 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 			prNum, _ := strings.CutPrefix(path, repoBase+"/pulls/")
 			return allDigits(prNum)
 		case strings.HasPrefix(path, "/graphql"):
-			// /graphql passes the path allowlist; the belt-and-suspenders
-			// GraphQL deny-all handler registered in New catches it afterwards.
+			// /graphql passes the path check; the GraphQL allowlist handler
+			// (doc/design/mitm-graphql-allowlist.md) enforces body-level rules.
 			return true
 		}
 		// Remaining shapes require a suffix after /releases/.
@@ -1160,80 +1282,6 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 		// Should not be reached; policy map keys guard the call site.
 		return false
 	}
-}
-
-// githubTokenValidationQueries is the exact set of GraphQL documents permitted
-// through the otherwise default-denied /graphql endpoint. Each selects only the
-// authenticated viewer's login — a strict subset of the already-allowed REST
-// GET /user — so admitting them grants no capability beyond the existing
-// allowlist. Comparison is against the whitespace-stripped request document, so
-// formatting variations of the same query match. `gh auth status` (gh ≥ 2) sends
-// the first form to validate GH_TOKEN. The list is an explicit, auditable
-// allowlist — NOT a general GraphQL parser (that is TBR-GRAPHQL/R5).
-var githubTokenValidationQueries = map[string]struct{}{
-	"queryUserCurrent{viewer{login}}": {}, // gh auth status
-	"query{viewer{login}}":            {}, // anonymous named-op-free variant
-	"{viewer{login}}":                 {}, // bare shorthand query
-}
-
-// stripASCIIWhitespace removes spaces, tabs, newlines, and carriage returns.
-// GraphQL treats these (plus commas) as insignificant between tokens; removing
-// them canonicalises formatting variants of the same document for exact-match
-// comparison against githubTokenValidationQueries.
-func stripASCIIWhitespace(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case ' ', '\t', '\n', '\r', ',':
-			// skip
-		default:
-			b.WriteByte(s[i])
-		}
-	}
-	return b.String()
-}
-
-// isGitHubTokenValidationQuery reports whether req is the read-only GraphQL
-// token-validation POST that `gh auth status` issues. It reads req.Body (capped
-// at maxGraphQLValidationBody bytes) and ALWAYS restores it so the swap handler
-// and upstream see the original body regardless of the verdict. Returns false —
-// keeping the GraphQL default-deny intact — for any body that is not exactly one
-// of githubTokenValidationQueries after whitespace stripping, is too large, is
-// not valid JSON, or carries GraphQL variables.
-func isGitHubTokenValidationQuery(req *http.Request) bool {
-	if req.Method != http.MethodPost || req.Body == nil {
-		return false
-	}
-	const maxGraphQLValidationBody = 4 << 10 // 4 KiB: the validation query is ~40 bytes.
-	limited := io.LimitReader(req.Body, maxGraphQLValidationBody+1)
-	buf, err := io.ReadAll(limited)
-	// Restore the consumed bytes plus any unread remainder unconditionally.
-	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), req.Body))
-	if err != nil || int64(len(buf)) > maxGraphQLValidationBody {
-		return false
-	}
-	// Reject bodies with duplicate top-level JSON keys. Go's encoding/json is
-	// last-wins on duplicates, so {"query":"mutation{evil}","query":"{viewer{login}}"}
-	// would pass the gate (the second value wins) while a differently-behaving parser
-	// could execute the first. Detect and deny before any key is trusted.
-	if hasDuplicateTopLevelJSONKeys(buf) {
-		return false
-	}
-	var body struct {
-		Query     string          `json:"query"`
-		Variables json.RawMessage `json:"variables"`
-	}
-	if err := json.Unmarshal(buf, &body); err != nil {
-		return false
-	}
-	// Reject any request that carries variables: the validation query has none,
-	// and non-empty variables signal a different (unvetted) document.
-	if v := strings.TrimSpace(string(body.Variables)); v != "" && v != "null" && v != "{}" {
-		return false
-	}
-	_, ok := githubTokenValidationQueries[stripASCIIWhitespace(body.Query)]
-	return ok
 }
 
 // hasDuplicateTopLevelJSONKeys reports whether data contains repeated keys at
@@ -1578,11 +1626,17 @@ func makeH2SuffixHijack(
 				"sandbox", sandboxID, "host", hostname, "err", err)
 			return
 		}
-		// Per-request handler: swap Authorization placeholder, forward upstream.
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Swap Authorization header (unscoped: same credential covers all
-			// suffix-matched shards; proxy is per-sandbox so cross-sandbox theft
-			// is not possible).
+			rHdrHost := strings.ToLower(strings.TrimSuffix(stripHost(r.Host), "."))
+			if rHdrHost == "" {
+				rHdrHost = lhostname
+			}
+			if rHdrHost != lhostname {
+				log.Info("mitm: h2 hijack host mismatch denied", "sandbox", sandboxID,
+					"connect_host", lhostname, "hdr_host", rHdrHost)
+				http.Error(w, "403 Forbidden: host mismatch", http.StatusForbidden)
+				return
+			}
 			auth := r.Header.Get("Authorization")
 			hasAuth := auth != ""
 			authPrefix := ""

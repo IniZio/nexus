@@ -184,13 +184,12 @@ func TestConfigPatternPolicy_GitHubCarveOutsAllowed(t *testing.T) {
 // TestConfigPatternPolicy_GitHubCarveOutsStayNarrow pins the carve-outs to
 // exactly the public-read class under config-derived pattern policies: POST
 // to an archive path, smart-HTTP on a foreign repo, any non-root API path
-// outside the pattern, and every other GraphQL document remain 403 with no
-// upstream hit.
+// outside the pattern, and every non-allowlisted GraphQL document remain 403
+// with no upstream hit.
 //
 // Mutation evidence: make gitHubHostCarveOut return true for any github.com
-// path → the receive-pack case reaches upstream; drop the
-// isGitHubTokenValidationQuery gate in the GraphQL handler → the mutation
-// case reaches upstream.
+// path → the receive-pack case reaches upstream; widen the GraphQL allowlist
+// to accept any mutation body → the mutation case reaches upstream.
 func TestConfigPatternPolicy_GitHubCarveOutsStayNarrow(t *testing.T) {
 	t.Parallel()
 	upstream, authCh := captureAuthUpstream(t)

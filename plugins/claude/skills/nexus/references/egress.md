@@ -3,7 +3,7 @@
 Covers: `egress.policy` allowlist structure, the `egress.secrets` brokering
 model, per-provider patterns (GitHub, GitLab, generic tokens), the four
 verification probes, `--allow-host` for agent sandboxes, and per-ecosystem host
-sets. Also the answer to "GH_TOKEN in the guest", cross-repo 403, GraphQL 403,
+sets. Also the answer to "GH_TOKEN in the guest", cross-repo 403, GraphQL allowlist,
 and "why does the sandbox have open egress."
 
 For first-run authoring of `.nexus/config.yaml` (detecting the repo's stack and
@@ -209,11 +209,12 @@ from the guest works with `github.com` under `policy` only. The redirect target
 `codeload.github.com` is never policy-gated, so list it under `allow` if the download follows
 the redirect.
 
-**Hard rule:** never add `/graphql` under `api.github.com` paths. The GitHub GraphQL endpoint
-is a parallel write channel; the `nexus-github-token-sole-bound` MEMORY note documents why
-this matters. The MITM returns 403 for GraphQL even if listed (`service.go:971-977` backstop
-fires for unbound GitHub secrets, and the graphql backstop in the MITM layer is a separate
-guard).
+**Hard rule:** never add `/graphql` under `api.github.com` paths. The path ACL is not the
+enforcement layer for `/graphql` — the MITM AST-shape body allowlist controls which GraphQL
+documents are permitted. Listing `/graphql` in paths widens the REST path ACL without changing
+GraphQL access at all. The GitHub GraphQL endpoint is a parallel write channel; the
+`nexus-github-token-sole-bound` MEMORY note documents why adding it as a REST path reopens the
+sole-bound risk. Leave `/graphql` out of `egress.policy`; the shape allowlist handles it.
 
 ---
 
@@ -333,16 +334,25 @@ curl -s -o /dev/null -w "HTTP %{http_code}\n" \
 # Expected: HTTP 403  (MITM path policy deny)
 ```
 
-### Probe 3 — GraphQL → 403 expected
+### Probe 3 — GraphQL (two directions)
+
+Disallowed document — a query outside the shape allowlist → 403:
 
 ```bash
 curl -s -o /dev/null -w "HTTP %{http_code}\n" \
   -X POST \
   -H "Authorization: Bearer $GH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"query":"{ viewer { login } }"}' \
+  -d '{"query":"{ viewer { login repositories(first:1) { nodes { name } } } }"}' \
   https://api.github.com/graphql
-# Expected: HTTP 403  (GraphQL denied fail-closed)
+# Expected: HTTP 403  (denied by shape allowlist; proxy log: "mitm: GraphQL denied")
+```
+
+Allowed operations — PR commands for the policy repo succeed:
+
+```bash
+gh pr list --repo {owner}/{repo}
+# Expected: list output (not 403)
 ```
 
 ### Probe 4 — Placeholder check → 64-hex expected
@@ -368,7 +378,7 @@ HTTP 200
 === Probe 2: cross-repo REST ===
 HTTP 403
 
-=== Probe 3: GraphQL ===
+=== Probe 3: GraphQL (disallowed doc) ===
 HTTP 403
 ```
 
@@ -518,5 +528,7 @@ config loader rejects such a file at parse time.
 
 - "`gh auth status` needs `/graphql` or `/` in my `egress.policy`." No — the two
   probes it makes (`GET /` and the viewer-login `POST /graphql` query) are admitted
-  for api.github.com regardless of policy kind; every other GraphQL query is still
-  403 (see github-pr.md).
+  for api.github.com regardless of policy kind. PR-related operations for the policy
+  repo (`gh pr create/view/list/status/checkout`) also work via the shape allowlist
+  (see github-pr.md). Documents outside the allowlist — cross-repo queries, non-PR
+  mutations, `gh api graphql` calls for non-PR operations — are still denied (403).
