@@ -123,6 +123,20 @@ func TestHerdrSpaceResolve_ByWorkspaceID(t *testing.T) {
 	}
 }
 
+// TestHerdrSpaceResolve_BySandboxID verifies resolution by the stable SandboxID.
+func TestHerdrSpaceResolve_BySandboxID(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	b := HerdrSpaceBinding{SpaceLabel: "nexus:demo", HerdrWorkspaceID: "wX", SandboxHandle: "orca/demo", SandboxID: "sb-abc123"}
+	if err := HerdrSpacePut(ctx, root, b); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err := herdrSpaceResolve(ctx, root, "sb-abc123")
+	if err != nil || got != b {
+		t.Errorf("BySandboxID: got %+v err %v, want %+v", got, err, b)
+	}
+}
+
 // TestHerdrSpaceResolve_NotFound verifies that an unknown key returns ErrHerdrSpaceNotFound.
 func TestHerdrSpaceResolve_NotFound(t *testing.T) {
 	root := t.TempDir()

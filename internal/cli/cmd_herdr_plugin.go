@@ -1843,7 +1843,7 @@ func herdrPluginNewTab(ctx context.Context, workspaceID, storeRoot string, svc h
 	return nil
 }
 
-/** herdrSpaceResolve looks up a binding by label, sandbox handle, derived label, or workspace ID. */
+/** herdrSpaceResolve looks up a binding by label, sandbox handle, derived label, sandbox ID, or workspace ID. */
 func herdrSpaceResolve(ctx context.Context, storeRoot, key string) (HerdrSpaceBinding, error) {
 	if b, err := HerdrSpaceGetByLabel(ctx, storeRoot, key); err == nil {
 		return b, nil
@@ -1852,6 +1852,9 @@ func herdrSpaceResolve(ctx context.Context, storeRoot, key string) (HerdrSpaceBi
 		return b, nil
 	}
 	if b, err := HerdrSpaceGetByLabel(ctx, storeRoot, herdrSpaceLabelForRef(key)); err == nil {
+		return b, nil
+	}
+	if b, err := HerdrSpaceGetBySandboxID(ctx, storeRoot, key); err == nil {
 		return b, nil
 	}
 	all, err := HerdrSpaceList(ctx, storeRoot)

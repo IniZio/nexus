@@ -152,6 +152,56 @@ func TestHerdrSpaceResolveOrAdopt_AdoptsByID(t *testing.T) {
 	}
 }
 
+// TestResolveOrAdopt_BySandboxID_DoesNotClobber reproduces the prod data-loss
+// bug: the controller calls `nexus herdr pause <sandbox_id>`; before the fix
+// that resolve fell through to adopt and clobbered the full binding.
+func TestResolveOrAdopt_BySandboxID_DoesNotClobber(t *testing.T) {
+	storeRoot, g, sb := adoptFixture(t)
+	ctx := context.Background()
+	full := HerdrSpaceBinding{
+		SpaceLabel: herdrSpaceLabelForRef(sb.Handle()), HerdrWorkspaceID: "wDX",
+		SandboxHandle: sb.Handle(), SandboxID: sb.ID.String(), GuestPaneID: "wDX:p3",
+		Principal: "slack:T:U", WorktreeManaged: true,
+	}
+	if err := HerdrSpacePut(ctx, storeRoot, full); err != nil {
+		t.Fatal(err)
+	}
+	b, adopted, err := herdrSpaceResolveOrAdopt(ctx, g, storeRoot, sb.ID.String())
+	if err != nil {
+		t.Fatalf("resolveOrAdopt by sandbox ID: %v", err)
+	}
+	if adopted {
+		t.Error("adopted = true; binding already existed, must resolve without adopting")
+	}
+	stored, _ := HerdrSpaceGetByHandle(ctx, storeRoot, sb.Handle())
+	if stored.HerdrWorkspaceID != "wDX" || stored.GuestPaneID != "wDX:p3" || stored.Principal == "" {
+		t.Errorf("binding clobbered: stored=%+v returned=%+v", stored, b)
+	}
+}
+
+// TestHerdrSpacePut_RefusesDowngrade ensures HerdrSpacePut returns
+// ErrHerdrSpaceDowngrade rather than silently replacing a rich binding with a
+// minimal one that lacks workspace ID, pane ID, and principal.
+func TestHerdrSpacePut_RefusesDowngrade(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	rich := HerdrSpaceBinding{
+		SpaceLabel: "nexus:proj/demo", SandboxHandle: "proj/demo", SandboxID: "sb-1",
+		HerdrWorkspaceID: "wQ", GuestPaneID: "wQ:p1", Principal: "slack:T:U",
+	}
+	if err := HerdrSpacePut(ctx, root, rich); err != nil {
+		t.Fatalf("put rich: %v", err)
+	}
+	minimal := HerdrSpaceBinding{SpaceLabel: "nexus:proj/demo", SandboxHandle: "proj/demo", SandboxID: "sb-1"}
+	if err := HerdrSpacePut(ctx, root, minimal); !errors.Is(err, ErrHerdrSpaceDowngrade) {
+		t.Errorf("want ErrHerdrSpaceDowngrade, got %v", err)
+	}
+	stored, _ := HerdrSpaceGetByLabel(ctx, root, rich.SpaceLabel)
+	if stored.HerdrWorkspaceID != "wQ" || stored.GuestPaneID != "wQ:p1" {
+		t.Errorf("rich binding was clobbered despite downgrade guard: %+v", stored)
+	}
+}
+
 // herdrSpaceEnsureWorkspace must not touch herdr when a workspace already
 // exists, and must refuse (rather than silently produce an empty ID) when it
 // needs to create one and herdr is not reachable.

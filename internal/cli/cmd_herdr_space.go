@@ -138,6 +138,19 @@ func (b HerdrSpaceBinding) OwnedByHerdrSession(s string) bool {
 // ErrHerdrSpaceNotFound is returned when no matching binding exists.
 var ErrHerdrSpaceNotFound = errors.New("herdr-space: binding not found")
 
+// ErrHerdrSpaceDowngrade is returned by HerdrSpacePut when the incoming
+// binding would replace a richer existing binding (one with HerdrWorkspaceID,
+// GuestPaneID, or Principal) with a minimal one that lacks all three.
+var ErrHerdrSpaceDowngrade = errors.New("herdr-space: refusing to replace rich binding with minimal one")
+
+// herdrSpacePutOpt is a flag accepted by HerdrSpacePut to modify its behaviour.
+type herdrSpacePutOpt int
+
+// HerdrSpacePutReplace suppresses the downgrade guard, allowing a binding with
+// fewer fields to replace an existing richer one. Pass this for intentional
+// updates such as clearing a stale workspace ID.
+const HerdrSpacePutReplace herdrSpacePutOpt = 1
+
 // herdrSpaceBindingsPath returns the path to the bindings JSON file.
 func herdrSpaceBindingsPath(storeRoot string) string {
 	return filepath.Join(storeRoot, "herdr-space-bindings.json")
@@ -214,8 +227,14 @@ func herdrSpaceWriteAll(storeRoot string, bindings []HerdrSpaceBinding) error {
 //
 // If an existing binding has the same SpaceLabel or the same SandboxHandle, it
 // is removed before the new binding is inserted. This allows re-binding without
-// error.
-func HerdrSpacePut(ctx context.Context, storeRoot string, b HerdrSpaceBinding) error {
+// error. Pass HerdrSpacePutReplace to suppress the downgrade guard.
+func HerdrSpacePut(ctx context.Context, storeRoot string, b HerdrSpaceBinding, opts ...herdrSpacePutOpt) error {
+	allowReplace := false
+	for _, o := range opts {
+		if o == HerdrSpacePutReplace {
+			allowReplace = true
+		}
+	}
 	if err := os.MkdirAll(storeRoot, 0700); err != nil {
 		return fmt.Errorf("herdr-space: ensure store dir: %w", err)
 	}
@@ -228,6 +247,11 @@ func HerdrSpacePut(ctx context.Context, storeRoot string, b HerdrSpaceBinding) e
 		filtered := bindings[:0:0]
 		for _, existing := range bindings {
 			if existing.SpaceLabel == b.SpaceLabel || existing.SandboxHandle == b.SandboxHandle {
+				if !allowReplace &&
+					(existing.HerdrWorkspaceID != "" || existing.GuestPaneID != "" || existing.Principal != "") &&
+					b.HerdrWorkspaceID == "" && b.GuestPaneID == "" && b.Principal == "" {
+					return ErrHerdrSpaceDowngrade
+				}
 				continue // drop conflicting entry
 			}
 			filtered = append(filtered, existing)
@@ -265,6 +289,23 @@ func HerdrSpaceGetByHandle(ctx context.Context, storeRoot string, handle string)
 	}
 	for _, b := range bindings {
 		if b.SandboxHandle == handle {
+			return b, nil
+		}
+	}
+	return HerdrSpaceBinding{}, ErrHerdrSpaceNotFound
+}
+
+// HerdrSpaceGetBySandboxID returns the binding whose SandboxID matches id.
+func HerdrSpaceGetBySandboxID(ctx context.Context, storeRoot string, id string) (HerdrSpaceBinding, error) {
+	if err := ctx.Err(); err != nil {
+		return HerdrSpaceBinding{}, err
+	}
+	bindings, err := herdrSpaceReadAll(storeRoot)
+	if err != nil {
+		return HerdrSpaceBinding{}, err
+	}
+	for _, b := range bindings {
+		if b.SandboxID == id {
 			return b, nil
 		}
 	}
@@ -432,7 +473,7 @@ func herdrSpaceBindingClearWorkspaceID(ctx context.Context, storeRoot, label str
 		return fmt.Errorf("herdr-space: clear workspace-id for %q: %w", label, err)
 	}
 	b.HerdrWorkspaceID = ""
-	return HerdrSpacePut(ctx, storeRoot, b)
+	return HerdrSpacePut(ctx, storeRoot, b, HerdrSpacePutReplace)
 }
 
 // herdrSpacePruneLister is the subset of *service.Service needed for the prune

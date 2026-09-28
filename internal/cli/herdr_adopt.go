@@ -73,6 +73,11 @@ func herdrSpaceResolveOrAdopt(
 		// HerdrWorkspaceID intentionally empty — see the doc comment.
 	}
 	if putErr := HerdrSpacePut(ctx, storeRoot, adopted); putErr != nil {
+		if errors.Is(putErr, ErrHerdrSpaceDowngrade) {
+			if existing, lookupErr := herdrSpaceResolve(ctx, storeRoot, sb.Handle()); lookupErr == nil {
+				return existing, false, nil
+			}
+		}
 		return HerdrSpaceBinding{}, false, fmt.Errorf("adopt sandbox %q: %w", sb.Handle(), putErr)
 	}
 	return adopted, true, nil
