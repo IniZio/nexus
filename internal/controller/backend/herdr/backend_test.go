@@ -2664,3 +2664,276 @@ func TestRestart_TwoRowsSharingBasename_FallsBackToSandboxIDArg(t *testing.T) {
 		t.Error("Restart must return non-empty ref")
 	}
 }
+
+// TestRestart_StaleNonGuestPaneHoldsAgentName_ReleasesNameAndStartsOnNewPane verifies
+// that when agent start returns agent_name_taken with a stale host-shell pane as
+// candidate, Restart clears the name on that pane and retries on the new guest pane.
+// This exercises the reopen path: initial entry has p3 (host shell) → space-open-pane → p4.
+func TestRestart_StaleNonGuestPaneHoldsAgentName_ReleasesNameAndStartsOnNewPane(t *testing.T) {
+	const wsID = "wRCV"
+	const sbID = "sb-rcv1"
+	const stalePane = "wRCV:p3"
+	const newPane = "wRCV:p4"
+	const handle = "nexus/ctrl-rcv1"
+	agentName := agentNameFromWsID(wsID)
+
+	nameTakenJSON := fmt.Sprintf(
+		`{"error":{"code":"agent_name_taken","message":"agent name %s is already used; candidates: terminal_id=term_abc pane_id=%s workspace_id=%s tab_id=%s:t1 status=Idle"},"id":"cli:agent:start"}`,
+		agentName, stalePane, wsID, wsID,
+	)
+
+	var mu sync.Mutex
+	startCalls := 0
+	var clearCalled bool
+	var clearTargetPane string
+	var startPanes []string
+
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+			paneArg := ""
+			for i, a := range argv {
+				if a == "read" && i+1 < len(argv) {
+					paneArg = argv[i+1]
+					break
+				}
+			}
+			for _, a := range argv {
+				if a == "150" {
+					// verifyPaneInGuest + tryNameTakenRetry target read: target pane is guest
+					return "root@nexus-fake-guest:/workspace#\n", nil
+				}
+			}
+			// lines=50: stale pane → ANSI-suffixed line so extractHostnameFromPrompt returns "".
+			// "" triggers the reopen branch in Restart (pane is dead/not a shell).
+			// In tryNameTakenRetry, "" != guestHostname so candidate is treated non-guest.
+			if paneArg == stalePane {
+				return "newman@engine-03:~/x$ 997;2n997;1n\n", nil
+			}
+			return "root@nexus-fake-guest:/workspace#\n", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+			// capture target pane from --pane arg
+			for i, a := range argv {
+				if a == "--pane" && i+1 < len(argv) {
+					mu.Lock()
+					startPanes = append(startPanes, argv[i+1])
+					mu.Unlock()
+					break
+				}
+			}
+			mu.Lock()
+			startCalls++
+			call := startCalls
+			mu.Unlock()
+			if call == 1 {
+				return nameTakenJSON, fmt.Errorf("exit status 1")
+			}
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "rename":
+			if len(argv) >= 4 && argv[3] == "--clear" {
+				mu.Lock()
+				clearCalled = true
+				clearTargetPane = argv[2]
+				mu.Unlock()
+			}
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+			return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentName), nil
+		}
+		return "", nil
+	}
+
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "space-open-pane":
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list":
+			return fmt.Sprintf("label=nexus:%s\tworkspace_id=%s\thandle=%s\tsandbox_id=%s\tpane_id=%s\tprincipal=\n",
+				handle, wsID, handle, sbID, newPane), nil
+		case len(argv) >= 2 && argv[0] == "exec":
+			return "nexus-fake-guest\n", nil
+		}
+		return "", nil
+	}
+
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+		func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.entries[agentName] = &entry{paneID: stalePane, nexusSandboxID: sbID, wsID: wsID}
+	b.sandboxes[sbID] = agentName
+
+	newRef, err := b.Restart(context.Background(), sbID, agentName)
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if newRef == "" {
+		t.Error("Restart must return non-empty ref")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !clearCalled {
+		t.Error("expected agent rename --clear on stale pane; not called")
+	}
+	if clearTargetPane != stalePane {
+		t.Errorf("rename --clear on %q; want %q", clearTargetPane, stalePane)
+	}
+	for _, p := range startPanes {
+		if p == stalePane {
+			t.Errorf("agent start targeted stale pane %q; must target new pane %q", stalePane, newPane)
+		}
+	}
+	if len(startPanes) < 2 {
+		t.Errorf("expected 2 agent start calls (name_taken + retry); got %d", len(startPanes))
+	}
+}
+
+// TestRestart_BindingAlreadyOnNewPane_NameTakenByStaleHostPane_ClearsAndRetries verifies
+// that when the binding already points at the new guest pane (e.paneID=p4) and agent start
+// fails with agent_name_taken from a stale host-shell pane (p3), Restart clears and retries.
+func TestRestart_BindingAlreadyOnNewPane_NameTakenByStaleHostPane_ClearsAndRetries(t *testing.T) {
+	const wsID = "wRCV"
+	const sbID = "sb-rcv2"
+	const stalePane = "wRCV:p3"
+	const targetPane = "wRCV:p4"
+	agentName := agentNameFromWsID(wsID)
+
+	nameTakenJSON := fmt.Sprintf(
+		`{"error":{"code":"agent_name_taken","message":"agent name %s is already used; candidates: terminal_id=term_abc pane_id=%s workspace_id=%s tab_id=%s:t1 status=Idle"},"id":"cli:agent:start"}`,
+		agentName, stalePane, wsID, wsID,
+	)
+
+	var mu sync.Mutex
+	startCalls := 0
+	var clearCalled bool
+	var clearTargetPane string
+
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+			// All pane reads: targetPane (p4) shows guest, stalePane (p3) shows host
+			paneArg := ""
+			for i, a := range argv {
+				if a == "read" && i+1 < len(argv) {
+					paneArg = argv[i+1]
+					break
+				}
+			}
+			if paneArg == stalePane {
+				// ANSI suffix → extractHostnameFromPrompt returns "" → non-guest in tryNameTakenRetry
+				return "newman@engine-03:~/x$ 997;2n997;1n\n", nil
+			}
+			return "root@nexus-fake-guest:/workspace#\n", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+			mu.Lock()
+			startCalls++
+			call := startCalls
+			mu.Unlock()
+			if call == 1 {
+				return nameTakenJSON, fmt.Errorf("exit status 1")
+			}
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "rename":
+			if len(argv) >= 4 && argv[3] == "--clear" {
+				mu.Lock()
+				clearCalled = true
+				clearTargetPane = argv[2]
+				mu.Unlock()
+			}
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+			return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentName), nil
+		}
+		return "", nil
+	}
+
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "exec" {
+			return "nexus-fake-guest\n", nil
+		}
+		return "", nil
+	}
+
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+		func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.entries[agentName] = &entry{paneID: targetPane, nexusSandboxID: sbID, wsID: wsID}
+	b.sandboxes[sbID] = agentName
+
+	newRef, err := b.Restart(context.Background(), sbID, agentName)
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if newRef == "" {
+		t.Error("Restart must return non-empty ref")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !clearCalled {
+		t.Error("expected agent rename --clear on stale host pane; not called")
+	}
+	if clearTargetPane != stalePane {
+		t.Errorf("rename --clear on %q; want %q", clearTargetPane, stalePane)
+	}
+}
+
+// TestRestart_NameTakenByGuestPane_DoesNotClear verifies that when the agent_name_taken
+// candidate pane shows the same guest hostname as the target pane, Restart does NOT call
+// rename --clear and returns an error.
+func TestRestart_NameTakenByGuestPane_DoesNotClear(t *testing.T) {
+	const wsID = "wRCV"
+	const sbID = "sb-rcv3"
+	const candidatePane = "wRCV:p3"
+	const targetPane = "wRCV:p4"
+	agentName := agentNameFromWsID(wsID)
+
+	nameTakenJSON := fmt.Sprintf(
+		`{"error":{"code":"agent_name_taken","message":"agent name %s is already used; candidates: terminal_id=term_abc pane_id=%s workspace_id=%s tab_id=%s:t1 status=Idle"},"id":"cli:agent:start"}`,
+		agentName, candidatePane, wsID, wsID,
+	)
+
+	var mu sync.Mutex
+	var clearCalled bool
+
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+			// Both panes show the same guest hostname.
+			return "root@nexus-fake-guest:/workspace#\n", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+			return nameTakenJSON, fmt.Errorf("exit status 1")
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "rename":
+			if len(argv) >= 4 && argv[3] == "--clear" {
+				mu.Lock()
+				clearCalled = true
+				mu.Unlock()
+			}
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+			return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentName), nil
+		}
+		return "", nil
+	}
+
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "exec" {
+			return "nexus-fake-guest\n", nil
+		}
+		return "", nil
+	}
+
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+		func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.entries[agentName] = &entry{paneID: targetPane, nexusSandboxID: sbID, wsID: wsID}
+	b.sandboxes[sbID] = agentName
+
+	_, err := b.Restart(context.Background(), sbID, agentName)
+	if err == nil {
+		t.Fatal("Restart must return an error when name is held by a guest pane")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if clearCalled {
+		t.Error("rename --clear must NOT be called when candidate is a guest pane")
+	}
+}

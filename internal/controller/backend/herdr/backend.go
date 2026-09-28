@@ -748,6 +748,8 @@ func (b *Backend) startAgent(ctx context.Context, name, paneID, nexusSandboxID, 
 	if agentName != name {
 		if _, renameErr := b.herdrRun(ctx, nil, "agent", "rename", agentName, name); renameErr == nil {
 			agentName = name
+		} else {
+			slog.Error("startAgent: rename auto-detected agent to ctrl name failed", "pane", paneID, "detected", agentName, "want", name, "err", renameErr)
 		}
 	}
 	if err := b.waitForAgentReady(ctx, agentName, 5*time.Minute); err != nil {
@@ -1234,6 +1236,11 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 	newAgentName := agentNameFromWsID(e.wsID)
 	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, sbID, permMode, "", sessionID, settingsPath, true)
 	if err != nil {
+		if retryRef, retryErr, handled := b.tryNameTakenRetry(ctx, err, newAgentName, paneID, sbID, permMode, sessionID, settingsPath); handled {
+			newAgentRef, err = retryRef, retryErr
+		}
+	}
+	if err != nil {
 		return "", fmt.Errorf("restart %s: start agent: %w", sandboxID, err)
 	}
 
@@ -1592,6 +1599,50 @@ func agentNameFromWsID(wsID string) string {
 		body = body[:32-len(sfx)]
 	}
 	return body + sfx
+}
+
+// parseCandidatePaneID extracts the pane_id field from an agent_name_taken error message.
+// Message format: "... candidates: terminal_id=X pane_id=wDX:p3 workspace_id=...".
+func parseCandidatePaneID(msg string) string {
+	const pfx = "pane_id="
+	idx := strings.Index(msg, pfx)
+	if idx < 0 {
+		return ""
+	}
+	rest := msg[idx+len(pfx):]
+	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+		return rest[:sp]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// tryNameTakenRetry handles agent_name_taken from startAgent at the Restart level.
+// Returns (ref, err, handled). If handled is false, the caller's original startErr stands.
+// Clears the stale agent name only when the candidate pane is a non-guest (host-shell) pane;
+// never closes panes.
+func (b *Backend) tryNameTakenRetry(ctx context.Context, startErr error, name, targetPane, sbID, permMode, sessionID, settingsPath string) (string, error, bool) {
+	code, msg, ok := herdrout.ParseHerdrErrorCode(startErr.Error())
+	if !ok || code != "agent_name_taken" {
+		return "", nil, false
+	}
+	candidatePane := parseCandidatePaneID(msg)
+	if candidatePane == "" || candidatePane == targetPane {
+		return "", fmt.Errorf("agent_name_taken: no releasable candidate (msg: %s)", msg), true
+	}
+	// Get the verified guest hostname from the target pane (verifyPaneInGuest already passed).
+	targetOut, _ := b.herdrRun(ctx, nil, "pane", "read", targetPane, "--source", "recent-unwrapped", "--lines", "150")
+	guestHostname := extractHostnameFromPrompt(targetOut)
+	// Check candidate pane hostname.
+	candidateOut, _ := b.herdrRun(ctx, nil, "pane", "read", candidatePane, "--source", "recent-unwrapped", "--lines", "50")
+	candidateHostname := extractHostnameFromPrompt(candidateOut)
+	if guestHostname != "" && candidateHostname == guestHostname {
+		return "", fmt.Errorf("agent_name_taken: candidate pane %s is a guest pane (hostname %q); not clearing name", candidatePane, candidateHostname), true
+	}
+	if _, renErr := b.herdrRun(ctx, nil, "agent", "rename", candidatePane, "--clear"); renErr != nil {
+		return "", fmt.Errorf("agent_name_taken: rename %s --clear: %w", candidatePane, renErr), true
+	}
+	ref, err := b.startAgent(ctx, name, targetPane, sbID, permMode, "", sessionID, settingsPath, true)
+	return ref, err, true
 }
 
 // parseWorkspaceIDByAgentName returns the workspace_id from nexus herdr list
