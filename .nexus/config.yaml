@@ -7,3 +7,20 @@ sandbox:
   # Read from the checkout's own .nexus/config.yaml (D-12); it takes effect on
   # the next worktree-sandbox create for that checkout.
   nested: true
+
+egress:
+  secrets:
+    - env: GH_TOKEN
+      hosts: [github.com, api.github.com, uploads.github.com]
+  policy:
+    - host: github.com
+      paths:
+        - /IniZio/nexus/**
+        - /IniZio/nexus.git/**
+    - host: api.github.com
+      paths:
+        - /repos/IniZio/nexus/**
+        - /user
+    - host: uploads.github.com
+      paths:
+        - /repos/IniZio/nexus/**

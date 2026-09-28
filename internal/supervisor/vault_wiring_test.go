@@ -10,6 +10,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/vault/vaulttest"
 )
@@ -25,7 +26,11 @@ func TestSupervisorResolvesGitHubViaVault(t *testing.T) {
 	broker := cred.NewBroker()
 	var sid domain.SandboxID
 	sid[0] = 1
-	sb := domain.Sandbox{ID: sid, Principal: "alice"}
+	sb := domain.Sandbox{
+		ID:        sid,
+		Principal: "alice",
+		Envelope:  domain.Envelope{SecretHosts: service.GitHubSecretHosts},
+	}
 
 	payload := resolveGitHubFromVault(ctx, fakeV, broker, sb)
 
@@ -42,6 +47,29 @@ func TestSupervisorResolvesGitHubViaVault(t *testing.T) {
 	ph := strings.TrimPrefix(strings.SplitN(payloadStr, "\n", 2)[0], "GH_TOKEN=")
 	if _, ok := broker.Resolve(ph); !ok {
 		t.Errorf("broker.Resolve(%q) = false; placeholder not registered for github.com", ph)
+	}
+}
+
+func TestResolveGitHubFromVault_SkipsWhenGitHubNotInSecretHosts(t *testing.T) {
+	fakeV := vaulttest.NewFake()
+	ctx := context.Background()
+	key := vault.Key{Principal: "alice", Integration: "github"}
+	if err := fakeV.Put(ctx, key, vault.Record{AccessToken: "gh-tok", AllowedProjects: []string{"*"}}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	broker := cred.NewBroker()
+	var sid domain.SandboxID
+	sid[0] = 3
+	sb := domain.Sandbox{
+		ID:        sid,
+		Principal: "alice",
+		Envelope:  domain.Envelope{SecretHosts: []string{"api.anthropic.com"}},
+	}
+
+	payload := resolveGitHubFromVault(ctx, fakeV, broker, sb)
+	if payload != nil {
+		t.Fatalf("expected nil payload when GitHub not in SecretHosts; got %q", string(payload))
 	}
 }
 

@@ -30,6 +30,21 @@ func resolveGitHubFromVault(ctx context.Context, v vault.Vault, broker *cred.Bro
 		slog.Info("supervisor.vault_github_skip", "reason", "no_principal")
 		return nil
 	}
+	ghBrokered := false
+	secretHostSet := make(map[string]struct{}, len(sb.Envelope.SecretHosts))
+	for _, h := range sb.Envelope.SecretHosts {
+		secretHostSet[h] = struct{}{}
+	}
+	for _, h := range service.GitHubSecretHosts {
+		if _, ok := secretHostSet[h]; ok {
+			ghBrokered = true
+			break
+		}
+	}
+	if !ghBrokered {
+		slog.Info("supervisor.vault_github_skip", "reason", "github_not_brokered", "principal", sb.Principal)
+		return nil
+	}
 	bind, ok, err := service.GitHubSecretFromVault(ctx, v, sb.Principal, sb.Project)
 	if err != nil {
 		slog.Info("supervisor.vault_github_skip", "principal", sb.Principal, "err", err)
