@@ -133,6 +133,12 @@ make test
 Integration tests (KVM-gated) are excluded from the default run. They require
 the `integration` build tag and a host with `/dev/kvm`.
 
+### Quick sanity check
+
+Before opening a PR, `go vet ./...` is a fast way to catch obvious mistakes
+(unreachable code, bad format strings, unused results) without the full
+`make ci` run.
+
 ### Builder agent: two binaries, one silent trap
 
 `nexus create --file` bakes a **separate** `nexus-agent` binary into the
