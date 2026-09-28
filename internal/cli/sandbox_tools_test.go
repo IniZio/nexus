@@ -10,6 +10,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/builder"
 	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 	"github.com/IniZio/nexus/internal/core/config"
+	"github.com/IniZio/nexus/internal/core/hostbin/pin"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/service"
 )
@@ -17,8 +18,10 @@ import (
 // fakeTool returns a minimal toolcache.Tool for test use.
 func fakeTool(name string) toolcache.Tool {
 	return toolcache.Tool{
-		Name:    name,
-		Version: "1.0.0",
+		Pin: pin.Pin{
+			Name:    name,
+			Version: "1.0.0",
+		},
 	}
 }
 

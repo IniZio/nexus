@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/IniZio/nexus/internal/core/hostbin/pin"
 )
 
 func buildTarball(memberPath string, content []byte) (data []byte, sum string) {
@@ -39,13 +41,15 @@ func buildTarball(memberPath string, content []byte) (data []byte, sum string) {
 
 func makeTestTool(serverURL, version, goarch, pinSHA string) Tool {
 	return Tool{
-		Name:           "gh",
-		Version:        version,
-		URLTemplate:    serverURL + "/gh_{VERSION}_linux_{GOARCH}.tar.gz",
-		SHA256ByGoArch: map[string]string{goarch: pinSHA},
-		ArchiveMember:  "gh_{VERSION}_linux_{GOARCH}/bin/gh",
-		InstallDir:     "/usr/local/share/nexus-tools/gh/{VERSION}",
-		LinkPath:       "/usr/local/bin/gh",
+		Pin: pin.Pin{
+			Name:           "gh",
+			Version:        version,
+			URLTemplate:    serverURL + "/gh_{VERSION}_linux_{GOARCH}.tar.gz",
+			SHA256ByGoArch: map[string]string{goarch: pinSHA},
+			ArchiveMember:  "gh_{VERSION}_linux_{GOARCH}/bin/gh",
+		},
+		InstallDir: "/usr/local/share/nexus-tools/gh/{VERSION}",
+		LinkPath:   "/usr/local/bin/gh",
 	}
 }
 

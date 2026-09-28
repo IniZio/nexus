@@ -14,8 +14,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
+
+	"github.com/IniZio/nexus/internal/core/hostbin/pin"
 )
 
 // GHVersion is the pinned version of the GitHub CLI baked into every sandbox.
@@ -38,28 +39,26 @@ var ErrUnsupportedArch = errors.New("toolcache: no pinned sha256 for arch")
 
 // Tool describes a host-downloaded, guest-injected binary tool.
 type Tool struct {
-	Name           string            // e.g. "gh"
-	Version        string            // e.g. "2.101.0"
-	URLTemplate    string            // placeholders {VERSION}, {GOARCH}
-	SHA256ByGoArch map[string]string // keys "amd64", "arm64" — sha256 of the TARBALL
-	ArchiveMember  string            // tar path of the binary; placeholders {VERSION}, {GOARCH}
-	InstallDir     string            // guest dir, placeholder {VERSION} allowed
-	LinkPath       string            // guest symlink path, e.g. "/usr/local/bin/gh"
+	pin.Pin           // Name, Version, URLTemplate, SHA256ByGoArch, ArchiveMember, etc.
+	InstallDir string // guest dir, placeholder {VERSION} allowed
+	LinkPath   string // guest symlink path, e.g. "/usr/local/bin/gh"
 }
 
 // GH returns a fresh Tool describing the pinned gh CLI release.
 func GH() Tool {
 	return Tool{
-		Name:        "gh",
-		Version:     GHVersion,
-		URLTemplate: "https://github.com/cli/cli/releases/download/v{VERSION}/gh_{VERSION}_linux_{GOARCH}.tar.gz",
-		SHA256ByGoArch: map[string]string{
-			"amd64": "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8",
-			"arm64": "b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f",
+		Pin: pin.Pin{
+			Name:        "gh",
+			Version:     GHVersion,
+			URLTemplate: "https://github.com/cli/cli/releases/download/v{VERSION}/gh_{VERSION}_linux_{GOARCH}.tar.gz",
+			SHA256ByGoArch: map[string]string{
+				"amd64": "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8",
+				"arm64": "b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f",
+			},
+			ArchiveMember: "gh_{VERSION}_linux_{GOARCH}/bin/gh",
 		},
-		ArchiveMember: "gh_{VERSION}_linux_{GOARCH}/bin/gh",
-		InstallDir:    "/usr/local/share/nexus-tools/gh/{VERSION}",
-		LinkPath:      "/usr/local/bin/gh",
+		InstallDir: "/usr/local/share/nexus-tools/gh/{VERSION}",
+		LinkPath:   "/usr/local/bin/gh",
 	}
 }
 
@@ -92,32 +91,25 @@ func (f Fetcher) httpClient() *http.Client {
 	return &http.Client{Timeout: 2 * time.Minute}
 }
 
-// expand replaces {VERSION} and {GOARCH} in s.
-func expand(s, version, goarch string) string {
-	s = strings.ReplaceAll(s, "{VERSION}", version)
-	s = strings.ReplaceAll(s, "{GOARCH}", goarch)
-	return s
-}
-
 // Fetch returns the verified binary for tool t on the given GOARCH.
 // Cache layout: <Root>/<name>/<sha256>/<name>.
 func (f Fetcher) Fetch(ctx context.Context, t Tool, goarch string) (Fetched, error) {
-	pin, ok := t.SHA256ByGoArch[goarch]
-	if !ok || pin == "" {
+	sha, ok := t.SHA256ByGoArch[goarch]
+	if !ok || sha == "" {
 		return Fetched{}, fmt.Errorf("%w: arch=%s tool=%s", ErrUnsupportedArch, goarch, t.Name)
 	}
 
 	// Cache hit: <Root>/<name>/<sha256>/<name>
-	cachePath := filepath.Join(f.Root, t.Name, pin, t.Name)
+	cachePath := filepath.Join(f.Root, t.Name, sha, t.Name)
 	if info, err := os.Stat(cachePath); err == nil && info.Mode().IsRegular() {
-		return makeFetched(t, goarch, pin, cachePath), nil
+		return makeFetched(t, goarch, sha, cachePath), nil
 	}
 
 	if err := os.MkdirAll(f.Root, 0755); err != nil {
 		return Fetched{}, fmt.Errorf("toolcache: mkdir root: %w", err)
 	}
 
-	url := expand(t.URLTemplate, t.Version, goarch)
+	url := t.URL(goarch)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return Fetched{}, fmt.Errorf("toolcache: build request: %w", err)
@@ -149,25 +141,25 @@ func (f Fetcher) Fetch(ctx context.Context, t Tool, goarch string) (Fetched, err
 	}
 
 	got := hex.EncodeToString(h.Sum(nil))
-	if got != pin {
+	if got != sha {
 		os.Remove(tmpName)
-		return Fetched{}, fmt.Errorf("%w: want=%s got=%s", ErrChecksumMismatch, pin, got)
+		return Fetched{}, fmt.Errorf("%w: want=%s got=%s", ErrChecksumMismatch, sha, got)
 	}
 
-	binPath, err := extractMember(f.Root, t, goarch, pin, tmpName)
+	binPath, err := extractMember(f.Root, t, goarch, sha, tmpName)
 	os.Remove(tmpName)
 	if err != nil {
 		return Fetched{}, err
 	}
 
-	return makeFetched(t, goarch, pin, binPath), nil
+	return makeFetched(t, goarch, sha, binPath), nil
 }
 
 var maxMemberBytes int64 = 512 << 20
 
 // extractMember opens tarPath, locates the expected member, writes it to a
 // temp dir, then atomically renames the temp dir to <Root>/<name>/<sha256>.
-func extractMember(root string, t Tool, goarch, pin, tarPath string) (string, error) {
+func extractMember(root string, t Tool, goarch, sha, tarPath string) (string, error) {
 	fh, err := os.Open(tarPath)
 	if err != nil {
 		return "", fmt.Errorf("toolcache: open tarball: %w", err)
@@ -180,7 +172,7 @@ func extractMember(root string, t Tool, goarch, pin, tarPath string) (string, er
 	}
 	defer gr.Close()
 
-	target := expand(t.ArchiveMember, t.Version, goarch)
+	target := t.Member(goarch)
 	tr := tar.NewReader(gr)
 
 	for {
@@ -219,7 +211,7 @@ func extractMember(root string, t Tool, goarch, pin, tarPath string) (string, er
 			return "", fmt.Errorf("toolcache: write binary: %w", writeErr)
 		}
 
-		destDir := filepath.Join(root, t.Name, pin)
+		destDir := filepath.Join(root, t.Name, sha)
 		parentDir := filepath.Dir(destDir)
 		if err := os.MkdirAll(parentDir, 0755); err != nil {
 			os.RemoveAll(tmpDir)
@@ -242,7 +234,7 @@ func extractMember(root string, t Tool, goarch, pin, tarPath string) (string, er
 }
 
 func makeFetched(t Tool, goarch, sha256sum, binPath string) Fetched {
-	installDir := expand(t.InstallDir, t.Version, goarch)
+	installDir := pin.Expand(t.InstallDir, t.Version, goarch)
 	return Fetched{
 		Name:         t.Name,
 		Version:      t.Version,
