@@ -287,3 +287,39 @@ func TestCmdlineContainsSandboxHandle(t *testing.T) {
 		t.Errorf("no-mount cmdline %q missing --sandbox-handle=test-agent1", cmdline)
 	}
 }
+
+func TestSpaceOpenPaneDispatch_EmptyRefRejected(t *testing.T) {
+	ctx := context.Background()
+	var w strings.Builder
+	err := runHerdrPlugin(ctx, []string{"space-open-pane", ""}, &Output{w: &w})
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Errorf("empty ref: want UsageError, got %T: %v", err, err)
+	}
+}
+
+func TestSpaceOpenPaneDispatch_FlagShapedRefRejected(t *testing.T) {
+	ctx := context.Background()
+	var w strings.Builder
+	err := runHerdrPlugin(ctx, []string{"space-open-pane", "--workspace", "wX"}, &Output{w: &w})
+	var ue *UsageError
+	if !errors.As(err, &ue) {
+		t.Errorf("flag-shaped ref: want UsageError, got %T: %v", err, err)
+	}
+}
+
+func TestHerdrSpaceResolve_EmptyKey_DoesNotMatchEmptyWorkspaceID(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := t.TempDir()
+	if err := HerdrSpacePut(ctx, storeRoot, HerdrSpaceBinding{
+		SpaceLabel:    "nexus:proj/testhandle",
+		SandboxHandle: "proj/testhandle",
+		SandboxID:     "sb-empty-ws",
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	_, err := herdrSpaceResolve(ctx, storeRoot, "")
+	if !errors.Is(err, ErrHerdrSpaceNotFound) {
+		t.Errorf("empty key: want ErrHerdrSpaceNotFound, got %v", err)
+	}
+}

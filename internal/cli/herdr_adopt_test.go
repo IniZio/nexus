@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -232,4 +233,89 @@ func TestHerdrSpaceEnsureWorkspace_RefusesWithoutHerdrBin(t *testing.T) {
 	if rootPaneID != "" {
 		t.Errorf("root pane ID = %q, want empty on failure", rootPaneID)
 	}
+}
+
+// TestHerdrPluginSpaceOpenPane_EmptyWorkspaceBinding_RepairsFromFlag verifies
+// that space-open-pane with --workspace repairs an empty HerdrWorkspaceID binding.
+func TestHerdrPluginSpaceOpenPane_EmptyWorkspaceBinding_RepairsFromFlag(t *testing.T) {
+	const wsID = "wX"
+	// Slash label covers the live shape; herdrWorkspaceDisplayLabel strips to "nexus:testpane".
+	const spaceLabel = "nexus:proj/testpane"
+	const sandboxHandle = "proj/testpane"
+	const displayLabel = "nexus:testpane"
+
+	fakeHerdr := writeFakeHerdrScript(t, fmt.Sprintf(`case "$*" in
+  *"workspace list"*)
+    printf '{"result":{"workspaces":[{"workspace_id":"%s","label":"%s"}]}}\n'
+    exit 0;;
+  *"workspace create"*)
+    echo "ERROR: workspace create must not be called" >&2
+    exit 1;;
+  *"plugin pane open"*)
+    printf '{"result":{"plugin_pane":{"pane":{"pane_id":"%s:p1"}}}}\n'
+    exit 0;;
+  *)
+    exit 0;;
+esac
+`, wsID, displayLabel, wsID))
+	t.Setenv("HERDR_BIN_PATH", fakeHerdr)
+
+	ctx := context.Background()
+	storeRoot := t.TempDir()
+
+	sb := domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "testpane", State: domain.Running}
+	sbIDStr := sb.ID.String()
+	g := &fakeAdoptGetter{byRef: map[string]domain.Sandbox{sbIDStr: sb}}
+
+	if err := HerdrSpacePut(ctx, storeRoot, HerdrSpaceBinding{
+		SpaceLabel:       spaceLabel,
+		SandboxHandle:    sandboxHandle,
+		SandboxID:        sbIDStr,
+		HerdrWorkspaceID: "",
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+
+	var w strings.Builder
+	if err := herdrPluginSpaceOpenPane(ctx, sbIDStr, storeRoot, g, &w, wsID); err != nil {
+		t.Fatalf("herdrPluginSpaceOpenPane: %v", err)
+	}
+
+	got, err := HerdrSpaceGetBySandboxID(ctx, storeRoot, sbIDStr)
+	if err != nil {
+		t.Fatalf("lookup after repair: %v", err)
+	}
+	if got.HerdrWorkspaceID != wsID {
+		t.Errorf("HerdrWorkspaceID = %q, want %q", got.HerdrWorkspaceID, wsID)
+	}
+
+	t.Run("label_mismatch_refused", func(t *testing.T) {
+		wrongHerdr := writeFakeHerdrScript(t, fmt.Sprintf(`case "$*" in
+  *"workspace list"*)
+    printf '{"result":{"workspaces":[{"workspace_id":"%s","label":"nexus:WRONG"}]}}\n'
+    exit 0;;
+  *) exit 0;;
+esac
+`, wsID))
+		t.Setenv("HERDR_BIN_PATH", wrongHerdr)
+
+		storeRoot2 := t.TempDir()
+		if err := HerdrSpacePut(ctx, storeRoot2, HerdrSpaceBinding{
+			SpaceLabel:       spaceLabel,
+			SandboxHandle:    sandboxHandle,
+			SandboxID:        sbIDStr,
+			HerdrWorkspaceID: "",
+		}); err != nil {
+			t.Fatalf("seed binding: %v", err)
+		}
+
+		var w2 strings.Builder
+		err := herdrPluginSpaceOpenPane(ctx, sbIDStr, storeRoot2, g, &w2, wsID)
+		if err == nil {
+			t.Fatal("want error on label mismatch, got nil")
+		}
+		if !strings.Contains(err.Error(), "label") {
+			t.Errorf("error should mention label: %v", err)
+		}
+	})
 }

@@ -1174,8 +1174,8 @@ func TestRestart_DeadPaneRecreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Restart with dead pane: %v", err)
 	}
-	if !n.calledWith("herdr", "space-open-pane", "wDead") {
-		t.Error("expected herdr space-open-pane to be called for dead pane")
+	if !n.calledWith("herdr", "space-open-pane", "sb-dead1", "--workspace", "wDead") {
+		t.Error("expected herdr space-open-pane to be called with sandboxID and --workspace wsID for dead pane")
 	}
 	// New entry should use the refreshed pane id.
 	b.mu.Lock()
@@ -2158,7 +2158,7 @@ func TestObserveWaitCtxDeadlineReturnsError(t *testing.T) {
 // and pane_id are empty (broken binding after CLI bug).
 func herdrListLineEmptyBinding(handle, sandboxID string) string {
 	return fmt.Sprintf("label=nexus:%s\tworkspace_id=\thandle=%s\tsandbox_id=%s\tpane_id=\tprincipal=\n",
-		filepath.Base(handle), handle, sandboxID)
+		handle, handle, sandboxID)
 }
 
 // herdrPaneListJSON returns a minimal herdr pane list JSON response for wsID with paneID.
@@ -2401,5 +2401,266 @@ func TestTeardown_EmptyWsID_NoEmptyWorktreeRemove(t *testing.T) {
 				t.Errorf("worktree remove called with empty --workspace arg: %v", call)
 			}
 		}
+	}
+}
+
+// TestRestart_BrokenBinding_HostShellPane_RepairsBindingBeforeOpenPane verifies
+// that when rediscover finds wsID via workspace list but pane read shows a host
+// shell (pane is dead), Restart calls space-open-pane with both sandboxID and
+// --workspace <wsID> so the CLI can repair the empty binding.
+func TestRestart_BrokenBinding_HostShellPane_RepairsBindingBeforeOpenPane(t *testing.T) {
+	const handle = "nexus/ctrl-nexus-recover-test"
+	const sbID = "sb-RECOVER01"
+	const wsID = "wRCV"
+	const paneID = "wRCV:p3"
+	base := filepath.Base(handle)
+	label := "nexus:" + base
+
+	listBroken := herdrListLineEmptyBinding(handle, sbID)
+	wsListJSON := fmt.Sprintf(`{"result":{"workspaces":[{"workspace_id":%q,"label":%q,"worktree":{"checkout_path":"/worktrees/%s"}}]}}`,
+		wsID, label, base)
+
+	var spaceOpenPaneArgv []string
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "list":
+			return wsListJSON, nil
+		case len(argv) >= 3 && argv[0] == "pane" && argv[1] == "list":
+			return herdrPaneListJSON(paneID), nil
+		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+			// --lines 50: Restart's pane-alive check → host output triggers reopen.
+			// --lines 150: verifyPaneInGuest → return guest prompt.
+			for _, a := range argv {
+				if a == "150" {
+					return "root@nexus-fake-guest:/workspace#\n", nil
+				}
+			}
+			return "newman@engine-03:~/x$ 997;2n997;1n\n", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+			return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentNameFromWsID(wsID)), nil
+		}
+		return "", nil
+	}
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list" {
+			return listBroken, nil
+		}
+		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "space-open-pane" {
+			spaceOpenPaneArgv = argv
+			// Require sandboxID and --workspace wsID in the call.
+			hasSandboxID := false
+			hasWorkspace := false
+			for i, a := range argv {
+				if a == sbID {
+					hasSandboxID = true
+				}
+				if a == "--workspace" && i+1 < len(argv) && argv[i+1] == wsID {
+					hasWorkspace = true
+				}
+			}
+			if !hasSandboxID || !hasWorkspace {
+				return "", fmt.Errorf("space-open-pane: wrong args %v; want sbID=%q and --workspace %q", argv, sbID, wsID)
+			}
+			return "", nil
+		}
+		if len(argv) >= 2 && argv[0] == "exec" {
+			return "nexus-fake-guest\n", nil
+		}
+		return "", nil
+	}
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+		func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	newRef, err := b.Restart(context.Background(), sbID, agentNameFromWsID(wsID))
+	if err != nil {
+		t.Fatalf("Restart with broken binding + host pane: %v", err)
+	}
+	if newRef == "" {
+		t.Error("Restart must return a non-empty ref")
+	}
+	if spaceOpenPaneArgv == nil {
+		t.Error("space-open-pane must be called when pane is on host shell")
+	}
+}
+
+// TestObserveThenRestart_BrokenBinding_PassesSandboxIDToSpaceOpenPane verifies
+// that when Observe triggers rediscoverEntry (broken binding, workspace_id empty)
+// and a subsequent Restart finds the pane on the host shell, space-open-pane is
+// called with the real sandbox ID (not "").
+func TestObserveThenRestart_BrokenBinding_PassesSandboxIDToSpaceOpenPane(t *testing.T) {
+	const handle = "nexus/ctrl-nexus-recover-test"
+	const sbID = "sb-RECOVER01"
+	const wsID = "wRCV"
+	const paneID = "wRCV:p3"
+	base := filepath.Base(handle)
+	label := "nexus:" + base
+
+	listBroken := herdrListLineEmptyBinding(handle, sbID)
+	wsListJSON := fmt.Sprintf(`{"result":{"workspaces":[{"workspace_id":%q,"label":%q}]}}`, wsID, label)
+
+	var spaceOpenPaneArgv []string
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "list":
+			return wsListJSON, nil
+		case len(argv) >= 3 && argv[0] == "pane" && argv[1] == "list":
+			return herdrPaneListJSON(paneID), nil
+		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+			for _, a := range argv {
+				if a == "150" {
+					return "root@nexus-fake-guest:/workspace#\n", nil
+				}
+			}
+			return "newman@engine-03:~/x$ 997;2n997;1n\n", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+			return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentNameFromWsID(wsID)), nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+			return "", nil
+		}
+		return "", nil
+	}
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list" {
+			return listBroken, nil
+		}
+		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "space-open-pane" {
+			spaceOpenPaneArgv = argv
+			hasSandboxID := false
+			hasWorkspace := false
+			for i, a := range argv {
+				if a == sbID {
+					hasSandboxID = true
+				}
+				if a == "--workspace" && i+1 < len(argv) && argv[i+1] == wsID {
+					hasWorkspace = true
+				}
+			}
+			if !hasSandboxID || !hasWorkspace {
+				return "", fmt.Errorf("space-open-pane: wrong args %v; want sbID=%q and --workspace %q", argv, sbID, wsID)
+			}
+			return "", nil
+		}
+		if len(argv) >= 2 && argv[0] == "exec" {
+			if len(argv) > 2 && argv[1] == "" {
+				t.Errorf("exec called with empty sandbox ID: %v", argv)
+			}
+			return "nexus-fake-guest\n", nil
+		}
+		return "", nil
+	}
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+		func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	agentRef := agentNameFromWsID(wsID)
+	_, _ = b.Observe(context.Background(), agentRef, false)
+
+	b.mu.Lock()
+	observedEntry := b.entries[agentRef]
+	b.mu.Unlock()
+	if observedEntry != nil && observedEntry.nexusSandboxID != sbID {
+		t.Errorf("after Observe: nexusSandboxID = %q, want %q", observedEntry.nexusSandboxID, sbID)
+	}
+
+	_, err := b.Restart(context.Background(), sbID, agentRef)
+	if err != nil {
+		t.Fatalf("Restart after Observe on broken binding: %v", err)
+	}
+	if spaceOpenPaneArgv == nil {
+		t.Error("space-open-pane must be called when pane is on host shell")
+	}
+}
+
+func TestRecoverSandboxByWorkspaceLabel_AmbiguousBasename(t *testing.T) {
+	handleA := "repoA/ctrl-shared-base"
+	handleB := "repoB/ctrl-shared-base"
+	listOut := fmt.Sprintf(
+		"label=nexus:%s\tworkspace_id=\thandle=%s\tsandbox_id=sb-A\tpane_id=\tprincipal=\n"+
+			"label=nexus:%s\tworkspace_id=\thandle=%s\tsandbox_id=sb-B\tpane_id=\tprincipal=\n",
+		handleA, handleA,
+		handleB, handleB,
+	)
+	wsLabel := "nexus:ctrl-shared-base"
+
+	sbID, handle := recoverSandboxByWorkspaceLabel(listOut, wsLabel)
+	if sbID != "" || handle != "" {
+		t.Errorf("ambiguous basename: want (\"\",\"\"), got (%q,%q)", sbID, handle)
+	}
+
+	singleList := fmt.Sprintf("label=nexus:%s\tworkspace_id=\thandle=%s\tsandbox_id=sb-A\tpane_id=\tprincipal=\n",
+		handleA, handleA)
+	sbID, handle = recoverSandboxByWorkspaceLabel(singleList, wsLabel)
+	if sbID != "sb-A" || handle != handleA {
+		t.Errorf("unique match: want (sb-A,%q), got (%q,%q)", handleA, sbID, handle)
+	}
+}
+
+func TestRestart_TwoRowsSharingBasename_FallsBackToSandboxIDArg(t *testing.T) {
+	const handleA = "repoA/ctrl-shared-bb"
+	const handleB = "repoB/ctrl-shared-bb"
+	const sbIDA = "sb-BBA"
+	const wsID = "wBB"
+	const paneID = "wBB:p1"
+
+	wsListJSON := fmt.Sprintf(`{"result":{"workspaces":[{"workspace_id":%q,"label":"nexus:ctrl-shared-bb"}]}}`, wsID)
+	listOut := fmt.Sprintf(
+		"label=nexus:%s\tworkspace_id=\thandle=%s\tsandbox_id=%s\tpane_id=\tprincipal=\n"+
+			"label=nexus:%s\tworkspace_id=\thandle=%s\tsandbox_id=sb-BBB\tpane_id=\tprincipal=\n",
+		handleA, handleA, sbIDA,
+		handleB, handleB,
+	)
+
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "list":
+			return wsListJSON, nil
+		case len(argv) >= 3 && argv[0] == "pane" && argv[1] == "list":
+			return herdrPaneListJSON(paneID), nil
+		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+			return "root@nexus-fake-guest:/workspace#\n", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+			return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentNameFromWsID(wsID)), nil
+		}
+		return "", nil
+	}
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list" {
+			return listOut, nil
+		}
+		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "space-open-pane" {
+			return "", nil
+		}
+		if len(argv) >= 2 && argv[0] == "exec" {
+			if len(argv) > 2 && argv[1] == "" {
+				t.Errorf("exec called with empty sandbox ID: %v", argv)
+			}
+			return "nexus-fake-guest\n", nil
+		}
+		return "", nil
+	}
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+		func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+	_, _ = b.Observe(context.Background(), agentNameFromWsID(wsID), false)
+
+	b.mu.Lock()
+	e, ok := b.entries[agentNameFromWsID(wsID)]
+	b.mu.Unlock()
+	if ok && e.nexusSandboxID != "" {
+		t.Errorf("after Observe with ambiguous basename: nexusSandboxID = %q, want empty", e.nexusSandboxID)
+	}
+
+	newRef, err := b.Restart(context.Background(), sbIDA, agentNameFromWsID(wsID))
+	if err != nil {
+		t.Fatalf("Restart with ambiguous basename should succeed via fallback: %v", err)
+	}
+	if newRef == "" {
+		t.Error("Restart must return non-empty ref")
 	}
 }

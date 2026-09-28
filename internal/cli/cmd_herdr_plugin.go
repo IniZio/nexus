@@ -244,6 +244,16 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin space-open-pane: sandbox ref or space label required"}
 		}
+		if rest[0] == "" || strings.HasPrefix(rest[0], "--") {
+			return &UsageError{Msg: "__herdr-plugin space-open-pane: first argument must be a sandbox ref or space label, not empty or a flag"}
+		}
+		var workspaceHint string
+		for i := 1; i+1 < len(rest); i++ {
+			if rest[i] == "--workspace" {
+				workspaceHint = rest[i+1]
+				break
+			}
+		}
 		svc, err := newSandboxService()
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-open-pane: " + err.Error(), Err: err}
@@ -252,7 +262,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		if err != nil {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin space-open-pane: resolve store: " + err.Error(), Err: err}
 		}
-		return herdrPluginSpaceOpenPane(ctx, rest[0], storeRoot, svc, out.w)
+		return herdrPluginSpaceOpenPane(ctx, rest[0], storeRoot, svc, out.w, workspaceHint)
 
 	case "space-pause":
 		if len(rest) == 0 {
@@ -1756,7 +1766,7 @@ func herdrParsePluginPaneID(raw string) string {
 }
 
 /** herdrPluginSpaceOpenPane resolves a space by ref, label, or workspace_id and opens another guest-shell pane. */
-func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string, svc herdrAdoptGetter, w io.Writer) error {
+func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot string, svc herdrAdoptGetter, w io.Writer, workspaceHint string) error {
 	herdrBin, binErr := resolveHerdrBin()
 	if binErr != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: " + binErr.Error(), Err: binErr}
@@ -1768,6 +1778,13 @@ func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot 
 	}
 	if adopted {
 		herdrAdoptNotice(b)
+	}
+
+	if workspaceHint != "" {
+		b, err = herdrSpaceApplyWorkspaceHint(ctx, herdrBin, storeRoot, b, workspaceHint)
+		if err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "space-open-pane: " + err.Error(), Err: err}
+		}
 	}
 
 	/**
@@ -1811,6 +1828,40 @@ func herdrPluginSpaceOpenPane(ctx context.Context, refOrLabel string, storeRoot 
 	return nil
 }
 
+// herdrSpaceApplyWorkspaceHint sets b.HerdrWorkspaceID from the hint when the
+// binding has none, after verifying the workspace exists in herdr with the
+// expected label. Returns error on label mismatch or workspace not found.
+func herdrSpaceApplyWorkspaceHint(ctx context.Context, herdrBin, storeRoot string, b HerdrSpaceBinding, wsID string) (HerdrSpaceBinding, error) {
+	if b.HerdrWorkspaceID != "" {
+		if b.HerdrWorkspaceID != wsID {
+			return HerdrSpaceBinding{}, fmt.Errorf("binding already has workspace %q; refusing to overwrite with %q", b.HerdrWorkspaceID, wsID)
+		}
+		return b, nil
+	}
+	out, err := herdrExecCommandContext(ctx, herdrBin, "workspace", "list").Output()
+	if err != nil {
+		return HerdrSpaceBinding{}, fmt.Errorf("--workspace hint: herdr workspace list: %w", err)
+	}
+	refs, parseErr := herdrParseWorkspaceRefs(out)
+	if parseErr != nil {
+		return HerdrSpaceBinding{}, fmt.Errorf("--workspace hint: %w", parseErr)
+	}
+	wantLabel := herdrWorkspaceDisplayLabel(b.SpaceLabel)
+	for _, ref := range refs {
+		if ref.WorkspaceID == wsID {
+			if ref.Label != wantLabel {
+				return HerdrSpaceBinding{}, fmt.Errorf("--workspace hint: workspace %q has label %q, want %q", wsID, ref.Label, wantLabel)
+			}
+			b.HerdrWorkspaceID = wsID
+			if putErr := HerdrSpacePut(ctx, storeRoot, b); putErr != nil {
+				return HerdrSpaceBinding{}, fmt.Errorf("--workspace hint: persist binding: %w", putErr)
+			}
+			return b, nil
+		}
+	}
+	return HerdrSpaceBinding{}, fmt.Errorf("--workspace hint: workspace %q not found in herdr workspace list", wsID)
+}
+
 /** herdrPluginNewTab opens a tab: new guest pane if bound, else herdr default. */
 func herdrPluginNewTab(ctx context.Context, workspaceID, storeRoot string, svc herdrAdoptGetter, w io.Writer) error {
 	herdrBin, binErr := resolveHerdrBin()
@@ -1828,7 +1879,7 @@ func herdrPluginNewTab(ctx context.Context, workspaceID, storeRoot string, svc h
 	}
 
 	if lookupErr == nil {
-		return herdrPluginSpaceOpenPane(ctx, workspaceID, storeRoot, svc, w)
+		return herdrPluginSpaceOpenPane(ctx, workspaceID, storeRoot, svc, w, "")
 	}
 
 	if binErr != nil {
@@ -1862,7 +1913,7 @@ func herdrSpaceResolve(ctx context.Context, storeRoot, key string) (HerdrSpaceBi
 		return HerdrSpaceBinding{}, err
 	}
 	for _, b := range all {
-		if b.HerdrWorkspaceID == key {
+		if key != "" && b.HerdrWorkspaceID == key {
 			return b, nil
 		}
 	}

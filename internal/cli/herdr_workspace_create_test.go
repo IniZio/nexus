@@ -461,7 +461,7 @@ func TestHerdrPluginSpaceOpenPane_SplitsGuestPaneThenClosesRootPane(t *testing.T
 	})
 
 	var out strings.Builder
-	if err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &out); err != nil {
+	if err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &out, ""); err != nil {
 		t.Fatalf("space-open-pane: %v", err)
 	}
 
@@ -556,7 +556,7 @@ func TestHerdrPluginSpaceOpenPane_ReusedWorkspaceOpensPaneWithoutCreating(t *tes
 	})
 
 	var out strings.Builder
-	if err := herdrPluginSpaceOpenPane(ctx, "proj/z", storeRoot, g, &out); err != nil {
+	if err := herdrPluginSpaceOpenPane(ctx, "proj/z", storeRoot, g, &out, ""); err != nil {
 		t.Fatalf("space-open-pane: %v", err)
 	}
 
@@ -622,7 +622,7 @@ func TestHerdrPluginSpaceOpenPane_ClosesRootPaneAfterGuestPaneOpens(t *testing.T
 		}
 	})
 
-	if err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &strings.Builder{}); err != nil {
+	if err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &strings.Builder{}, ""); err != nil {
 		t.Fatalf("space-open-pane: %v", err)
 	}
 
@@ -669,7 +669,7 @@ func TestHerdrPluginSpaceOpenPane_DoesNotCloseRootPaneIfGuestPaneOpenFails(t *te
 		}
 	})
 
-	err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &strings.Builder{})
+	err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &strings.Builder{}, "")
 	if err == nil {
 		t.Fatal("expected error when guest pane open fails, got nil")
 	}
@@ -711,7 +711,7 @@ func TestHerdrPluginSpaceOpenPane_CloseRootPaneFailureDoesNotFailSpaceCreate(t *
 	})
 
 	var out strings.Builder
-	if err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &out); err != nil {
+	if err := herdrPluginSpaceOpenPane(ctx, sb.Handle(), storeRoot, g, &out, ""); err != nil {
 		t.Fatalf("space-open-pane must succeed even when pane close fails, got: %v", err)
 	}
 

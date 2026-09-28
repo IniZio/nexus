@@ -1202,12 +1202,15 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 		}
 	}
 
-	// Verify the pane is alive and in the guest. After a sandbox stop/start the
-	// guest shell may have exited; check once and recreate the pane if needed.
+	sbID := e.nexusSandboxID
+	if sbID == "" {
+		sbID = sandboxID
+	}
+
 	paneID := e.paneID
 	paneOut, _ := b.herdrRun(ctx, nil, "pane", "read", paneID, "--source", "recent-unwrapped", "--lines", "50")
 	if extractHostnameFromPrompt(paneOut) == "" {
-		reopenOut, reopenErr := b.nexusRun(ctx, nil, "herdr", "space-open-pane", e.wsID)
+		reopenOut, reopenErr := b.nexusRun(ctx, nil, "herdr", "space-open-pane", sbID, "--workspace", e.wsID)
 		if reopenErr != nil {
 			return "", fmt.Errorf("restart %s: space-open-pane: %w\n%s", sandboxID, reopenErr, reopenOut)
 		}
@@ -1219,18 +1222,17 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 		}
 	}
 
-	// Reuse existing session/settings; write settings again in case guest /tmp was wiped.
-	sessionID := deterministicSessionID(e.nexusSandboxID)
+	sessionID := deterministicSessionID(sbID)
 	permMode := b.permMode()
 	settingsJSON := controllerSettingsJSON(permMode)
 	settingsPath := "/tmp/ctrl-settings.json"
 	writeCmd := fmt.Sprintf("printf '%%s' %s > %s", shellescape(settingsJSON), settingsPath)
-	if out, wErr := b.nexusRun(ctx, nil, "exec", e.nexusSandboxID, "--", "sh", "-c", writeCmd); wErr != nil {
+	if out, wErr := b.nexusRun(ctx, nil, "exec", sbID, "--", "sh", "-c", writeCmd); wErr != nil {
 		slog.Error("restart: write controller settings", "sandbox", sandboxID, "err", wErr, "out", out)
 	}
 
 	newAgentName := agentNameFromWsID(e.wsID)
-	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, e.nexusSandboxID, permMode, "", sessionID, settingsPath, true)
+	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, sbID, permMode, "", sessionID, settingsPath, true)
 	if err != nil {
 		return "", fmt.Errorf("restart %s: start agent: %w", sandboxID, err)
 	}
@@ -1238,7 +1240,7 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 	newEntry := &entry{
 		paneID:         paneID,
 		nexusHandle:    e.nexusHandle,
-		nexusSandboxID: e.nexusSandboxID,
+		nexusSandboxID: sbID,
 		wsID:           e.wsID,
 		branch:         e.branch,
 		agentSessionID: sessionID,
@@ -1365,9 +1367,11 @@ func (b *Backend) rediscoverEntry(ctx context.Context, agentRef string) (*entry,
 		return nil, fmt.Errorf("herdr backend: rediscover %q: nexus herdr list: %w", agentRef, err)
 	}
 	wsID := parseWorkspaceIDByAgentName(listOut, agentRef)
+	var wsListOut string
 	if wsID == "" {
 		// Binding may have lost workspace_id; iterate herdr workspace list to find wsID by derived name.
-		wsListOut, wsListErr := b.herdrRun(ctx, nil, "workspace", "list")
+		var wsListErr error
+		wsListOut, wsListErr = b.herdrRun(ctx, nil, "workspace", "list")
 		if wsListErr != nil {
 			return nil, fmt.Errorf("herdr backend: agentRef %q not found in nexus herdr list", agentRef)
 		}
@@ -1386,9 +1390,21 @@ func (b *Backend) rediscoverEntry(ctx context.Context, agentRef string) (*entry,
 		return nil, fmt.Errorf("herdr backend: agentRef %q (workspace %s) not found in nexus herdr list", agentRef, wsID)
 	}
 	sbID := parseSandboxID(listOut, wsID)
+	nexusHandle := parseNexusHandle(listOut, wsID)
+	if sbID == "" && wsListOut != "" {
+		if wsLabel := parseWorkspaceLabelByID(wsListOut, wsID); wsLabel != "" {
+			recSbID, recHandle := recoverSandboxByWorkspaceLabel(listOut, wsLabel)
+			if recSbID != "" {
+				sbID = recSbID
+			}
+			if nexusHandle == "" && recHandle != "" {
+				nexusHandle = recHandle
+			}
+		}
+	}
 	e := &entry{
 		paneID:         paneID,
-		nexusHandle:    parseNexusHandle(listOut, wsID),
+		nexusHandle:    nexusHandle,
 		nexusSandboxID: sbID,
 		wsID:           wsID,
 		agentSessionID: deterministicSessionID(sbID),
@@ -1474,7 +1490,7 @@ func (b *Backend) resolveOrOpenPane(ctx context.Context, sandboxID, wsID string)
 		return paneID, nil
 	}
 	// No pane — open one and recheck.
-	reopenOut, reopenErr := b.nexusRun(ctx, nil, "herdr", "space-open-pane", wsID)
+	reopenOut, reopenErr := b.nexusRun(ctx, nil, "herdr", "space-open-pane", sandboxID, "--workspace", wsID)
 	if reopenErr != nil {
 		return "", fmt.Errorf("herdr backend: sandbox %q binding has no herdr workspace/pane; recovery failed: space-open-pane: %w\n%s", sandboxID, reopenErr, reopenOut)
 	}
@@ -1730,6 +1746,76 @@ func findListRowBySandboxID(out, sandboxID string) (fields []string, found bool)
 		}
 	}
 	return nil, false
+}
+
+// recoverSandboxByWorkspaceLabel returns (sbID, handle) for the unique empty-workspace_id row
+// whose display label ("nexus:"+filepath.Base(handle)) equals wsLabel.
+// Returns ("","") if zero or more than one row matches.
+func recoverSandboxByWorkspaceLabel(listOut, wsLabel string) (sbID, handle string) {
+	type candidate struct{ sbID, handle string }
+	var matches []candidate
+	for _, line := range strings.Split(listOut, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fs := strings.Split(line, "\t")
+		if fieldValue(fs, "workspace_id=") != "" {
+			continue
+		}
+		h := fieldValue(fs, "handle=")
+		if h == "" {
+			continue
+		}
+		if "nexus:"+filepath.Base(h) == wsLabel {
+			matches = append(matches, candidate{
+				sbID:   fieldValue(fs, "sandbox_id="),
+				handle: h,
+			})
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].sbID, matches[0].handle
+	}
+	return "", ""
+}
+
+// findListRowByLabel returns the herdr list row whose label= field matches label.
+func findListRowByLabel(out, label string) (fields []string, found bool) {
+	needle := "label=" + label
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		fs := strings.Split(line, "\t")
+		if containsField(fs, needle) {
+			return fs, true
+		}
+	}
+	return nil, false
+}
+
+// parseWorkspaceLabelByID returns the label for the workspace with workspace_id == wsID
+// from herdr workspace list JSON output.
+func parseWorkspaceLabelByID(out, wsID string) string {
+	var parsed struct {
+		Result struct {
+			Workspaces []struct {
+				WorkspaceID string `json:"workspace_id"`
+				Label       string `json:"label"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil && len(parsed.Result.Workspaces) > 0 {
+			break
+		}
+	}
+	for _, ws := range parsed.Result.Workspaces {
+		if ws.WorkspaceID == wsID {
+			return ws.Label
+		}
+	}
+	return ""
 }
 
 // fieldValue extracts the value after prefix from a slice of tab-split fields.
