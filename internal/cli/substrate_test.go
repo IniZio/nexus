@@ -455,42 +455,80 @@ func TestSubstrateFindsCloudHypervisorOutsidePATH(t *testing.T) {
 	}
 }
 
-// TestDoctorToolChecks_EmptyPATH verifies that runAllChecks reports [FAIL] for
-// mke2fs and e2fsck when they are absent from PATH.
+// TestDoctorToolChecks_HostbinOK verifies that when resolveHostBin succeeds,
+// tool checks report OK=true with source and path in Detail.
 //
-// MUTATION PROOF: remove the mke2fs/e2fsck checks from runAllChecks →
+// MUTATION PROOF: remove the mke2fs/e2fsck/resize2fs checks from runAllChecks →
 // those names are never found in the check slice → this test goes RED.
-func TestDoctorToolChecks_EmptyPATH(t *testing.T) {
+func TestDoctorToolChecks_HostbinOK(t *testing.T) {
 	p := probes{
-		goos:     "linux",
-		lookPath: func(string) (string, error) { return "", errors.New("not found") },
-		openKVM:  func() error { return nil },
-		getenv:   func(string) string { return "" },
-		executable: func() (string, error) {
-			return "/usr/local/bin/nexus", nil
+		goos:    "linux",
+		openKVM: func() error { return nil },
+		resolveHostBin: func(_ context.Context, name string) (hostbin.Resolved, error) {
+			return hostbin.Resolved{Name: name, Path: "/cache/" + name, Source: hostbin.SourceEmbedded}, nil
 		},
 	}
 	checks, _ := runAllChecks(p)
 
-	toolChecks := map[string]*CheckResult{}
-	for i := range checks {
-		if checks[i].Name == "tool_mke2fs" || checks[i].Name == "tool_e2fsck" {
-			c := checks[i]
-			toolChecks[checks[i].Name] = &c
+	for _, name := range []string{"mke2fs", "e2fsck", "resize2fs"} {
+		var chk *CheckResult
+		for i := range checks {
+			if checks[i].Name == "tool_"+name {
+				c := checks[i]
+				chk = &c
+				break
+			}
 		}
-	}
-
-	for _, name := range []string{"tool_mke2fs", "tool_e2fsck"} {
-		c, ok := toolChecks[name]
-		if !ok {
-			t.Errorf("check %q not found in runAllChecks output", name)
+		if chk == nil {
+			t.Errorf("check %q not found in runAllChecks output", "tool_"+name)
 			continue
 		}
-		if c.OK {
-			t.Errorf("check %q: OK=true with empty PATH; want false", name)
+		if !chk.OK {
+			t.Errorf("check %q: OK=false; want true; detail=%q", "tool_"+name, chk.Detail)
 		}
-		if c.Remediation == "" {
-			t.Errorf("check %q: Remediation is empty; want install hint", name)
+		if !strings.Contains(chk.Detail, "embedded") {
+			t.Errorf("check %q: Detail should contain source; got %q", "tool_"+name, chk.Detail)
+		}
+		if !strings.Contains(chk.Detail, "/cache/"+name) {
+			t.Errorf("check %q: Detail should contain path; got %q", "tool_"+name, chk.Detail)
+		}
+	}
+}
+
+// TestDoctorToolChecks_HostbinFail verifies that when resolveHostBin fails,
+// tool checks report OK=false with a remediation that does not mention apt or
+// any distro package manager.
+func TestDoctorToolChecks_HostbinFail(t *testing.T) {
+	p := probes{
+		goos:    "linux",
+		openKVM: func() error { return nil },
+		resolveHostBin: func(_ context.Context, name string) (hostbin.Resolved, error) {
+			return hostbin.Resolved{}, errors.New("hostbin: host binary not found: " + name)
+		},
+	}
+	checks, _ := runAllChecks(p)
+
+	for _, name := range []string{"mke2fs", "e2fsck", "resize2fs"} {
+		var chk *CheckResult
+		for i := range checks {
+			if checks[i].Name == "tool_"+name {
+				c := checks[i]
+				chk = &c
+				break
+			}
+		}
+		if chk == nil {
+			t.Errorf("check %q not found in runAllChecks output", "tool_"+name)
+			continue
+		}
+		if chk.OK {
+			t.Errorf("check %q: OK=true; want false on resolver error", "tool_"+name)
+		}
+		if chk.Remediation == "" {
+			t.Errorf("check %q: Remediation is empty", "tool_"+name)
+		}
+		if strings.Contains(chk.Remediation, "apt") {
+			t.Errorf("check %q: Remediation must not mention apt; got %q", "tool_"+name, chk.Remediation)
 		}
 	}
 }

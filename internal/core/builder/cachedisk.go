@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
 const cacheDiskSizeBytes int64 = 10 * 1024 * 1024 * 1024 // default sparse size for new per-ecosystem cache disks
@@ -30,7 +32,7 @@ var fsckCacheDisk = func(imgPath string) error { return runE2fsck(imgPath) }
 // failure. The builder cache ext4 uses ordered-data journaling, so an OOM- or
 // SIGKILL-ed VM normally leaves nothing worse than a journal replay.
 func runE2fsck(imgPath string) error {
-	e2fsckPath, err := exec.LookPath("e2fsck")
+	e2fsckPath, err := hostbin.Resolve(context.Background(), hostbin.E2fsck)
 	if err != nil {
 		return ErrE2fsckUnavailable
 	}

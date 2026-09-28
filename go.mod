@@ -28,6 +28,7 @@ require (
 
 require (
 	github.com/containerd/containerd/v2 v2.2.5
+	github.com/klauspost/compress v1.18.6
 	github.com/slack-go/slack v0.29.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/mod v0.38.0
@@ -78,7 +79,6 @@ require (
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/miekg/dns v1.1.72 // indirect

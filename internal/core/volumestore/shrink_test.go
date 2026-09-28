@@ -2,6 +2,7 @@ package volumestore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
 func debugfsAvailable() bool {
@@ -121,11 +124,10 @@ func TestShrinkExt4ToMinimum_Idempotent(t *testing.T) {
 func TestShrinkExt4ToMinimum_ToolsUnavailable(t *testing.T) {
 	path := newTestExt4Image(t, 64*1024*1024)
 
-	oldPath := os.Getenv("PATH")
-	defer os.Setenv("PATH", oldPath) //nolint:errcheck
-	os.Setenv("PATH", "")            //nolint:errcheck
+	t.Setenv(hostbin.EnvVar(hostbin.E2fsck), "/nonexistent/e2fsck")
+	t.Setenv(hostbin.EnvVar(hostbin.Resize2fs), "/nonexistent/resize2fs")
 
-	if _, err := shrinkExt4ToMinimum(context.Background(), path); err != ErrE2fsckUnavailable {
+	if _, err := shrinkExt4ToMinimum(context.Background(), path); !errors.Is(err, ErrE2fsckUnavailable) {
 		t.Fatalf("expected ErrE2fsckUnavailable, got: %v", err)
 	}
 }

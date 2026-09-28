@@ -29,6 +29,7 @@ func main() {
 	agentTag := flag.String("agent-tag", "dev", "build tag embedded in nexus-agent via -X main.agentBuildTag")
 	agentPkg := flag.String("agent-pkg", "./cmd/nexus-agent", "Go package path for nexus-agent")
 	skipAgent := flag.Bool("skip-agent", false, "skip building nexus-agent (leave existing files untouched)")
+	localDir := flag.String("local-dir", "", "directory of locally-built binaries; <dir>/<goarch>/<name> or <dir>/<name> used instead of network fetch")
 	flag.Parse()
 
 	if *out == "" {
@@ -72,15 +73,39 @@ func main() {
 			}
 		}
 
-		data, err := hostbin.FetchVerified(ctx, client, p, *goarch)
-		if err != nil {
-			if errors.Is(err, hostbin.ErrChecksumMismatch) {
-				fmt.Fprintf(os.Stderr, "genartifacts: checksum mismatch for %s — build aborted\n", name)
-			} else {
-				fmt.Fprintf(os.Stderr, "genartifacts: fetch %s: %v\n", name, err)
+		var (
+			data []byte
+			err  error
+		)
+		useLocal := false
+		if *localDir != "" {
+			data, err = readLocalBinary(*localDir, *goarch, name)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintf(os.Stderr, "genartifacts: local read %s: %v\n", name, err)
+				exitCode = 1
+				continue
 			}
-			exitCode = 1
-			continue
+			if err == nil {
+				useLocal = true
+				want, _ := p.BinarySHA256(*goarch)
+				if sha256hex(data) != want {
+					fmt.Fprintf(os.Stderr, "genartifacts: checksum mismatch for %s — build aborted\n", name)
+					exitCode = 1
+					continue
+				}
+			}
+		}
+		if !useLocal {
+			data, err = hostbin.FetchVerified(ctx, client, p, *goarch)
+			if err != nil {
+				if errors.Is(err, hostbin.ErrChecksumMismatch) {
+					fmt.Fprintf(os.Stderr, "genartifacts: checksum mismatch for %s — build aborted\n", name)
+				} else {
+					fmt.Fprintf(os.Stderr, "genartifacts: fetch %s: %v\n", name, err)
+				}
+				exitCode = 1
+				continue
+			}
 		}
 
 		compressed, err := encodeZst(data)
@@ -109,7 +134,15 @@ func main() {
 			exitCode = 1
 			continue
 		}
-		fmt.Printf("wrote %s %s raw=%d zst=%d\n", name, p.Version, len(data), len(compressed))
+		if useLocal {
+			localPath := filepath.Join(*localDir, *goarch, name)
+			if _, statErr := os.Stat(localPath); statErr != nil {
+				localPath = filepath.Join(*localDir, name)
+			}
+			fmt.Printf("local %s from %s raw=%d zst=%d\n", name, localPath, len(data), len(compressed))
+		} else {
+			fmt.Printf("wrote %s %s raw=%d zst=%d\n", name, p.Version, len(data), len(compressed))
+		}
 	}
 
 	if !*skipAgent {
@@ -145,6 +178,20 @@ func main() {
 	os.Exit(exitCode)
 }
 
+// readLocalBinary returns the contents of <dir>/<goarch>/<name> if it exists
+// as a regular file, falling back to <dir>/<name>.
+func readLocalBinary(dir, goarch, name string) ([]byte, error) {
+	archPath := filepath.Join(dir, goarch, name)
+	if fi, err := os.Stat(archPath); err == nil && fi.Mode().IsRegular() {
+		return os.ReadFile(archPath)
+	}
+	flat := filepath.Join(dir, name)
+	if fi, err := os.Stat(flat); err == nil && fi.Mode().IsRegular() {
+		return os.ReadFile(flat)
+	}
+	return nil, fmt.Errorf("%w: not found in %s (tried %s/%s and %s)", os.ErrNotExist, dir, goarch, name, name)
+}
+
 func buildAgent(out, goarch, tag, pkg string) error {
 	tmp, err := os.MkdirTemp("", "genartifacts-agent-")
 	if err != nil {
@@ -156,7 +203,7 @@ func buildAgent(out, goarch, tag, pkg string) error {
 	cmd := exec.Command("go", "build",
 		"-trimpath",
 		"-buildvcs=false",
-		"-ldflags", "-X main.agentBuildTag="+tag,
+		"-ldflags", "-s -w -X main.agentBuildTag="+tag,
 		"-o", bin,
 		pkg,
 	)

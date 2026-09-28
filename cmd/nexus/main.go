@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 
+	_ "github.com/IniZio/nexus/internal/core/hostbin/embedded"
+
 	"github.com/IniZio/nexus/internal/cli"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/supervisor"

@@ -1,5 +1,6 @@
 // Package hostbin resolves pinned host executables from env override,
 // embedded zstd artifact, pinned download, or PATH — in that order.
+// Artifacts are linked at build time by blank-importing internal/core/hostbin/embedded.
 package hostbin
 
 import (
@@ -32,6 +33,20 @@ var (
 	ErrUnknown          = errors.New("hostbin: unknown host binary")
 	ErrNotFound         = errors.New("hostbin: host binary not found")
 )
+
+// embeddedFS holds artifacts registered by package hostbin/embedded's init.
+var embeddedFS fs.FS = emptyFS{}
+
+// emptyFS is an fs.FS with no files.
+type emptyFS struct{}
+
+func (emptyFS) Open(name string) (fs.File, error) {
+	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+}
+
+// RegisterEmbedded sets the package-level embedded FS.
+// Called by package hostbin/embedded's init; host binaries blank-import that package.
+func RegisterEmbedded(f fs.FS) { embeddedFS = f }
 
 // Source identifies how a binary was located.
 type Source string

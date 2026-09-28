@@ -272,25 +272,20 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		}
 	}
 
-	if p.lookPath != nil {
-		for _, tool := range []struct {
-			name string
-			hint string
-		}{
-			{"mke2fs", "install e2fsprogs: sudo apt-get install e2fsprogs"},
-			{"e2fsck", "install e2fsprogs: sudo apt-get install e2fsprogs"},
-		} {
-			_, lookErr := p.lookPath(tool.name)
+	if p.resolveHostBin != nil {
+		for _, name := range []string{"mke2fs", "e2fsck", "resize2fs"} {
 			chk := CheckResult{
-				Name:        "tool_" + tool.name,
-				Description: tool.name + " executable in PATH",
+				Name:        "tool_" + name,
+				Description: name + " executable (hostbin)",
 			}
-			if lookErr == nil {
+			res, err := p.resolveHostBin(context.Background(), name)
+			if err == nil {
 				chk.OK = true
+				chk.Detail = fmt.Sprintf("%s: %s", res.Source, res.Path)
 			} else {
 				chk.OK = false
-				chk.Detail = fmt.Sprintf("%s not found on PATH", tool.name)
-				chk.Remediation = tool.hint
+				chk.Detail = err.Error()
+				chk.Remediation = fmt.Sprintf("rebuild nexus with `make artifacts` or set %s", hostbin.EnvVar(name))
 			}
 			checks = append(checks, chk)
 		}

@@ -63,21 +63,23 @@ func TestDownloadableVirtiofsd(t *testing.T) {
 	}
 }
 
-func TestE2fsprogsNotDownloadable(t *testing.T) {
-	for _, name := range []string{"mke2fs", "e2fsck", "resize2fs"} {
-		pins := Pins()
+func TestE2fsprogsDownloadable(t *testing.T) {
+	pins := Pins()
+	for _, name := range []string{Mke2fs, E2fsck, Resize2fs} {
 		p, ok := pins[name]
 		if !ok {
 			t.Errorf("pin %q missing", name)
 			continue
 		}
-		for _, arch := range []string{"amd64", "arm64"} {
-			if p.Downloadable(arch) {
-				t.Errorf("%s[%s] should not be downloadable", name, arch)
-			}
+		if !p.Downloadable("amd64") {
+			t.Errorf("%s[amd64] should be downloadable", name)
 		}
-		if p.Note == "" {
-			t.Errorf("%s: Note must be non-empty", name)
+		if p.Downloadable("arm64") {
+			t.Errorf("%s[arm64] should not be downloadable", name)
+		}
+		u := p.URL("amd64")
+		if !strings.Contains(u, "e2fsprogs-v1.47.2") {
+			t.Errorf("%s[amd64] URL %q does not contain e2fsprogs-v1.47.2", name, u)
 		}
 	}
 }

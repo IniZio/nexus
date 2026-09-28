@@ -20,6 +20,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
 	"github.com/IniZio/nexus/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
 // fakeAgentBytes is a minimal placeholder for the nexus-agent binary in tests.
@@ -197,9 +198,7 @@ func TestEnsureBuilderImage_EmptyAgentRejected(t *testing.T) {
 // TestEnsureBuilderImage_MissingMke2fs verifies ErrMke2fsUnavailable is
 // surfaced when mke2fs is hidden from PATH.
 func TestEnsureBuilderImage_MissingMke2fs(t *testing.T) {
-	orig := os.Getenv("PATH")
-	t.Cleanup(func() { os.Setenv("PATH", orig) })
-	os.Setenv("PATH", "/nonexistent")
+	t.Setenv(hostbin.EnvVar(hostbin.Mke2fs), "/nonexistent/mke2fs")
 
 	const fakeDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	img := buildMinimalOCIImage(t)

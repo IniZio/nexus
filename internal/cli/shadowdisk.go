@@ -42,6 +42,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/builder"
 	"github.com/IniZio/nexus/internal/core/diskname"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/service"
 )
 
@@ -169,14 +170,14 @@ func createShadowDisk(ctx context.Context, spec ShadowDisk) error {
 	return nil
 }
 
-// ErrShadowMke2fsUnavailable is returned when mke2fs is not on the host PATH.
-var ErrShadowMke2fsUnavailable = fmt.Errorf("shadow disk: mke2fs not found on PATH (install e2fsprogs)")
+// ErrShadowMke2fsUnavailable is returned when mke2fs cannot be resolved.
+var ErrShadowMke2fsUnavailable = fmt.Errorf("shadow disk: mke2fs unavailable")
 
 // formatExt4 formats the file at path as an empty ext4 filesystem using mke2fs.
 func formatExt4(ctx context.Context, path string) error {
-	mke2fsPath, err := exec.LookPath("mke2fs")
+	mke2fsPath, err := hostbin.Resolve(ctx, hostbin.Mke2fs)
 	if err != nil {
-		return ErrShadowMke2fsUnavailable
+		return fmt.Errorf("%w: %v", ErrShadowMke2fsUnavailable, err)
 	}
 	cmd := exec.CommandContext(ctx, mke2fsPath,
 		"-t", "ext4",

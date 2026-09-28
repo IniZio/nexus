@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1124,7 +1126,7 @@ func TestWarmBench(t *testing.T) {
 		f.Close()
 		t.Fatal(err)
 	}
-	if mke2fsBin, err := exec.LookPath("mke2fs"); err == nil {
+	if mke2fsBin, err := hostbin.Resolve(context.Background(), hostbin.Mke2fs); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		_ = exec.CommandContext(ctx, mke2fsBin, "-F", "-t", "ext4", "-E", "nodiscard", diskPath).Run()

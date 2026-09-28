@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
-// ErrMke2fsUnavailable is returned when mke2fs is not on PATH.
-var ErrMke2fsUnavailable = fmt.Errorf("volumestore: mke2fs not found on PATH (install e2fsprogs)")
+// ErrMke2fsUnavailable is returned when mke2fs cannot be resolved.
+var ErrMke2fsUnavailable = fmt.Errorf("volumestore: mke2fs unavailable")
 
 // preallocateFile creates (or truncates) the file at path to size bytes as a
 // sparse file (no disk blocks allocated until data is written).
@@ -25,9 +27,9 @@ func preallocateFile(path string, size int64) error {
 // formatExt4 formats the file at path as an empty ext4 filesystem using
 // mke2fs.  Mirrors the pattern used in internal/cli/shadowdisk.go.
 func formatExt4(ctx context.Context, path string) error {
-	mke2fsPath, err := exec.LookPath("mke2fs")
+	mke2fsPath, err := hostbin.Resolve(ctx, hostbin.Mke2fs)
 	if err != nil {
-		return ErrMke2fsUnavailable
+		return fmt.Errorf("%w: %v", ErrMke2fsUnavailable, err)
 	}
 	cmd := exec.CommandContext(ctx, mke2fsPath,
 		"-t", "ext4",

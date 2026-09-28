@@ -20,6 +20,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/core/hostbin"
+	_ "github.com/IniZio/nexus/internal/core/hostbin/embedded"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/service"

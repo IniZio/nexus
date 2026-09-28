@@ -10,22 +10,24 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
-var ErrE2fsckUnavailable = fmt.Errorf("volumestore: e2fsck not found on PATH (install e2fsprogs)")
-var ErrResize2fsUnavailable = fmt.Errorf("volumestore: resize2fs not found on PATH (install e2fsprogs)")
+var ErrE2fsckUnavailable = fmt.Errorf("volumestore: e2fsck unavailable")
+var ErrResize2fsUnavailable = fmt.Errorf("volumestore: resize2fs unavailable")
 
 // reclaimTimeout bounds reclaimExt4, decoupled from a caller's short ctx.
 const reclaimTimeout = 5 * time.Minute
 
 func ShrinkToolsAvailable() bool {
-	_, e2fsckErr := exec.LookPath("e2fsck")
-	_, resize2fsErr := exec.LookPath("resize2fs")
+	_, e2fsckErr := hostbin.Resolve(context.Background(), hostbin.E2fsck)
+	_, resize2fsErr := hostbin.Resolve(context.Background(), hostbin.Resize2fs)
 	return e2fsckErr == nil && resize2fsErr == nil
 }
 
 func Mke2fsAvailable() bool {
-	_, err := exec.LookPath("mke2fs")
+	_, err := hostbin.Resolve(context.Background(), hostbin.Mke2fs)
 	return err == nil
 }
 
@@ -35,13 +37,13 @@ var resize2fsBlockLenRE = regexp.MustCompile(`(\d+) \((\d+)k\) blocks long`)
 // image at path, then truncates the file to the resulting minimum size.
 // Idempotent; safe to call back to back. Returns the new file size in bytes.
 func shrinkExt4ToMinimum(ctx context.Context, path string) (int64, error) {
-	e2fsckPath, err := exec.LookPath("e2fsck")
+	e2fsckPath, err := hostbin.Resolve(ctx, hostbin.E2fsck)
 	if err != nil {
-		return 0, ErrE2fsckUnavailable
+		return 0, fmt.Errorf("%w: %v", ErrE2fsckUnavailable, err)
 	}
-	resize2fsPath, err := exec.LookPath("resize2fs")
+	resize2fsPath, err := hostbin.Resolve(ctx, hostbin.Resize2fs)
 	if err != nil {
-		return 0, ErrResize2fsUnavailable
+		return 0, fmt.Errorf("%w: %v", ErrResize2fsUnavailable, err)
 	}
 
 	if err := runE2fsckAt(ctx, e2fsckPath, path); err != nil {
@@ -85,9 +87,9 @@ func reclaimExt4(ctx context.Context, path string, declaredSizeBytes int64) erro
 }
 
 func runResize2fs(ctx context.Context, path string) error {
-	resize2fsPath, err := exec.LookPath("resize2fs")
+	resize2fsPath, err := hostbin.Resolve(ctx, hostbin.Resize2fs)
 	if err != nil {
-		return ErrResize2fsUnavailable
+		return fmt.Errorf("%w: %v", ErrResize2fsUnavailable, err)
 	}
 	cmd := exec.CommandContext(ctx, resize2fsPath, path)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -97,9 +99,9 @@ func runResize2fs(ctx context.Context, path string) error {
 }
 
 func runE2fsckClean(ctx context.Context, path string) error {
-	e2fsckPath, err := exec.LookPath("e2fsck")
+	e2fsckPath, err := hostbin.Resolve(ctx, hostbin.E2fsck)
 	if err != nil {
-		return ErrE2fsckUnavailable
+		return fmt.Errorf("%w: %v", ErrE2fsckUnavailable, err)
 	}
 	return runE2fsckAt(ctx, e2fsckPath, path)
 }

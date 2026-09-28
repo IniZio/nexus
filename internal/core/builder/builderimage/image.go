@@ -3,7 +3,7 @@
 // Package builderimage bootstraps a bootable builder-VM rootfs ext4 image
 // from the public moby/buildkit OCI image using pure-Go layer extraction.
 // No docker, podman, or buildkitd is required on the host; only mke2fs
-// (from e2fsprogs) is exec'd to format the final ext4 image.
+// is exec'd to format the final ext4 image.
 //
 // # Cache layout
 //
@@ -34,15 +34,16 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/IniZio/nexus/internal/core/builder/toolcache"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
 // DefaultOCIRef is the public moby/buildkit image reference used as the
 // builder VM base. Pinned to the same tag as old-nexus for reproducibility.
 const DefaultOCIRef = "docker.io/moby/buildkit:v0.19.0"
 
-// ErrMke2fsUnavailable is returned when mke2fs is not found on the host PATH.
+// ErrMke2fsUnavailable is returned when mke2fs cannot be resolved.
 // Tests should skip (not fail) when they see this error.
-var ErrMke2fsUnavailable = errors.New("mke2fs not found in PATH (install e2fsprogs)")
+var ErrMke2fsUnavailable = errors.New("mke2fs unavailable")
 
 // imageSizeHeadroomFactor is applied to the staging dir size to compute the
 // ext4 image size, covering metadata overhead and alignment padding.
@@ -315,9 +316,9 @@ func extractTarStream(r io.Reader, destDir string) error {
 // (fixed UUID, fixed hash seed, SOURCE_DATE_EPOCH=0) so identical content
 // always produces identical bytes.
 func buildExt4(ctx context.Context, srcDir, dstPath string) error {
-	mke2fsPath, err := exec.LookPath("mke2fs")
+	mke2fsPath, err := hostbin.Resolve(ctx, hostbin.Mke2fs)
 	if err != nil {
-		return ErrMke2fsUnavailable
+		return fmt.Errorf("%w: %v", ErrMke2fsUnavailable, err)
 	}
 
 	dataBytes, err := dirSizeBytes(srcDir)

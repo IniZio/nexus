@@ -45,6 +45,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/builder"
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 )
 
@@ -90,7 +91,7 @@ var ErrDockerUnavailable = errors.New("docker not found in PATH (install docker-
 //
 // Prerequisite checks:
 //   - docker in PATH (returns [ErrDockerUnavailable] if absent)
-//   - mke2fs in PATH (returns [builder.ErrMke2fsUnavailable] if absent)
+//   - mke2fs resolved via hostbin (returns [builder.ErrMke2fsUnavailable] if absent)
 //
 // Build steps:
 //  1. Compile cmd/nexus-agent CGO_ENABLED=0 GOOS=linux GOARCH=amd64.
@@ -385,11 +386,11 @@ func extractTar(r io.Reader, dstDir string) error {
 //   - fixed HTree hash seed
 //   - SOURCE_DATE_EPOCH=0 (epoch timestamps in superblock)
 //
-// Requires mke2fs from e2fsprogs; returns [builder.ErrMke2fsUnavailable] if absent.
+// Resolves mke2fs via hostbin; returns [builder.ErrMke2fsUnavailable] if absent.
 func runMke2fs(ctx context.Context, srcDir, dstPath string, sizeBytes int64) error {
-	mke2fsPath, err := exec.LookPath("mke2fs")
+	mke2fsPath, err := hostbin.Resolve(ctx, hostbin.Mke2fs)
 	if err != nil {
-		return builder.ErrMke2fsUnavailable
+		return fmt.Errorf("%w: %v", builder.ErrMke2fsUnavailable, err)
 	}
 
 	// Pre-allocate a sparse file; mke2fs reads its size automatically.

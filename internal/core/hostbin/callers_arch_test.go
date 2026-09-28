@@ -285,3 +285,178 @@ func f() { p := filepath.Join(dir, "nexus-agent"); _ = p }
 		t.Fatalf("walk: %v", err)
 	}
 }
+
+// isE2fsprogsArg returns true if expr is one of the e2fsprogs binary string
+// literals or a hostbin selector constant for those binaries.
+func isE2fsprogsArg(expr ast.Expr) bool {
+	switch v := expr.(type) {
+	case *ast.BasicLit:
+		if v.Kind != token.STRING {
+			return false
+		}
+		switch v.Value {
+		case `"mke2fs"`, `"e2fsck"`, `"resize2fs"`, `"mkfs.ext4"`:
+			return true
+		}
+	case *ast.SelectorExpr:
+		switch v.Sel.Name {
+		case "Mke2fs", "E2fsck", "Resize2fs":
+			return true
+		}
+	}
+	return false
+}
+
+func detectE2fsprogsViolations(src, filename string) ([]violation, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filename, src, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse %q: %w", filename, err)
+	}
+	var vs []violation
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pos := fset.Position(call.Pos())
+		switch sel.Sel.Name {
+		case "LookPath":
+			if len(call.Args) >= 1 && isE2fsprogsArg(call.Args[0]) {
+				vs = append(vs, violation{pos.Filename, pos.Line, "LookPath(e2fsprogs)"})
+			}
+		case "Command":
+			if len(call.Args) >= 1 && isE2fsprogsArg(call.Args[0]) {
+				vs = append(vs, violation{pos.Filename, pos.Line, "Command(e2fsprogs)"})
+			}
+		case "CommandContext":
+			if len(call.Args) >= 2 && isE2fsprogsArg(call.Args[1]) {
+				vs = append(vs, violation{pos.Filename, pos.Line, "CommandContext(ctx,e2fsprogs)"})
+			}
+		}
+		return true
+	})
+	return vs, nil
+}
+
+// e2fsprogsGuestExemptions lists source subtrees that run inside a VM guest
+// where PATH resolution is the guest OS's responsibility, not host PATH.
+// Format: slash-separated paths relative to module root.
+var e2fsprogsGuestExemptions = []string{
+	// nexus-agent is PID 1 in the VM; the kernel provides no PATH.
+	"cmd/nexus-agent",
+	// buildkit_linux.go runs inside the builder VM guest, not on the host.
+	"internal/core/agent",
+}
+
+func TestNoDirectE2fsprogsLookPath(t *testing.T) {
+	t.Run("self_check_mke2fs_literal_detected", func(t *testing.T) {
+		src := `package foo
+import "os/exec"
+func f() { p, _ := exec.LookPath("mke2fs"); _ = p }
+`
+		vs, err := detectE2fsprogsViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) == 0 {
+			t.Fatal("self-check: expected violation for exec.LookPath(\"mke2fs\"), got none")
+		}
+	})
+
+	t.Run("self_check_resize2fs_command_detected", func(t *testing.T) {
+		src := `package foo
+import "os/exec"
+func f() { exec.Command("resize2fs", "-f", dev) }
+`
+		vs, err := detectE2fsprogsViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) == 0 {
+			t.Fatal("self-check: expected violation for exec.Command(\"resize2fs\"), got none")
+		}
+	})
+
+	t.Run("self_check_mkfs_ext4_command_context_detected", func(t *testing.T) {
+		src := `package foo
+import "os/exec"
+func f(ctx context.Context) { exec.CommandContext(ctx, "mkfs.ext4", "-F", dev) }
+`
+		vs, err := detectE2fsprogsViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) == 0 {
+			t.Fatal("self-check: expected violation for exec.CommandContext(ctx, \"mkfs.ext4\"), got none")
+		}
+	})
+
+	t.Run("self_check_selector_detected", func(t *testing.T) {
+		src := `package foo
+func f() { exec.Command(hostbin.Mke2fs, "-d", srcDir, imgPath) }
+`
+		vs, err := detectE2fsprogsViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) == 0 {
+			t.Fatal("self-check: expected violation for exec.Command(hostbin.Mke2fs), got none")
+		}
+	})
+
+	t.Run("self_check_variable_path_not_detected", func(t *testing.T) {
+		src := `package foo
+import "os/exec"
+func f(path string) { exec.Command(path, "-d", srcDir, imgPath) }
+`
+		vs, err := detectE2fsprogsViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) != 0 {
+			t.Fatalf("self-check: variable-path exec.Command must not trip; got %v", vs)
+		}
+	})
+
+	t.Run("self_check_other_binary_not_detected", func(t *testing.T) {
+		src := `package foo
+import "os/exec"
+func f() { exec.Command("blkid", "-o", "value", "-s", "TYPE", device) }
+`
+		vs, err := detectE2fsprogsViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) != 0 {
+			t.Fatalf("self-check: unrelated binary must not trip; got %v", vs)
+		}
+	})
+
+	modRoot, hostbinRel := testModRoot(t)
+	err := walkSourceFiles(modRoot, hostbinRel, func(path string, data []byte) error {
+		rel, _ := filepath.Rel(modRoot, path)
+		relSlash := filepath.ToSlash(rel)
+		for _, exempt := range e2fsprogsGuestExemptions {
+			if strings.HasPrefix(relSlash, exempt+"/") || relSlash == exempt {
+				return nil
+			}
+		}
+		vs, err := detectE2fsprogsViolations(string(data), path)
+		if err != nil {
+			return err
+		}
+		for _, v := range vs {
+			t.Errorf("%s:%d: direct e2fsprogs binary ref (%s); use hostbin.Acquire instead",
+				v.file, v.line, v.msg)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+}

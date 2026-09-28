@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 )
 
@@ -25,7 +26,11 @@ const deterministicUUID = "00000000-0000-0000-0000-000000000000"
 
 // deterministicHashSeed is passed to mke2fs -E hash_seed to fix the HTree
 // directory seed, removing another source of non-determinism.
-const deterministicHashSeed = "00000000-0000-0000-0000-000000000000"
+//
+// Must be non-zero: mke2fs treats an all-zero seed as "unset" and calls
+// uuid_generate() instead, writing a random s_hash_seed into every superblock
+// copy and breaking reproducibility (mke2fs.c:3285-3290 in e2fsprogs 1.47.2).
+const deterministicHashSeed = "b3c89a4f-2d1e-4f7a-9c6b-1a2b3c4d5e6f"
 
 // imageSizeHeadroomFactor is the multiplier applied to the source-directory
 // size when computing the raw image size. The factor accounts for ext4
@@ -40,14 +45,15 @@ const imageSizeHeadroomFactor = 2
 // trees (such as those produced by unit-test fakes).
 const imageMinSizeBytes = 64 * 1024 * 1024
 
-// ErrMke2fsUnavailable is returned by [exportAndCache] when mke2fs is not
-// found on the host PATH. Test suites should check [Mke2fsAvailable] and
-// skip rather than fail when they see this error.
-var ErrMke2fsUnavailable = errors.New("mke2fs not found in PATH (install e2fsprogs)")
+// ErrMke2fsUnavailable is returned by [exportAndCache] when mke2fs cannot be
+// resolved (embedded artifact missing and not on PATH). Test suites should
+// check [Mke2fsAvailable] and skip rather than fail when they see this error.
+var ErrMke2fsUnavailable = errors.New("mke2fs unavailable (embedded artifact missing and not on PATH)")
 
-// Mke2fsAvailable reports whether mke2fs is available on the host PATH.
+// Mke2fsAvailable reports whether mke2fs can be resolved via hostbin (embedded
+// artifact, cache, or PATH fallback).
 func Mke2fsAvailable() bool {
-	_, err := exec.LookPath("mke2fs")
+	_, err := hostbin.Resolve(context.Background(), hostbin.Mke2fs)
 	return err == nil
 }
 
@@ -144,15 +150,10 @@ func exportAndCache(ctx context.Context, srcDir, ref string, kind domain.ImageKi
 // These constraints together ensure that identical srcDir content always
 // produces identical image bytes AND that the on-disk size reflects only the
 // actual content, not the full image size.
-//
-// Host dependency: mke2fs from e2fsprogs. Install with:
-//
-//	apt-get install e2fsprogs    # Debian/Ubuntu
-//	dnf install e2fsprogs        # Fedora/RHEL
 func runMke2fs(ctx context.Context, srcDir, dstPath string, sizeBytes int64) error {
-	mke2fsPath, err := exec.LookPath("mke2fs")
+	mke2fsPath, err := hostbin.Resolve(ctx, hostbin.Mke2fs)
 	if err != nil {
-		return ErrMke2fsUnavailable
+		return fmt.Errorf("%w: %v", ErrMke2fsUnavailable, err)
 	}
 
 	// Pre-allocate a sparse file; mke2fs reads its size automatically.

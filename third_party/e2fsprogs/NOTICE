@@ -1,0 +1,66 @@
+Upstream licence summary (verbatim from e2fsprogs 1.47.2 NOTICE):
+
+  This package, the EXT2 filesystem utilities, are made available under
+  the GNU Public License version 2, with the exception of the lib/ext2fs
+  and lib/e2p libraries, which are made available under the GNU Library
+  General Public License Version 2, the lib/uuid library which is made
+  available under a BSD-style license and the lib/et and lib/ss
+  libraries which are made available under an MIT-style license.  Please
+  see lib/uuid/COPYING for more details for the license for the files
+  comprising the libuuid library, and the source file headers of the
+  libet and libss libraries for more information.
+
+  Theodore Ts'o, 23-June-2007
+
+The complete licence text (GPLv2 + LGPLv2) is in the COPYING file in this
+directory.
+
+----------------------------------------------------------------------
+
+nexus embedded binaries — e2fsprogs 1.47.2
+===========================================
+
+nexus distributes the following statically-linked binaries built from the
+unmodified e2fsprogs 1.47.2 source tarball:
+
+  mke2fs    — create ext2/3/4 filesystems
+  e2fsck    — check and repair ext2/3/4 filesystems
+  resize2fs — resize ext2/3/4 filesystems
+
+The binaries are statically linked against musl libc (MIT licence,
+https://musl.libc.org/). The e2fsprogs programs themselves are licensed
+under the GNU General Public License, version 2 (GPLv2). The full text of
+the GPLv2 and the LGPLv2 (which applies to lib/ext2fs and lib/e2p) is in
+the COPYING file in this directory.
+
+Source
+------
+
+The complete corresponding machine-readable source code is the unmodified
+upstream tarball:
+
+  https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.2/e2fsprogs-1.47.2.tar.xz
+
+A copy of this tarball is also attached to the nexus GitHub release at:
+
+  https://github.com/IniZio/nexus/releases/tag/e2fsprogs-v1.47.2
+
+The build recipe used to produce the binaries (cross-compiled, statically
+linked against musl libc) is:
+
+  scripts/e2fsprogs/build.sh   (in this repository)
+
+No modifications were made to the e2fsprogs source code.
+
+Written source offer (GPLv2 §3(b))
+-----------------------------------
+
+For at least three years from the date of each nexus release that includes
+these binaries, IniZio (contact: inizio@skymakers.digital) will provide, on
+written request, a complete machine-readable copy of the corresponding source
+code on a medium customarily used for software interchange, for a charge no
+more than the cost of physically performing the distribution.
+
+Alternatively, the source tarball linked above and the build recipe in
+scripts/e2fsprogs/build.sh are publicly available and constitute the full
+corresponding source.
