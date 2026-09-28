@@ -9,13 +9,13 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/builder/toolcache"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
@@ -554,7 +554,10 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	}
 
 	// ── cloud-hypervisor binary ────────────────────────────────────────────────
-	chBin, _ := exec.LookPath("cloud-hypervisor")
+	chBin, err := hostbin.Resolve(ctx, hostbin.CloudHypervisor)
+	if err != nil {
+		return fmt.Errorf("orca create: resolve cloud-hypervisor: %w", err)
+	}
 
 	// ── DriverFactory ─────────────────────────────────────────────────────────
 	// capturedDiskPath: the CoW ext4 copy path forwarded to the supervisor.

@@ -26,6 +26,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
@@ -1275,9 +1276,11 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			dialerCfg.SocketDir = builderSocketDir
 			dialerCfg.MemoryMaxMiB = builderAR.MemoryMaxMiB
 			dialerCfg.VCPUMax = builderAR.VCPUMax
-			if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
-				dialerCfg.BinaryPath = p
+			chBinPath, err := hostbin.Resolve(ctx, hostbin.CloudHypervisor)
+			if err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: resolve cloud-hypervisor: %w", err))
 			}
+			dialerCfg.BinaryPath = chBinPath
 			dialerDrv, err := cloudhypervisor.New(dialerCfg)
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: builder dialer driver: %w", err))
@@ -1745,7 +1748,11 @@ func handoffHumanSupervisor(
 		return fmt.Errorf("no disk path captured")
 	}
 	if chBin == "" {
-		chBin, _ = exec.LookPath("cloud-hypervisor")
+		var resolveErr error
+		chBin, resolveErr = hostbin.Resolve(context.Background(), hostbin.CloudHypervisor)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve cloud-hypervisor: %w", resolveErr)
+		}
 	}
 	if socketDir == "" {
 		var err error

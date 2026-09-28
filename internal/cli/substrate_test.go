@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/service"
 )
 
@@ -426,13 +427,13 @@ func TestSubstrateFindsCloudHypervisorOutsidePATH(t *testing.T) {
 	}
 	t.Setenv("NEXUS_KERNEL_PATH", kernelFile)
 
-	nexusBin := dir + "/nexus"
 	p := probes{
-		goos:       "linux",
-		lookPath:   func(string) (string, error) { return "", os.ErrNotExist },
-		openKVM:    func() error { return nil },
-		executable: func() (string, error) { return nexusBin, nil },
-		getenv:     func(key string) string { return "" },
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "", os.ErrNotExist },
+		openKVM:  func() error { return nil },
+		resolveHostBin: func(_ context.Context, name string) (hostbin.Resolved, error) {
+			return hostbin.Resolved{Name: name, Path: chBin, Source: hostbin.SourceCache}, nil
+		},
 	}
 	checks, _ := runAllChecks(p)
 
@@ -447,10 +448,10 @@ func TestSubstrateFindsCloudHypervisorOutsidePATH(t *testing.T) {
 		t.Fatal("expected binary check in results")
 	}
 	if !binCheck.OK {
-		t.Errorf("binary check should be OK when cloud-hypervisor is next to the executable; detail: %s", binCheck.Detail)
+		t.Errorf("binary check should be OK when resolveHostBin succeeds; detail: %s", binCheck.Detail)
 	}
-	if binCheck.Detail != chBin {
-		t.Errorf("binary path = %q, want %q", binCheck.Detail, chBin)
+	if !strings.Contains(binCheck.Detail, chBin) {
+		t.Errorf("binary detail should contain path %q; got %q", chBin, binCheck.Detail)
 	}
 }
 
@@ -491,5 +492,141 @@ func TestDoctorToolChecks_EmptyPATH(t *testing.T) {
 		if c.Remediation == "" {
 			t.Errorf("check %q: Remediation is empty; want install hint", name)
 		}
+	}
+}
+
+// ── resolveHostBin injection tests ────────────────────────────────────────────
+
+func TestRunAllChecks_BinaryEmbedded(t *testing.T) {
+	kernelFile := t.TempDir() + "/vmlinux"
+	if err := os.WriteFile(kernelFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NEXUS_KERNEL_PATH", kernelFile)
+
+	const chPath = "/xdg/nexus/artifacts/abc123/cloud-hypervisor"
+	p := probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "", os.ErrNotExist },
+		openKVM:  func() error { return nil },
+		resolveHostBin: func(_ context.Context, name string) (hostbin.Resolved, error) {
+			return hostbin.Resolved{Name: name, Path: chPath, Source: hostbin.SourceEmbedded}, nil
+		},
+	}
+	checks, drv := runAllChecks(p)
+
+	var binCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "binary" {
+			binCheck = &checks[i]
+			break
+		}
+	}
+	if binCheck == nil {
+		t.Fatal("expected binary check")
+	}
+	if !binCheck.OK {
+		t.Errorf("binary check: OK=false; detail=%q", binCheck.Detail)
+	}
+	if !strings.Contains(binCheck.Detail, chPath) {
+		t.Errorf("detail should contain path %q; got %q", chPath, binCheck.Detail)
+	}
+	if !strings.Contains(binCheck.Detail, "embedded") {
+		t.Errorf("detail should contain source; got %q", binCheck.Detail)
+	}
+	if drv == nil {
+		t.Error("expected non-nil driver when binary resolves via embedded artifact")
+	}
+}
+
+func TestRunAllChecks_BinaryEnvSource(t *testing.T) {
+	p := probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "", os.ErrNotExist },
+		openKVM:  func() error { return nil },
+		resolveHostBin: func(_ context.Context, name string) (hostbin.Resolved, error) {
+			return hostbin.Resolved{Name: name, Path: "/custom/cloud-hypervisor", Source: hostbin.SourceEnv}, nil
+		},
+	}
+	checks, _ := runAllChecks(p)
+
+	var binCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "binary" {
+			binCheck = &checks[i]
+			break
+		}
+	}
+	if binCheck == nil {
+		t.Fatal("expected binary check")
+	}
+	if !binCheck.OK {
+		t.Errorf("binary check: OK=false; detail=%q", binCheck.Detail)
+	}
+	if !strings.Contains(binCheck.Detail, "env") {
+		t.Errorf("detail should contain source; got %q", binCheck.Detail)
+	}
+}
+
+func TestRunAllChecks_BinaryResolverError(t *testing.T) {
+	p := probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "", os.ErrNotExist },
+		openKVM:  func() error { return nil },
+		resolveHostBin: func(_ context.Context, name string) (hostbin.Resolved, error) {
+			return hostbin.Resolved{}, errors.New("hostbin: host binary not found: cloud-hypervisor")
+		},
+	}
+	checks, drv := runAllChecks(p)
+
+	if drv != nil {
+		t.Error("expected nil driver when binary resolution fails")
+	}
+	var binCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "binary" {
+			binCheck = &checks[i]
+			break
+		}
+	}
+	if binCheck == nil {
+		t.Fatal("expected binary check")
+	}
+	if binCheck.OK {
+		t.Error("binary check: expected OK=false on resolver error")
+	}
+	if strings.Contains(binCheck.Remediation, "Install cloud-hypervisor") {
+		t.Errorf("remediation must not tell user to install manually; got %q", binCheck.Remediation)
+	}
+	if binCheck.Remediation == "" {
+		t.Error("remediation should be non-empty")
+	}
+}
+
+func TestRunAllChecks_BinaryNilResolver(t *testing.T) {
+	const chPath = "/usr/bin/cloud-hypervisor"
+	p := probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return chPath, nil },
+		openKVM:  func() error { return nil },
+		// resolveHostBin intentionally nil — exercises the legacy fallback path.
+	}
+	checks, _ := runAllChecks(p)
+
+	var binCheck *CheckResult
+	for i := range checks {
+		if checks[i].Name == "binary" {
+			binCheck = &checks[i]
+			break
+		}
+	}
+	if binCheck == nil {
+		t.Fatal("expected binary check")
+	}
+	if !binCheck.OK {
+		t.Errorf("nil resolver fallback: expected OK=true via lookPath; detail=%q", binCheck.Detail)
+	}
+	if !strings.Contains(binCheck.Detail, chPath) {
+		t.Errorf("detail should contain path %q; got %q", chPath, binCheck.Detail)
 	}
 }

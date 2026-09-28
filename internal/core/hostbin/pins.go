@@ -4,6 +4,8 @@ package hostbin
 import "github.com/IniZio/nexus/internal/core/hostbin/pin"
 
 const (
+	// CloudHypervisor is the canonical binary name for the cloud-hypervisor VMM.
+	CloudHypervisor        = "cloud-hypervisor"
 	CloudHypervisorVersion = "53.0"
 	VirtiofsdVersion       = "1.14.0"
 	E2fsprogsVersion       = "1.47.2"
@@ -12,8 +14,8 @@ const (
 // Pins returns a fresh map of all pinned host executables, keyed by Name.
 func Pins() map[string]pin.Pin {
 	return map[string]pin.Pin{
-		"cloud-hypervisor": {
-			Name:    "cloud-hypervisor",
+		CloudHypervisor: {
+			Name:    CloudHypervisor,
 			Version: CloudHypervisorVersion,
 			URLByGoArch: map[string]string{
 				"amd64": "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v{VERSION}/cloud-hypervisor-static",

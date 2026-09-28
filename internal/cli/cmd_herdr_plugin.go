@@ -26,6 +26,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/portfwd"
@@ -1132,7 +1133,10 @@ func handoffLaunchSupervisor(
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve socket dir: %w", err)
 	}
-	chBin, _ := exec.LookPath("cloud-hypervisor")
+	chBin, err := hostbin.Resolve(ctx, hostbin.CloudHypervisor)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve cloud-hypervisor: %w", err)
+	}
 	stateDir := supervisor.DefaultStateDir(storeRoot, sb.ID)
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return nil, "", fmt.Errorf("create supervisor state dir: %w", err)
@@ -1259,9 +1263,11 @@ func newLaunchDeps() (launchDeps, error) {
 	newDriver := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		diskPath = ext4Path
 		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
-		if p, lookErr := exec.LookPath("cloud-hypervisor"); lookErr == nil {
-			cfg.BinaryPath = p
+		chBin, resolveErr := hostbin.Resolve(context.Background(), hostbin.CloudHypervisor)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("resolve cloud-hypervisor: %w", resolveErr)
 		}
+		cfg.BinaryPath = chBin
 		return cloudhypervisor.New(cfg)
 	})
 
@@ -3593,7 +3599,7 @@ func herdrSpaceAgentCheckFallbackPane(
 	_ = HerdrSpacePut(ctx, storeRoot, *binding)
 	if content2, ok2 := herdrPaneReadFn(ctx, herdrBin, freshID); ok2 && strings.Contains(content2, guestShellFallbackMarker) {
 		return freshID, &CodedError{Code: ErrCodeInternalError,
-			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor installation (NEXUS_CLOUD_HYPERVISOR_PATH)", freshID)}
+			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor resolution (nexus doctor; NEXUS_CLOUD_HYPERVISOR_PATH)", freshID)}
 	}
 	return freshID, nil
 }
@@ -3672,7 +3678,7 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	 */
 	if content, ok := herdrPaneReadFn(ctx, herdrBin, paneID); ok && strings.Contains(content, guestShellFallbackMarker) {
 		return &CodedError{Code: ErrCodeInternalError,
-			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor installation (NEXUS_CLOUD_HYPERVISOR_PATH)", paneID)}
+			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor resolution (nexus doctor; NEXUS_CLOUD_HYPERVISOR_PATH)", paneID)}
 	}
 	guestPrompt := sandboxHandleHostname(ref)
 	fmt.Fprintf(w, "space-agent: waiting for the guest shell (match=%q) ...\n", guestPrompt)

@@ -34,7 +34,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 
@@ -42,6 +41,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/vmcfg"
 	"github.com/IniZio/nexus/internal/supervisor"
 )
@@ -142,7 +142,7 @@ func (d *supervisorBuilderDriver) Start(_ context.Context, req driver.StartReque
 // that ships a handoff no caller performs is the defect class this motive has
 // already shipped once.
 func (d *supervisorBuilderDriver) buildSpawnConfig(sandboxID domain.SandboxID, stateDir string) supervisor.SpawnConfig {
-	chBin, _ := exec.LookPath("cloud-hypervisor")
+	chBin, _ := hostbin.Resolve(context.Background(), hostbin.CloudHypervisor)
 
 	// The builder declares its cache disk(s) as resizable via the same generic
 	// field; no builder-specific governor branch.

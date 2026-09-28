@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/service"
@@ -86,9 +86,9 @@ func smokeboot() error {
 	}
 	defer os.RemoveAll(socketDir)
 
-	chBin, err := exec.LookPath("cloud-hypervisor")
+	chBin, err := hostbin.Resolve(context.Background(), hostbin.CloudHypervisor)
 	if err != nil {
-		return fmt.Errorf("cloud-hypervisor not in PATH: %w", err)
+		return fmt.Errorf("resolve cloud-hypervisor: %w", err)
 	}
 
 	st, err := store.NewFileStore(storeRoot)

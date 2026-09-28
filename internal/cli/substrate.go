@@ -14,6 +14,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
@@ -51,14 +52,16 @@ type probes struct {
 	listHerdrProcs    func(context.Context) ([]HerdrProc, error)
 	getenv            func(string) string
 	executable        func() (string, error)
+	resolveHostBin    func(ctx context.Context, name string) (hostbin.Resolved, error)
 }
 
 func defaultProbes() probes {
 	return probes{
-		goos:       runtime.GOOS,
-		lookPath:   exec.LookPath,
-		getenv:     os.Getenv,
-		executable: os.Executable,
+		goos:           runtime.GOOS,
+		lookPath:       exec.LookPath,
+		getenv:         os.Getenv,
+		executable:     os.Executable,
+		resolveHostBin: (&hostbin.Resolver{}).Resolve,
 		openKVM: func() error {
 			f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 			if err != nil {
@@ -117,31 +120,40 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 	var binaryPath string
 	binCheck := CheckResult{
 		Name:        "binary",
-		Description: "cloud-hypervisor executable in PATH",
+		Description: "cloud-hypervisor executable (embedded in nexus)",
 	}
 	if !platOK {
 		binCheck.OK = false
 		binCheck.Detail = "skipped (platform is not Linux)"
-	} else if envPath := chBinaryFromEnv(p.getenv); envPath != "" {
-		binaryPath = envPath
-		binCheck.OK = true
-		binCheck.Detail = envPath
+	} else if p.resolveHostBin != nil {
+		res, err := p.resolveHostBin(context.Background(), hostbin.CloudHypervisor)
+		if err != nil {
+			binCheck.OK = false
+			binCheck.Detail = err.Error()
+			binCheck.Remediation = "The nexus build lacks the embedded artifact or the download failed. Use a release build or set NEXUS_CLOUD_HYPERVISOR_PATH."
+		} else {
+			binaryPath = res.Path
+			binCheck.OK = true
+			binCheck.Detail = fmt.Sprintf("%s (source: %s)", res.Path, res.Source)
+		}
 	} else {
-		path, err := p.lookPath("cloud-hypervisor")
-		if err == nil {
+		// nil fallback: used when tests build probes literals without resolveHostBin.
+		var envPath string
+		if p.getenv != nil {
+			envPath = p.getenv(hostbin.EnvVar(hostbin.CloudHypervisor))
+		}
+		if envPath != "" {
+			binaryPath = envPath
+			binCheck.OK = true
+			binCheck.Detail = envPath
+		} else if path, err := p.lookPath(hostbin.CloudHypervisor); err == nil {
 			binaryPath = path
 			binCheck.OK = true
 			binCheck.Detail = path
 		} else {
-			binaryPath = chBinaryFallback(p.executable, p.getenv)
-			if binaryPath != "" {
-				binCheck.OK = true
-				binCheck.Detail = binaryPath
-			} else {
-				binCheck.OK = false
-				binCheck.Detail = "cloud-hypervisor not found in PATH"
-				binCheck.Remediation = "Install cloud-hypervisor (https://github.com/cloud-hypervisor/cloud-hypervisor/releases) and ensure it is on your PATH."
-			}
+			binCheck.OK = false
+			binCheck.Detail = "cloud-hypervisor not found in PATH"
+			binCheck.Remediation = "Set NEXUS_CLOUD_HYPERVISOR_PATH to the binary path, or use a release build that embeds the artifact."
 		}
 	}
 	checks = append(checks, binCheck)
@@ -289,36 +301,6 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 	}
 
 	return checks, drv
-}
-
-// chBinaryFromEnv returns the cloud-hypervisor path set via NEXUS_CLOUD_HYPERVISOR_PATH.
-func chBinaryFromEnv(getenv func(string) string) string {
-	if getenv == nil {
-		return ""
-	}
-	return getenv("NEXUS_CLOUD_HYPERVISOR_PATH")
-}
-
-// chBinaryFallback searches for cloud-hypervisor next to the current executable
-// and in $HOME/.local/bin when the PATH lookup already failed.
-func chBinaryFallback(executable func() (string, error), getenv func(string) string) string {
-	if executable != nil {
-		if exe, err := executable(); err == nil {
-			candidate := filepath.Join(filepath.Dir(exe), "cloud-hypervisor")
-			if _, statErr := os.Stat(candidate); statErr == nil {
-				return candidate
-			}
-		}
-	}
-	if getenv != nil {
-		if home := getenv("HOME"); home != "" {
-			candidate := filepath.Join(home, ".local", "bin", "cloud-hypervisor")
-			if _, statErr := os.Stat(candidate); statErr == nil {
-				return candidate
-			}
-		}
-	}
-	return ""
 }
 
 // selectWith is the testable substrate selection logic.

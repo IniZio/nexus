@@ -373,7 +373,8 @@ func TestSandbox_OperationalError_StartNoSubstrate(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
 	t.Setenv("PATH", t.TempDir())
-	t.Setenv("NEXUS_CLOUD_HYPERVISOR_PATH", "")
+	t.Setenv("NEXUS_CLOUD_HYPERVISOR_PATH", filepath.Join(dir, "no-such-cloud-hypervisor"))
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
 	// Create via Run so the store is in the right place.

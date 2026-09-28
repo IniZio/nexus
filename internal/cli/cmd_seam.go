@@ -2,10 +2,10 @@ package cli
 
 import (
 	"context"
-	"os/exec"
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
@@ -132,7 +132,7 @@ func buildSandboxDriverFactory(spec sandboxDriverSpec, caps *sandboxDriverCaptur
 			socketDir = sd
 		}
 		// Resolve cloud-hypervisor binary.
-		if p, err := exec.LookPath("cloud-hypervisor"); err == nil {
+		if p, err := hostbin.Resolve(context.Background(), hostbin.CloudHypervisor); err == nil {
 			cfg.BinaryPath = p
 		}
 		// Populate captures for supervisor handoff (sandbox create path only).
