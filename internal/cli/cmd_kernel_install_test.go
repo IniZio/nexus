@@ -11,20 +11,37 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/IniZio/nexus/internal/core/hostbin/pin"
 )
+
+// fakeKernelPins returns a kernelPins func that serves the given sha as the
+// amd64 sha, downloadable from NEXUS_RELEASE_BASE_URL.
+func fakeKernelPins(sha string) func() map[string]pin.Pin {
+	return func() map[string]pin.Pin {
+		return map[string]pin.Pin{
+			kernelPinName: {
+				Name:    kernelPinName,
+				Version: "1.0.0",
+				SHA256ByGoArch: map[string]string{
+					"amd64": sha,
+					"arm64": sha,
+				},
+			},
+		}
+	}
+}
 
 func TestKernelInstall(t *testing.T) {
 	kernelBytes := []byte("fake-kernel-content")
 	h := sha256.Sum256(kernelBytes)
 	correctHash := hex.EncodeToString(h[:])
-	sha256Body := fmt.Sprintf("%s  vmlinux-x86_64\n", correctHash)
 
 	wrongHash := strings.Repeat("a", 64)
 
 	tests := []struct {
 		name         string
-		sha256Body   string
-		sha256Status int
+		pinSHA       string
 		kernelBody   []byte
 		kernelStatus int
 		preInstall   bool
@@ -35,24 +52,21 @@ func TestKernelInstall(t *testing.T) {
 	}{
 		{
 			name:         "fresh install",
-			sha256Body:   sha256Body,
-			sha256Status: http.StatusOK,
+			pinSHA:       correctHash,
 			kernelBody:   kernelBytes,
 			kernelStatus: http.StatusOK,
 			wantOutput:   "kernel installed:",
 		},
 		{
-			name:         "already installed",
-			sha256Body:   sha256Body,
-			sha256Status: http.StatusOK,
-			preInstall:   true,
-			noKernelReq:  true,
-			wantOutput:   "already installed",
+			name:        "already installed",
+			pinSHA:      correctHash,
+			preInstall:  true,
+			noKernelReq: true,
+			wantOutput:  "already installed",
 		},
 		{
 			name:         "bad checksum",
-			sha256Body:   wrongHash + "  vmlinux-x86_64\n",
-			sha256Status: http.StatusOK,
+			pinSHA:       wrongHash,
 			kernelBody:   kernelBytes,
 			kernelStatus: http.StatusOK,
 			wantErr:      true,
@@ -60,7 +74,8 @@ func TestKernelInstall(t *testing.T) {
 		},
 		{
 			name:         "404",
-			sha256Status: http.StatusNotFound,
+			pinSHA:       correctHash,
+			kernelStatus: http.StatusNotFound,
 			wantErr:      true,
 			wantErrMsg:   "not found",
 		},
@@ -83,19 +98,16 @@ func TestKernelInstall(t *testing.T) {
 				}
 			}
 
+			orig := kernelPins
+			kernelPins = fakeKernelPins(tc.pinSHA)
+			t.Cleanup(func() { kernelPins = orig })
+
 			kernelRequested := false
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.Path, ".sha256") {
-					w.WriteHeader(tc.sha256Status)
-					if tc.sha256Status == http.StatusOK {
-						fmt.Fprint(w, tc.sha256Body)
-					}
-					return
-				}
 				kernelRequested = true
 				w.WriteHeader(tc.kernelStatus)
 				if tc.kernelStatus == http.StatusOK {
-					w.Write(tc.kernelBody)
+					w.Write(tc.kernelBody) //nolint:errcheck
 				}
 			}))
 			defer srv.Close()
@@ -110,7 +122,7 @@ func TestKernelInstall(t *testing.T) {
 				t.Fatal("kernel install not registered")
 			}
 
-			err := cmd.Run(t.Context(), []string{"--version", "1.0.0"}, out)
+			err := cmd.Run(t.Context(), nil, out)
 
 			if tc.wantErr {
 				if err == nil {
@@ -156,5 +168,34 @@ func TestKernelInstall(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestKernelInstall_DevBuildUsesPin(t *testing.T) {
+	kernelBytes := []byte("dev-kernel")
+	h := sha256.Sum256(kernelBytes)
+	hash := hex.EncodeToString(h[:])
+
+	orig := kernelPins
+	kernelPins = fakeKernelPins(hash)
+	t.Cleanup(func() { kernelPins = orig })
+
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDir)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s", kernelBytes)
+	}))
+	defer srv.Close()
+	t.Setenv("NEXUS_RELEASE_BASE_URL", srv.URL)
+
+	var stdout bytes.Buffer
+	out := NewOutput(&stdout, &bytes.Buffer{}, false)
+	cmd, _ := Lookup("kernel install")
+	if err := cmd.Run(t.Context(), nil, out); err != nil {
+		t.Fatalf("dev build install failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "kernel installed:") {
+		t.Errorf("unexpected output: %q", stdout.String())
 	}
 }

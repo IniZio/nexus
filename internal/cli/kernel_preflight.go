@@ -1,36 +1,35 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
-// resolveKernelPath returns the path to the pinned guest kernel, validating
-// that the file exists. It must be called before any expensive work (workspace
-// capture, shadow disk creation, builder VM) so that a misconfiguration is
+// resolveKernelPath returns the path to the guest kernel, searching known
+// locations and auto-downloading the pinned release if none is found locally.
+// It must be called before any expensive work so that a misconfiguration is
 // caught immediately with a legible error.
 //
 // Search order:
 //  1. NEXUS_KERNEL_PATH environment variable (always used if set; file must exist).
 //  2. <binary-dir>/images/kernel/vmlinux-x86_64  (installed binary layout).
-//  3. $XDG_DATA_HOME/nexus/images/kernel/vmlinux-x86_64, default
-//     ~/.local/share/nexus/images/kernel/vmlinux-x86_64 (`make install-kernel`).
-//     This is the path that works regardless of cwd: herdr plugin panes run
-//     from the plugin directory, and every guest-dialing verb (exec, shell,
-//     forward) goes through substrate selection, which requires the kernel.
-//  4. <cwd>/images/kernel/vmlinux-x86_64          ("go run ./cmd/nexus" from repo root).
-//
-// If none resolve, the error names NEXUS_KERNEL_PATH and lists every searched
-// path so the operator can act without reading source.
-//
-// All sandbox-creation entry points must call this function before expensive
-// work. See AC4 note at the bottom of this file for enforceability limitations.
+//  3. $XDG_DATA_HOME/nexus/images/kernel/vmlinux-x86_64 (populated by
+//     `nexus kernel install` or a prior auto-fetch).
+//  4. <cwd>/images/kernel/vmlinux-x86_64 ("go run ./cmd/nexus" from repo root).
+//  5. Auto-download: fetches the pinned release to the XDG path with an INFO
+//     log, then continues. Offline or missing pin → error naming
+//     NEXUS_KERNEL_PATH and `nexus kernel install`.
 func resolveKernelPath() (string, error) {
-	// Env override is always honoured but validated: a typo in NEXUS_KERNEL_PATH
-	// is caught here rather than after an expensive workspace capture.
+	return resolveKernelPathWithClient(context.Background(), nil)
+}
+
+// resolveKernelPathWithClient is the testable implementation; client nil → default.
+func resolveKernelPathWithClient(ctx context.Context, client *http.Client) (string, error) {
 	if k := os.Getenv("NEXUS_KERNEL_PATH"); k != "" {
 		if _, err := os.Stat(k); err != nil {
 			return "", fmt.Errorf(
@@ -43,7 +42,6 @@ func resolveKernelPath() (string, error) {
 
 	var searched []string
 
-	// Binary-relative: works when the nexus binary is installed alongside images/.
 	if exe, err := os.Executable(); err == nil {
 		p := filepath.Join(filepath.Dir(exe), "images", "kernel", "vmlinux-x86_64")
 		searched = append(searched, p)
@@ -52,7 +50,6 @@ func resolveKernelPath() (string, error) {
 		}
 	}
 
-	// XDG data dir: cwd-independent, populated by `make install-kernel`.
 	if p := xdgKernelPath(); p != "" {
 		searched = append(searched, p)
 		if _, err := os.Stat(p); err == nil {
@@ -60,8 +57,6 @@ func resolveKernelPath() (string, error) {
 		}
 	}
 
-	// CWD-relative: works for "go run ./cmd/nexus" executed from the repo root,
-	// where images/kernel/vmlinux-x86_64 exists relative to the working directory.
 	if cwd, err := os.Getwd(); err == nil {
 		p := filepath.Join(cwd, "images", "kernel", "vmlinux-x86_64")
 		searched = append(searched, p)
@@ -70,10 +65,15 @@ func resolveKernelPath() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf(
-		"kernel not found: set NEXUS_KERNEL_PATH to the vmlinux image path\n"+
-			"  searched (NEXUS_KERNEL_PATH not set):\n    %s",
-		strings.Join(searched, "\n    "))
+	dest, fetchErr := autoFetchKernelXDG(ctx, client)
+	if fetchErr != nil {
+		return "", fmt.Errorf(
+			"kernel not found and auto-download failed: %w\n"+
+				"  set NEXUS_KERNEL_PATH or run `nexus kernel install`\n"+
+				"  searched:\n    %s",
+			fetchErr, strings.Join(searched, "\n    "))
+	}
+	return dest, nil
 }
 
 // xdgKernelPath returns the XDG data-dir kernel candidate, or "" when no home

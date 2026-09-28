@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,19 +68,26 @@ func TestResolveKernelPath_XDGDataHome_FoundFromForeignCwd(t *testing.T) {
 	}
 }
 
-func TestResolveKernelPath_EnvUnset_NoCandidates(t *testing.T) {
-	// Clear NEXUS_KERNEL_PATH and ensure neither binary-relative nor CWD
-	// candidates exist. The function must return an error naming NEXUS_KERNEL_PATH.
+func TestResolveKernelPath_EnvUnset_NoCandidates_AutoFetchFails(t *testing.T) {
+	// With NEXUS_KERNEL_PATH unset and no local kernel, resolveKernelPath
+	// attempts auto-download. Point at a closed server to simulate offline;
+	// the error must mention `nexus kernel install`.
 	t.Setenv("NEXUS_KERNEL_PATH", "")
+	xdgDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDir)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+	t.Setenv("NEXUS_RELEASE_BASE_URL", srv.URL)
+
+	t.Chdir(t.TempDir())
 
 	_, err := resolveKernelPath()
 	if err == nil {
-		// Kernel found at binary-relative or CWD path in this environment;
-		// skip rather than fail — the path legitimately exists in a dev checkout.
-		t.Skip("kernel found at default path; skipping missing-kernel test")
+		t.Skip("kernel found at binary-relative path; skipping missing-kernel test")
 	}
-	if !strings.Contains(err.Error(), "NEXUS_KERNEL_PATH") {
-		t.Errorf("error should mention NEXUS_KERNEL_PATH: %v", err)
+	if !strings.Contains(err.Error(), "nexus kernel install") {
+		t.Errorf("error should mention `nexus kernel install`: %v", err)
 	}
 }
 
