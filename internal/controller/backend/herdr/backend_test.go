@@ -2161,91 +2161,148 @@ func herdrListLineEmptyBinding(handle, sandboxID string) string {
 		filepath.Base(handle), handle, sandboxID)
 }
 
+// herdrPaneListJSON returns a minimal herdr pane list JSON response for wsID with paneID.
+func herdrPaneListJSON(paneID string) string {
+	return fmt.Sprintf(`{"result":{"panes":[{"pane_id":%q,"label":"nexus guest shell","agent":"claude"}]}}`, paneID)
+}
+
 // TestRestart_RecoversWorkspaceFromHerdrLabel_WhenBindingEmpty verifies that
-// when the herdr list row for a sandbox has an empty workspace_id/pane_id
-// (broken binding), Restart recovers the workspace via herdr workspace list
-// label lookup, calls space-open-pane, and starts the agent with --resume.
+// when the herdr list row has an empty workspace_id/pane_id (broken binding),
+// Restart recovers the workspace via herdr workspace list and obtains the pane
+// from herdr pane list (never from nexus herdr list, which stays broken).
 func TestRestart_RecoversWorkspaceFromHerdrLabel_WhenBindingEmpty(t *testing.T) {
 	const handle = "nexus/ctrl-nexus-recover-test"
 	const sbID = "sb-RECOVER01"
 	const wsID = "wRCV"
+	const paneID = "wRCV:p3"
 	base := filepath.Base(handle)
 	label := "nexus:" + base
 
-	// herdr list: row has sandbox_id but empty workspace_id/pane_id (broken binding).
-	// After space-open-pane, a second call returns the pane.
+	// nexus herdr list always returns the broken binding (empty workspace_id/pane_id).
 	listBroken := herdrListLineEmptyBinding(handle, sbID)
-	listRepaired := fmt.Sprintf("label=%s\tworkspace_id=%s\thandle=%s\tsandbox_id=%s\tpane_id=%s:p1\tprincipal=\n",
-		label, wsID, handle, sbID, wsID)
 	wsListJSON := fmt.Sprintf(`{"result":{"workspaces":[{"workspace_id":%q,"label":%q,"worktree":{"checkout_path":"/worktrees/%s"}}]}}`,
 		wsID, label, base)
 
-	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
-		switch {
-		case len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "list":
-			return wsListJSON, nil
-		case len(argv) >= 1 && argv[0] == "agent" && len(argv) >= 2 && argv[1] == "start":
+	t.Run("pane_already_exists", func(t *testing.T) {
+		var spaceOpenPaneCalled bool
+		herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+			switch {
+			case len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "list":
+				return wsListJSON, nil
+			case len(argv) >= 3 && argv[0] == "pane" && argv[1] == "list":
+				return herdrPaneListJSON(paneID), nil
+			case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+				return "", nil
+			case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+				return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentNameFromWsID(wsID)), nil
+			case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+				return "root@nexus-fake-guest:/workspace#\n", nil
+			}
 			return "", nil
-		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
-			agentName := agentNameFromWsID(wsID)
-			return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentName), nil
-		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
-			return "root@nexus-fake-guest:/workspace#\n", nil
 		}
-		return "", nil
-	}
-
-	listCallCount := 0
-	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
-		if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list" {
-			listCallCount++
-			if listCallCount == 1 {
+		nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+			if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list" {
 				return listBroken, nil
 			}
-			return listRepaired, nil
-		}
-		if len(argv) >= 3 && argv[0] == "herdr" && argv[1] == "space-open-pane" {
+			if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "space-open-pane" {
+				spaceOpenPaneCalled = true
+				return "", nil
+			}
+			if len(argv) >= 2 && argv[0] == "exec" {
+				return "nexus-fake-guest\n", nil
+			}
 			return "", nil
 		}
-		if len(argv) >= 2 && argv[0] == "exec" {
-			return "nexus-fake-guest\n", nil
+		b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+			func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+		b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+
+		newRef, err := b.Restart(context.Background(), sbID, agentNameFromWsID(wsID))
+		if err != nil {
+			t.Fatalf("Restart with broken binding (pane exists): %v", err)
 		}
-		return "", nil
-	}
+		if newRef == "" {
+			t.Error("Restart must return a non-empty ref")
+		}
+		if spaceOpenPaneCalled {
+			t.Error("space-open-pane must NOT be called when pane already exists in pane list")
+		}
+		wantSessionID := deterministicSessionID(sbID)
+		b.mu.Lock()
+		e, ok := b.entries[newRef]
+		b.mu.Unlock()
+		if !ok {
+			t.Fatalf("new entry not found for ref %q", newRef)
+		}
+		if e.wsID != wsID {
+			t.Errorf("entry wsID = %q, want %q", e.wsID, wsID)
+		}
+		if e.agentSessionID != wantSessionID {
+			t.Errorf("agentSessionID = %q, want %q", e.agentSessionID, wantSessionID)
+		}
+	})
 
-	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
-		func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
-	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
-	// empty cache — simulates the controller seeing a sandbox it doesn't know about
+	t.Run("no_pane_then_space_open_pane", func(t *testing.T) {
+		var spaceOpenPaneCalled bool
+		paneListCallCount := 0
+		herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+			switch {
+			case len(argv) >= 2 && argv[0] == "workspace" && argv[1] == "list":
+				return wsListJSON, nil
+			case len(argv) >= 3 && argv[0] == "pane" && argv[1] == "list":
+				paneListCallCount++
+				if paneListCallCount == 1 {
+					// First call: no pane yet.
+					return `{"result":{"panes":[]}}`, nil
+				}
+				// Second call: pane appeared after space-open-pane.
+				return herdrPaneListJSON(paneID), nil
+			case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+				return "", nil
+			case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+				return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentNameFromWsID(wsID)), nil
+			case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+				return "root@nexus-fake-guest:/workspace#\n", nil
+			}
+			return "", nil
+		}
+		nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+			if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "list" {
+				return listBroken, nil
+			}
+			if len(argv) >= 2 && argv[0] == "herdr" && argv[1] == "space-open-pane" {
+				spaceOpenPaneCalled = true
+				return "", nil
+			}
+			if len(argv) >= 2 && argv[0] == "exec" {
+				return "nexus-fake-guest\n", nil
+			}
+			return "", nil
+		}
+		b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+			func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+		b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
 
-	newRef, err := b.Restart(context.Background(), sbID, agentNameFromWsID(wsID))
-	if err != nil {
-		t.Fatalf("Restart with broken binding: %v", err)
-	}
-	if newRef == "" {
-		t.Error("Restart must return a non-empty ref")
-	}
-
-	// Confirm space-open-pane was called with the recovered wsID.
-	spaceOpenPaneCalled := false
-	// Re-run nexusFn calls via the captured nexusFn; instead verify via call count.
-	// space-open-pane is only called when wsID was recovered.
-	_ = spaceOpenPaneCalled
-
-	// Confirm the agent was started with --resume and the deterministic session ID.
-	wantSessionID := deterministicSessionID(sbID)
-	b.mu.Lock()
-	e, ok := b.entries[newRef]
-	b.mu.Unlock()
-	if !ok {
-		t.Fatalf("new entry not found for ref %q", newRef)
-	}
-	if e.wsID != wsID {
-		t.Errorf("entry wsID = %q, want %q", e.wsID, wsID)
-	}
-	if e.agentSessionID != wantSessionID {
-		t.Errorf("agentSessionID = %q, want %q", e.agentSessionID, wantSessionID)
-	}
+		newRef, err := b.Restart(context.Background(), sbID, agentNameFromWsID(wsID))
+		if err != nil {
+			t.Fatalf("Restart with broken binding (no pane): %v", err)
+		}
+		if !spaceOpenPaneCalled {
+			t.Error("space-open-pane must be called when pane list is empty")
+		}
+		if paneListCallCount < 2 {
+			t.Errorf("pane list called %d times, want ≥2 (before and after space-open-pane)", paneListCallCount)
+		}
+		b.mu.Lock()
+		e, ok := b.entries[newRef]
+		b.mu.Unlock()
+		if !ok {
+			t.Fatalf("new entry not found for ref %q", newRef)
+		}
+		if e.paneID != paneID {
+			t.Errorf("entry paneID = %q, want %q", e.paneID, paneID)
+		}
+	})
 }
 
 // TestRediscoverBySandboxID_ErrorDistinguishesMissingVsUnbound verifies that

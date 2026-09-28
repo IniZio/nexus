@@ -1378,6 +1378,11 @@ func (b *Backend) rediscoverEntry(ctx context.Context, agentRef string) (*entry,
 	}
 	paneID := parsePaneID(listOut, wsID)
 	if paneID == "" {
+		// nexus herdr list may have a broken binding; try herdr pane list directly.
+		paneListOut, _ := b.herdrRun(ctx, nil, "pane", "list", "--workspace", wsID)
+		paneID = parsePaneFromPaneList(paneListOut)
+	}
+	if paneID == "" {
 		return nil, fmt.Errorf("herdr backend: agentRef %q (workspace %s) not found in nexus herdr list", agentRef, wsID)
 	}
 	sbID := parseSandboxID(listOut, wsID)
@@ -1419,14 +1424,10 @@ func (b *Backend) rediscoverBySandboxID(ctx context.Context, sandboxID string) (
 		if err != nil {
 			return "", nil, fmt.Errorf("herdr backend: sandbox %q binding has no herdr workspace/pane; recovery failed: %w", sandboxID, err)
 		}
-		// Reopen pane since the binding was incomplete.
-		reopenOut, reopenErr := b.nexusRun(ctx, nil, "herdr", "space-open-pane", wsID)
-		if reopenErr != nil {
-			return "", nil, fmt.Errorf("herdr backend: sandbox %q binding has no herdr workspace/pane; recovery failed: space-open-pane: %w\n%s", sandboxID, reopenErr, reopenOut)
-		}
-		newListOut, newListErr := b.nexusRun(ctx, nil, "herdr", "list")
-		if newListErr == nil {
-			paneID = parsePaneID(newListOut, wsID)
+		// Get pane directly from herdr (nexus herdr list still has the broken binding).
+		paneID, err = b.resolveOrOpenPane(ctx, sandboxID, wsID)
+		if err != nil {
+			return "", nil, err
 		}
 	}
 
@@ -1462,6 +1463,56 @@ func (b *Backend) recoverWorkspaceByHandle(ctx context.Context, handle string) (
 		return wsID, nil
 	}
 	return "", fmt.Errorf("workspace with label %q not found in herdr workspace list", label)
+}
+
+// resolveOrOpenPane finds the existing pane for wsID via herdr pane list.
+// If no pane exists, it calls nexus herdr space-open-pane and rechecks.
+// Never reads the pane from nexus herdr list, which may have a broken binding.
+func (b *Backend) resolveOrOpenPane(ctx context.Context, sandboxID, wsID string) (string, error) {
+	paneOut, _ := b.herdrRun(ctx, nil, "pane", "list", "--workspace", wsID)
+	if paneID := parsePaneFromPaneList(paneOut); paneID != "" {
+		return paneID, nil
+	}
+	// No pane — open one and recheck.
+	reopenOut, reopenErr := b.nexusRun(ctx, nil, "herdr", "space-open-pane", wsID)
+	if reopenErr != nil {
+		return "", fmt.Errorf("herdr backend: sandbox %q binding has no herdr workspace/pane; recovery failed: space-open-pane: %w\n%s", sandboxID, reopenErr, reopenOut)
+	}
+	paneOut2, _ := b.herdrRun(ctx, nil, "pane", "list", "--workspace", wsID)
+	if paneID := parsePaneFromPaneList(paneOut2); paneID != "" {
+		return paneID, nil
+	}
+	return "", fmt.Errorf("herdr backend: sandbox %q binding has no herdr workspace/pane; recovery failed: no pane after space-open-pane", sandboxID)
+}
+
+// parsePaneFromPaneList picks the pane_id from herdr pane list JSON output.
+// Prefers panes labelled "nexus guest shell" or with agent "claude";
+// falls back to the first pane in the result.
+func parsePaneFromPaneList(out string) string {
+	var parsed struct {
+		Result struct {
+			Panes []struct {
+				PaneID string `json:"pane_id"`
+				Label  string `json:"label"`
+				Agent  string `json:"agent"`
+			} `json:"panes"`
+		} `json:"result"`
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil && len(parsed.Result.Panes) > 0 {
+			break
+		}
+	}
+	for _, p := range parsed.Result.Panes {
+		if p.Label == "nexus guest shell" || p.Agent == "claude" {
+			return p.PaneID
+		}
+	}
+	if len(parsed.Result.Panes) > 0 {
+		return parsed.Result.Panes[0].PaneID
+	}
+	return ""
 }
 
 func (b *Backend) checkAgent(ctx context.Context, agentRef string) error {
