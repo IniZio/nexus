@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -25,6 +26,9 @@ import (
 func main() {
 	goarch := flag.String("goarch", runtime.GOARCH, "target GOARCH (e.g. amd64, arm64)")
 	out := flag.String("out", "", "output directory for .zst files (required)")
+	agentTag := flag.String("agent-tag", "dev", "build tag embedded in nexus-agent via -X main.agentBuildTag")
+	agentPkg := flag.String("agent-pkg", "./cmd/nexus-agent", "Go package path for nexus-agent")
+	skipAgent := flag.Bool("skip-agent", false, "skip building nexus-agent (leave existing files untouched)")
 	flag.Parse()
 
 	if *out == "" {
@@ -108,7 +112,15 @@ func main() {
 		fmt.Printf("wrote %s %s raw=%d zst=%d\n", name, p.Version, len(data), len(compressed))
 	}
 
+	if !*skipAgent {
+		if err := buildAgent(*out, *goarch, *agentTag, *agentPkg); err != nil {
+			fmt.Fprintf(os.Stderr, "genartifacts: build nexus-agent: %v\n", err)
+			exitCode = 1
+		}
+	}
+
 	// Remove stale .zst files whose pin is no longer downloadable for this arch.
+	// "nexus-agent" is always kept (built above or left alone when -skip-agent).
 	entries, err := os.ReadDir(*out)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "genartifacts: readdir %s: %v\n", *out, err)
@@ -119,7 +131,7 @@ func main() {
 			continue
 		}
 		base := strings.TrimSuffix(e.Name(), ".zst")
-		if downloadable[base] {
+		if downloadable[base] || base == "nexus-agent" {
 			continue
 		}
 		stale := filepath.Join(*out, e.Name())
@@ -131,6 +143,62 @@ func main() {
 	}
 
 	os.Exit(exitCode)
+}
+
+func buildAgent(out, goarch, tag, pkg string) error {
+	tmp, err := os.MkdirTemp("", "genartifacts-agent-")
+	if err != nil {
+		return fmt.Errorf("mkdirtemp: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	bin := filepath.Join(tmp, "nexus-agent")
+	cmd := exec.Command("go", "build",
+		"-trimpath",
+		"-buildvcs=false",
+		"-ldflags", "-X main.agentBuildTag="+tag,
+		"-o", bin,
+		pkg,
+	)
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+goarch)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go build: %w", err)
+	}
+
+	data, err := os.ReadFile(bin)
+	if err != nil {
+		return fmt.Errorf("read binary: %w", err)
+	}
+
+	rawSHA := sha256hex(data)
+
+	compressed, err := encodeZst(data)
+	if err != nil {
+		return fmt.Errorf("compress: %w", err)
+	}
+
+	decoded, err := decodeZst(compressed)
+	if err != nil {
+		return fmt.Errorf("re-decode: %w", err)
+	}
+	if sha256hex(decoded) != rawSHA {
+		return fmt.Errorf("re-verify failed")
+	}
+
+	zstPath := filepath.Join(out, "nexus-agent.zst")
+	if err := atomicWrite(out, zstPath, compressed); err != nil {
+		return fmt.Errorf("write zst: %w", err)
+	}
+
+	shaPath := filepath.Join(out, "nexus-agent.sha256")
+	if err := atomicWrite(out, shaPath, []byte(rawSHA+"\n")); err != nil {
+		return fmt.Errorf("write sha256: %w", err)
+	}
+
+	fmt.Printf("wrote nexus-agent tag=%s raw=%d zst=%d sha=%s\n", tag, len(data), len(compressed), rawSHA[:12])
+	return nil
 }
 
 func sha256hex(b []byte) string {

@@ -31,10 +31,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	repro "github.com/IniZio/nexus/internal/test/repro"
 )
 
@@ -65,7 +65,10 @@ func main() {
 		stateDir = filepath.Join(home, ".local", "state", "nexus")
 	}
 
-	agentBin, _ := exec.LookPath("nexus-agent")
+	var agentBin string
+	if a, err := hostbin.ResolveAgent(nil); err == nil {
+		agentBin = a.Path
+	}
 
 	// baseBuild is the shared BuildConfig used by all phases.
 	// Each phase overrides SandboxName and (where applicable) BuilderMemoryMiB.

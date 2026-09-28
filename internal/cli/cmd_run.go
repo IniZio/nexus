@@ -2,14 +2,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"math/rand"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
@@ -142,16 +143,12 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		PID1Args:     sizing.PID1Args,
 	}, nil)
 
-	// Locate the nexus-agent binary to inject into OCI images on a cache miss.
-	// D2: a present-but-unreadable binary must surface a clear error rather than
-	// silently passing a nil slice (which produces a misleading "no agent binary"
-	// error downstream on a cache miss).
+	// Locate nexus-agent bytes for OCI image injection; absent is allowed, unreadable is not.
 	var agentBytes []byte
-	if agentBin, lookErr := exec.LookPath("nexus-agent"); lookErr == nil {
-		agentBytes, err = os.ReadFile(agentBin)
-		if err != nil {
-			return errSandbox("run", fmt.Errorf("found nexus-agent but cannot read %s: %w", agentBin, err))
-		}
+	if a, aErr := hostbin.ResolveAgent(kernelDirForAgent); aErr == nil {
+		agentBytes = a.Bytes
+	} else if !errors.Is(aErr, hostbin.ErrNotFound) {
+		return errSandbox("run", fmt.Errorf("resolve nexus-agent: %w", aErr))
 	}
 
 	opts := buildRunCreateOpts(ctx, imageRef, agentBytes, cacheRoot, memoryMiB, vcpus, parsed.force, parsed.noSandboxTools, defaultToolFetch(storeRoot))

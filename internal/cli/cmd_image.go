@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -307,22 +306,9 @@ func shortDigest(d string) string {
 	return d
 }
 
-// builderAgentTag resolves the host nexus-agent binary the way `sandbox create
-// --file` does and returns its image.BuilderAgentTag; "" when it cannot be found.
+// builderAgentTag delegates to currentAgentTag for unified agent resolution.
 func builderAgentTag() string {
-	agentBin, err := exec.LookPath("nexus-agent")
-	if err != nil {
-		kernelPath, kerr := resolveKernelPath()
-		if kerr != nil {
-			return ""
-		}
-		agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus-agent")
-	}
-	agentBytes, err := os.ReadFile(agentBin)
-	if err != nil {
-		return ""
-	}
-	return image.BuilderAgentTag(agentBytes)
+	return currentAgentTag()
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

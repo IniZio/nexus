@@ -4,11 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
@@ -42,22 +41,13 @@ func runDisk(ctx context.Context, args []string, out *Output) error {
 	}
 }
 
-// currentAgentTag mirrors the --file build path: PATH first, then the agent
-// binary next to the kernel. No binary => "" (templates cannot be classed stale).
+// currentAgentTag mirrors sandbox create's agent resolution order.
 func currentAgentTag() string {
-	agentBin, err := exec.LookPath("nexus-agent")
-	if err != nil {
-		kernelPath, kerr := resolveKernelPath()
-		if kerr != nil {
-			return ""
-		}
-		agentBin = filepath.Join(filepath.Dir(kernelPath), "nexus-agent")
-	}
-	b, err := os.ReadFile(agentBin)
+	a, err := hostbin.ResolveAgent(kernelDirForAgent)
 	if err != nil {
 		return ""
 	}
-	return image.BuilderAgentTag(b)
+	return image.BuilderAgentTag(a.Bytes)
 }
 
 func runDiskUsage(ctx context.Context, args []string, out *Output, stateDir, agentTag string) error {

@@ -99,7 +99,7 @@ func injectSandboxTools(stagingDir string, tools []toolcache.Fetched) error {
 // digest immediately (ref-based hit).
 //
 // agentBytes must be the raw bytes of the nexus-agent binary. The caller is
-// responsible for locating it (e.g. exec.LookPath("nexus-agent") + os.ReadFile).
+// responsible for locating it (hostbin.ResolveAgent).
 //
 // TODO(auth): pass credentials for private-registry pulls via remote.WithAuth.
 func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBytes []byte) (digest string, err error) {

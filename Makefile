@@ -110,21 +110,16 @@ build:
 
 HOSTBIN_GOARCH ?= $(shell go env GOARCH)
 artifacts:
-	$(call CAPPED,go run ./internal/core/hostbin/internal/genartifacts -goarch $(HOSTBIN_GOARCH) -out internal/core/hostbin/embedded/$(HOSTBIN_GOARCH))
+	$(call CAPPED,go run ./internal/core/hostbin/internal/genartifacts -goarch $(HOSTBIN_GOARCH) -out internal/core/hostbin/embedded/$(HOSTBIN_GOARCH) -agent-tag $(AGENT_BUILD_TAG))
 
 # install-agent compiles the on-PATH nexus-agent (CGO_ENABLED=0, static) and
 # installs it at NEXUS_AGENT_INSTALL_DIR/nexus-agent (default: ~/.local/bin).
 #
-# WHY THIS MATTERS — the builder trap:
-#   `nexus create --file` resolves the agent via exec.LookPath("nexus-agent")
-#   and bakes it into the builder VM image. The builder-image cache key is
-#   sha256(agentBytes)[:8] (see internal/core/builder/builderimage/image.go:94).
-#   Rebuilding only `go build ./cmd/nexus` leaves the on-PATH agent STALE —
-#   new agent code (e.g. boot.json capture) silently never runs. Always run
-#   `make install-agent` when agent source changes, not just after CLI changes.
-#
-# The base-image agent (images/kernel/nexus-agent, baked into nexus-agent-base)
-# is a SEPARATE binary rebuilt by images/kernel/rebuild-base.sh — see AGENT-REBUILD.md.
+# WHY THIS MATTERS: nexus-agent is resolved at runtime via $NEXUS_AGENT_PATH,
+# then the embedded artifact (make artifacts), then PATH, then beside the kernel.
+# Rebuilding only `go build ./cmd/nexus` leaves installed and embedded agents
+# STALE — new agent code silently never runs. Run `make install-agent` (on-PATH)
+# or `make artifacts` (embedded) when agent source changes.
 NEXUS_AGENT_INSTALL_DIR ?= $(HOME)/.local/bin
 AGENT_BUILD_TAG ?= $(shell date -u +%Y%m%d)-$(shell git rev-parse --short=7 HEAD)
 

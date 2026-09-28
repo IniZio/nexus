@@ -18,12 +18,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
 func init() {
@@ -53,15 +53,15 @@ func runSandboxAgentUpgrade(ctx context.Context, args []string, out *Output) err
 	// Locate the replacement binary.
 	agentBin := *agentFlag
 	if agentBin == "" {
-		var err error
-		agentBin, err = exec.LookPath("nexus-agent")
+		a, err := hostbin.ResolveAgent(kernelDirForAgent)
 		if err != nil {
 			return &CodedError{
 				Code: ErrCodeInternalError,
-				Msg:  "sandbox agent-upgrade: cannot locate nexus-agent in PATH; use --agent <path>",
+				Msg:  "sandbox agent-upgrade: cannot locate nexus-agent (embedded, $NEXUS_AGENT_PATH, PATH, beside kernel); use --agent <path>",
 				Err:  err,
 			}
 		}
+		agentBin = a.Path
 	}
 	agentBin = filepath.Clean(agentBin)
 

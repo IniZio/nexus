@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -1057,15 +1056,10 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 
 	var agentBytes []byte
 	var agentBytesLoadErr error
-	{
-		ab, lookErr := exec.LookPath("nexus-agent")
-		if lookErr != nil {
-			ab = filepath.Join(filepath.Dir(kernelPath), "nexus-agent")
-		}
-		agentBytes, agentBytesLoadErr = os.ReadFile(ab)
-		if agentBytesLoadErr != nil {
-			agentBytesLoadErr = fmt.Errorf("read agent binary %q: %w", ab, agentBytesLoadErr)
-		}
+	if a, aErr := hostbin.ResolveAgent(func() string { return filepath.Dir(kernelPath) }); aErr == nil {
+		agentBytes = a.Bytes
+	} else {
+		agentBytesLoadErr = fmt.Errorf("resolve nexus-agent: %w", aErr)
 	}
 
 	storeRoot, err := store.DefaultRoot()
@@ -2437,4 +2431,13 @@ func parseVolumeSize(s string) (int64, error) {
 		}
 		return v, nil
 	}
+}
+
+// kernelDirForAgent returns the kernel's directory for the beside-kernel agent fallback, "" if unresolvable.
+func kernelDirForAgent() string {
+	kp, err := resolveKernelPath()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(kp)
 }

@@ -11,10 +11,10 @@ import (
 	"github.com/IniZio/nexus/internal/core/service"
 )
 
-// diskWarnEnv isolates runSandboxCreate from the host: a fake kernel so the
-// booted path is reachable, empty state/config roots, and a PATH with no
-// nexus-agent so the --file branch stops at "read agent binary" right after
-// the disk guard (the first step past the guard that touches a real artefact).
+// diskWarnEnv isolates runSandboxCreate from the host: a fake kernel, empty
+// state/config roots, and NEXUS_AGENT_PATH pointing at a missing file so
+// resolution fails immediately at "resolve nexus-agent" — the first stop past
+// the disk guard — without falling through to any embedded agent.
 func diskWarnEnv(t *testing.T) []string {
 	t.Helper()
 	kernel := filepath.Join(t.TempDir(), "vmlinux")
@@ -25,6 +25,7 @@ func diskWarnEnv(t *testing.T) []string {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
+	t.Setenv("NEXUS_AGENT_PATH", filepath.Join(t.TempDir(), "absent-nexus-agent"))
 
 	ctxDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(ctxDir, ".nexus"), 0o700); err != nil {
@@ -80,7 +81,7 @@ func TestSandboxCreate_DiskWarn_BelowFloorRefusesBeforeBuild(t *testing.T) {
 	if !strings.Contains(err.Error(), "below the 15.0 GiB floor") {
 		t.Errorf("error should name the floor; got %q", err)
 	}
-	if strings.Contains(err.Error(), "read agent binary") {
+	if strings.Contains(err.Error(), "resolve nexus-agent") {
 		t.Errorf("create proceeded past the disk guard into the --file build path: %q", err)
 	}
 	got := stderr.String()
@@ -110,7 +111,7 @@ func TestSandboxCreate_DiskWarn_UnderTwiceFloorWarnsAndProceeds(t *testing.T) {
 	out, _, stderr := capture(false)
 
 	err := runSandboxCreate(context.Background(), args, out, svc)
-	if err == nil || !strings.Contains(err.Error(), "read agent binary") {
+	if err == nil || !strings.Contains(err.Error(), "resolve nexus-agent") {
 		t.Fatalf("expected create to proceed past the disk guard and stop at the agent-binary read; got %v", err)
 	}
 	if *calls != 1 {
@@ -144,7 +145,7 @@ func TestSandboxCreate_DiskWarn_AboveTwiceFloorSilent(t *testing.T) {
 	out, _, stderr := capture(false)
 
 	err := runSandboxCreate(context.Background(), args, out, svc)
-	if err == nil || !strings.Contains(err.Error(), "read agent binary") {
+	if err == nil || !strings.Contains(err.Error(), "resolve nexus-agent") {
 		t.Fatalf("expected create to proceed to the agent-binary read; got %v", err)
 	}
 	if strings.Contains(stderr.String(), "free space") {
