@@ -112,3 +112,44 @@ func TestLoadUserGlobal_MalformedFile(t *testing.T) {
 		t.Fatal("malformed file: expected error, got nil")
 	}
 }
+
+func TestLoadUserGlobal_SandboxToolsGH(t *testing.T) {
+	falseBool := false
+	trueBool := true
+	cases := []struct {
+		name string
+		yaml string
+		want *bool
+	}{
+		{"gh false", "version: 1\nsandbox:\n  tools:\n    gh: false\n", &falseBool},
+		{"gh true", "version: 1\nsandbox:\n  tools:\n    gh: true\n", &trueBool},
+		{"gh absent", "version: 1\nsandbox:\n  tools: {}\n", nil},
+		{"tools absent", "version: 1\nsandbox: {}\n", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", dir)
+			cfgDir := filepath.Join(dir, "nexus")
+			if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadUserGlobal()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := cfg.Sandbox.Tools.GH
+			switch {
+			case tc.want == nil && got != nil:
+				t.Errorf("Tools.GH = %v, want nil", *got)
+			case tc.want != nil && got == nil:
+				t.Errorf("Tools.GH = nil, want %v", *tc.want)
+			case tc.want != nil && got != nil && *got != *tc.want:
+				t.Errorf("Tools.GH = %v, want %v", *got, *tc.want)
+			}
+		})
+	}
+}

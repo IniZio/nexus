@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+
+	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 )
 
 // BuildExt4ForTest exposes the unexported buildExt4 function for integration
@@ -61,4 +63,22 @@ func BuilderImageCachePathForTest(dataDir, ociDigest string, agentBytes []byte) 
 	digestSafe := strings.NewReplacer(":", "-", "/", "-").Replace(ociDigest)
 	imagesDir := filepath.Join(dataDir, "images")
 	return builderImageCachePath(imagesDir, digestSafe, agentBytes)
+}
+
+// BuilderImageCachePathWithToolsForTest exposes builderImageCachePathWithTools
+// for test assertions.
+func BuilderImageCachePathWithToolsForTest(dataDir, ociDigest string, agentBytes []byte, tools []toolcache.Fetched) string {
+	digestSafe := strings.NewReplacer(":", "-", "/", "-").Replace(ociDigest)
+	imagesDir := filepath.Join(dataDir, "images")
+	return builderImageCachePathWithTools(imagesDir, digestSafe, agentBytes, tools)
+}
+
+// StageBuilderToolsForTest exposes stageBuilderTools for unit tests.
+func StageBuilderToolsForTest(stagingDir string, tools []toolcache.Fetched) error {
+	return stageBuilderTools(stagingDir, tools)
+}
+
+// InjectSandboxToolsForTest exposes injectSandboxTools for unit tests.
+func InjectSandboxToolsForTest(stagingDir string, tools []toolcache.Fetched) error {
+	return injectSandboxTools(stagingDir, tools)
 }

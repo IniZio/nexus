@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
@@ -618,20 +619,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// derived via WorkspaceGuestMount (currently /dev/vdb, since the orca path
 	// attaches no shadow disks) — never hardcode it, or adding shadow disks
 	// here would silently mount the wrong volume.
-	opts := service.CreateAndBootOptions{
-		Labels:              map[string]string{"motive": env.InstanceID},
-		Image:               service.ImageSpec{Ref: imageRef},
-		CacheRoot:           cacheRoot,
-		ReachabilityTimeout: 120 * time.Second,
-		SSHPublicKey:        pubKey,
-		AllowedHosts:        allowedHosts,
-		Workspace:           orcaWorkspaceSpec(env),
-		// Record which agent this sandbox serves. The credential seed itself is
-		// the detached supervisor's job (UseAgentSeed stays false), but without
-		// the profile here the record carries no agent and the perimeter cannot
-		// tell an agent sandbox apart from a plain one.
-		AgentProfile: claudeProfile,
-	}
+	opts := buildOrcaCreateOpts(ctx, env, imageRef, cacheRoot, pubKey, allowedHosts, claudeProfile, defaultToolFetch(storeRoot))
 
 	name := orcaSandboxName(env.InstanceID)
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe, "orca", name, opts)
@@ -759,6 +747,44 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 
 	result := buildOrcaConnectionJSON(env.InstanceID, sb.ID.String(), env.WorkspaceName, env.RepoPath, privKeyPath)
 	return json.NewEncoder(w).Encode(result)
+}
+
+// buildOrcaCreateOpts assembles CreateAndBootOptions for an orca sandbox,
+// including the SandboxTools assignment. It is extracted so tests can verify
+// that the SandboxTools field is populated without spinning up a real VM.
+// fetch is the tool-fetch backend; production callers pass defaultToolFetch(storeRoot).
+// The opt-out gate is read from the package-level userGlobalSandboxToolsOptOut var.
+func buildOrcaCreateOpts(
+	ctx context.Context,
+	env orcaEnv,
+	imageRef string,
+	cacheRoot string,
+	pubKey string,
+	allowedHosts []string,
+	claudeProfile cred.AgentProfile,
+	fetch toolFetchFn,
+) service.CreateAndBootOptions {
+	opts := service.CreateAndBootOptions{
+		Labels:              map[string]string{"motive": env.InstanceID},
+		Image:               service.ImageSpec{Ref: imageRef},
+		CacheRoot:           cacheRoot,
+		ReachabilityTimeout: 120 * time.Second,
+		SSHPublicKey:        pubKey,
+		AllowedHosts:        allowedHosts,
+		Workspace:           orcaWorkspaceSpec(env),
+		AgentProfile:        claudeProfile,
+	}
+	opts.SandboxTools = orcaToolsForCreate(ctx, imageRef, userGlobalSandboxToolsOptOut(), fetch)
+	return opts
+}
+
+// orcaToolsForCreate resolves sandbox tools to inject into the OCI-ref boot
+// path of orca create. It wraps imageOptsSandboxTools with an opts stub so
+// that cmd_orca_tools_test.go can verify injection without spinning up a VM.
+// Production callers pass userGlobalSandboxToolsOptOut() and defaultToolFetch(storeRoot).
+func orcaToolsForCreate(ctx context.Context, imageRef string, optOut bool, fetch toolFetchFn) []toolcache.Fetched {
+	stub := service.CreateAndBootOptions{Image: service.ImageSpec{Ref: imageRef}}
+	return imageOptsSandboxTools(ctx, stub, optOut, goArchForBuild(), fetch)
 }
 
 // orcaSocketDir returns the directory used for per-sandbox Cloud Hypervisor

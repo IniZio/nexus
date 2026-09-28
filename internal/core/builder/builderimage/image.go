@@ -32,6 +32,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+
+	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 )
 
 // DefaultOCIRef is the public moby/buildkit image reference used as the
@@ -93,10 +95,25 @@ var pullRemoteImage = func(ctx context.Context, ociRef string) (v1.Image, error)
 // and triggers a fresh image build rather than reusing a stale, too-small
 // ext4.
 func builderImageCachePath(imagesDir, digestSafe string, agentBytes []byte) string {
+	return builderImageCachePathWithTools(imagesDir, digestSafe, agentBytes, nil)
+}
+
+// builderImageCachePathWithTools returns the cache path for a builder image
+// that optionally includes baked-in tools. When tools is non-empty a
+// -tools<digest> component is inserted between -tc<..> and -agent<..>.
+// When tools is empty the output is identical to builderImageCachePath.
+//
+// The -tc and -agent positions match what image.parseBuilderTemplateName
+// expects: it anchors on the trailing -agent<16hex>.ext4, so the new
+// -tools<..> segment sits before that suffix and parses correctly.
+func builderImageCachePathWithTools(imagesDir, digestSafe string, agentBytes []byte, tools []toolcache.Fetched) string {
 	agentSum := sha256.Sum256(agentBytes)
 	agentTag := fmt.Sprintf("%x", agentSum[:8]) // 16 hex chars — sufficient for version skew
-	// -tc sits BEFORE -agent: image.parseBuilderTemplateName anchors on the trailing -agent<16hex>.
 	tcTag := toolchainFingerprint(toolchainPackages)
+	toolsDigest := toolcache.Digest(tools)
+	if toolsDigest != "" {
+		return filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s-tc%s-tools%s-agent%s.ext4", digestSafe, tcTag, toolsDigest, agentTag))
+	}
 	return filepath.Join(imagesDir, fmt.Sprintf("nexus-builder-%s-tc%s-agent%s.ext4", digestSafe, tcTag, agentTag))
 }
 
@@ -111,6 +128,17 @@ func builderImageCachePath(imagesDir, digestSafe string, agentBytes []byte) stri
 // dataDir is the nexus data directory; images are written under
 // <dataDir>/images/.
 func EnsureBuilderImage(ctx context.Context, dataDir string, embeddedAgentBytes []byte) (string, error) {
+	return EnsureBuilderImageWithTools(ctx, dataDir, embeddedAgentBytes, nil)
+}
+
+// EnsureBuilderImageWithTools is like EnsureBuilderImage but also bakes a set
+// of host-verified tool binaries into the builder rootfs under
+// toolcache.BuilderTreeDir. When tools is nil or empty the result is
+// byte-identical to EnsureBuilderImage and uses the same cache path.
+//
+// If staging the tools fails the function returns an error; no partial image
+// is left behind under the tools-tagged cache path.
+func EnsureBuilderImageWithTools(ctx context.Context, dataDir string, embeddedAgentBytes []byte, tools []toolcache.Fetched) (string, error) {
 	if len(embeddedAgentBytes) == 0 {
 		return "", fmt.Errorf("builderimage: embeddedAgentBytes must not be empty")
 	}
@@ -125,7 +153,7 @@ func EnsureBuilderImage(ctx context.Context, dataDir string, embeddedAgentBytes 
 	// "sha256:abc123" → "sha256-abc123"
 	digestSafe := strings.NewReplacer(":", "-", "/", "-").Replace(digest)
 	imagesDir := filepath.Join(dataDir, "images")
-	cachePath := builderImageCachePath(imagesDir, digestSafe, embeddedAgentBytes)
+	cachePath := builderImageCachePathWithTools(imagesDir, digestSafe, embeddedAgentBytes, tools)
 
 	if info, err := os.Stat(cachePath); err == nil && info.Size() > 0 {
 		slog.Info("builderimage: cache hit", "path", cachePath, "digest", digest)
@@ -163,6 +191,13 @@ func EnsureBuilderImage(ctx context.Context, dataDir string, embeddedAgentBytes 
 		return "", fmt.Errorf("builderimage: toolchain layers: %w", err)
 	}
 
+	if len(tools) > 0 {
+		slog.Info("builderimage: staging sandbox tools", "count", len(tools))
+		if err := stageBuilderTools(stagingDir, tools); err != nil {
+			return "", fmt.Errorf("builderimage: stage tools: %w", err)
+		}
+	}
+
 	slog.Info("builderimage: building ext4 image", "dest", cachePath)
 	if err := buildExt4(ctx, stagingDir, cachePath); err != nil {
 		// Remove any partial output so the next call retries cleanly.
@@ -172,6 +207,14 @@ func EnsureBuilderImage(ctx context.Context, dataDir string, embeddedAgentBytes 
 
 	slog.Info("builderimage: done", "path", cachePath, "digest", digest)
 	return cachePath, nil
+}
+
+func stageBuilderTools(stagingDir string, tools []toolcache.Fetched) error {
+	treeRoot := filepath.Join(stagingDir, toolcache.BuilderTreeDir)
+	if err := os.MkdirAll(treeRoot, 0o755); err != nil {
+		return fmt.Errorf("stageBuilderTools: mkdir treeRoot: %w", err)
+	}
+	return toolcache.StageTree(treeRoot, tools, false)
 }
 
 // extractImageLayers extracts all layers of img onto destDir, applying OCI

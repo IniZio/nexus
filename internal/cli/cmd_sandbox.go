@@ -307,6 +307,7 @@ type sandboxCreateFlags struct {
 	mountLive        []string // --mount <host-path>:<guest-path>[:ro] (D-PD-53 live virtiofs)
 	noShareSettings  bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
 	noUserMounts     bool     // --no-user-mounts: skip operator tool-dir live mounts (usermount-table-host)
+	noSandboxTools   bool
 	positionals      []string
 }
 
@@ -407,6 +408,10 @@ func applyProjectConfig(f *sandboxCreateFlags) error {
 		f.nestedVirt = true
 	}
 
+	if !f.noSandboxTools && sandboxToolsOptOutFromConfig(cfg) {
+		f.noSandboxTools = true
+	}
+
 	return nil
 }
 
@@ -451,6 +456,10 @@ func applyUserGlobalConfig(f *sandboxCreateFlags) error {
 
 	if f.builderMemoryMiB == 0 && userCfg.Builder.MemoryMiB > 0 {
 		f.builderMemoryMiB = uint32(userCfg.Builder.MemoryMiB)
+	}
+
+	if !f.noSandboxTools {
+		f.noSandboxTools = sandboxToolsOptOutFromConfig(userCfg)
 	}
 
 	return nil
@@ -581,6 +590,8 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			f.noShareSettings = true
 		case "--no-user-mounts":
 			f.noUserMounts = true
+		case "--no-sandbox-tools":
+			f.noSandboxTools = true
 		case "--egress":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --egress requires a value (open|closed)"}
@@ -1004,7 +1015,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-share-settings] [--no-user-mounts] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-share-settings] [--no-user-mounts] [--no-sandbox-tools] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])
@@ -1151,11 +1162,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		baseImageRef := builder.ExtractFromRef(containerfileBytes)
 		buildProfile, _, _ := resolveAgentPosture(f)
 		buildTargetArch := builder.GoArchToVendorArch(goArchForBuild())
+		sandboxTools := resolveSandboxTools(buildCtx, f.noSandboxTools, containerfileBytes, goArchForBuild(), defaultToolFetch(storeRoot))
 		resolvedRecipe, err := cred.ResolveFloatingVersions(buildCtx, buildProfile.Recipe())
 		if err != nil {
 			return errSandbox("sandbox create", fmt.Errorf("--file: resolve tool recipe versions: %w", err))
 		}
-		fp, err := builder.BuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir, resolvedRecipe, buildTargetArch)
+		fp, err := fileBuildFingerprint(containerfileBytes, baseImageRef, agentBytes, workspaceDir, resolvedRecipe, buildTargetArch, sandboxTools)
 		if err != nil {
 			return errSandbox("sandbox create", fmt.Errorf("--file: fingerprint: %w", err))
 		}
@@ -1203,7 +1215,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
 			}
 
-			builderRootfsTemplate, err := builderimage.EnsureBuilderImage(buildCtx, storeRoot, agentBytes)
+			builderRootfsTemplate, err := builderimage.EnsureBuilderImageWithTools(buildCtx, storeRoot, agentBytes, sandboxTools)
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: builder image: %w", err))
 			}
@@ -1583,6 +1595,8 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		}
 	}
 
+	bootTools := bootSandboxTools(ctx, f, goArchForBuild(), defaultToolFetch(storeRoot))
+
 	sb, err := service.CreateAndBoot(ctx, svc, imgCache, newDriver, probe,
 		project, name,
 		service.CreateAndBootOptions{
@@ -1613,6 +1627,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			NamedVolumeMounts:       namedMounts,
 			LiveMounts:              bootLiveMounts, // D-PD-53: populated from --mount flags
 			AgentBytes:              agentBytes,
+			SandboxTools:            bootTools,
 		},
 	)
 	agentCfgLease.Finish(err)

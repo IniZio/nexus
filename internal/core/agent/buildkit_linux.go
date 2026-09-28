@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/IniZio/nexus/internal/core/builder"
+	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 )
 
 const (
@@ -26,6 +27,38 @@ const (
 	inGuestDefaultBase    = "ubuntu:24.04"
 	inGuestDefaultImgSize = 2 << 30 // 2 GiB
 )
+
+// sandboxToolsTreeDir is the host directory baked into the builder VM that
+// contains the verified sandbox-tools tree (e.g. gh CLI). Overridable in
+// tests via an unexported package-level var.
+var sandboxToolsTreeDir = toolcache.BuilderTreeDir
+
+// builderSandboxToolsDir returns sandboxToolsTreeDir when it exists as a
+// directory, or "" when it is absent (e.g. older builder VMs, tests without
+// the tree on disk).
+func builderSandboxToolsDir() string {
+	if fi, err := os.Stat(sandboxToolsTreeDir); err == nil && fi.IsDir() {
+		return sandboxToolsTreeDir
+	}
+	return ""
+}
+
+// newInGuestSolveRequest constructs the builder.SolveRequest for an in-guest
+// build. It is a pure function of its inputs so it can be tested in isolation.
+// SandboxToolsDir is resolved internally via builderSandboxToolsDir so callers
+// do not need to pass it separately.
+func newInGuestSolveRequest(baseRef string, opts InGuestBuildOptions) builder.SolveRequest {
+	return builder.SolveRequest{
+		BaseRef:            baseRef,
+		ContainerfileBytes: opts.ContainerfileBytes,
+		AgentPath:          opts.AgentPath,
+		AgentInstallPath:   "/sbin/nexus-agent",
+		WorkspaceDir:       opts.ContextDir, // vdb mount point; empty means no user context files
+		ToolRecipe:         opts.ToolRecipe,
+		TargetArch:         opts.TargetArch,
+		SandboxToolsDir:    builderSandboxToolsDir(),
+	}
+}
 
 // buildInGuestImageLinux is the Linux implementation of BuildInGuestImage.
 func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error {
@@ -224,15 +257,7 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	solveCtx, solveCancel := context.WithTimeout(ctx, solveTimeout)
 	defer solveCancel()
 
-	if err := bkClient.Solve(solveCtx, builder.SolveRequest{
-		BaseRef:            baseRef,
-		ContainerfileBytes: opts.ContainerfileBytes,
-		AgentPath:          opts.AgentPath,
-		AgentInstallPath:   "/sbin/nexus-agent",
-		WorkspaceDir:       opts.ContextDir, // vdb mount point; empty means no user context files
-		ToolRecipe:         opts.ToolRecipe,
-		TargetArch:         opts.TargetArch,
-	}, rootfsDir); err != nil {
+	if err := bkClient.Solve(solveCtx, newInGuestSolveRequest(baseRef, opts), rootfsDir); err != nil {
 		// Prototype finding (2026-08): the async log-forward goroutine is cut off
 		// at shutdown, so the buildkitd failure reason never reaches the host.
 		// Synchronously flush the buildkitd log and write the solve error to

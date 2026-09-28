@@ -15,6 +15,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/builder"
 	"github.com/IniZio/nexus/internal/core/builder/builderimage"
+	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/image"
@@ -30,6 +31,8 @@ import (
 var ErrAgentUnreachable = errors.New("service: guest agent did not answer after VM boot")
 
 var ociPullAndCacheFn = builderimage.PullAndCacheOCI
+
+var ociPullAndCacheToolsFn = builderimage.PullAndCacheOCIWithTools
 
 // ErrAgentBytesRequired is returned by CreateAndBoot when an OCI pull is
 // required but no agent binary was supplied in CreateAndBootOptions.
@@ -174,6 +177,15 @@ type CreateAndBootOptions struct {
 	// binary as /sbin/nexus-agent (PID 1). For cached images this field may
 	// be nil (the agent was already injected when the image was first cached).
 	AgentBytes []byte
+
+	// SandboxTools lists host-verified tool binaries (e.g. gh) to inject into
+	// the OCI-derived ext4 image at pull time. The tools are staged via
+	// toolcache.StageTree inside the image rootfs so they are available in every
+	// sandbox booted from that image. nil and empty slice are equivalent (no
+	// extra tools). When non-empty a different image-cache slot is used (keyed
+	// by builderimage.CacheTag(agentBytes, tools)) so that existing cached images
+	// without tools are not inadvertently reused.
+	SandboxTools []toolcache.Fetched
 
 	// ReachabilityTimeout is the maximum time to wait for the guest agent to
 	// become reachable after the VM starts. Defaults to 30 seconds.
@@ -512,7 +524,7 @@ func CreateAndBoot(
 	opts CreateAndBootOptions,
 ) (domain.Sandbox, error) {
 	// 1. Resolve ext4 path from the image spec
-	ext4Path, resolvedDigest, err := resolveExt4(ctx, opts.Image, cache, opts.CacheRoot, opts.AgentBytes)
+	ext4Path, resolvedDigest, err := resolveExt4WithTools(ctx, opts.Image, cache, opts.CacheRoot, opts.AgentBytes, opts.SandboxTools)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, err)
 	}
@@ -1257,6 +1269,47 @@ func resolveExt4(
 	cacheRoot string,
 	agentBytes []byte,
 ) (ext4Path, imageDigest string, err error) {
+	return resolveExt4WithTools(ctx, spec, cache, cacheRoot, agentBytes, nil)
+}
+
+// resolveExt4WithTools is the tools-aware variant of resolveExt4. tools is the
+// set of host-verified binaries to inject into the image on an OCI pull. When
+// tools is nil or empty the behaviour is identical to resolveExt4 so that all
+// existing callers and tests continue to work unchanged.
+//
+// On a cache miss or stale-agent hit:
+//   - len(tools)==0 → ociPullAndCacheFn (the original two-arg fn) so existing
+//     stubs in test files using the old signature keep compiling and passing.
+//   - len(tools)>0  → ociPullAndCacheToolsFn which also stages the tool binaries.
+//
+// The agent-tag comparison uses builderimage.CacheTag(agentBytes, tools) instead
+// of image.BuilderAgentTag(agentBytes) so that an image cached without tools is
+// treated as stale once tools are requested, and an image cached with the same
+// tool set hits the cache without re-pulling.
+func resolveExt4WithTools(
+	ctx context.Context,
+	spec ImageSpec,
+	cache *image.Cache,
+	cacheRoot string,
+	agentBytes []byte,
+	tools []toolcache.Fetched,
+) (ext4Path, imageDigest string, err error) {
+	// pull invokes the appropriate pull function depending on whether tools are
+	// requested, then recurses by digest to return the resolved path.
+	pull := func(ref string) (string, string, error) {
+		var digest string
+		var pullErr error
+		if len(tools) == 0 {
+			digest, pullErr = ociPullAndCacheFn(ctx, ref, cache, agentBytes)
+		} else {
+			digest, pullErr = ociPullAndCacheToolsFn(ctx, ref, cache, agentBytes, tools)
+		}
+		if pullErr != nil {
+			return "", "", fmt.Errorf("resolve image: pull OCI %q: %w", ref, pullErr)
+		}
+		return resolveExt4WithTools(ctx, ImageSpec{Digest: digest}, cache, cacheRoot, nil, nil)
+	}
+
 	switch {
 	case spec.RootfsPath != "":
 		// Direct ext4 path — no cache lookup.
@@ -1294,24 +1347,17 @@ func resolveExt4(
 		switch len(matches) {
 		case 0:
 			// Cache miss: pull from the OCI registry, convert to an ext4 rootfs,
-			// inject the nexus-agent binary, and store in the image cache. Then
-			// recurse by digest so the path is returned from the single-match branch.
+			// inject the nexus-agent binary (and tools when requested), and store
+			// in the image cache. Then recurse by digest.
 			if len(agentBytes) == 0 {
 				return "", "", fmt.Errorf("resolve image: no cached image with ref %q: %w", spec.Ref, ErrAgentBytesRequired)
 			}
-			digest, pullErr := ociPullAndCacheFn(ctx, spec.Ref, cache, agentBytes)
-			if pullErr != nil {
-				return "", "", fmt.Errorf("resolve image: pull OCI %q: %w", spec.Ref, pullErr)
-			}
-			return resolveExt4(ctx, ImageSpec{Digest: digest}, cache, cacheRoot, nil)
+			return pull(spec.Ref)
 		case 1:
 			m := matches[0]
-			if len(agentBytes) > 0 && m.Kind == domain.KindBase && m.AgentTag != image.BuilderAgentTag(agentBytes) {
-				digest, pullErr := ociPullAndCacheFn(ctx, spec.Ref, cache, agentBytes)
-				if pullErr != nil {
-					return "", "", fmt.Errorf("resolve image: pull OCI %q: %w", spec.Ref, pullErr)
-				}
-				return resolveExt4(ctx, ImageSpec{Digest: digest}, cache, cacheRoot, nil)
+			wantTag := builderimage.CacheTag(agentBytes, tools)
+			if len(agentBytes) > 0 && m.Kind == domain.KindBase && m.AgentTag != wantTag {
+				return pull(spec.Ref)
 			}
 			d := m.Digest
 			return filepath.Join(cacheRoot, d.Algo(), d.Hex(), "artifact"), string(d), nil

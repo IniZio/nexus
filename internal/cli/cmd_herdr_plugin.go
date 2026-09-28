@@ -1224,6 +1224,14 @@ type launchDeps struct {
 	waitForExit    func(ctx context.Context, stateDir string) error
 
 	execInGuest func(ctx context.Context, ref string, opts agent.ExecOptions) (int32, error)
+
+	// fetchTools is the tool-fetch backend for sandbox-tools injection.
+	// nil → defaultToolFetch(d.storeRoot).
+	fetchTools toolFetchFn
+
+	// createAndBoot is the CreateAndBoot implementation. nil → service.CreateAndBoot.
+	// Tests set this to capture the opts that would have been passed.
+	createAndBoot func(ctx context.Context, svc *service.Service, cache *image.Cache, newDriver service.DriverFactory, probe service.ProbeFunc, project, name string, opts service.CreateAndBootOptions) (domain.Sandbox, error)
 }
 
 func newLaunchDeps() (launchDeps, error) {
@@ -1314,8 +1322,20 @@ func runHerdrLaunch(ctx context.Context, d launchDeps, imageRef string, argv []s
 	/** Unique name per invocation to prevent ErrAlreadyExists on retry or concurrent runs. */
 	name := fmt.Sprintf("run-%x", time.Now().UnixNano())
 
-	sb, err := service.CreateAndBoot(ctx, d.svc, d.imgCache, d.newDriver, d.probe,
-		"herdr", name, buildLaunchBootOpts(imageRef, d.cacheRoot, agentEgress),
+	opts := buildLaunchBootOpts(imageRef, d.cacheRoot, agentEgress)
+	fetch := d.fetchTools
+	if fetch == nil {
+		fetch = defaultToolFetch(d.storeRoot)
+	}
+	optOut := userGlobalSandboxToolsOptOut != nil && userGlobalSandboxToolsOptOut()
+	opts.SandboxTools = imageOptsSandboxTools(ctx, opts, optOut, goArchForBuild(), fetch)
+
+	cab := d.createAndBoot
+	if cab == nil {
+		cab = service.CreateAndBoot
+	}
+	sb, err := cab(ctx, d.svc, d.imgCache, d.newDriver, d.probe,
+		"herdr", name, opts,
 	)
 	if err != nil {
 		return &CodedError{Code: sandboxCodeFor(err), Msg: "__herdr-plugin launch: boot: " + err.Error(), Err: err}

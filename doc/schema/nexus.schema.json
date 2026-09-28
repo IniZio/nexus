@@ -172,6 +172,16 @@
           "type": "boolean",
           "description": "Expose /dev/kvm to the guest so inner VMs can boot. Opt-in and default false (D-N3N-02): nested virtualisation widens the isolation perimeter. Worktree sandboxes honour it from the checkout's own .nexus/config.yaml; it takes effect on the next worktree-sandbox create.",
           "default": false
+        },
+        "tools": {
+          "type": "object",
+          "description": "Toggles for host-provided tools injected into sandboxes. Absent means all tools are enabled (the default).",
+          "properties": {
+            "gh": {
+              "type": "boolean",
+              "description": "When false, the gh CLI is not injected into the sandbox. Absent means enabled (default)."
+            }
+          }
         }
       }
     }

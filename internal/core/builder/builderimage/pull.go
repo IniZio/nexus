@@ -28,6 +28,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/IniZio/nexus/internal/core/bootspec"
+	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/image"
 )
@@ -54,6 +55,35 @@ var pullAmd64RemoteImage = func(ctx context.Context, ociRef string) (v1.Image, e
 	return img, nil
 }
 
+// CacheTag returns the image-cache AgentTag for an OCI image baked with
+// agentBytes and tools. When len(tools)==0 the result is identical to
+// image.BuilderAgentTag(agentBytes) so that existing cached images remain
+// valid without a re-bake. When tools are supplied the tag is extended with
+// "+tools-" + toolcache.Digest(tools) so that a change in the tool set
+// forces a re-bake.
+//
+// AgentTag is stored as a plain JSON string in image metadata and is compared
+// verbatim; there are no format constraints on OCI-image records (the 16-hex
+// constraint only applies to builder-template filenames). The "+tools-" suffix
+// is therefore safe.
+func CacheTag(agentBytes []byte, tools []toolcache.Fetched) string {
+	base := image.BuilderAgentTag(agentBytes)
+	if len(tools) == 0 {
+		return base
+	}
+	return base + "+tools-" + toolcache.Digest(tools)
+}
+
+// injectSandboxTools stages the fetched tool binaries into stagingDir.
+// Errors are not fatal — gh is a convenience; a failure must not block
+// sandbox creation.  The caller logs and continues on error.
+func injectSandboxTools(stagingDir string, tools []toolcache.Fetched) error {
+	if len(tools) == 0 {
+		return nil
+	}
+	return toolcache.StageTree(stagingDir, tools, true)
+}
+
 // PullAndCacheOCI pulls an OCI image from a public registry (anonymous auth),
 // converts it to a bootable ext4 rootfs by:
 //
@@ -73,12 +103,23 @@ var pullAmd64RemoteImage = func(ctx context.Context, ociRef string) (v1.Image, e
 //
 // TODO(auth): pass credentials for private-registry pulls via remote.WithAuth.
 func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBytes []byte) (digest string, err error) {
+	return PullAndCacheOCIWithTools(ctx, ociRef, c, agentBytes, nil)
+}
+
+// PullAndCacheOCIWithTools is the tool-aware variant of PullAndCacheOCI.
+// When tools is non-empty the resulting ext4 image also contains the tool
+// binaries staged by toolcache.StageTree; the cache tag embeds a digest of
+// the tool set so that a change forces a re-bake.
+//
+// A failure to inject tools is non-fatal: a warning is logged and the image
+// is cached without the tools rather than blocking sandbox creation entirely.
+func PullAndCacheOCIWithTools(ctx context.Context, ociRef string, c *image.Cache, agentBytes []byte, tools []toolcache.Fetched) (digest string, err error) {
 	if len(agentBytes) == 0 {
 		return "", fmt.Errorf("ocirun: agentBytes must not be empty")
 	}
 
-	// Hit only when ref and agent tag both match; empty/mismatched tag = re-bake.
-	currentTag := image.BuilderAgentTag(agentBytes)
+	// Hit only when ref and cache tag both match; empty/mismatched tag = re-bake.
+	currentTag := CacheTag(agentBytes, tools)
 	imgs, listErr := c.List(ctx)
 	if listErr != nil {
 		return "", fmt.Errorf("ocirun: list cache: %w", listErr)
@@ -115,6 +156,10 @@ func PullAndCacheOCI(ctx context.Context, ociRef string, c *image.Cache, agentBy
 	slog.Info("ocirun: injecting user-run boot layers", "ref", ociRef)
 	if err := addUserRunLayers(stagingDir, agentBytes, img); err != nil {
 		return "", fmt.Errorf("ocirun: boot layers: %w", err)
+	}
+
+	if injectErr := injectSandboxTools(stagingDir, tools); injectErr != nil {
+		slog.Warn("ocirun: tool injection failed, continuing without tools", "err", injectErr)
 	}
 
 	// Build ext4 to a temp file; compute its SHA-256; commit to cache.

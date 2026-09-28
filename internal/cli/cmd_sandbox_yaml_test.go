@@ -504,6 +504,16 @@ func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 				}
 			},
 		},
+		{
+			yamlTag:    "tools",
+			configYAML: "version: 1\nsandbox:\n  tools:\n    gh: true\n",
+			setupFlags: func(f *sandboxCreateFlags) { f.noSandboxTools = true },
+			check: func(t *testing.T, f sandboxCreateFlags) {
+				if !f.noSandboxTools {
+					t.Errorf("tools: gh:true in project config cleared CLI --no-sandbox-tools flag, want noSandboxTools=true")
+				}
+			},
+		},
 	}
 
 	// Part 1: reflection sweep — every yaml tag in SandboxConfig must be in cases.
@@ -525,6 +535,21 @@ func TestApplyProjectConfig_FieldGuardCoverage(t *testing.T) {
 				"add an entry to cases AND a CLI-intent guard in applyProjectConfig before applying the field", tag)
 		}
 	}
+
+	// Separate: gh:false in project config sets noSandboxTools when not already set.
+	t.Run("tools/gh-false-sets-noSandboxTools", func(t *testing.T) {
+		dir := t.TempDir()
+		writeGitRoot(t, dir)
+		writeYaml(t, dir, "version: 1\nsandbox:\n  tools:\n    gh: false\n")
+		t.Chdir(dir)
+		f := sandboxCreateFlags{}
+		if err := applyProjectConfig(&f); err != nil {
+			t.Fatalf("applyProjectConfig: %v", err)
+		}
+		if !f.noSandboxTools {
+			t.Errorf("tools: gh:false in project config did not set noSandboxTools=true")
+		}
+	})
 
 	// Part 2: per-field guard verification.
 	for _, tc := range cases {

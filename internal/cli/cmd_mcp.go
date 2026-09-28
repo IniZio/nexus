@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -16,6 +17,18 @@ import (
 	mcpsrv "github.com/IniZio/nexus/internal/mcp"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// mcpCreateAndBootFn is the seam for service.CreateAndBoot. Tests replace it
+// to capture opts without booting a VM.
+var mcpCreateAndBootFn = service.CreateAndBoot
+
+// mcpToolsWarnOnce guards the "sandbox tools disabled: no store root" warning
+// so it appears at most once per process.
+var mcpToolsWarnOnce sync.Once
+
+// mcpRunEphemeralFn is the seam for service.RunEphemeral. Tests replace it
+// to capture opts without booting a VM.
+var mcpRunEphemeralFn = service.RunEphemeral
 
 func init() {
 	Register(Command{
@@ -31,9 +44,21 @@ func init() {
 //
 // The cacheRoot field mirrors the CLI's filepath.Join(storeRoot, "images")
 // convention and is resolved once at MCP server startup.
+//
+// fetchTools is the tool-fetch seam (nil → defaultToolFetch(storeRoot)).
 type mcpService struct {
 	*service.Service
-	cacheRoot string
+	cacheRoot  string
+	fetchTools toolFetchFn
+}
+
+// toolFetch returns the configured fetch function, falling back to the default
+// toolcache fetcher rooted at the parent of cacheRoot (storeRoot).
+func (m *mcpService) toolFetch() toolFetchFn {
+	if m.fetchTools != nil {
+		return m.fetchTools
+	}
+	return defaultToolFetch(filepath.Dir(m.cacheRoot))
 }
 
 // CreateAndBoot implements mcpsrv.SandboxService. It opens the image cache,
@@ -51,6 +76,15 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 	}
 
 	opts.CacheRoot = m.cacheRoot
+	if m.cacheRoot == "" && m.fetchTools == nil {
+		mcpToolsWarnOnce.Do(func() {
+			fmt.Fprintln(os.Stderr, "mcp: warn: sandbox tools disabled: no store root")
+		})
+		// opts.SandboxTools stays nil — no store root, no safe download target.
+	} else {
+		optOut := userGlobalSandboxToolsOptOut != nil && userGlobalSandboxToolsOptOut()
+		opts.SandboxTools = imageOptsSandboxTools(ctx, opts, optOut, goArchForBuild(), m.toolFetch())
+	}
 
 	imgCache, err := image.NewCache(m.cacheRoot)
 	if err != nil {
@@ -76,7 +110,7 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 		SBHandle:     project + "/" + name,
 	}, nil)
 
-	return service.CreateAndBoot(ctx, m.Service, imgCache, newDriver, vsockProbe, project, name, opts)
+	return mcpCreateAndBootFn(ctx, m.Service, imgCache, newDriver, vsockProbe, project, name, opts)
 }
 
 // Exec implements mcpsrv.SandboxService.Exec. It captures stdout and stderr
@@ -106,6 +140,15 @@ func (m *mcpService) RunEphemeral(ctx context.Context, project, name string, opt
 	}
 
 	opts.CacheRoot = m.cacheRoot
+	if m.cacheRoot == "" && m.fetchTools == nil {
+		mcpToolsWarnOnce.Do(func() {
+			fmt.Fprintln(os.Stderr, "mcp: warn: sandbox tools disabled: no store root")
+		})
+		// opts.SandboxTools stays nil — no store root, no safe download target.
+	} else {
+		runOptOut := userGlobalSandboxToolsOptOut != nil && userGlobalSandboxToolsOptOut()
+		opts.SandboxTools = imageOptsSandboxTools(ctx, opts, runOptOut, goArchForBuild(), m.toolFetch())
+	}
 
 	imgCache, err := image.NewCache(m.cacheRoot)
 	if err != nil {
@@ -129,7 +172,7 @@ func (m *mcpService) RunEphemeral(ctx context.Context, project, name string, opt
 	}, nil)
 
 	var outBuf, errBuf bytes.Buffer
-	code, err := service.RunEphemeral(ctx, m.Service, imgCache, newDriver, vsockProbe,
+	code, err := mcpRunEphemeralFn(ctx, m.Service, imgCache, newDriver, vsockProbe,
 		project, name, opts,
 		service.ExecOptions{Argv: argv, Env: env, Cwd: cwd},
 		strings.NewReader(stdin), &outBuf, &errBuf)

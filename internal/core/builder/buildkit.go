@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/IniZio/nexus/internal/core/bootspec"
+	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
@@ -142,6 +143,53 @@ func renderRecipeIfNeeded(containerfileBytes []byte, recipe cred.ToolRecipe, arc
 	return rl, nil
 }
 
+// sandboxToolsContextDir is the subdirectory name used inside the "nexusagent"
+// named build context to stage the host-verified sandbox tool tree (e.g. gh).
+// A COPY --from=nexusagent with this directory as source installs the tree at
+// the filesystem root of the guest image.
+const sandboxToolsContextDir = "nexus-sandbox-tools"
+
+// synthesizeDockerfileWithTools returns the combined Dockerfile handed to the
+// dockerfile.v0 frontend: the user's Containerfile, an optional recipe layer
+// (deterministic RUN instructions), an optional sandbox-tools COPY layer, and
+// the final agent-binary COPY layer.
+//
+// Ordering:
+//
+//	<user Containerfile>        ← cache-hits on every build for unchanged content
+//	[recipe layer]              ← deterministic; cache-hits on same recipe+arch
+//	[sandbox tools COPY]        ← present when toolsCtxDir != ""
+//	# Final layer: nexus-agent ← always a cache MISS (agentFile carries a nonce)
+//
+// toolsCtxDir is the sub-directory inside the "nexusagent" named build context
+// that holds the staged tool tree. Pass "" to omit the sandbox-tools layer.
+//
+// agentFile must come from [newAgentContextFilename] — the per-Solve nonce makes
+// the agent layer's buildkit cache key unique per build, preventing a corrupted
+// agent snapshot from being served again (see the function doc comment there).
+//
+// recipeLayerBytes is the output of [renderRecipeIfNeeded]. Pass nil or empty
+// to omit the recipe layer (no recipe, or Containerfile opted out).
+//
+// runcShimFile must come from [stageRuncShim]; the shim is copied to
+// [RuncShimInstallPath] in the same final layer, right after the agent.
+func synthesizeDockerfileWithTools(containerfileBytes, recipeLayerBytes []byte, toolsCtxDir, agentFile, installPath, runcShimFile string) []byte {
+	var out []byte
+	out = append(out, containerfileBytes...)
+	if len(recipeLayerBytes) > 0 {
+		out = append(out, "\n\n# Recipe layer: install agent tooling\n"...)
+		out = append(out, recipeLayerBytes...)
+	}
+	if toolsCtxDir != "" {
+		out = append(out, []byte("\n\n# Sandbox tools: host-verified binaries (gh)\nCOPY --from=nexusagent "+toolsCtxDir+"/ /\n")...)
+	}
+	finalLayer := fmt.Sprintf(
+		"\n\n# Final layer: bake the nexus-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexusagent %s %s\nCOPY --chmod=0755 --from=nexusagent %s %s\n",
+		installPath, agentFile, installPath, runcShimFile, RuncShimInstallPath,
+	)
+	return append(out, []byte(finalLayer)...)
+}
+
 // synthesizeDockerfile returns the combined Dockerfile handed to the
 // dockerfile.v0 frontend: the user's Containerfile, an optional recipe layer
 // (deterministic RUN instructions), and the final agent-binary COPY layer.
@@ -162,17 +210,43 @@ func renderRecipeIfNeeded(containerfileBytes []byte, recipe cred.ToolRecipe, arc
 // runcShimFile must come from [stageRuncShim]; the shim is copied to
 // [RuncShimInstallPath] in the same final layer, right after the agent.
 func synthesizeDockerfile(containerfileBytes, recipeLayerBytes []byte, agentFile, installPath, runcShimFile string) []byte {
-	var out []byte
-	out = append(out, containerfileBytes...)
-	if len(recipeLayerBytes) > 0 {
-		out = append(out, "\n\n# Recipe layer: install agent tooling\n"...)
-		out = append(out, recipeLayerBytes...)
+	return synthesizeDockerfileWithTools(containerfileBytes, recipeLayerBytes, "", agentFile, installPath, runcShimFile)
+}
+
+// stageSandboxTools copies the host-verified tool tree at srcDir into the
+// "nexus-sandbox-tools" subdirectory of agentDir (the "nexusagent" named build
+// context) and returns the subdirectory name suitable for use as the source in
+// a COPY --from=nexusagent instruction.
+//
+// Returns "" (nil error) when any of the following hold:
+//   - srcDir is ""
+//   - srcDir does not exist or is an empty directory
+//   - containerfile contains [toolcache.SkipDirective]
+//
+// On CopyTree failure the error is returned and the caller (Solve) logs it as a
+// warning and continues without tools — a build must never fail because gh is
+// absent.
+func stageSandboxTools(agentDir, srcDir string, containerfile []byte) (string, error) {
+	if srcDir == "" {
+		return "", nil
 	}
-	finalLayer := fmt.Sprintf(
-		"\n\n# Final layer: bake the nexus-agent (boot contract: init=%s)\nCOPY --chmod=0755 --from=nexusagent %s %s\nCOPY --chmod=0755 --from=nexusagent %s %s\n",
-		installPath, agentFile, installPath, runcShimFile, RuncShimInstallPath,
-	)
-	return append(out, []byte(finalLayer)...)
+	if toolcache.SkippedBy(containerfile) {
+		return "", nil
+	}
+	// Check that srcDir exists and is non-empty.
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		// Missing directory is not an error; treat as no tools.
+		return "", nil //nolint:nilerr
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+	dst := filepath.Join(agentDir, sandboxToolsContextDir)
+	if err := toolcache.CopyTree(srcDir, dst); err != nil {
+		return "", err
+	}
+	return sandboxToolsContextDir, nil
 }
 
 // SolveRequest is the fully-resolved build specification handed to a
@@ -212,6 +286,15 @@ type SolveRequest struct {
 	// SHA-256 from [cred.RecipePackage.SHA256ByArch]. Required when
 	// ToolRecipe.Packages is non-empty; ignored otherwise.
 	TargetArch string
+
+	// SandboxToolsDir is the absolute host filesystem path of the pre-staged
+	// tool tree that the builder VM placed at [toolcache.BuilderTreeDir]
+	// (typically /opt/nexus-sandbox-tools/root). When non-empty, the tree is
+	// copied into the "nexusagent" named build context under
+	// [sandboxToolsContextDir] and a COPY --from=nexusagent layer is inserted
+	// immediately before the final agent layer. "" means no sandbox tools are
+	// baked in (default, silent no-op).
+	SandboxToolsDir string
 }
 
 // BuildkitClient is the seam between [Builder] and a running buildkitd daemon.
@@ -379,6 +462,38 @@ func buildLocalMounts(set *sizeVerifiedSet, ctxFS, dfFS, agentFS fsutil.FS) map[
 	}
 }
 
+// prepareSolveDockerfile performs the pure preparation phase of a Solve call:
+// it stages the agent binary, runc shim, and sandbox tools into agentDir
+// (the "nexusagent" named build context) and returns the synthesised
+// Dockerfile bytes that reference them.
+//
+// agentDir must already exist; the caller (Solve) creates it with
+// os.MkdirTemp and defers os.RemoveAll so that cleanup is always tied to the
+// Solve lifetime.
+//
+// stageSandboxTools errors are logged and treated as "no tools" — a build
+// must never fail because gh is absent. All other errors are returned.
+func prepareSolveDockerfile(req SolveRequest, agentDir string) ([]byte, error) {
+	agentFile, err := stageAgentContext(agentDir, req.AgentPath)
+	if err != nil {
+		return nil, err
+	}
+	runcShimFile, err := stageRuncShim(agentDir)
+	if err != nil {
+		return nil, err
+	}
+	recipeLayerBytes, err := renderRecipeIfNeeded(req.ContainerfileBytes, req.ToolRecipe, req.TargetArch)
+	if err != nil {
+		return nil, err
+	}
+	toolsCtxDir, toolsErr := stageSandboxTools(agentDir, req.SandboxToolsDir, req.ContainerfileBytes)
+	if toolsErr != nil {
+		slog.Warn("buildkit: stageSandboxTools: skipping sandbox tools", "err", toolsErr)
+		toolsCtxDir = ""
+	}
+	return synthesizeDockerfileWithTools(req.ContainerfileBytes, recipeLayerBytes, toolsCtxDir, agentFile, req.AgentInstallPath, runcShimFile), nil
+}
+
 // Solve implements [BuildkitClient].
 //
 // It connects to buildkitd, synthesises a combined Dockerfile that applies
@@ -436,19 +551,10 @@ func (c *realBuildkitClient) Solve(ctx context.Context, req SolveRequest, outDir
 		return fmt.Errorf("buildkit: create agent dir: %w", err)
 	}
 	defer os.RemoveAll(agentDir)
-	agentFile, err := stageAgentContext(agentDir, req.AgentPath)
+	synthDF, err := prepareSolveDockerfile(req, agentDir)
 	if err != nil {
 		return err
 	}
-	runcShimFile, err := stageRuncShim(agentDir)
-	if err != nil {
-		return err
-	}
-	recipeLayerBytes, err := renderRecipeIfNeeded(req.ContainerfileBytes, req.ToolRecipe, req.TargetArch)
-	if err != nil {
-		return err
-	}
-	synthDF := synthesizeDockerfile(req.ContainerfileBytes, recipeLayerBytes, agentFile, req.AgentInstallPath, runcShimFile)
 
 	// Small temp dir for the synthetic Dockerfile only.
 	dfDir, err := os.MkdirTemp("", "nexus-bkdf-*")

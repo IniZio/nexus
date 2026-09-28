@@ -24,31 +24,76 @@ func init() {
 	})
 }
 
-// runRun implements `nexus run [flags] <image-ref> -- <command> [args...]`.
-func runRun(ctx context.Context, args []string, out *Output) error {
+// runArgs holds the parsed flag and positional values for `nexus run`.
+// parseRunArgs populates it; runRun consumes it.
+type runArgs struct {
+	imageRef       string
+	argv           []string
+	noSandboxTools bool // flag --no-sandbox-tools OR user-global opt-out (combined)
+	memory         uint
+	memoryMax      uint
+	vcpus          uint
+	vcpusMax       uint
+	name           string
+	project        string
+	force          bool
+}
+
+// parseRunArgs parses the argument slice for `nexus run`, validates that an
+// image ref and guest command are present, and combines the --no-sandbox-tools
+// flag with the user-global opt-out into a single noSandboxTools field.
+//
+// Flags must appear before the image ref because flag.Parse stops at the first
+// positional argument: `run [--no-sandbox-tools] [flags] <image-ref> -- <command> [args...]`.
+func parseRunArgs(args []string) (runArgs, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	var (
-		memoryFlag    = fs.Uint("memory", 0, "guest RAM in MiB — hard cap when set without --memory-max (0 = driver default with 4× hotplug headroom)")
-		memoryMaxFlag = fs.Uint("memory-max", 0, "RAM ceiling for hotplug in MiB (0 = pin at --memory; ignored when --memory is 0)")
-		vcpusFlag     = fs.Uint("vcpus", 0, "number of virtual CPUs — hard cap when set without --vcpus-max (0 = driver default with 4× hotplug headroom)")
-		vcpusMaxFlag  = fs.Uint("vcpus-max", 0, "vCPU ceiling for hotplug (0 = pin at --vcpus; ignored when --vcpus is 0)")
-		nameFlag      = fs.String("name", "", "sandbox name (default: generated)")
-		projectFlag   = fs.String("project", "ephemeral", "sandbox project")
-		forceFlag     = fs.Bool("force", false, "skip the disk-space preflight")
-	)
+	noSandboxToolsFlag := fs.Bool("no-sandbox-tools", false, "skip automatic injection of host tools (e.g. gh) into the sandbox")
+	memoryFlag := fs.Uint("memory", 0, "guest RAM in MiB — hard cap when set without --memory-max (0 = driver default with 4× hotplug headroom)")
+	memoryMaxFlag := fs.Uint("memory-max", 0, "RAM ceiling for hotplug in MiB (0 = pin at --memory; ignored when --memory is 0)")
+	vcpusFlag := fs.Uint("vcpus", 0, "number of virtual CPUs — hard cap when set without --vcpus-max (0 = driver default with 4× hotplug headroom)")
+	vcpusMaxFlag := fs.Uint("vcpus-max", 0, "vCPU ceiling for hotplug (0 = pin at --vcpus; ignored when --vcpus is 0)")
+	nameFlag := fs.String("name", "", "sandbox name (default: generated)")
+	projectFlag := fs.String("project", "ephemeral", "sandbox project")
+	forceFlag := fs.Bool("force", false, "skip the disk-space preflight")
+
 	if err := fs.Parse(args); err != nil {
-		return &UsageError{Msg: "run: " + err.Error()}
+		return runArgs{}, &UsageError{Msg: "run: " + err.Error()}
 	}
 
 	positional := fs.Args()
 	if len(positional) < 2 {
-		return &UsageError{Msg: "run: usage: run [flags] <image-ref> -- <command> [args...]"}
+		return runArgs{}, &UsageError{Msg: "run: usage: run [--no-sandbox-tools] [flags] <image-ref> -- <command> [args...]"}
 	}
 
-	imageRef := positional[0]
+	// Combine the per-invocation flag with the user-global opt-out so that
+	// either source can suppress tool injection.
+	optOut := *noSandboxToolsFlag || (userGlobalSandboxToolsOptOut != nil && userGlobalSandboxToolsOptOut())
+
+	return runArgs{
+		imageRef:       positional[0],
+		argv:           stripArgvSeparator(positional[1:]),
+		noSandboxTools: optOut,
+		memory:         *memoryFlag,
+		memoryMax:      *memoryMaxFlag,
+		vcpus:          *vcpusFlag,
+		vcpusMax:       *vcpusMaxFlag,
+		name:           *nameFlag,
+		project:        *projectFlag,
+		force:          *forceFlag,
+	}, nil
+}
+
+// runRun implements `nexus run [--no-sandbox-tools] [flags] <image-ref> -- <command> [args...]`.
+func runRun(ctx context.Context, args []string, out *Output) error {
+	parsed, err := parseRunArgs(args)
+	if err != nil {
+		return err
+	}
+
+	imageRef := parsed.imageRef
 	// Strip the conventional "--" separator: flag.Parse stops at the first
 	// positional and never consumes it. See stripArgvSeparator.
-	argv := stripArgvSeparator(positional[1:])
+	argv := parsed.argv
 
 	// Resolve kernel path before any expensive work (preflight validation).
 	kernelPath, err := resolveKernelPath()
@@ -73,15 +118,15 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 	}
 
 	// Generate a sandbox name when none is provided.
-	name := *nameFlag
+	name := parsed.name
 	if name == "" {
 		name = fmt.Sprintf("run-%08x", rand.Uint32())
 	}
 
-	memoryMiB := uint32(*memoryFlag)
-	memoryMaxMiB := uint32(*memoryMaxFlag)
-	vcpus := uint32(*vcpusFlag)
-	vcpusMax := uint32(*vcpusMaxFlag)
+	memoryMiB := uint32(parsed.memory)
+	memoryMaxMiB := uint32(parsed.memoryMax)
+	vcpus := uint32(parsed.vcpus)
+	vcpusMax := uint32(parsed.vcpusMax)
 
 	sizing, sizingErr := resolveRunSizing(memoryMiB, memoryMaxMiB, vcpus, vcpusMax)
 	if sizingErr != nil {
@@ -109,15 +154,7 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		}
 	}
 
-	opts := service.CreateAndBootOptions{
-		Image:               service.ImageSpec{Ref: imageRef},
-		CacheRoot:           cacheRoot,
-		AgentBytes:          agentBytes,
-		MemoryMiB:           memoryMiB,
-		VCPUs:               vcpus,
-		ReachabilityTimeout: 30 * time.Second,
-		ForceDiskSpace:      *forceFlag,
-	}
+	opts := buildRunCreateOpts(ctx, imageRef, agentBytes, cacheRoot, memoryMiB, vcpus, parsed.force, parsed.noSandboxTools, defaultToolFetch(storeRoot))
 
 	// vsockProbe polls until the guest agent is listening or ReachabilityTimeout
 	// expires — shared with MCP and sandbox-create paths via cmd_seam.go.
@@ -127,7 +164,7 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		imgCache,
 		newDriver,
 		vsockProbe,
-		*projectFlag,
+		parsed.project,
 		name,
 		opts,
 		service.ExecOptions{Argv: argv},
@@ -142,6 +179,23 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 		return &ExitCodeError{Code: exitCode}
 	}
 	return nil
+}
+
+// buildRunCreateOpts constructs a service.CreateAndBootOptions for `nexus run`.
+// Extracted as a pure function so tests can verify SandboxTools wiring without
+// touching the filesystem or a live service.
+func buildRunCreateOpts(ctx context.Context, imageRef string, agentBytes []byte, cacheRoot string, memoryMiB, vcpus uint32, forceFlag bool, optOut bool, fetch toolFetchFn) service.CreateAndBootOptions {
+	opts := service.CreateAndBootOptions{
+		Image:               service.ImageSpec{Ref: imageRef},
+		CacheRoot:           cacheRoot,
+		AgentBytes:          agentBytes,
+		MemoryMiB:           memoryMiB,
+		VCPUs:               vcpus,
+		ReachabilityTimeout: 30 * time.Second,
+		ForceDiskSpace:      forceFlag,
+	}
+	opts.SandboxTools = imageOptsSandboxTools(ctx, opts, optOut, goArchForBuild(), fetch)
+	return opts
 }
 
 type runSizingResult struct {

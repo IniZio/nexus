@@ -433,6 +433,15 @@ type SandboxConfig struct {
 	// from the checkout's .nexus/config.yaml (D-12): it takes effect on the
 	// next worktree-sandbox create for that checkout.
 	Nested bool `yaml:"nested"`
+
+	// Tools controls which host-provided tools are injected into sandboxes.
+	// Absent means "use defaults" (all tools enabled).
+	Tools SandboxToolsConfig `yaml:"tools"`
+}
+
+// SandboxToolsConfig toggles host-provided sandbox tools; nil means default (enabled).
+type SandboxToolsConfig struct {
+	GH *bool `yaml:"gh"`
 }
 
 // ImageGCConfig holds image garbage collection settings.
