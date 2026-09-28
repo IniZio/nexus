@@ -1,4 +1,4 @@
-.PHONY: proto build vet test test-integration vet-integration check-agent-fresh install-agent install-kernel build-agent docs docs-build install-plugin secret setup audit lint format format-fix ci
+.PHONY: proto build artifacts vet test test-integration vet-integration check-agent-fresh install-agent install-kernel build-agent docs docs-build install-plugin secret setup audit lint format format-fix ci
 
 # proto regenerates the Go stubs from proto/nexus/agent/v1/agent.proto.
 # Running this target twice must leave the tree byte-identical (deterministic).
@@ -107,6 +107,10 @@ endef
 
 build:
 	$(call CAPPED,go build -p $(GOBUILD_P) ./...)
+
+HOSTBIN_GOARCH ?= $(shell go env GOARCH)
+artifacts:
+	$(call CAPPED,go run ./internal/core/hostbin/internal/genartifacts -goarch $(HOSTBIN_GOARCH) -out internal/core/hostbin/embedded/$(HOSTBIN_GOARCH))
 
 # install-agent compiles the on-PATH nexus-agent (CGO_ENABLED=0, static) and
 # installs it at NEXUS_AGENT_INSTALL_DIR/nexus-agent (default: ~/.local/bin).
