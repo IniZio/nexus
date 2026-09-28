@@ -298,6 +298,22 @@ func (c *Controller) turnTimeout() time.Duration {
 
 type Controller struct{ deps Deps }
 
+// withChannelAgentOpts enriches ctx with the per-channel permission mode and
+// model override stored in Deps, matching the logic in OnMention/Provision.
+func (c *Controller) withChannelAgentOpts(ctx context.Context, ch string) context.Context {
+	if c.deps.PermMode != nil {
+		if pm := c.deps.PermMode(ch); pm != "" {
+			ctx = WithPermMode(ctx, pm)
+		}
+	}
+	if c.deps.Model != nil {
+		if m := c.deps.Model(ch); m != "" {
+			ctx = WithModel(ctx, m)
+		}
+	}
+	return ctx
+}
+
 func New(d Deps) *Controller { return &Controller{deps: d} }
 
 var _ Flows = (*Controller)(nil)

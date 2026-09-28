@@ -2937,3 +2937,162 @@ func TestRestart_NameTakenByGuestPane_DoesNotClear(t *testing.T) {
 		t.Error("rename --clear must NOT be called when candidate is a guest pane")
 	}
 }
+
+func TestRestart_UsesCtxModelAndPermMode(t *testing.T) {
+	var mu sync.Mutex
+	var startArgvs [][]string
+	var execArgvs [][]string
+
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+			mu.Lock()
+			startArgvs = append(startArgvs, append([]string(nil), argv...))
+			mu.Unlock()
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+			return `{"result":{"agent":{"agent":"ctrl-wCTX","agent_status":"idle","state_change_seq":1}}}`, nil
+		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+			return "root@nexus-fake-guest:/workspace#\n", nil
+		}
+		return "", nil
+	}
+
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		if len(argv) >= 1 && argv[0] == "exec" {
+			mu.Lock()
+			execArgvs = append(execArgvs, append([]string(nil), argv...))
+			mu.Unlock()
+			return "nexus-fake-guest\n", nil
+		}
+		return "", nil
+	}
+
+	b := newWithRunners(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn)
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.mu.Lock()
+	b.entries["ctrl-wCTX"] = &entry{paneID: "wCTX:p1", nexusSandboxID: "sb-ctx1", wsID: "wCTX"}
+	b.sandboxes["sb-ctx1"] = "ctrl-wCTX"
+	b.mu.Unlock()
+
+	ctx := controller.WithModel(controller.WithPermMode(context.Background(), "acceptEdits"), "sonnet")
+	if _, err := b.Restart(ctx, "sb-ctx1", "ctrl-wCTX"); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	var startFound bool
+	for _, argv := range startArgvs {
+		joined := strings.Join(argv, " ")
+		if argv[0] == "agent" && argv[1] == "start" {
+			startFound = true
+			if !strings.Contains(joined, "--model sonnet") {
+				t.Errorf("agent start missing --model sonnet: %v", argv)
+			}
+			if !strings.Contains(joined, "--permission-mode acceptEdits") {
+				t.Errorf("agent start missing --permission-mode acceptEdits: %v", argv)
+			}
+		}
+	}
+	if !startFound {
+		t.Error("no agent start call found")
+	}
+
+	// settings JSON written to exec must contain "defaultMode":"acceptEdits"
+	var settingsFound bool
+	for _, argv := range execArgvs {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "defaultMode") && strings.Contains(joined, "acceptEdits") {
+			settingsFound = true
+			break
+		}
+	}
+	if !settingsFound {
+		t.Errorf("settings exec did not contain defaultMode:acceptEdits; exec calls: %v", execArgvs)
+	}
+}
+
+func TestRestart_UsesCtxModelAndPermMode_NameTakenRetryAlsoUsesCtx(t *testing.T) {
+	const wsID = "wCTX2"
+	const sbID = "sb-ctx2"
+	const stalePane = "wCTX2:p3"
+	const targetPane = "wCTX2:p4"
+	agentName := agentNameFromWsID(wsID)
+
+	nameTakenJSON := fmt.Sprintf(
+		`{"error":{"code":"agent_name_taken","message":"agent name %s is already used; candidates: terminal_id=term_abc pane_id=%s workspace_id=%s tab_id=%s:t1 status=Idle"},"id":"cli:agent:start"}`,
+		agentName, stalePane, wsID, wsID,
+	)
+
+	var mu sync.Mutex
+	startCalls := 0
+	var retryArgvs [][]string
+
+	herdrFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		switch {
+		case len(argv) >= 2 && argv[0] == "pane" && argv[1] == "read":
+			paneArg := ""
+			for i, a := range argv {
+				if a == "read" && i+1 < len(argv) {
+					paneArg = argv[i+1]
+					break
+				}
+			}
+			if paneArg == stalePane {
+				return "newman@engine-03:~/x$ 997;2n997;1n\n", nil
+			}
+			return "root@nexus-fake-guest:/workspace#\n", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "start":
+			mu.Lock()
+			startCalls++
+			call := startCalls
+			mu.Unlock()
+			if call == 1 {
+				return nameTakenJSON, fmt.Errorf("exit status 1")
+			}
+			mu.Lock()
+			retryArgvs = append(retryArgvs, append([]string(nil), argv...))
+			mu.Unlock()
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "rename":
+			return "", nil
+		case len(argv) >= 2 && argv[0] == "agent" && argv[1] == "get":
+			return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":"idle","state_change_seq":1}}}`, agentName), nil
+		}
+		return "", nil
+	}
+
+	nexusFn := func(_ context.Context, _ []string, argv ...string) (string, error) {
+		if len(argv) >= 1 && argv[0] == "exec" {
+			return "nexus-fake-guest\n", nil
+		}
+		return "", nil
+	}
+
+	b := newWithRunnersGit(Config{RepoPath: "/repo", Model: "claude-haiku-4-5"}, herdrFn, nexusFn,
+		func(_ context.Context, _ []string, _ ...string) (string, error) { return "", nil })
+	b.agentOpts = []herdragent.Option{herdragent.WithSettle(10 * time.Millisecond)}
+	b.entries[agentName] = &entry{paneID: targetPane, nexusSandboxID: sbID, wsID: wsID}
+	b.sandboxes[sbID] = agentName
+
+	ctx := controller.WithModel(controller.WithPermMode(context.Background(), "acceptEdits"), "sonnet")
+	newRef, err := b.Restart(ctx, sbID, agentName)
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if newRef == "" {
+		t.Error("Restart must return non-empty ref")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(retryArgvs) == 0 {
+		t.Fatal("retry agent start not called")
+	}
+	joined := strings.Join(retryArgvs[0], " ")
+	if !strings.Contains(joined, "--model sonnet") {
+		t.Errorf("retry agent start missing --model sonnet: %v", retryArgvs[0])
+	}
+}

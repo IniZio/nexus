@@ -1225,7 +1225,11 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 	}
 
 	sessionID := deterministicSessionID(sbID)
-	permMode := b.permMode()
+	permMode := controller.PermModeFromCtx(ctx)
+	if permMode == "" {
+		permMode = b.permMode()
+	}
+	model := controller.ModelFromCtx(ctx)
 	settingsJSON := controllerSettingsJSON(permMode)
 	settingsPath := "/tmp/ctrl-settings.json"
 	writeCmd := fmt.Sprintf("printf '%%s' %s > %s", shellescape(settingsJSON), settingsPath)
@@ -1234,9 +1238,9 @@ func (b *Backend) Restart(ctx context.Context, sandboxID, agentRef string) (stri
 	}
 
 	newAgentName := agentNameFromWsID(e.wsID)
-	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, sbID, permMode, "", sessionID, settingsPath, true)
+	newAgentRef, err := b.startAgent(ctx, newAgentName, paneID, sbID, permMode, model, sessionID, settingsPath, true)
 	if err != nil {
-		if retryRef, retryErr, handled := b.tryNameTakenRetry(ctx, err, newAgentName, paneID, sbID, permMode, sessionID, settingsPath); handled {
+		if retryRef, retryErr, handled := b.tryNameTakenRetry(ctx, err, newAgentName, paneID, sbID, permMode, model, sessionID, settingsPath); handled {
 			newAgentRef, err = retryRef, retryErr
 		}
 	}
@@ -1620,7 +1624,7 @@ func parseCandidatePaneID(msg string) string {
 // Returns (ref, err, handled). If handled is false, the caller's original startErr stands.
 // Clears the stale agent name only when the candidate pane is a non-guest (host-shell) pane;
 // never closes panes.
-func (b *Backend) tryNameTakenRetry(ctx context.Context, startErr error, name, targetPane, sbID, permMode, sessionID, settingsPath string) (string, error, bool) {
+func (b *Backend) tryNameTakenRetry(ctx context.Context, startErr error, name, targetPane, sbID, permMode, model, sessionID, settingsPath string) (string, error, bool) {
 	code, msg, ok := herdrout.ParseHerdrErrorCode(startErr.Error())
 	if !ok || code != "agent_name_taken" {
 		return "", nil, false
@@ -1641,7 +1645,7 @@ func (b *Backend) tryNameTakenRetry(ctx context.Context, startErr error, name, t
 	if _, renErr := b.herdrRun(ctx, nil, "agent", "rename", candidatePane, "--clear"); renErr != nil {
 		return "", fmt.Errorf("agent_name_taken: rename %s --clear: %w", candidatePane, renErr), true
 	}
-	ref, err := b.startAgent(ctx, name, targetPane, sbID, permMode, "", sessionID, settingsPath, true)
+	ref, err := b.startAgent(ctx, name, targetPane, sbID, permMode, model, sessionID, settingsPath, true)
 	return ref, err, true
 }
 

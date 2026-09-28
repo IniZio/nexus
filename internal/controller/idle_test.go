@@ -527,3 +527,71 @@ func (f *fakeLcStartErr) Start(_ context.Context, id string) error {
 	f.fakeLc.started = append(f.fakeLc.started, id)
 	return f.startErr
 }
+
+// recordingBackend wraps backendtest.Fake and records ctx values on Restart.
+type recordingBackend struct {
+	*backendtest.Fake
+	restartModel    string
+	restartPermMode string
+}
+
+func (r *recordingBackend) Restart(ctx context.Context, sandboxID, agentRef string) (string, error) {
+	r.restartModel = controller.ModelFromCtx(ctx)
+	r.restartPermMode = controller.PermModeFromCtx(ctx)
+	return r.Fake.Restart(ctx, sandboxID, agentRef)
+}
+
+func TestHandleStoppedReply_PassesChannelModelAndPermMode(t *testing.T) {
+	ctx := context.Background()
+	lc := &fakeLc{}
+	inner := backendtest.New()
+	rec := &recordingBackend{Fake: inner}
+	ch := chattest.New()
+	st := storetest.New()
+	d := controller.Deps{
+		Chat:      ch,
+		Store:     st,
+		Backend:   rec,
+		Lifecycle: lc,
+		Linker:    &fakeLinker{},
+		Projects:  &fakeProjects{project: "myproject"},
+		IdleFor: func(string) controller.IdleThresholds {
+			return controller.IdleThresholds{Pause: 30 * time.Minute, Stop: 2 * time.Hour}
+		},
+		Model:    func(string) string { return "sonnet" },
+		PermMode: func(string) string { return "auto" },
+	}
+	c := controller.New(d)
+
+	ref := controller.NewThreadRef("T1", "C1", "pmtest1")
+	sbID, agRef, err := inner.Provision(ctx, "myproject", ref, "p")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	task := controller.Task{
+		ThreadRef:      ref,
+		Owner:          "U1",
+		LastAuthor:     "U1",
+		Status:         controller.StatusStopped,
+		SandboxID:      sbID,
+		HerdrAgent:     agRef,
+		CreatedAt:      time.Now(),
+		LastActivityAt: time.Now(),
+	}
+	if err := st.Upsert(ctx, task); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	ev := controller.Event{Kind: controller.EventReply, ThreadRef: ref, User: "U1", Text: "resume"}
+	if err := c.OnReply(ctx, task, ev); err != nil {
+		t.Fatalf("OnReply: %v", err)
+	}
+
+	if rec.restartModel != "sonnet" {
+		t.Errorf("Restart ctx model=%q; want sonnet", rec.restartModel)
+	}
+	if rec.restartPermMode != "auto" {
+		t.Errorf("Restart ctx permMode=%q; want auto", rec.restartPermMode)
+	}
+}

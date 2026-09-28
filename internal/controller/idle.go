@@ -63,6 +63,7 @@ func (c *Controller) handleStoppedReply(ctx context.Context, t Task, ev Event) e
 	if err := c.deps.Lifecycle.Start(ctx, t.SandboxID); err != nil {
 		return errReact(err)
 	}
+	ctx = c.withChannelAgentOpts(ctx, t.ThreadRef.Channel())
 	newRef, err := c.deps.Backend.Restart(ctx, t.SandboxID, t.HerdrAgent)
 	if err != nil {
 		return errReact(err)
