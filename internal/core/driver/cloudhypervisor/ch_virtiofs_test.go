@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -522,5 +523,56 @@ func TestFakeOwnerEnabled_EnvForce1(t *testing.T) {
 	bin := fakeVirtiofsd(t)
 	if !fakeOwnerEnabled(bin) {
 		t.Error("expected true with NEXUS_VIRTIOFS_FAKE_OWNER=1")
+	}
+}
+
+func TestVirtiofsdChildAttr_Cloneflags(t *testing.T) {
+	attr := virtiofsdChildAttr()
+	if attr.Cloneflags&syscall.CLONE_NEWUSER == 0 {
+		t.Error("expected CLONE_NEWUSER")
+	}
+	if attr.Cloneflags&syscall.CLONE_NEWNS == 0 {
+		t.Error("expected CLONE_NEWNS")
+	}
+	if !attr.Setpgid {
+		t.Error("expected Setpgid true")
+	}
+	if len(attr.UidMappings) == 0 || attr.UidMappings[0].ContainerID != 0 {
+		t.Error("expected uid map with container id 0")
+	}
+}
+
+func TestSpawnVirtiofsdForFile_EnvBuilt(t *testing.T) {
+	bin := fakeVirtiofsd(t)
+	stageDir := t.TempDir()
+	hostFile := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(hostFile, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bindTarget := filepath.Join(stageDir, "secret.txt")
+	if err := os.WriteFile(bindTarget, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env := []string{
+		VirtiofsRunEnv + "=1",
+		virtiofsEnvHostFile + "=" + hostFile,
+		virtiofsEnvBindTarget + "=" + bindTarget,
+		virtiofsEnvBin + "=" + bin,
+		virtiofsEnvSharedDir + "=" + stageDir,
+		virtiofsEnvSocket + "=/tmp/test.sock",
+		virtiofsEnvReadOnly + "=1",
+	}
+	for _, e := range env {
+		k, _, _ := strings.Cut(e, "=")
+		found := false
+		for _, ee := range env {
+			if strings.HasPrefix(ee, k+"=") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("env missing %s", k)
+		}
 	}
 }

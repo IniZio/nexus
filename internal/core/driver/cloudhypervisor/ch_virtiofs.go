@@ -266,22 +266,15 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-func checkUnshare() (string, error) {
-	p, err := exec.LookPath("unshare")
-	if err != nil {
-		return "", fmt.Errorf("cloudhypervisor: unshare not found: file mounts require unshare (util-linux)")
-	}
-	if out, err := exec.Command(p, "-Urm", "true").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("cloudhypervisor: unshare -Urm true failed (need unprivileged_userns_clone=1): %w\n%s", err, out)
-	}
-	return p, nil
-}
-
 func virtiofsdStageDirPath(socketDir string, id domain.SandboxID, idx int) string {
 	return filepath.Join(socketDir, fmt.Sprintf("%s.vfsfile%d", id.String(), idx))
 }
 
-func spawnVirtiofsdForFile(ctx context.Context, unshare, binaryPath, socketPath, stageDir, hostFile string, readOnly bool) (*managedProcess, error) {
+// spawnVirtiofsdForFile spawns virtiofsd to serve a single host file.
+// It re-execs the nexus binary into a new user+mount namespace (no unshare,
+// no sh dependency). The child bind-mounts hostFile into stageDir then
+// exec's virtiofsd in place.
+func spawnVirtiofsdForFile(ctx context.Context, binaryPath, socketPath, stageDir, hostFile string, readOnly bool) (*managedProcess, error) {
 	_ = os.Remove(socketPath)
 
 	bindTarget := filepath.Join(stageDir, filepath.Base(hostFile))
@@ -291,27 +284,33 @@ func spawnVirtiofsdForFile(ctx context.Context, unshare, binaryPath, socketPath,
 	}
 	f.Close()
 
-	vParts := []string{shellQuote(binaryPath),
-		"--shared-dir", shellQuote(stageDir),
-		"--socket-path", shellQuote(socketPath),
-		"--sandbox", "none",
-		"--seccomp", "none",
+	self, err := os.Executable()
+	if err != nil {
+		_ = os.Remove(bindTarget)
+		return nil, fmt.Errorf("cloudhypervisor: os.Executable: %w", err)
+	}
+
+	env := []string{
+		VirtiofsRunEnv + "=1",
+		virtiofsEnvHostFile + "=" + hostFile,
+		virtiofsEnvBindTarget + "=" + bindTarget,
+		virtiofsEnvBin + "=" + binaryPath,
+		virtiofsEnvSharedDir + "=" + stageDir,
+		virtiofsEnvSocket + "=" + socketPath,
 	}
 	if readOnly {
-		vParts = append(vParts, "--readonly")
+		env = append(env, virtiofsEnvReadOnly+"=1")
 	}
 	if fakeOwnerEnabled(binaryPath) {
-		vParts = append(vParts, "--fake-owner")
+		env = append(env, virtiofsEnvFakeOwner+"=1")
 	}
-	script := fmt.Sprintf("mount --bind %s %s && exec %s",
-		shellQuote(hostFile), shellQuote(bindTarget), strings.Join(vParts, " "))
 
 	stderrBuf := newVMMStderrBuf(64 * 1024)
-	cmd := exec.Command(unshare, "--user", "--map-root-user", "--mount", "--", "sh", "-c", script)
+	cmd := exec.Command(self)
+	cmd.Env = env
 	cmd.Stdout = nil
 	cmd.Stderr = stderrBuf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	setPdeathsig(cmd.SysProcAttr)
+	cmd.SysProcAttr = virtiofsdChildAttr()
 
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(bindTarget)
@@ -381,22 +380,6 @@ func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.Sandbo
 		)
 	}
 
-	hasFileMounts := false
-	for _, lm := range mounts {
-		if lm.IsFile {
-			hasFileMounts = true
-			break
-		}
-	}
-	var unsharePath string
-	if hasFileMounts {
-		up, uerr := checkUnshare()
-		if uerr != nil {
-			return nil, uerr
-		}
-		unsharePath = up
-	}
-
 	fsCfgs := make([]vmFsConfig, 0, len(mounts))
 	for i, lm := range mounts {
 		sockPath := virtiofsdSockPath(d.cfg.SocketDir, id, i)
@@ -407,7 +390,7 @@ func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.Sandbo
 			if mkErr := os.MkdirAll(stageDir, 0o700); mkErr != nil {
 				return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] stage dir %s: %w", i, stageDir, mkErr)
 			}
-			vp, err = spawnVirtiofsdForFile(ctx, unsharePath, d.cfg.VirtiofsdPath, sockPath, stageDir, lm.HostPath, lm.ReadOnly)
+			vp, err = spawnVirtiofsdForFile(ctx, d.cfg.VirtiofsdPath, sockPath, stageDir, lm.HostPath, lm.ReadOnly)
 			if err != nil {
 				_ = os.RemoveAll(stageDir)
 				return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] file-mount for %s: %w", i, lm.HostPath, err)

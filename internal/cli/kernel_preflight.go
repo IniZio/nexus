@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
 // resolveKernelPath returns the path to the guest kernel, searching known
@@ -90,48 +91,18 @@ func xdgKernelPath() string {
 	return filepath.Join(base, "nexus", "images", "kernel", "vmlinux-x86_64")
 }
 
-// resolveVirtiofsdPath returns the absolute path to the virtiofsd 1.x binary.
-//
-// Search order:
-//  1. NEXUS_VIRTIOFSD_PATH environment variable (always used if set; file must exist).
-//  2. exec.LookPath("virtiofsd") — honours the caller's PATH.
-//  3. Conventional system install locations: /usr/lib/virtiofsd, /usr/libexec/virtiofsd,
-//     /usr/local/bin/virtiofsd.
-//
-// Returns an error (naming NEXUS_VIRTIOFSD_PATH) only when virtiofsd is not found.
-// Called only when live mounts are configured; hosts without virtiofsd and without
-// --mount are unaffected.
-func resolveVirtiofsdPath() (string, error) {
-	if v := os.Getenv("NEXUS_VIRTIOFSD_PATH"); v != "" {
-		if _, err := os.Stat(v); err != nil {
-			return "", fmt.Errorf(
-				"virtiofsd not found: NEXUS_VIRTIOFSD_PATH=%q: no such file\n"+
-					"  Correct the path or unset NEXUS_VIRTIOFSD_PATH to use PATH-based resolution",
-				v)
-		}
-		return v, nil
+// resolveVirtiofsdPath returns the resolved virtiofsd binary via hostbin.
+// Resolution order: NEXUS_VIRTIOFSD_PATH env → embedded artifact → download → PATH.
+// On arm64 no artifact is embedded; PATH fallback is used if available.
+func resolveVirtiofsdPath() (hostbin.Resolved, error) {
+	res, err := (&hostbin.Resolver{}).Resolve(context.Background(), "virtiofsd")
+	if err != nil {
+		return hostbin.Resolved{}, fmt.Errorf(
+			"virtiofsd not found: set NEXUS_VIRTIOFSD_PATH or ensure network access for first-use download\n"+
+				"  virtiofsd is required when --mount is used; sandboxes without --mount are unaffected\n"+
+				"  (arm64: no embedded artifact; install virtiofsd manually or set NEXUS_VIRTIOFSD_PATH)")
 	}
-
-	// PATH lookup: honours any user-installed virtiofsd.
-	if p, err := exec.LookPath("virtiofsd"); err == nil {
-		return p, nil
-	}
-
-	// Conventional system install locations (Debian/Ubuntu/Fedora/RHEL).
-	for _, p := range []string{
-		"/usr/lib/virtiofsd",
-		"/usr/libexec/virtiofsd",
-		"/usr/local/bin/virtiofsd",
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-
-	return "", fmt.Errorf(
-		"virtiofsd not found: set NEXUS_VIRTIOFSD_PATH to the virtiofsd binary path\n" +
-			"  See https://gitlab.com/virtio-fs/virtiofsd for installation instructions\n" +
-			"  virtiofsd is required when --mount is used; sandboxes without --mount are unaffected")
+	return res, nil
 }
 
 // AC4 — enforceability of "all new creation paths must call resolveKernelPath":

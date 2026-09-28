@@ -244,13 +244,13 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 			Name:        "virtiofsd",
 			Description: "virtiofsd binary for live directory mounts (--mount)",
 		}
-		if vp, verr := resolveVirtiofsdPath(); verr != nil {
+		if vres, verr := resolveVirtiofsdPath(); verr != nil {
 			virtiofsdCheck.OK = false
 			virtiofsdCheck.Detail = "not found"
-			virtiofsdCheck.Remediation = "Set NEXUS_VIRTIOFSD_PATH to the virtiofsd binary path, or install virtiofsd (https://gitlab.com/virtio-fs/virtiofsd). Required only for --mount; sandboxes without --mount continue to work."
+			virtiofsdCheck.Remediation = "Set NEXUS_VIRTIOFSD_PATH or ensure network access (embedded amd64 artifact auto-extracts on first use; arm64 requires manual install)."
 		} else {
 			virtiofsdCheck.OK = true
-			virtiofsdCheck.Detail = vp
+			virtiofsdCheck.Detail = vres.Path + " (source: " + string(vres.Source) + ")"
 		}
 		checks = append(checks, virtiofsdCheck)
 

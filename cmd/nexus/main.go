@@ -20,6 +20,11 @@ func main() {
 		return
 	}
 
+	if os.Getenv(cloudhypervisor.VirtiofsRunEnv) == "1" {
+		cloudhypervisor.RunVirtiofsdChild()
+		return
+	}
+
 	// Hidden subcommand: detached per-sandbox supervisor.
 	// Dispatched before CLI routing so the supervisor process never enters the
 	// CLI machinery (JSON flag scanning, command registry, etc.).

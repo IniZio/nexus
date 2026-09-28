@@ -227,6 +227,73 @@ func f() { exec.Command("pgrep", "-fa", "cloud-hypervisor") }
 	}
 }
 
+func isVirtiofsdArg(expr ast.Expr) bool {
+	switch v := expr.(type) {
+	case *ast.BasicLit:
+		return v.Kind == token.STRING && v.Value == `"virtiofsd"`
+	case *ast.SelectorExpr:
+		return v.Sel.Name == "Virtiofsd"
+	}
+	return false
+}
+
+func detectVirtiofsdViolations(src, filename string) ([]violation, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filename, src, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse %q: %w", filename, err)
+	}
+	var vs []violation
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name == "LookPath" && len(call.Args) >= 1 && isVirtiofsdArg(call.Args[0]) {
+			pos := fset.Position(call.Pos())
+			vs = append(vs, violation{pos.Filename, pos.Line, "LookPath(virtiofsd)"})
+		}
+		return true
+	})
+	return vs, nil
+}
+
+func TestNoDirectVirtiofsdLookPath(t *testing.T) {
+	t.Run("self_check_literal_detected", func(t *testing.T) {
+		src := `package foo
+import "os/exec"
+func f() { p, _ := exec.LookPath("virtiofsd"); _ = p }
+`
+		vs, err := detectVirtiofsdViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) == 0 {
+			t.Fatal("self-check: expected violation for exec.LookPath(\"virtiofsd\"), got none")
+		}
+	})
+
+	modRoot, hostbinRel := testModRoot(t)
+	err := walkSourceFiles(modRoot, hostbinRel, func(path string, data []byte) error {
+		vs, err := detectVirtiofsdViolations(string(data), path)
+		if err != nil {
+			return err
+		}
+		for _, v := range vs {
+			t.Errorf("%s:%d: direct virtiofsd LookPath (%s); use hostbin.Resolve instead",
+				v.file, v.line, v.msg)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+}
+
 func TestNoDirectNexusAgentLookPath(t *testing.T) {
 	t.Run("self_check_literal_detected", func(t *testing.T) {
 		src := `package foo

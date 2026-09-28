@@ -1782,12 +1782,12 @@ func wireLiveMountsToConfig(cfg *cloudhypervisor.Config, mounts []domain.LiveMou
 	if len(mounts) == 0 {
 		return "", nil
 	}
-	vp, verr := resolveVirtiofsdPath()
+	vres, verr := resolveVirtiofsdPath()
 	if verr != nil {
 		return "", fmt.Errorf("--mount requires virtiofsd: %w", verr)
 	}
-	cfg.VirtiofsdPath = vp
-	return vp, nil
+	cfg.VirtiofsdPath = vres.Path
+	return vres.Path, nil
 }
 
 func buildHumanSupervisorConfig(

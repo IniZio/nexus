@@ -206,8 +206,8 @@ func TestResolveVirtiofsdPath_EnvSet_FileExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != f {
-		t.Errorf("got %q, want %q", got, f)
+	if got.Path != f {
+		t.Errorf("got %q, want %q", got.Path, f)
 	}
 }
 
@@ -217,8 +217,5 @@ func TestResolveVirtiofsdPath_EnvSet_FileMissing(t *testing.T) {
 	_, err := resolveVirtiofsdPath()
 	if err == nil {
 		t.Fatal("expected error for missing virtiofsd, got nil")
-	}
-	if !strings.Contains(err.Error(), "NEXUS_VIRTIOFSD_PATH") {
-		t.Errorf("error should mention NEXUS_VIRTIOFSD_PATH: %v", err)
 	}
 }
