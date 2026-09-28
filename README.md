@@ -73,3 +73,5 @@ To produce a runnable binary: `go build -o nexus ./cmd/nexus`
 
 Other targets: `make proto` (regenerate gRPC stubs), `make lint`, `make setup`,
 `make install-agent`, `make install-kernel`.
+
+<!-- sandbox-workflow-test: verifying PR creation from a nexus sandbox -->
