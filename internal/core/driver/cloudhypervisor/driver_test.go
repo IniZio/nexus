@@ -803,19 +803,28 @@ func TestObserve_hungServerIsNotAbsent(t *testing.T) {
 	}
 }
 
-// TestBuildMemoryConfig_SharedAlways verifies that buildMemoryConfig always
-// enables shared memory (CH vhost-user requirement for virtiofs and vhost-net).
-func TestBuildMemoryConfig_SharedAlways(t *testing.T) {
+// TestBuildMemoryConfig verifies the shared-memory gating logic.
+// Default VMs must not have Shared set (preserves snapshot/ondemand paths).
+// Shared is enabled only when live mounts or vhost-user net are present.
+func TestBuildMemoryConfig(t *testing.T) {
 	mount := domain.LiveMount{HostPath: "/tmp/x", GuestPath: "/mnt/x"}
 
-	got := buildMemoryConfig(Config{MemoryMiB: 512, LiveMounts: []domain.LiveMount{mount}}, 512)
-	if !got.Shared {
+	// default: no live mounts, no vhost-user net → Shared false
+	got := buildMemoryConfig(Config{MemoryMiB: 512}, 512, false)
+	if got.Shared {
+		t.Errorf("Shared = true for default VM, want false")
+	}
+
+	// live mounts → Shared true
+	got2 := buildMemoryConfig(Config{MemoryMiB: 512, LiveMounts: []domain.LiveMount{mount}}, 512, false)
+	if !got2.Shared {
 		t.Errorf("Shared = false with live mounts, want true")
 	}
 
-	got2 := buildMemoryConfig(Config{MemoryMiB: 512}, 512)
-	if !got2.Shared {
-		t.Errorf("Shared = false without live mounts, want true (unconditional for vhost-user-net readiness)")
+	// vhost-user net → Shared true
+	got3 := buildMemoryConfig(Config{MemoryMiB: 512}, 512, true)
+	if !got3.Shared {
+		t.Errorf("Shared = false with vhost-user net, want true")
 	}
 }
 

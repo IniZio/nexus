@@ -81,15 +81,19 @@ func buildCmdline(base string, memoryMaxMiB uint32) string {
 
 // buildMemoryConfig constructs the CH MemoryConfig for a sandbox.
 //
-// Shared (memfd-backed) is always true: CH requires it for any vhost-user
-// device (virtiofs or vhost-user-net). Enabling it unconditionally avoids a
-// per-sandbox conditional and prepares for S9b (vhost-user-net on all paths).
+// Shared memory (memfd-backed) is enabled when live mounts are present OR a
+// vhost-user net device is configured — CH requires shared memory for any
+// vhost-user device (virtiofs or vhost-user-net). Default VMs with neither
+// use ordinary memory to avoid the memfd overhead and preserve snapshot/restore
+// and ondemand userfaultfd behaviour.
 //
 // hugepages is NOT used: it requires host-level huge page pre-allocation.
-func buildMemoryConfig(cfg Config, memMiB uint64) *vmMemoryConfig {
+func buildMemoryConfig(cfg Config, memMiB uint64, vhostUserNet bool) *vmMemoryConfig {
 	mc := &vmMemoryConfig{
 		SizeBytes: memMiB * 1024 * 1024,
-		Shared:    true,
+	}
+	if len(cfg.LiveMounts) > 0 || vhostUserNet {
+		mc.Shared = true
 	}
 	if cfg.MemoryMaxMiB > uint32(memMiB) {
 		mc.SizeBytes = uint64(cfg.MemoryMaxMiB) * 1024 * 1024
@@ -828,8 +832,8 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 	}
 
 	// Build the memory config via the helper so the shared-memory condition is
-	// testable without a real VM (see TestMemoryConfig_SharedSetWithLiveMounts).
-	memCfg := buildMemoryConfig(d.cfg, uint64(memMiB))
+	// testable without a real VM (see TestBuildMemoryConfig).
+	memCfg := buildMemoryConfig(d.cfg, uint64(memMiB), false)
 
 	vmcfg := vmConfig{
 		Payload: vmPayloadConfig{
