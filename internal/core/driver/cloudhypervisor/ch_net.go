@@ -75,8 +75,19 @@ func sandboxMac(id domain.SandboxID) string {
 }
 
 // vmNetConfig is the JSON representation of a CH net device in vm.create.
+//
+// Tap and VhostUser/Socket are mutually exclusive:
+//   - Tap path: CH opens the named tap interface inside the netns child.
+//   - VhostUser path (S9b): CH connects to Socket as vhost-user master;
+//     the nexus process acts as vhost-user slave (S9b, not yet implemented).
+//
+// CH v53 NetConfig fields: tap (string), vhost_user (bool), socket (string),
+// mac (string), num_queues (int). Source: CH OpenAPI schema at
+// github.com/cloud-hypervisor/cloud-hypervisor v53.0 vmm/src/api/openapi/cloud-hypervisor.yaml.
 type vmNetConfig struct {
-	Tap       string `json:"tap"`
+	Tap       string `json:"tap,omitempty"`
+	VhostUser bool   `json:"vhost_user,omitempty"`
+	Socket    string `json:"socket,omitempty"`
 	Mac       string `json:"mac"`
 	NumQueues int    `json:"num_queues"`
 }
@@ -491,6 +502,11 @@ func (d *CHDriver) GuestNetworkFD(ctx context.Context, id domain.SandboxID) (io.
 		return nil, fmt.Errorf("cloudhypervisor: GuestNetworkFD %s: fd already transferred (GuestNetworkFD called twice)", id)
 	}
 	ns.claimed = true
+	if ns.perimConn == nil {
+		c1, c2 := net.Pipe()
+		c2.Close()
+		return c1, nil
+	}
 	return ns.perimConn, nil // net.Conn implements io.ReadWriteCloser
 }
 

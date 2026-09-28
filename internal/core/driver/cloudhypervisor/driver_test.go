@@ -2,6 +2,7 @@ package cloudhypervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -802,25 +803,67 @@ func TestObserve_hungServerIsNotAbsent(t *testing.T) {
 	}
 }
 
-// TestBuildMemoryConfig_SharedSetWithLiveMounts verifies that buildMemoryConfig
-// enables shared memory (CH vhost-user requirement) when LiveMounts are present,
-// and suppresses it when absent.
-//
-// This test catches the regression where omitting the shared field causes CH to
-// reject the vm.create request with HTTP 500 "Using vhost-user requires using
-// shared memory or huge pages" (D-PD-104 / LM-SHARED-MEM).
-func TestBuildMemoryConfig_SharedSetWithLiveMounts(t *testing.T) {
+// TestBuildMemoryConfig_SharedAlways verifies that buildMemoryConfig always
+// enables shared memory (CH vhost-user requirement for virtiofs and vhost-net).
+func TestBuildMemoryConfig_SharedAlways(t *testing.T) {
 	mount := domain.LiveMount{HostPath: "/tmp/x", GuestPath: "/mnt/x"}
 
-	// With live mounts: Shared must be true.
 	got := buildMemoryConfig(Config{MemoryMiB: 512, LiveMounts: []domain.LiveMount{mount}}, 512)
 	if !got.Shared {
-		t.Errorf("Shared = false, want true when LiveMounts present (CH rejects vhost-user without shared memory)")
+		t.Errorf("Shared = false with live mounts, want true")
 	}
 
-	// Without live mounts: Shared must be false (omitted from JSON via omitempty).
 	got2 := buildMemoryConfig(Config{MemoryMiB: 512}, 512)
-	if got2.Shared {
-		t.Errorf("Shared = true, want false when no LiveMounts (unnecessary memfd overhead on every sandbox)")
+	if !got2.Shared {
+		t.Errorf("Shared = false without live mounts, want true (unconditional for vhost-user-net readiness)")
+	}
+}
+
+// TestVmNetConfig_VhostUserMarshal verifies that vhost_user and socket fields
+// marshal correctly and that tap is omitted when empty (omitempty).
+func TestVmNetConfig_VhostUserMarshal(t *testing.T) {
+	cfg := vmNetConfig{
+		VhostUser: true,
+		Socket:    "/run/nexus/net.sock",
+		Mac:       "52:54:00:aa:bb:cc",
+		NumQueues: 2,
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"vhost_user":true`) {
+		t.Errorf("missing vhost_user:true in %s", s)
+	}
+	if !strings.Contains(s, `"socket":"/run/nexus/net.sock"`) {
+		t.Errorf("missing socket in %s", s)
+	}
+	if strings.Contains(s, `"tap"`) {
+		t.Errorf("tap should be omitted when empty, got %s", s)
+	}
+}
+
+// TestVmNetConfig_TapMarshal verifies that tap is emitted and vhost_user/socket
+// are omitted when using the tap path (existing default behaviour).
+func TestVmNetConfig_TapMarshal(t *testing.T) {
+	cfg := vmNetConfig{
+		Tap:       "nxg-aabbccddee",
+		Mac:       "52:54:00:aa:bb:cc",
+		NumQueues: 2,
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"tap":"nxg-aabbccddee"`) {
+		t.Errorf("missing tap in %s", s)
+	}
+	if strings.Contains(s, `"vhost_user"`) {
+		t.Errorf("vhost_user should be omitted on tap path, got %s", s)
+	}
+	if strings.Contains(s, `"socket"`) {
+		t.Errorf("socket should be omitted on tap path, got %s", s)
 	}
 }

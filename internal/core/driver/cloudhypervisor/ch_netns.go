@@ -89,6 +89,11 @@ const (
 	// discards the stream while still draining the pipe (pipe-buffer safety).
 	netnsEnvConsoleLog = "NEXUS_NETNS_CONSOLE_LOG"
 
+	// netnsEnvNoNet signals the child to skip tap/bridge creation and the frame
+	// pump; CH boots in an empty netns with no virtio-net device. Set to "1"
+	// by StartNetnsRuntime when NEXUS_NET_MODE=none is in the parent environment.
+	netnsEnvNoNet = "NEXUS_NETNS_NO_NET"
+
 	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
 	// to vm.restore after spawning CH. When absent (empty), the child runs in
 	// boot mode: it just spawns CH and pumps frames; the parent issues
@@ -282,6 +287,9 @@ func netnsSocketpairFiles() (perimFile, pumpFile *os.File, err error) {
 // (create) and the parent (connect); /tmp satisfies this because only the
 // mount namespace is shared.
 func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, socketPath, restoreURL string) (*NetnsRuntime, error) {
+	if os.Getenv("NEXUS_NET_MODE") == "none" {
+		return startNetnsRuntimeNoNet(ctx, cfg, id, socketPath)
+	}
 	guestTap, hostTap, bridge := tapIfNames(id)
 
 	// Create the socketpair as raw *os.File for ExtraFiles handoff.
@@ -441,6 +449,79 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	// already confirmed the VM is up, so we can now hand off Wait ownership
 	// to this goroutine. Stop() will wait on deathCh instead of calling
 	// cmd.Wait() directly, preserving the single-owner invariant (AC-12c).
+	go rt.watchParentOwnedDeath()
+	return rt, nil
+}
+
+// startNetnsRuntimeNoNet re-execs into CLONE_NEWUSER|CLONE_NEWNET without
+// creating any tap/bridge. CH runs in an empty netns with no virtio-net device.
+// PerimConn is nil on the returned runtime; GuestNetworkFD returns a null conn.
+func startNetnsRuntimeNoNet(ctx context.Context, cfg Config, id domain.SandboxID, socketPath string) (*NetnsRuntime, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("cloudhypervisor: StartNetnsRuntime(no-net): os.Executable: %w", err)
+	}
+
+	startTimeoutMS := int64(cfg.StartTimeout / time.Millisecond)
+	if startTimeoutMS <= 0 {
+		startTimeoutMS = 15_000
+	}
+
+	pathEnv := "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	if p := os.Getenv("PATH"); p != "" {
+		pathEnv = "PATH=" + p
+	}
+
+	controlDir := netnsControlDir(cfg.SocketDir)
+
+	cmd := exec.Command(self)
+	cmd.Env = []string{
+		NetnsRunEnv + "=1",
+		netnsEnvNoNet + "=1",
+		fmt.Sprintf("%s=%s", netnsEnvAPISocket, socketPath),
+		fmt.Sprintf("%s=%s", netnsEnvCHBin, cfg.BinaryPath),
+		fmt.Sprintf("%s=%d", netnsEnvStartTimeoutMS, startTimeoutMS),
+		fmt.Sprintf("%s=%s", netnsEnvControlDir, controlDir),
+		fmt.Sprintf("%s=%s", netnsEnvSandboxID, id.String()),
+		pathEnv,
+	}
+	if cfg.ConsoleLogPath != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", netnsEnvConsoleLog, cfg.ConsoleLogPath))
+	}
+	cmd.SysProcAttr = netnsChildAttr()
+	stderrBuf := newVMMStderrBuf(64 * 1024)
+	cmd.Stderr = stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("cloudhypervisor: StartNetnsRuntime(no-net): spawn child: %w", err)
+	}
+	childPgid := cmd.Process.Pid
+
+	if err := ctx.Err(); err != nil {
+		_ = syscall.Kill(-childPgid, syscall.SIGKILL)
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("cloudhypervisor: StartNetnsRuntime(no-net): %w", err)
+	}
+
+	childStartTime, stErr := readProcStartTime(childPgid)
+	if stErr != nil {
+		slog.Warn("cloudhypervisor: could not read netns child starttime (no-net)",
+			"pid", childPgid, "err", stErr)
+	}
+
+	rt := &NetnsRuntime{
+		PerimConn:      nil,
+		APISocket:      socketPath,
+		GuestTap:       "",
+		ChildPID:       childPgid,
+		ChildPGID:      childPgid,
+		ChildStartTime: childStartTime,
+		ControlSocket:  ControlSocketPath(controlDir, id.String()),
+		ControlToken:   ControlTokenPath(controlDir, id.String()),
+		cmd:            cmd,
+		stderrBuf:      stderrBuf,
+		deathCh:        make(chan struct{}),
+	}
 	go rt.watchParentOwnedDeath()
 	return rt, nil
 }
@@ -722,6 +803,50 @@ func waitForGroupExit(pgid int, timeout time.Duration) bool {
 	}
 }
 
+// runNetnsChildNoNet is the child-side no-net entry point: spawns CH in the
+// empty netns without any tap/bridge, waits for CH to exit, then calls
+// os.Exit(0). No packet pump or control socket is started.
+func runNetnsChildNoNet() {
+	socketPath := os.Getenv(netnsEnvAPISocket)
+	chBin := os.Getenv(netnsEnvCHBin)
+	timeoutMS, _ := strconv.ParseInt(os.Getenv(netnsEnvStartTimeoutMS), 10, 64)
+	if timeoutMS <= 0 {
+		timeoutMS = 15_000
+	}
+
+	var consoleOut io.Writer = io.Discard
+	if consolePath := os.Getenv(netnsEnvConsoleLog); consolePath != "" {
+		if cw, cerr := newCappedConsoleWriter(consolePath); cerr == nil {
+			consoleOut = cw
+		} else {
+			fmt.Fprintf(os.Stderr, "netns child (no-net): open console log %s: %v (discarding)\n", consolePath, cerr)
+		}
+	}
+
+	cfg := Config{
+		BinaryPath:   chBin,
+		StartTimeout: time.Duration(timeoutMS) * time.Millisecond,
+	}
+	proc, err := spawnVMMInGroup(context.Background(), cfg, socketPath, consoleOut)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "netns child (no-net): spawnVMMInGroup: %v\n", err)
+		os.Exit(1)
+	}
+
+	var ws syscall.WaitStatus
+	for {
+		wpid, werr := syscall.Wait4(proc.pid, &ws, 0, nil)
+		if werr == nil && wpid == proc.pid {
+			break
+		}
+		if errors.Is(werr, syscall.EINTR) {
+			continue
+		}
+		break
+	}
+	os.Exit(0)
+}
+
 // RunNetnsChild is the exported child-side entry point for the netns-runtime.
 // It is invoked when the re-exec'd process detects NetnsRunEnv=1. It runs
 // entirely inside the new user+network namespace with effective CAP_NET_ADMIN.
@@ -731,6 +856,10 @@ func waitForGroupExit(pgid int, timeout time.Duration) bool {
 //
 // S1: wire this sentinel dispatch into cmd/nexus/main.go
 func RunNetnsChild() {
+	if os.Getenv(netnsEnvNoNet) == "1" {
+		runNetnsChildNoNet()
+		return
+	}
 	pumpFD, err := strconv.Atoi(os.Getenv(netnsEnvPumpFD))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "netns child: parse %s: %v\n", netnsEnvPumpFD, err)

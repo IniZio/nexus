@@ -81,19 +81,15 @@ func buildCmdline(base string, memoryMaxMiB uint32) string {
 
 // buildMemoryConfig constructs the CH MemoryConfig for a sandbox.
 //
-// Shared memory (memfd-backed) is enabled when live mounts are present —
-// CH requires shared memory or huge pages for any vhost-user device
-// (including virtiofs). Enabling it unconditionally would impose the memfd
-// overhead on every sandbox; gating on LiveMounts keeps the blast radius small.
+// Shared (memfd-backed) is always true: CH requires it for any vhost-user
+// device (virtiofs or vhost-user-net). Enabling it unconditionally avoids a
+// per-sandbox conditional and prepares for S9b (vhost-user-net on all paths).
 //
-// hugepages is NOT used: it requires host-level huge page pre-allocation and
-// is an operator/system decision outside nexus's scope.
+// hugepages is NOT used: it requires host-level huge page pre-allocation.
 func buildMemoryConfig(cfg Config, memMiB uint64) *vmMemoryConfig {
 	mc := &vmMemoryConfig{
 		SizeBytes: memMiB * 1024 * 1024,
-	}
-	if len(cfg.LiveMounts) > 0 {
-		mc.Shared = true
+		Shared:    true,
 	}
 	if cfg.MemoryMaxMiB > uint32(memMiB) {
 		mc.SizeBytes = uint64(cfg.MemoryMaxMiB) * 1024 * 1024
@@ -903,28 +899,22 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		Socket: d.vsockPath(id),
 	}
 
-	// Build the net config from the guest TAP name allocated by the netns child.
-	// The TAP lives inside the child's netns; CH (also inside the netns) calls
-	// TUNSETIFF on it at vm.boot. NumQueues=2 matches the host-netns legacy path.
-	netCfg := vmNetConfig{
-		Tap:       rt.GuestTap,
-		Mac:       sandboxMac(id),
-		NumQueues: 2,
+	var nets []vmNetConfig
+	if os.Getenv("NEXUS_NET_MODE") != "none" {
+		nets = []vmNetConfig{{
+			Tap:       rt.GuestTap,
+			Mac:       sandboxMac(id),
+			NumQueues: 2,
+		}}
 	}
 
-	// Spawn virtiofsd for each live mount BEFORE vm.create.
-	// CH connects to each virtiofsd socket at device-creation time; all sockets
-	// must be present before VMCreateWithNet is called. spawnVirtiofsdForMounts
-	// polls each socket until it appears (mirroring spawnVMM's API-socket poll)
-	// and registers each proc in d.virtiofsdProcs[id] immediately so the
-	// existing cleanup() → clearState path kills them on any subsequent failure.
 	fsCfgs, err := d.spawnVirtiofsdForMounts(apiCtx, id)
 	if err != nil {
 		cleanup()
 		return "", fmt.Errorf("cloudhypervisor: start %s: %w", id, err)
 	}
 
-	if err := c.VMCreateWithNet(apiCtx, vmcfg, vsock, []vmNetConfig{netCfg}, fsCfgs); err != nil {
+	if err := c.VMCreateWithNet(apiCtx, vmcfg, vsock, nets, fsCfgs); err != nil {
 		wrapped := withStderr(fmt.Errorf("cloudhypervisor: start %s: %w", id, err))
 		cleanup()
 		return "", wrapped
