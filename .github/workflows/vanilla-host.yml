@@ -1,0 +1,121 @@
+name: Vanilla host
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - internal/core/hostbin/**
+      - internal/core/driver/cloudhypervisor/**
+      - cmd/nexus/**
+      - Makefile
+      - .github/workflows/vanilla-host.yml
+
+concurrency:
+  group: vanilla-host-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build single binary
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # UNCAPPED: systemd-run memory scope is unavailable on hosted runners
+      - name: Embed host artifacts (make artifacts)
+        env:
+          NEXUS_ALLOW_UNCAPPED: "1"
+        run: make artifacts HOSTBIN_GOARCH=amd64
+
+      - name: Build nexus binary
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath -o nexus ./cmd/nexus
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-linux-amd64
+          path: nexus
+          if-no-files-found: error
+          retention-days: 3
+
+  sandbox:
+    name: Sandbox on vanilla host
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus-linux-amd64
+          path: ${{ runner.temp }}/dl
+
+      - name: Enable /dev/kvm for runner user
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -w /dev/kvm
+
+      # TODO(S9b): remove once tap networking works under
+      # kernel.apparmor_restrict_unprivileged_userns=1 (Ubuntu 24.04 default).
+      - name: Relax unprivileged userns AppArmor restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build scrubbed PATH
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/scrub"
+          mkdir -p "$bin"
+          install -m 0755 "$RUNNER_TEMP/dl/nexus" "$bin/nexus"
+          for t in mkdir cat; do
+            ln -s "$(command -v "$t")" "$bin/$t"
+          done
+          echo "SCRUB_BIN=$bin" >> "$GITHUB_ENV"
+
+      - name: Assert host deps absent under scrubbed PATH
+        run: |
+          set -euo pipefail
+          export PATH="$SCRUB_BIN"
+          for t in mke2fs mkfs.ext4 e2fsck resize2fs git ssh lsof virtiofsd cloud-hypervisor unshare ip; do
+            if command -v "$t" >/dev/null; then
+              echo "::error::$t is on the scrubbed PATH"
+              exit 1
+            fi
+          done
+          command -v nexus
+
+      - name: Create, exec, mount, remove
+        run: |
+          set -euo pipefail
+          export PATH="$SCRUB_BIN"
+          mnt="$RUNNER_TEMP/hostdir"
+          mkdir -p "$mnt"
+          echo vanilla-marker > "$mnt/marker.txt"
+          trap 'nexus rm ci/vanilla || true; nexus rm ci/vanilla-mnt || true' EXIT
+
+          nexus sandbox create ci/vanilla --image alpine:3.21
+          nexus exec ci/vanilla uname -r
+          out="$(nexus exec ci/vanilla echo ok)"
+          test "$out" = "ok"
+
+          nexus sandbox create ci/vanilla-mnt --image alpine:3.21 --mount "$mnt:/mnt/host:ro"
+          out="$(nexus exec ci/vanilla-mnt cat /mnt/host/marker.txt)"
+          test "$out" = "vanilla-marker"
+
+          nexus rm ci/vanilla
+          nexus rm ci/vanilla-mnt
