@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/IniZio/nexus/internal/controller"
@@ -103,7 +105,7 @@ type Backend struct {
 	cfg       Config
 	herdrRun  runner
 	nexusRun  runner
-	gitRun    runner            // injected for tests; real impl calls git directly
+	gitRun    runner // injected for tests; real impl calls git directly
 	agentOpts []herdragent.Option
 	sleepFn   func(time.Duration) // injected for tests
 	nowFn     func() time.Time    // injected for tests
@@ -346,9 +348,13 @@ func runCmdPTY(ctx context.Context, bin string, extraEnv []string, argv ...strin
 	}
 	defer ptmx.Close()
 	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, ptmx)
+	_, copyErr := io.Copy(&buf, ptmx)
 	waitErr := cmd.Wait()
 	out := buf.String()
+	// Linux pty master reads return EIO once the child closes the slave.
+	if copyErr != nil && !errors.Is(copyErr, syscall.EIO) && !errors.Is(copyErr, os.ErrClosed) {
+		return out, fmt.Errorf("pty read %s: %w", bin, copyErr)
+	}
 	if waitErr != nil {
 		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() != 0 {
 			return out, waitErr
@@ -378,9 +384,11 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 		if mkErr := os.MkdirAll(claimsDir, 0o755); mkErr == nil {
 			markerPath = filepath.Join(claimsDir, safeBranch)
 			_ = os.WriteFile(markerPath, []byte{}, 0o644)
-			defer func() { //nolint:errcheck
+			defer func() {
 				if markerPath != "" {
-					os.Remove(markerPath)
+					if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+						slog.Warn("herdr: remove worktree claim marker", "path", markerPath, "err", err)
+					}
 				}
 			}()
 		}
@@ -448,7 +456,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	if nexusSandboxID == "" {
 		return "", "", fmt.Errorf("nexus herdr list: no sandbox_id for workspace %s", wsID)
 	}
-	rollbackSandboxID = nexusSandboxID   // sandbox is now bound; rollback must rm it
+	rollbackSandboxID = nexusSandboxID // sandbox is now bound; rollback must rm it
 	rollbackNexusHandle = nexusHandle
 
 	boundPrincipal := parsePrincipal(listOut, wsID)
@@ -1042,10 +1050,10 @@ func parseFinalAnswer(lines []string, marker string) string {
 		Content json.RawMessage `json:"content"`
 	}
 	type entry struct {
-		Type       string     `json:"type"`
-		IsSidechain bool      `json:"isSidechain"`
-		IsMeta     bool       `json:"isMeta"`
-		Message    messageObj `json:"message"`
+		Type        string     `json:"type"`
+		IsSidechain bool       `json:"isSidechain"`
+		IsMeta      bool       `json:"isMeta"`
+		Message     messageObj `json:"message"`
 	}
 
 	userText := func(e entry) (string, bool) {

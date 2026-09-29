@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"net"
 	"os"
 
@@ -59,17 +58,13 @@ func handleSSHForward(con *os.File, vsockConn net.Conn) {
 	defer sshdConn.Close()
 
 	done := make(chan struct{}, 2)
-	copy := func(dst, src net.Conn) {
-		io.Copy(dst, src) //nolint:errcheck
-		// Half-close so the other direction sees EOF.
-		if tc, ok := dst.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite() //nolint:errcheck
-		}
+	splice := func(dst, src net.Conn) {
+		spliceHalfClose(con, "sshd-forward", dst, src)
 		done <- struct{}{}
 	}
 
-	go copy(sshdConn, vsockConn)
-	go copy(vsockConn, sshdConn)
+	go splice(sshdConn, vsockConn)
+	go splice(vsockConn, sshdConn)
 
 	<-done
 }

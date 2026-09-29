@@ -91,11 +91,11 @@ func (s *VolumeStore) Trash(ctx context.Context, name string) (string, error) {
 		}
 		return "", fmt.Errorf("volume %s: open lock for trash: %w", name, err)
 	}
-	defer lk.Close() //nolint:errcheck
+	defer lk.Close() //nolint:errcheck // advisory lock fd close errors are non-actionable in a defer
 	if err := lk.TryExclusive(ctx); err != nil {
 		return "", fmt.Errorf("volume %s: acquire lock for trash: %w", name, err)
 	}
-	defer lk.Unlock() //nolint:errcheck
+	defer lk.Unlock() //nolint:errcheck // advisory lock release errors are non-fatal; fd close covers it
 
 	rec, err := s.readRecord(name)
 	if err != nil {

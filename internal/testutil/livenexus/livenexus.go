@@ -895,7 +895,9 @@ func resolveProdKernelPath() string {
 
 func randHex(n int) string {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("livenexus: crypto/rand: %v", err))
+	}
 	return hex.EncodeToString(b)
 }
 

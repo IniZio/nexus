@@ -128,6 +128,9 @@ func (q *queue) notifyLocked() {
 	}
 	var one [8]byte
 	binary.NativeEndian.PutUint64(one[:], 1)
+	// EAGAIN means the eventfd counter is saturated: the guest already has a
+	// pending interrupt, so dropping this kick is benign. Other errors mean the
+	// fd is closed (teardown); the rings stop separately.
 	_, _ = q.call.Write(one[:])
 }
 

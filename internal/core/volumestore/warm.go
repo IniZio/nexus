@@ -180,13 +180,13 @@ func (s *VolumeStore) SeedFromWarm(ctx context.Context, name, projectKey string,
 	if err != nil {
 		return false, fmt.Errorf("volumestore: seed open lock %s: %w", name, err)
 	}
-	defer lk.Close() //nolint:errcheck
+	defer lk.Close() //nolint:errcheck // advisory lock fd close errors are non-actionable in a defer
 	lockCtx, lockCancel := context.WithTimeout(ctx, createLockTimeout)
 	defer lockCancel()
 	if err := lk.TryExclusive(lockCtx); err != nil {
 		return false, fmt.Errorf("volumestore: seed acquire lock %s: %w", name, err)
 	}
-	defer lk.Unlock() //nolint:errcheck
+	defer lk.Unlock() //nolint:errcheck // advisory lock release errors are non-fatal; fd close covers it
 	if _, err := s.readRecord(name); err == nil {
 		return false, nil
 	}
@@ -195,7 +195,7 @@ func (s *VolumeStore) SeedFromWarm(ctx context.Context, name, projectKey string,
 	if err != nil {
 		return false, fmt.Errorf("volumestore: seed open warm disk: %w", err)
 	}
-	defer srcF.Close() //nolint:errcheck
+	defer srcF.Close() //nolint:errcheck // read-only fd; close error is non-actionable
 	allocBytes, statErr := allocatedFileBytes(srcF)
 	if statErr != nil {
 		return false, fmt.Errorf("volumestore: seed stat warm disk: %w", statErr)
@@ -273,13 +273,13 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 	if err != nil {
 		return fmt.Errorf("volumestore: promote open lock %s: %w", name, err)
 	}
-	defer lk.Close() //nolint:errcheck
+	defer lk.Close() //nolint:errcheck // advisory lock fd close errors are non-actionable in a defer
 	promoteCtx, promoteCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer promoteCancel()
 	if err := lk.TryExclusive(promoteCtx); err != nil {
 		return fmt.Errorf("volumestore: promote acquire lock %s: %w", name, err)
 	}
-	defer lk.Unlock() //nolint:errcheck
+	defer lk.Unlock() //nolint:errcheck // advisory lock release errors are non-fatal; fd close covers it
 	rec, err := s.readRecord(name)
 	if err != nil {
 		return fmt.Errorf("volumestore: promote read record: %w", err)
@@ -302,7 +302,7 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 	if err != nil {
 		return fmt.Errorf("volumestore: promote open src disk: %w", err)
 	}
-	defer srcF.Close() //nolint:errcheck
+	defer srcF.Close() //nolint:errcheck // read-only fd; close error is non-actionable
 	allocBytes, statErr := allocatedFileBytes(srcF)
 	if statErr != nil {
 		return fmt.Errorf("volumestore: promote stat src disk: %w", statErr)

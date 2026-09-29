@@ -223,6 +223,8 @@ func (l *VaultLinker) linkLinearPaste(ctx context.Context, ev Event, rawURL stri
 
 func randomState() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("controller: crypto/rand: %v", err))
+	}
 	return hex.EncodeToString(b)
 }

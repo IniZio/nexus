@@ -74,7 +74,9 @@ func runHerdrFocusWatch(ctx context.Context, socketPath, session, storeRoot, sta
 	var lastEventID string
 	applyID := func(workspaceID, source string) {
 		fmt.Fprintf(os.Stderr, "focus-watch: apply workspace=%q source=%s\n", workspaceID, source)
-		herdrFocusChanged(ctx, workspaceID, false, storeRoot, statePath, fwdStateDir, session, socketPath, w) //nolint:errcheck
+		if err := herdrFocusChanged(ctx, workspaceID, false, storeRoot, statePath, fwdStateDir, session, socketPath, w); err != nil {
+			fmt.Fprintf(os.Stderr, "focus-watch: apply workspace=%q failed: %v\n", workspaceID, err)
+		}
 	}
 
 	if id, err := herdrSnapshotFocusedID(ctx, socketPath); err == nil {

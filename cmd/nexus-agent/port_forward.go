@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -75,11 +76,7 @@ func handlePortForward(con *os.File, vsockConn net.Conn) {
 
 	done := make(chan struct{}, 2)
 	splice := func(dst, src net.Conn) {
-		io.Copy(dst, src) //nolint:errcheck
-		// Half-close so the other direction sees EOF.
-		if tc, ok := dst.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite() //nolint:errcheck
-		}
+		spliceHalfClose(con, "port-forward-mux", dst, src)
 		done <- struct{}{}
 	}
 
@@ -87,4 +84,17 @@ func handlePortForward(con *os.File, vsockConn net.Conn) {
 	go splice(vsockConn, tcpConn)
 
 	<-done
+}
+
+// spliceHalfClose copies src to dst, logs unexpected errors, then half-closes
+// dst so the peer direction sees EOF.
+func spliceHalfClose(con *os.File, tag string, dst, src net.Conn) {
+	if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		consoleLog(con, "nexus-agent: %s: copy: %v\n", tag, err)
+	}
+	if tc, ok := dst.(interface{ CloseWrite() error }); ok {
+		if err := tc.CloseWrite(); err != nil && !errors.Is(err, net.ErrClosed) {
+			consoleLog(con, "nexus-agent: %s: close write: %v\n", tag, err)
+		}
+	}
 }

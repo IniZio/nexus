@@ -5511,8 +5511,12 @@ func herdrWorktreeSandbox(
 func herdrPluginLocalAgentStartup(ctx context.Context) error {
 	if socketPath := os.Getenv("HERDR_SOCKET_PATH"); socketPath != "" {
 		storeRoot, _ := store.DefaultRoot()
-		go runHerdrFocusWatch(ctx, socketPath, os.Getenv("HERDR_SESSION"), //nolint:errcheck
-			storeRoot, portfwd.FocusStatePath(), portfwd.StateDir(), 5*time.Second, os.Stderr)
+		go func() {
+			if err := runHerdrFocusWatch(ctx, socketPath, os.Getenv("HERDR_SESSION"),
+				storeRoot, portfwd.FocusStatePath(), portfwd.StateDir(), 5*time.Second, os.Stderr); err != nil {
+				fmt.Fprintf(os.Stderr, "focus-watch: %v\n", err)
+			}
+		}()
 	}
 	return clientagent.RunStartup(ctx)
 }

@@ -398,10 +398,10 @@ func adoptMemState(info *vmInfoResponse, bootHintMiB uint32) *vmMemState {
 		return st
 	}
 	mem := info.Config.Memory
-	sizeMiB := uint32(mem.SizeBytes / (1024 * 1024)) //nolint:gosec
+	sizeMiB := uint32(mem.SizeBytes / (1024 * 1024)) //nolint:gosec // G115: MiB count of a VM memory size, bounded well below 4 PiB, fits uint32
 
 	if info.Config.Balloon != nil {
-		balloonMiB := uint32(info.Config.Balloon.SizeBytes / (1024 * 1024)) //nolint:gosec
+		balloonMiB := uint32(info.Config.Balloon.SizeBytes / (1024 * 1024)) //nolint:gosec // G115: MiB count of a VM memory size, bounded well below 4 PiB, fits uint32
 		st.mode = driver.MemoryModeBalloon
 		st.totalMiB = sizeMiB
 		if balloonMiB > 0 {
@@ -416,7 +416,7 @@ func adoptMemState(info *vmInfoResponse, bootHintMiB uint32) *vmMemState {
 		st.balloon.Store(balloonMiB)
 	} else if mem.HotplugSize > 0 {
 		// VirtioMem: memory.size = boot RAM; hotplug_size = extra capacity.
-		hotplugMiB := uint32(mem.HotplugSize / (1024 * 1024)) //nolint:gosec
+		hotplugMiB := uint32(mem.HotplugSize / (1024 * 1024)) //nolint:gosec // G115: MiB count of a VM memory size, bounded well below 4 PiB, fits uint32
 		st.mode = driver.MemoryModeVirtioMem
 		st.bootMiB = sizeMiB
 		st.totalMiB = sizeMiB + hotplugMiB
@@ -474,7 +474,7 @@ func (s *vmMemState) observeSample(memTotal, memAvail uint64) (driver.DriftStatu
 	}
 	var usedMiB uint32
 	if memTotal > memAvail {
-		usedMiB = uint32((memTotal - memAvail) / mib) //nolint:gosec
+		usedMiB = uint32((memTotal - memAvail) / mib) //nolint:gosec // G115: MiB count of a VM memory size, bounded well below 4 PiB, fits uint32
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -517,7 +517,7 @@ func (d *CHDriver) ResizeMemory(ctx context.Context, id domain.SandboxID, target
 }
 
 func (d *CHDriver) resizeMemoryBalloon(ctx context.Context, id domain.SandboxID, st *vmMemState, targetBytes int64) (int64, error) {
-	targetMiB := uint32(targetBytes / (1024 * 1024)) //nolint:gosec
+	targetMiB := uint32(targetBytes / (1024 * 1024)) //nolint:gosec // G115: MiB count of a VM memory size, bounded well below 4 PiB, fits uint32
 	if targetMiB < st.bootMiB {
 		targetMiB = st.bootMiB
 	}
@@ -548,7 +548,7 @@ func (d *CHDriver) resizeMemoryVirtioMem(ctx context.Context, id domain.SandboxI
 			targetBytes -= align
 		}
 	}
-	desiredRAM := uint64(targetBytes) //nolint:gosec
+	desiredRAM := uint64(targetBytes) //nolint:gosec // G115: targetBytes is clamped to bounds.MemMinBytes (positive) by SandboxResizer, so lossless
 	c := newClient(d.socketPath(id))
 	if err := c.VMResize(ctx, &desiredRAM, nil, nil); err != nil {
 		return 0, fmt.Errorf("cloudhypervisor: ResizeMemory %s: %w", id, err)

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -94,10 +95,14 @@ func forwardConn(ctx context.Context, hostConn net.Conn, ref string, guestPort u
 
 	done := make(chan struct{}, 2)
 	splice := func(dst, src net.Conn) {
-		io.Copy(dst, src) //nolint:errcheck
+		if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			fmt.Fprintf(os.Stderr, "forward: copy: %v\n", err)
+		}
 		// Half-close so the other direction sees EOF rather than a reset.
 		if tc, ok := dst.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite() //nolint:errcheck
+			if err := tc.CloseWrite(); err != nil && !errors.Is(err, net.ErrClosed) {
+				fmt.Fprintf(os.Stderr, "forward: close write: %v\n", err)
+			}
 		}
 		done <- struct{}{}
 	}
