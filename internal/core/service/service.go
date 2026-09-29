@@ -265,6 +265,14 @@ type CreateOptions struct {
 	// Mirrors the AgentName field on domain.Sandbox; the value comes from
 	// resolveAgentPosture (flag OR user-global / project config default).
 	AgentName string
+
+	// NetMode is stamped on the record. Empty means tap.
+	NetMode domain.NetMode
+}
+
+// NetModeFromEnv reads NEXUS_NET_MODE. It is the only reader; call it at create.
+func NetModeFromEnv() (domain.NetMode, error) {
+	return domain.ParseNetMode(os.Getenv("NEXUS_NET_MODE"))
 }
 
 // Create mints a new sandbox record in state Created.
@@ -299,6 +307,7 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 		Envelope:     domain.Envelope{}, // frozen at creation; future slices populate fields
 		RemoveOnExit: opts.RemoveOnExit,
 		AgentName:    opts.AgentName,
+		NetMode:      opts.NetMode,
 	}
 	if err := s.store.Create(ctx, sb); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create: %w", err)

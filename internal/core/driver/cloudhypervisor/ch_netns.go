@@ -91,7 +91,7 @@ const (
 
 	// netnsEnvNoNet signals the child to skip tap/bridge creation and the frame
 	// pump; CH boots in an empty netns with no virtio-net device. Set to "1"
-	// by StartNetnsRuntime when NEXUS_NET_MODE=none is in the parent environment.
+	// by StartNetnsRuntime when Config.NetMode is "none".
 	netnsEnvNoNet = "NEXUS_NETNS_NO_NET"
 
 	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
@@ -287,7 +287,7 @@ func netnsSocketpairFiles() (perimFile, pumpFile *os.File, err error) {
 // (create) and the parent (connect); /tmp satisfies this because only the
 // mount namespace is shared.
 func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, socketPath, restoreURL string) (*NetnsRuntime, error) {
-	if os.Getenv("NEXUS_NET_MODE") == "none" {
+	if cfg.NetMode == "none" {
 		return startNetnsRuntimeNoNet(ctx, cfg, id, socketPath)
 	}
 	guestTap, hostTap, bridge := tapIfNames(id)

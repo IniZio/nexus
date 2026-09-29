@@ -523,6 +523,15 @@ func CreateAndBoot(
 	project, name string,
 	opts CreateAndBootOptions,
 ) (domain.Sandbox, error) {
+	var netMode domain.NetMode
+	if project != "__builder" {
+		nm, nmErr := NetModeFromEnv()
+		if nmErr != nil {
+			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: NEXUS_NET_MODE: %w", project, name, nmErr)
+		}
+		netMode = nm
+	}
+
 	// 1. Resolve ext4 path from the image spec
 	ext4Path, resolvedDigest, err := resolveExt4WithTools(ctx, opts.Image, cache, opts.CacheRoot, opts.AgentBytes, opts.SandboxTools)
 	if err != nil {
@@ -914,6 +923,7 @@ func CreateAndBoot(
 		Labels:    opts.Labels,
 		State:     domain.Created,
 		Principal: principal,
+		NetMode:   netMode,
 		Envelope: domain.Envelope{
 			ImageDigest:        resolvedDigest,
 			AllowedHosts:       opts.AllowedHosts, // frozen at creation (P1-S6)

@@ -101,6 +101,17 @@ func buildMemoryConfig(cfg Config, memMiB uint64, vhostUserNet bool) *vmMemoryCo
 	return mc
 }
 
+func buildNets(cfg Config, guestTap string, id domain.SandboxID) []vmNetConfig {
+	if cfg.NetMode == "none" {
+		return nil
+	}
+	return []vmNetConfig{{
+		Tap:       guestTap,
+		Mac:       sandboxMac(id),
+		NumQueues: 2,
+	}}
+}
+
 // Config holds the static configuration for the Cloud Hypervisor driver.
 // It is set at construction time and must not be mutated afterwards.
 type Config struct {
@@ -310,6 +321,10 @@ type Config struct {
 	// Mirrors NEXUS_NESTED_VIRT in old nexus (packages/nexus).
 	// Set via the NEXUS_NESTED_VIRT=1 env var or by setting this field directly.
 	NestedVirt bool
+
+	// NetMode is the sandbox's recorded net mode. Empty means tap. "none" is
+	// honoured for tests only.
+	NetMode domain.NetMode
 }
 
 // CHDriver implements driver.Driver, driver.PauseResumer, driver.Snapshotter,
@@ -903,14 +918,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		Socket: d.vsockPath(id),
 	}
 
-	var nets []vmNetConfig
-	if os.Getenv("NEXUS_NET_MODE") != "none" {
-		nets = []vmNetConfig{{
-			Tap:       rt.GuestTap,
-			Mac:       sandboxMac(id),
-			NumQueues: 2,
-		}}
-	}
+	nets := buildNets(d.cfg, rt.GuestTap, id)
 
 	fsCfgs, err := d.spawnVirtiofsdForMounts(apiCtx, id)
 	if err != nil {

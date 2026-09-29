@@ -36,6 +36,7 @@ var knownOptionalSupervisorConfigFields = map[string]string{
 	// cache disk and therefore leases no slot (D-HSH-07). The builder path
 	// sets both — see supervisorBuilderDriver.buildSpawnConfig, guarded by
 	// TestBuilderSupervisorDriver_HandsCacheDiskLeasesToTheSupervisor.
+	"NetMode":           "empty = tap; set from the record by handoffHumanSupervisor",
 	"CacheDiskSlots":    "nil = no builder cache disk on a human sandbox; builder mode sets it",
 	"CacheDiskLeaseFDs": "nil = no inherited lease descriptors; builder mode sets it via SpawnDetached",
 }

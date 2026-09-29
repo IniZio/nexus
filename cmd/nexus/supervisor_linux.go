@@ -167,7 +167,8 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		bootVCPUs = fs.Uint("boot-vcpus", 0, "vCPU count at VM boot (0 = driver default = 1)")
 		// nestedVirt: enables KVM nested virtualisation (D-N3N-02). Default
 		// false. Absent flag means nested-OFF — never nested-ON.
-		nestedVirt = fs.Bool("nested", false, "enable KVM nested virtualisation (D-N3N-02: opt-in only, default-off)")
+		nestedVirt  = fs.Bool("nested", false, "enable KVM nested virtualisation (D-N3N-02: opt-in only, default-off)")
+		netModeFlag = fs.String("net-mode", "", "recorded sandbox net mode: tap|vhost-user (empty = tap)")
 		// ephemeral: one-shot/builder mode — exit on POST /supervisor/stop
 		// (the build-complete signal) rather than waiting indefinitely for SIGTERM.
 		ephemeral = fs.Bool("ephemeral", false, "one-shot mode: terminate on /supervisor/stop completion signal")
@@ -227,6 +228,11 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		return supervisor.Config{}, "", false, err
 	}
 
+	netMode, nmErr := domain.ParseNetMode(*netModeFlag)
+	if nmErr != nil {
+		return supervisor.Config{}, "", false, fmt.Errorf("supervisor: --net-mode: %w", nmErr)
+	}
+
 	missing := ""
 	switch {
 	case *sandboxRef == "":
@@ -260,6 +266,7 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		MemoryMiB:  uint32(*memoryMiB),
 		BootVCPUs:  uint32(*bootVCPUs), //nolint:gosec // range-checked by flag.Uint; vCPUs fit uint32
 		NestedVirt: *nestedVirt,
+		NetMode:    netMode,
 		// HasWorkspaceDisk / WorkspaceDiskIndex: the workspace disk index is
 		// meaningful only when the flag was explicitly passed (>= 0). The -1
 		// default means no workspace disk is attached; the disk axis is skipped.

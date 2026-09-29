@@ -27,6 +27,26 @@ const (
 	StopReasonMemoryLost StopReason = "memory_lost"
 )
 
+// NetMode selects how a sandbox's guest NIC is backed. The zero value means
+// tap. See doc/design/net-mode.md.
+type NetMode string
+
+const (
+	NetModeTap       NetMode = "tap"
+	NetModeVhostUser NetMode = "vhost-user"
+)
+
+// ParseNetMode validates a user-supplied mode. Empty parses to the zero value.
+func ParseNetMode(s string) (NetMode, error) {
+	switch NetMode(s) {
+	case "":
+		return "", nil
+	case NetModeTap, NetModeVhostUser:
+		return NetMode(s), nil
+	}
+	return "", fmt.Errorf("invalid net mode %q (want tap or vhost-user)", s)
+}
+
 // Sandbox is the ONE durable entity in nexus. There is no separate VM or
 // instance entity; a running Sandbox IS the VM.
 type Sandbox struct {
@@ -110,6 +130,10 @@ type Sandbox struct {
 	// signalling the PID alone leaves CH (and any grandchildren) running.
 	// Zero when NetnsChildPID is zero.
 	NetnsChildPGID int `json:"netns_child_pgid,omitempty"`
+
+	// NetMode is recorded once at create and never re-read from the
+	// environment. Empty means tap.
+	NetMode NetMode `json:"net_mode,omitempty"`
 
 	// GuestTapName is the guest-facing TAP interface name passed to CH's
 	// vm.create for this sandbox's network device. A non-parent adopter
