@@ -1244,9 +1244,6 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 			defer builder.ReleaseCacheDiskLeases(cacheDiskLeases)
 
-			if err := service.CheckNetModeEnv(); err != nil {
-				return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
-			}
 			spec := builder.BuilderVMSpec{
 				RootfsDiskPath:   builderRootfs,
 				ContextDiskPath:  ctxDiskPath,

@@ -125,29 +125,6 @@ func TestDoctor_RequiredFailureExitsNonZero(t *testing.T) {
 	}
 }
 
-func TestDoctor_NetModeEnv(t *testing.T) {
-	for _, v := range []string{"tap", "vhost-user"} {
-		t.Run(v, func(t *testing.T) {
-			t.Setenv("NEXUS_NET_MODE", v)
-			checks, _ := runAllChecks(doctorTestProbes())
-			c, ok := checkByName(checks, "net_mode_env")
-			if !ok || c.OK || c.Optional || c.Remediation == "" || !strings.Contains(c.Detail, "unset NEXUS_NET_MODE") {
-				t.Fatalf("want failing required net_mode_env, got %+v ok=%v", c, ok)
-			}
-			if !requiredFailed(checks) {
-				t.Error("net_mode_env failure must count as required failure")
-			}
-		})
-	}
-	t.Run("unset", func(t *testing.T) {
-		t.Setenv("NEXUS_NET_MODE", "")
-		checks, _ := runAllChecks(doctorTestProbes())
-		if c, ok := checkByName(checks, "net_mode_env"); !ok || !c.OK {
-			t.Fatalf("unset must pass, got %+v ok=%v", c, ok)
-		}
-	})
-}
-
 func TestFormatDoctorHuman_Groups(t *testing.T) {
 	out := formatDoctorHuman("none", false, []CheckResult{
 		{Name: "kvm", OK: true},

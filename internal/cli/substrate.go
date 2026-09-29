@@ -325,22 +325,6 @@ func appendHostChecks(checks []CheckResult, p probes, platOK bool) []CheckResult
 		checks = append(checks, chk)
 	}
 
-	if err := service.CheckNetModeEnv(); err != nil {
-		checks = append(checks, CheckResult{
-			Name:        "net_mode_env",
-			Description: "NEXUS_NET_MODE unset (tap removed; vhost-user only)",
-			Detail:      err.Error(),
-			Remediation: err.Error(),
-		})
-	} else {
-		checks = append(checks, CheckResult{
-			Name:        "net_mode_env",
-			Description: "NEXUS_NET_MODE unset (tap removed; vhost-user only)",
-			OK:          true,
-			Detail:      "unset",
-		})
-	}
-
 	if p.resolveAgent != nil {
 		chk := CheckResult{
 			Name:        "agent",

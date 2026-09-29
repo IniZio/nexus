@@ -59,8 +59,7 @@ nexus exec <handle> -- bash -lc 'ls -l /dev/kvm; grep -m1 ^flags /proc/cpuinfo |
 
 `vhost-user` is the only networking mode; tap was removed in S9d. `NEXUS_NET_MODE`
 must be unset: any value, including `vhost-user`, fails create with
-"NEXUS_NET_MODE is no longer supported", and `nexus doctor` (`net_mode_env`)
-flags it. Sandboxes still running from before S9d keep their tap NIC and are
+"NEXUS_NET_MODE is no longer supported". Sandboxes still running from before S9d keep their tap NIC and are
 refused by `supervisor-upgrade`/adopt (`supervisor_upgrade_legacy_nic`); run
 `nexus stop X && nexus start X` to migrate them. Stopped tap sandboxes migrate on
 their next start. Guest memory is always shared.
