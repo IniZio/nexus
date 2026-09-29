@@ -3,12 +3,14 @@ package service_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/agent/agentpb"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/service"
 )
@@ -16,6 +18,7 @@ import (
 // noGuestDialDriver implements driver.Driver but NOT driver.GuestDialer.
 // It is used to test that the service correctly detects missing capabilities.
 type noGuestDialDriver struct {
+	driver.NoGuest
 	name string
 }
 
@@ -103,5 +106,67 @@ func TestCopy_NoGuestDialer(t *testing.T) {
 	}
 	if !errors.Is(err, service.ErrNoSubstrate) {
 		t.Errorf("error %v does not wrap ErrNoSubstrate", err)
+	}
+}
+
+func TestServiceExecGoesThroughDriverPort(t *testing.T) {
+	fd := fake.New()
+	fd.SetExecHook(func(_ context.Context, _ domain.SandboxID, _ driver.ExecOptions) (int32, error) {
+		return 7, nil
+	})
+	svc := newSvcWithDriver(t, fd)
+	ref := createSandbox(t, svc)
+
+	code, err := svc.Exec(context.Background(), ref, agent.ExecOptions{Argv: []string{"echo", "hi"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if code != 7 {
+		t.Errorf("exit code = %d, want 7", code)
+	}
+	calls := fd.ExecCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ExecCalls = %d, want 1", len(calls))
+	}
+	if calls[0].ID.String() != ref {
+		t.Errorf("sandbox id = %s, want %s", calls[0].ID, ref)
+	}
+	if want := []string{"echo", "hi"}; !reflect.DeepEqual(calls[0].Opts.Argv, want) {
+		t.Errorf("argv = %v, want %v", calls[0].Opts.Argv, want)
+	}
+}
+
+func TestServiceCopyGoesThroughDriverPort(t *testing.T) {
+	fd := fake.New()
+	sentinel := errors.New("copy hook")
+	fd.SetCopyHook(func(_ context.Context, _ domain.SandboxID, _ driver.CopyOptions) error {
+		return sentinel
+	})
+	svc := newSvcWithDriver(t, fd)
+	ref := createSandbox(t, svc)
+
+	err := svc.Copy(context.Background(), ref, agent.CopyOptions{
+		Direction: agentpb.CopyDirection_COPY_DIRECTION_PULL,
+		GuestPath: "/workspace",
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Copy err = %v, want hook error", err)
+	}
+	calls := fd.CopyCalls()
+	if len(calls) != 1 {
+		t.Fatalf("CopyCalls = %d, want 1", len(calls))
+	}
+	if calls[0].ID.String() != ref || calls[0].Opts.GuestPath != "/workspace" {
+		t.Errorf("call = %+v", calls[0])
+	}
+}
+
+func TestServiceExecUnsupportedDriver(t *testing.T) {
+	svc := newSvcWithDriver(t, &noGuestDialDriver{name: "no-guest"})
+	ref := createSandbox(t, svc)
+
+	_, err := svc.Exec(context.Background(), ref, agent.ExecOptions{Argv: []string{"true"}})
+	if !errors.Is(err, service.ErrNoSubstrate) || !errors.Is(err, driver.ErrUnsupported) {
+		t.Errorf("err = %v, want ErrNoSubstrate and ErrUnsupported", err)
 	}
 }

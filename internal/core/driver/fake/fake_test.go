@@ -364,3 +364,50 @@ func TestConcurrentObserveAndSimulate(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestFakeExecRecordsCall(t *testing.T) {
+	f := fake.New()
+	id := newID()
+	code, err := f.Exec(ctx, id, driver.ExecOptions{Argv: []string{"true"}})
+	if err != nil || code != 0 {
+		t.Fatalf("default Exec = %d, %v", code, err)
+	}
+	f.SetExecHook(func(_ context.Context, _ domain.SandboxID, o driver.ExecOptions) (int32, error) {
+		return 7, errors.New("boom")
+	})
+	code, err = f.Exec(ctx, id, driver.ExecOptions{Argv: []string{"false"}})
+	if code != 7 || err == nil {
+		t.Fatalf("hook Exec = %d, %v", code, err)
+	}
+	calls := f.ExecCalls()
+	if len(calls) != 2 || calls[0].ID != id || calls[0].Opts.Argv[0] != "true" || calls[1].Opts.Argv[0] != "false" {
+		t.Fatalf("ExecCalls = %+v", calls)
+	}
+}
+
+func TestFakeCopyRecordsCall(t *testing.T) {
+	f := fake.New()
+	id := newID()
+	if err := f.Copy(ctx, id, driver.CopyOptions{GuestPath: "/a"}); err != nil {
+		t.Fatalf("default Copy = %v", err)
+	}
+	want := errors.New("boom")
+	f.SetCopyHook(func(context.Context, domain.SandboxID, driver.CopyOptions) error { return want })
+	if err := f.Copy(ctx, id, driver.CopyOptions{GuestPath: "/b"}); !errors.Is(err, want) {
+		t.Fatalf("hook Copy = %v", err)
+	}
+	calls := f.CopyCalls()
+	if len(calls) != 2 || calls[0].ID != id || calls[0].Opts.GuestPath != "/a" || calls[1].Opts.GuestPath != "/b" {
+		t.Fatalf("CopyCalls = %+v", calls)
+	}
+}
+
+func TestFakeCapabilitiesMatchInterfaces(t *testing.T) {
+	f := fake.New()
+	want := driver.OptionalInterfaces(f)
+	want.GuestOS = driver.GuestOSLinux
+	want.Egress = driver.EgressNone
+	if got := f.Capabilities(); got != want {
+		t.Fatalf("Capabilities = %+v, want %+v", got, want)
+	}
+}

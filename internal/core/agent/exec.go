@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/IniZio/nexus/internal/core/driver"
 	"io"
 	"log"
 	"sync"
@@ -13,39 +14,8 @@ import (
 	"github.com/IniZio/nexus/internal/core/agent/wire"
 )
 
-// ExecOptions configures an [Client.Exec] call.
-type ExecOptions struct {
-	// SessionID, when non-empty, uses the given string as the guest session
-	// identifier. When empty a cryptographically random ID is minted. Setting
-	// it explicitly allows the caller to later reattach via [Client.Attach].
-	SessionID string
-	// Argv is the command and arguments to run in the guest.
-	Argv []string
-	// Env sets additional environment variables for the process.
-	Env map[string]string
-	// Cwd is the working directory for the process.
-	Cwd string
-	// Pty, when non-nil, requests a PTY for the session.
-	Pty *agentpb.PtyOptions
-	// Stdin is read and forwarded to the guest as Data(Stdin) frames.
-	// May be nil.
-	Stdin io.Reader
-	// Stdout receives Data(Stdout) frames from the guest.
-	// May be nil.
-	Stdout io.Writer
-	// Stderr receives Data(Stderr) frames from the guest.
-	// May be nil.
-	Stderr io.Writer
-	// WinsizeCh delivers terminal resize events to the guest as Winsize
-	// frames. May be nil.
-	//
-	// CONTRACT: when non-nil, the caller MUST close WinsizeCh after the
-	// [Client.Exec] call returns to allow the winsize-forwarding goroutine
-	// inside runDataPump to exit. The pump also provides a defensive exit
-	// when the data connection closes (see runDataPump), but closing the
-	// channel remains the caller's responsibility for a clean shutdown.
-	WinsizeCh <-chan wire.Winsize
-}
+// ExecOptions is the port type; see [driver.ExecOptions].
+type ExecOptions = driver.ExecOptions
 
 // Exec starts a process in the guest, opens the data plane, and pumps
 // stdio until the process exits. It returns the exit code reported by the

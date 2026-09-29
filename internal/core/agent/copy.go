@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"fmt"
+	"github.com/IniZio/nexus/internal/core/driver"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,27 +13,8 @@ import (
 	"github.com/IniZio/nexus/internal/core/agent/wire"
 )
 
-// CopyOptions configures a [Client.Copy] call.
-type CopyOptions struct {
-	// Direction specifies whether the host pushes to the guest (PUSH) or
-	// receives from the guest (PULL).
-	Direction agentpb.CopyDirection
-	// GuestPath is the path inside the guest for the transfer.
-	GuestPath string
-	// IsDirectory indicates whether GuestPath refers to a directory.
-	IsDirectory bool
-	// Src is read for PUSH transfers (host → guest). May be nil for PULL.
-	Src io.Reader
-	// Dst receives archive bytes for PULL transfers (guest → host).
-	// May be nil for PUSH.
-	Dst io.Writer
-	// ExpectedBytes is the authoritative byte count of the payload for
-	// non-directory PUSH transfers. Declared as a pointer so nil (absent)
-	// is distinguishable from &0 (declared empty file). The guest fails
-	// closed when the field is nil — callers must set it for every single-file
-	// PUSH, including for size-0 files. Not set for directory PUSH transfers.
-	ExpectedBytes *int64
-}
+// CopyOptions is the port type; see [driver.CopyOptions].
+type CopyOptions = driver.CopyOptions
 
 // Copy negotiates a file-transfer operation with the guest over the split
 // control/data plane.

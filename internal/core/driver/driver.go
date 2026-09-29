@@ -158,4 +158,16 @@ type Driver interface {
 	// Stop terminates the VM identified by id. Stop is idempotent: stopping
 	// an already-absent VM is not an error.
 	Stop(ctx context.Context, id domain.SandboxID) error
+
+	// Exec runs a process in the guest of sandbox id, streaming stdio, and
+	// returns its exit code.
+	Exec(ctx context.Context, id domain.SandboxID, opts ExecOptions) (int32, error)
+
+	// Copy transfers a tar stream between host and guest (PUSH or PULL per
+	// opts.Direction). File and directory transfers share this one method.
+	Copy(ctx context.Context, id domain.SandboxID, opts CopyOptions) error
+
+	// Capabilities declares what this substrate provides. Interface-backed
+	// flags must agree with [OptionalInterfaces].
+	Capabilities() CapabilitySet
 }

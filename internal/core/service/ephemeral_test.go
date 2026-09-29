@@ -26,7 +26,7 @@ import (
 // The missing GuestDialer causes svc.Exec to fail via agentClientFor (the
 // type assertion to driver.GuestDialer returns ok=false → ErrNoSubstrate).
 // This is the fault-injection mechanism for TestRunEphemeral_ZeroLeftoversOnFault.
-type noDialDriver struct{}
+type noDialDriver struct{ driver.NoGuest }
 
 func (d *noDialDriver) Name() string { return "no-dial" }
 

@@ -72,6 +72,7 @@ const (
 )
 
 type sandboxNoopDriver struct {
+	driver.NoGuest
 	reason string
 }
 

@@ -250,6 +250,18 @@ func (d *supervisorBuilderDriver) DialGuest(ctx context.Context, id domain.Sandb
 	return d.dialerDrv.DialGuest(ctx, id, port)
 }
 
+func (d *supervisorBuilderDriver) Exec(ctx context.Context, id domain.SandboxID, o driver.ExecOptions) (int32, error) {
+	return d.dialerDrv.Exec(ctx, id, o)
+}
+
+func (d *supervisorBuilderDriver) Copy(ctx context.Context, id domain.SandboxID, o driver.CopyOptions) error {
+	return d.dialerDrv.Copy(ctx, id, o)
+}
+
+func (d *supervisorBuilderDriver) Capabilities() driver.CapabilitySet {
+	return d.dialerDrv.Capabilities()
+}
+
 // StartedID returns the SandboxID captured during the last Start call. The
 // execFn closure in runSandboxCreate reads this after BuildInVM has already
 // called Start, so the value is always set before execFn runs.

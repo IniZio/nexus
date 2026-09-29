@@ -97,6 +97,31 @@ type FakeDriver struct {
 	guestConns map[domain.SandboxID]net.Conn
 
 	calls []Call
+
+	execCalls   []ExecCall
+	copyCalls   []CopyCall
+	attachCalls []AttachCall
+	execHook    func(context.Context, domain.SandboxID, driver.ExecOptions) (int32, error)
+	copyHook    func(context.Context, domain.SandboxID, driver.CopyOptions) error
+	attachHook  func(context.Context, domain.SandboxID, driver.AttachOptions) (int32, error)
+}
+
+// ExecCall records one Exec invocation.
+type ExecCall struct {
+	ID   domain.SandboxID
+	Opts driver.ExecOptions
+}
+
+// CopyCall records one Copy invocation.
+type CopyCall struct {
+	ID   domain.SandboxID
+	Opts driver.CopyOptions
+}
+
+// AttachCall records one Attach invocation.
+type AttachCall struct {
+	ID   domain.SandboxID
+	Opts driver.AttachOptions
 }
 
 // New constructs an initialised FakeDriver. The returned value satisfies
@@ -533,4 +558,105 @@ var (
 	_ driver.Snapshotter     = (*FakeDriver)(nil)
 	_ driver.Forker          = (*FakeDriver)(nil)
 	_ driver.SnapshotRemover = (*FakeDriver)(nil)
+	_ driver.SessionAttacher = (*FakeDriver)(nil)
 )
+
+// SetExecHook sets a function run by Exec after recording; nil restores 0, nil.
+func (f *FakeDriver) SetExecHook(h func(context.Context, domain.SandboxID, driver.ExecOptions) (int32, error)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execHook = h
+}
+
+// SetCopyHook sets a function run by Copy after recording; nil restores nil error.
+func (f *FakeDriver) SetCopyHook(h func(context.Context, domain.SandboxID, driver.CopyOptions) error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.copyHook = h
+}
+
+// SetAttachHook sets a function run by Attach after recording.
+func (f *FakeDriver) SetAttachHook(h func(context.Context, domain.SandboxID, driver.AttachOptions) (int32, error)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attachHook = h
+}
+
+// ExecCalls returns a copy of the recorded Exec calls.
+func (f *FakeDriver) ExecCalls() []ExecCall {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return append([]ExecCall(nil), f.execCalls...)
+}
+
+// CopyCalls returns a copy of the recorded Copy calls.
+func (f *FakeDriver) CopyCalls() []CopyCall {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return append([]CopyCall(nil), f.copyCalls...)
+}
+
+// AttachCalls returns a copy of the recorded Attach calls.
+func (f *FakeDriver) AttachCalls() []AttachCall {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return append([]AttachCall(nil), f.attachCalls...)
+}
+
+// Exec records the call and runs the exec hook, if any. With no hook it fails
+// with an injected dial error, mirroring a real driver that dials the guest.
+func (f *FakeDriver) Exec(ctx context.Context, id domain.SandboxID, opts driver.ExecOptions) (int32, error) {
+	f.mu.Lock()
+	f.execCalls = append(f.execCalls, ExecCall{ID: id, Opts: opts})
+	h := f.execHook
+	dialErr := f.dialGuestErr
+	f.mu.Unlock()
+	if h == nil {
+		if dialErr != nil {
+			return 0, dialErr
+		}
+		return 0, nil
+	}
+	return h(ctx, id, opts)
+}
+
+// Copy records the call and runs the copy hook, if any.
+func (f *FakeDriver) Copy(ctx context.Context, id domain.SandboxID, opts driver.CopyOptions) error {
+	f.mu.Lock()
+	f.copyCalls = append(f.copyCalls, CopyCall{ID: id, Opts: opts})
+	h := f.copyHook
+	dialErr := f.dialGuestErr
+	f.mu.Unlock()
+	if h == nil {
+		if dialErr != nil {
+			return dialErr
+		}
+		return nil
+	}
+	return h(ctx, id, opts)
+}
+
+// Attach records the call and runs the attach hook, if any.
+func (f *FakeDriver) Attach(ctx context.Context, id domain.SandboxID, opts driver.AttachOptions) (int32, error) {
+	f.mu.Lock()
+	f.attachCalls = append(f.attachCalls, AttachCall{ID: id, Opts: opts})
+	h := f.attachHook
+	dialErr := f.dialGuestErr
+	f.mu.Unlock()
+	if h == nil {
+		if dialErr != nil {
+			return 0, dialErr
+		}
+		return 0, nil
+	}
+	return h(ctx, id, opts)
+}
+
+// Capabilities derives interface flags from the method set; the fake declares
+// a Linux guest with no egress enforcement.
+func (f *FakeDriver) Capabilities() driver.CapabilitySet {
+	c := driver.OptionalInterfaces(f)
+	c.GuestOS = driver.GuestOSLinux
+	c.Egress = driver.EgressNone
+	return c
+}
