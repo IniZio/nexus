@@ -11,7 +11,9 @@ STATE=/var/tmp/s9br
 IMAGE=alpine:3.21
 KEEP=0
 HANDLE=s9br/fixture
+SNAPH=s9br/snapfix
 VOL=s9brvol
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -54,6 +56,7 @@ recfile() { echo "$REC_GLOB/$ID/record.json"; }
 cleanup() {
   EXTRA=()
   nx rm "$HANDLE" >/dev/null 2>&1
+  nx rm "$SNAPH" >/dev/null 2>&1
   nx volume rm "$VOL" >/dev/null 2>&1
   if [ "$KEEP" = 0 ] && [ -n "$ID" ]; then
     for p in $(pgrep -f "$ID" 2>/dev/null); do
@@ -109,7 +112,9 @@ check_tap() {
   fi
 }
 
-gexec() { timeout "$1" env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus exec "$HANDLE" -- sh -c "$2" 2>&1; }
+gexec() { timeout "$1" env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus exec "${TARGET:-$HANDLE}" -- sh -c "$2" 2>&1; }
+live() { timeout 300 env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus-live s9b-live "$@" 2>>"$STATE/live.err"; }
+rec_of() { echo "$REC_GLOB/$1/record.json"; }
 
 probe() {
   local label=$1 n=$2 dns allow deny vol volw mntr mntw
@@ -129,6 +134,47 @@ probe() {
   else
     record FAIL "$label mount-rw" "mntr=[${mntr:0:120}] mntw=[${mntw:0:120}] host_has_w-$n=$([ -e "$STATE/mnt/w-$n" ] && echo y || echo n)"
   fi
+}
+
+probe_net() { # label handle: DNS + allowed + denied egress only
+  local label=$1 dns allow deny
+  TARGET=$2
+  dns=$(gexec 60 "nslookup example.com 2>&1 | awk '/^Name:/{f=1} f&&/^Address/{c++} END{print c+0}'")
+  allow=$(gexec 60 "wget --no-check-certificate -S -qO /dev/null -T8 https://example.com 2>&1 | head -1 | grep -c 'HTTP/1.[01] 200'")
+  deny=$(gexec 60 "if wget --no-check-certificate -qO /dev/null -T8 https://google.com 2>/dev/null; then echo open; else echo blocked; fi")
+  TARGET=
+  if [ "${dns:-0}" -ge 1 ] 2>/dev/null; then record PASS "$label dns" "example.com resolved ($dns addr)"; else record FAIL "$label dns" "out=[$dns]"; fi
+  if [ "${allow:-0}" -ge 1 ] 2>/dev/null; then record PASS "$label egress-allow" "https://example.com HTTP 200"; else record FAIL "$label egress-allow" "out=[$allow]"; fi
+  if [ "$deny" = blocked ]; then record PASS "$label egress-deny" "https://google.com blocked"; else record FAIL "$label egress-deny" "deny=[$deny]"; fi
+}
+
+check_child_tap() { # label child-id: tap, net_mode absent, no --net-mode argv, guest state survived
+  local label=$1 cid=$2 rf cpid tap spid bad="" marker
+  rf=$(rec_of "$cid")
+  tap=$(jq -r '.guest_tap_name // ""' "$rf")
+  cpid=$(jq -r '.netns_child_pid // 0' "$rf")
+  spid=$(jq -r '.supervisor_pid // 0' "$rf")
+  jq -e 'has("net_mode")' "$rf" >/dev/null && bad="net_mode written: $(jq -c .net_mode "$rf")"
+  jq -e 'has("vhost_socket") and (.vhost_socket != null and .vhost_socket != "")' "$rf" >/dev/null && bad="$bad; vhost_socket set"
+  [ -n "$tap" ] || bad="$bad; guest_tap_name empty"
+  grep -q "^ *$tap:" "/proc/$cpid/net/dev" 2>/dev/null || bad="$bad; tap $tap not in netns of pid $cpid"
+  if [ "$spid" -gt 0 ] && tr '\0' ' ' <"/proc/$spid/cmdline" 2>/dev/null | grep -q -- '--net-mode'; then bad="$bad; supervisor argv carries --net-mode"; fi
+  TARGET=$cid marker=$(gexec 30 "cat /root/s9b-marker")
+  TARGET=
+  [ "$marker" = snap-marker ] || bad="$bad; guest marker [${marker:0:60}]"
+  if [ -z "$bad" ]; then
+    record PASS "$label tap" "$tap in /proc/$cpid/net/dev; net_mode absent; no vhost_socket; marker survived"
+  else
+    record FAIL "$label tap" "$bad"
+  fi
+}
+
+wait_child() { # child-id: wait until exec answers
+  for _ in $(seq 1 60); do
+    if TARGET=$1 gexec 10 true >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  return 1
 }
 
 snap_record() { cp "$(recfile)" "$STATE/rec/$1.json"; }
@@ -164,6 +210,17 @@ fi
 timeout 60 env -i "${BASEENV[@]}" nexus exec "$HANDLE" -- sh -c 'echo volfile >/data/x; sync' >/dev/null 2>&1
 snap_record 00-created
 probe "pre-upgrade" 0
+
+EXTRA=()
+if timeout 300 env -i "${BASEENV[@]}" nexus sandbox create "$SNAPH" --image "$IMAGE" --memory 512 --memory-max 1024 \
+  --egress closed --repo octocat/hello-world --allow-host example.com >"$STATE/create2.log" 2>&1 &&
+  timeout 60 env -i "${BASEENV[@]}" nexus exec "$SNAPH" -- sh -c 'echo snap-marker >/root/s9b-marker; sync' >/dev/null 2>&1; then
+  SNAPID=$(nx sandbox list | awk -v h="$SNAPH" '$1==h{print $NF}')
+  record PASS "snapfix create" "tap fixture without mounts/volume: $SNAPH ($SNAPID)"
+else
+  record FAIL "snapfix create" "$(tail -3 "$STATE/create2.log")"
+  SNAPID=""
+fi
 
 echo "== atomic-rename upgrade to NEW binary ($NEW); NEXUS_NET_MODE=vhost-user from here on"
 cp "$NEW" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
@@ -203,19 +260,70 @@ snap_record 04-restarted
 check_record "(c) restarted" "$STATE/rec/03-stopped.json"
 check_tap "(c) restarted"
 
-HAVE_SNAP=0
-for bin in "$OLD" "$NEW"; do
-  verbs=$("$bin" --help 2>&1 | awk '/^Commands:/{f=1;next} /^Flags:/{f=0} f{print $1}')
-  sub=$(env -i "${BASEENV[@]}" "$bin" sandbox nosuchverb 2>&1 | sed -n 's/.*valid: //p')
-  if grep -Eqw 'snapshot|fork|clone' <<<"$verbs $sub"; then
-    HAVE_SNAP=1
-    record FAIL "(d,e) snapshot/fork" "verb exists in $(basename "$bin"); extend harness: $verbs $sub"
+(cd "$ROOT" && go build -tags s9blive -o "$STATE/bin/nexus-live.new" ./cmd/nexus) >"$STATE/live-build.log" 2>&1 &&
+  mv -f "$STATE/bin/nexus-live.new" "$STATE/bin/nexus-live"
+EXTRA=(NEXUS_NET_MODE=vhost-user)
+if [ -x "$STATE/bin/nexus-live" ] && [ -n "$SNAPID" ]; then
+  if out=$(live snapshot "$HANDLE"); then
+    record FAIL "(d) snapshot mount guard" "snapshot of mount+volume fixture unexpectedly succeeded: $out"
+  elif grep -q 'live host-directory mount' "$STATE/live.err" || grep -q 'named volume' "$STATE/live.err"; then
+    record PASS "(d) snapshot mount guard" "$HANDLE refused: $(grep -o 'live host-directory mount(s)\|named volume(s)' "$STATE/live.err" | tail -1)"
+  else
+    record FAIL "(d) snapshot mount guard" "no guard message: $(tail -2 "$STATE/live.err")"
   fi
-done
-if [ "$HAVE_SNAP" = 0 ]; then
-  record SKIP "(d) snapshot/restore" "no CLI verb in OLD or NEW (sandbox verbs: create list rm start stop); service-level only"
-  record SKIP "(e) fork" "no CLI verb in OLD or NEW; service-level only"
+  : >"$STATE/live.err"
+
+  t0=$(date +%s.%N)
+  out=$(live snapshot "$SNAPH"); sid=$(awk '/^snapshot /{print $2}' <<<"$out")
+  t1=$(date +%s.%N)
+  if [ -n "$sid" ]; then
+    record PASS "(d) snapshot" "$SNAPH -> $sid in $(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1fs", b-a}'), $(du -sm "$STATE/home/.local/state/nexus/snapshots/$sid" | cut -f1) MiB on disk"
+    out=$(live restore "$sid" 1)
+    cid=$(awk '/^child /{print $2}' <<<"$out" | head -1)
+    chandle=$(awk '/^child /{print $3}' <<<"$out" | head -1)
+    if [ -n "$cid" ] && wait_child "$cid"; then
+      record PASS "(d) restore" "child $chandle running under NEW binary, NEXUS_NET_MODE=vhost-user exported"
+      check_child_tap "(d) restored" "$cid"
+      probe_net "(d) restored" "$cid"
+    else
+      record FAIL "(d) restore" "out=[${out:0:200}] err=[$(tail -2 "$STATE/live.err")]"
+    fi
+    [ -n "$chandle" ] && nx rm "$chandle" >/dev/null 2>&1
+    live snaprm "$sid" >/dev/null
+  else
+    record FAIL "(d) snapshot" "out=[${out:0:200}] err=[$(tail -2 "$STATE/live.err")]"
+  fi
+
+  snapdir="$STATE/home/.local/state/nexus/snapshots"
+  before=$(ls "$snapdir" 2>/dev/null | grep -v '\.')
+  out=$(live fork "$SNAPH" 2)
+  mapfile -t kids < <(awk '/^child /{print $2 " " $3}' <<<"$out")
+  if [ "${#kids[@]}" = 2 ]; then
+    taps=""
+    for k in "${kids[@]}"; do
+      cid=${k% *}; chandle=${k#* }
+      if wait_child "$cid"; then
+        check_child_tap "(e) fork child ${cid: -6}" "$cid"
+        probe_net "(e) fork child ${cid: -6}" "$cid"
+        taps="$taps $(jq -r .netns_child_pid "$(rec_of "$cid")")"
+      else
+        record FAIL "(e) fork child ${cid: -6}" "not answering exec"
+      fi
+    done
+    if [ "$(tr ' ' '\n' <<<"$taps" | sort -u | grep -c .)" = 2 ]; then
+      record PASS "(e) fork distinct netns" "own netns child pids:$taps (tap names may repeat: one tap per netns)"
+    else
+      record FAIL "(e) fork distinct netns" "netns child pids=[$taps]"
+    fi
+    for k in "${kids[@]}"; do nx rm "${k#* }" >/dev/null 2>&1; done
+  else
+    record FAIL "(e) fork" "out=[${out:0:200}] err=[$(grep -v INFO "$STATE/live.err" | tail -2 | cut -c1-300)]"
+  fi
+  for leaked in $(comm -13 <(sort <<<"$before") <(ls "$snapdir" 2>/dev/null | grep -v '\.' | sort)); do live snaprm "$leaked" >/dev/null; done
+else
+  record FAIL "(d,e) snapshot/fork" "nexus-live missing ($(tail -2 "$STATE/live-build.log" 2>/dev/null)) or no snapfix"
 fi
+EXTRA=(NEXUS_NET_MODE=vhost-user)
 
 spid=$(jq -r .supervisor_pid "$(recfile)")
 if tr '\0' ' ' <"/proc/$spid/cmdline" 2>/dev/null | grep -q "__supervisor.*$ID"; then

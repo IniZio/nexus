@@ -20,8 +20,8 @@ Build: `git archive <rev> | tar -x -C <dir>`; in it
 | (a) running supervisor under NEW CLI | PASS | all probes; record diff empty; tap in `/proc/<netns_child_pid>/net/dev`; no `--net-mode` in supervisor argv |
 | (b) `supervisor-upgrade` | PASS for tap/record, **FAIL mount** | pid changed; tap kept; record diff = `supervisor_pid` only; `/mnt/host` reads hang (see below) |
 | (c) stop -> start | PASS | record diff lifecycle only (state, instance_id, netns_*, ch_api_socket, supervisor_*, stop_reason); same tap name; all probes |
-| (d) snapshot/restore | SKIP | no CLI verb in OLD or NEW (`sandbox` verbs: create list rm start stop) |
-| (e) fork | SKIP | no CLI verb in OLD or NEW (`service.Fork` only) |
+| (d) snapshot/restore | see S9b-6 below | second tap fixture `s9br/snapfix` (no volume or mount) |
+| (e) fork | see S9b-6 below | two children of `s9br/snapfix` |
 | (f) SIGKILL supervisor + `nexus recover` | PASS for tap/record, **FAIL mount** | verified cmdline contains fixture id; replacement pid; `supervisor.reacquire.acquired` 0->1; "rebuilt the perimeter"; record diff = `supervisor_pid`; `/mnt/host` reads hang |
 | AC4 overall | PASS | created vs final: only instance_id, netns_child_{pid,pgid,start_time}, supervisor_pid changed; `net_mode` never written |
 | AC5 real sandbox | PASS | installed binary, read-only: `sandbox list` shows handbook-review/newman-cto-104-contracts running; `exec ... -- true` rc=0 |
@@ -40,3 +40,25 @@ Likely the virtiofsd instance is not handed off or re-established on
 supervisor replacement. Real user sandboxes carry many live mounts, so a
 `supervisor-upgrade` on them is at risk. Follow-up outside S9b-R scope.
 The harness reports this as FAIL; it is not suppressed.
+
+## S9b-6: snapshot, restore and fork
+
+The `fork`, `snapshot` and `restore` verbs were retired from the CLI (e15245a),
+so the harness builds `./cmd/nexus` with `-tags s9blive` into
+`$STATE/bin/nexus-live` and drives `nexus-live s9b-live snapshot|snaprm|restore|fork`
+(`internal/cli/cmd_s9blive.go`; not part of the normal binary). Restore and
+fork children get the detached reacquire supervisor the old verbs spawned.
+
+Steps, run under `NEXUS_NET_MODE=vhost-user` against tap fixtures made by the
+OLD binary:
+
+- `(d) snapshot mount guard`: the mount + volume fixture is refused.
+- `(d) snapshot` / `(d) restore` of `s9br/snapfix`, `(e) fork` x2: each child
+  must be tap (`net_mode` absent, tap in the child's netns, no `--net-mode`
+  argv, no `vhost_socket`), keep guest state, and pass DNS, allowed and denied
+  egress. Children are removed by exact handle; snapshots via `snaprm`.
+
+Expected outcome: only `(b) supervisor-upgrade` fails (refused by the
+live-mounts guard). Tap names may repeat between siblings forked in the same
+millisecond; they live in separate netns, so `(e)` checks distinct netns
+children instead.
