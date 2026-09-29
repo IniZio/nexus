@@ -80,11 +80,11 @@ func sandboxMac(id domain.SandboxID) string {
 //
 // Tap and VhostUser/Socket are mutually exclusive:
 //   - Tap path: CH opens the named tap interface inside the netns child.
-//   - VhostUser path (S9b): CH connects to Socket as vhost-user master;
-//     the nexus process acts as vhost-user slave (S9b, not yet implemented).
+//   - VhostUser path (S9b): CH connects to Socket as vhost-user client;
+//     the nexus process serves the backend on that socket.
 //
-// CH v53 NetConfig fields: tap (string), vhost_user (bool), socket (string),
-// mac (string), num_queues (int). Source: CH OpenAPI schema at
+// CH v53 NetConfig fields: tap (string), vhost_user (bool), vhost_socket
+// (string), mac (string), num_queues (int). Source: CH OpenAPI schema at
 // github.com/cloud-hypervisor/cloud-hypervisor v53.0 vmm/src/api/openapi/cloud-hypervisor.yaml.
 type vmNetConfig struct {
 	Tap       string `json:"tap,omitempty"`
