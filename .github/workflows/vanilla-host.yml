@@ -71,11 +71,6 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           test -w /dev/kvm
 
-      # TODO(S9b): remove once tap networking works under
-      # kernel.apparmor_restrict_unprivileged_userns=1 (Ubuntu 24.04 default).
-      - name: Relax unprivileged userns AppArmor restriction
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
       - name: Build scrubbed PATH
         run: |
           set -euo pipefail
@@ -85,16 +80,13 @@ jobs:
           for t in mkdir cat; do
             ln -s "$(command -v "$t")" "$bin/$t"
           done
-          # TODO(S9b): remove once NEXUS_NET_MODE=vhost-user is default
-          # (tap bridge in the netns child still shells out to iproute2).
-          ln -s "$(command -v ip)" "$bin/ip"
           echo "SCRUB_BIN=$bin" >> "$GITHUB_ENV"
 
       - name: Assert host deps absent under scrubbed PATH
         run: |
           set -euo pipefail
           export PATH="$SCRUB_BIN"
-          for t in mke2fs mkfs.ext4 e2fsck resize2fs git ssh lsof virtiofsd cloud-hypervisor unshare; do
+          for t in mke2fs mkfs.ext4 e2fsck resize2fs git ssh lsof virtiofsd cloud-hypervisor unshare ip; do
             if command -v "$t" >/dev/null; then
               echo "::error::$t is on the scrubbed PATH"
               exit 1
