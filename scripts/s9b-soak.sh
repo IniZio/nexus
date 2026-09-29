@@ -62,7 +62,9 @@ mk_sandbox() {
     log "FATAL $h already exists in $STATE"
     return 2
   fi
-  if ! timeout 600 env -i "${NXBASE[@]}" NEXUS_NET_MODE="$mode" nexus sandbox create "$h" --image "$IMAGE" --egress closed --repo octocat/hello-world --allow-host "$ALLOW" >>"$LOG" 2>&1; then
+  local cmode=$mode
+  [ "$mode" = vhost-user ] && cmode=""
+  if ! timeout 600 env -i "${NXBASE[@]}" NEXUS_NET_MODE="$cmode" nexus sandbox create "$h" --image "$IMAGE" --egress closed --repo octocat/hello-world --allow-host "$ALLOW" >>"$LOG" 2>&1; then
     log "FATAL create $h failed"
     return 1
   fi
