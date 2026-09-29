@@ -5,17 +5,15 @@ package perimetertest
 // perimeter_e2e_test.go is the tracer-bullet acceptance test for P1-S0 of the
 // perimeter/egress feature.
 //
-// It proves that a booted sandbox VM's TAP fd can flow through the driver.NetworkHook
+// It proves that a booted sandbox VM's vhost-user slot can flow through the driver.NetworkHook
 // seam into the perimeter package and that at least one raw Ethernet frame is read.
 //
 // # What it tests
 //
-//   - CHDriver creates a TAP fd at Start time (unconditionally — the hook is no
-//     longer opt-in), passes it
-//     to CH as an inherited fd via ExtraFiles, and registers it via the fds field
-//     of the vm.create NetConfig JSON payload.
+//   - CHDriver, configured with NetModeVhostUser, sets up the vhost-user NIC slot
+//     at Start time and registers it with CH via the vm.create NetConfig payload.
 //   - The driver.NetworkHook capability is discoverable via type assertion on CHDriver.
-//   - GuestNetworkFD returns a live io.ReadWriteCloser backed by the TAP fd.
+//   - GuestNetworkFD returns a live io.ReadWriteCloser backed by the vhost-user slot.
 //   - At least one raw Ethernet frame (≥14-byte Ethernet header) can be read from
 //     that fd within 30 seconds of VM boot.
 //
@@ -25,7 +23,6 @@ package perimetertest
 //   - /dev/kvm accessible (KVM required for cloud-hypervisor)
 //   - cloud-hypervisor binary (CLOUD_HYPERVISOR_BIN env or default path)
 //   - kernel image (NEXUS_KERNEL env or images/kernel/vmlinux-x86_64)
-//   - /dev/net/tun accessible (CAP_NET_ADMIN required for TAP creation)
 //
 // # Running
 //
@@ -34,7 +31,7 @@ package perimetertest
 //
 // On a host with KVM, cloud-hypervisor, a kernel with virtio-net support, and
 // CAP_NET_ADMIN, the VM will boot, the guest kernel will bring up its virtio-net
-// interface, and ARP/IPv6 RS frames will appear on the TAP fd within seconds.
+// interface, and ARP/IPv6 RS frames will appear on the vhost-user slot within seconds.
 
 import (
 	"context"
@@ -46,8 +43,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
@@ -103,33 +98,11 @@ func skipUnlessKernel(t *testing.T) string {
 	return kernel
 }
 
-func skipUnlessNetAdmin(t *testing.T) {
-	t.Helper()
-	// Opening /dev/net/tun is not sufficient — TUNSETIFF requires CAP_NET_ADMIN.
-	// Probe with an actual TUNSETIFF call; skip if it fails.
-	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR, 0)
-	if err != nil {
-		t.Skipf("skipping: /dev/net/tun not accessible: %v", err)
-	}
-	defer unix.Close(fd)
-
-	ifreq, err := unix.NewIfreq("nxpprobe0")
-	if err != nil {
-		t.Skipf("skipping: ifreq: %v", err)
-	}
-	ifreq.SetUint16(unix.IFF_TAP | unix.IFF_NO_PI)
-	if err := unix.IoctlIfreq(fd, unix.TUNSETIFF, ifreq); err != nil {
-		// TUNSETIFF returns EPERM when CAP_NET_ADMIN is absent.
-		t.Skipf("skipping: TUNSETIFF (CAP_NET_ADMIN required): %v", err)
-	}
-	// The probe TAP is non-persistent; closing fd (deferred) destroys it.
-}
-
 // ── test-local frame capture perimeter ───────────────────────────────────────
 
 // frameCapture is a [perimeter.Perimeter] that signals fc.first on the first
-// non-empty frame read. It is used by the tracer test to verify that the TAP
-// fd is live and that Ethernet frames flow from the VM.
+// non-empty frame read. It is used by the tracer test to verify that the vhost-user
+// slot is live and that Ethernet frames flow from the VM.
 type frameCapture struct {
 	first chan struct{}
 	once  sync.Once
@@ -163,12 +136,12 @@ var _ perimeter.Perimeter = (*frameCapture)(nil)
 // ── tracer test ───────────────────────────────────────────────────────────────
 
 // TestNetworkHookTracer boots a real VM, obtains the
-// TAP fd via the driver.NetworkHook capability, attaches a frame-capturing
+// vhost-user slot via the driver.NetworkHook capability, attaches a frame-capturing
 // perimeter, and asserts that at least one raw Ethernet frame is read within
 // 30 seconds of boot.
 //
 // The test skips cleanly on hosts without KVM, cloud-hypervisor, a suitable
-// kernel, or CAP_NET_ADMIN. If none of those are available, output:
+// or kernel. If none of those are available, output:
 //
 //	"verified by build/skip; live frame-read pending privileged run"
 func TestNetworkHookTracer(t *testing.T) {
@@ -176,20 +149,14 @@ func TestNetworkHookTracer(t *testing.T) {
 	skipUnlessKVM(t)
 	chBin := skipUnlessCHBin(t)
 	kernelPath := skipUnlessKernel(t)
-	skipUnlessNetAdmin(t)
 
 	// ── driver setup ─────────────────────────────────────────────────────────
 	socketDir := t.TempDir()
-	// Config.EnableNetHook is gone: the two-TAP/L2-bridge topology is no longer
-	// opt-in. Every CHDriver.Start builds a vmNetConfig and calls
-	// VMCreateWithNet, so d.nets[id] — and therefore the NetworkHook capability
-	// and its TAP fd — is populated unconditionally. Dropping the field asserts
-	// strictly more than it used to (the hook must be present on a plain
-	// Config, not merely when explicitly enabled), so nothing narrows here.
 	cfg := cloudhypervisor.Config{
 		BinaryPath: chBin,
 		SocketDir:  socketDir,
 		KernelPath: kernelPath,
+		NetMode:    domain.NetModeVhostUser,
 		// Minimal VM: 1 vCPU, 256 MiB. Kernel must have virtio-net for frames.
 		VCPUs:     1,
 		MemoryMiB: 256,
@@ -226,7 +193,7 @@ func TestNetworkHookTracer(t *testing.T) {
 		t.Fatal("CHDriver does not implement driver.NetworkHook — the capability is unconditional and must always be present")
 	}
 
-	// ── obtain TAP fd ────────────────────────────────────────────────────────
+	// ── obtain vhost-user slot ────────────────────────────────────────────────────────
 	rw, err := hook.GuestNetworkFD(context.Background(), id)
 	if err != nil {
 		t.Fatalf("GuestNetworkFD: %v", err)
@@ -251,9 +218,9 @@ func TestNetworkHookTracer(t *testing.T) {
 	// ── assertion ────────────────────────────────────────────────────────────
 	select {
 	case <-fc.first:
-		t.Logf("tracer: read %d raw Ethernet frame(s) from VM TAP fd — seam plumbing verified", fc.count)
+		t.Logf("tracer: read %d raw Ethernet frame(s) from VM vhost-user slot — seam plumbing verified", fc.count)
 	case <-readCtx.Done():
-		t.Fatal("timed out after 30s waiting for first Ethernet frame from VM TAP fd; " +
+		t.Fatal("timed out after 30s waiting for first Ethernet frame from VM vhost-user slot; " +
 			"ensure the guest kernel has virtio-net support and brings eth0 up at boot")
 	}
 }

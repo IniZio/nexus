@@ -2,7 +2,7 @@
 
 // TestEgress_GuestOnWire_E2E is the S2 on-wire egress proof for nexus.
 //
-// It boots a real VM through the netns-runtime path (CH + TAP/bridge + pump
+// It boots a real VM through the netns-runtime path (CH + vhost-user NIC + pump
 // inside a rootless user+network namespace) and asserts egress policy on the
 // wire:
 //
@@ -72,15 +72,8 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// TestEgress_GuestOnWire_E2E runs the on-wire proof once per net mode; both must pass identically.
+// TestEgress_GuestOnWire_E2E is the on-wire egress proof over the vhost-user NIC.
 func TestEgress_GuestOnWire_E2E(t *testing.T) {
-	for _, mode := range []domain.NetMode{domain.NetModeTap, domain.NetModeVhostUser} {
-		t.Run(string(mode), func(t *testing.T) { runEgressGuestOnWire(t, mode) })
-	}
-}
-
-// runEgressGuestOnWire is the on-wire egress proof for one net mode.
-func runEgressGuestOnWire(t *testing.T, netMode domain.NetMode) {
 	// ── guard: /dev/kvm ────────────────────────────────────────────────────────
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skip("skipping: /dev/kvm not present")
@@ -209,7 +202,7 @@ func runEgressGuestOnWire(t *testing.T, netMode domain.NetMode) {
 		MemoryMiB:        256,
 		StartTimeout:     30 * time.Second,
 		SerialOutputPath: serialPath,
-		NetMode:          netMode,
+		NetMode:          domain.NetModeVhostUser,
 	})
 	if err != nil {
 		t.Fatalf("cloudhypervisor.New: %v", err)
