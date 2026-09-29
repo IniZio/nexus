@@ -426,7 +426,7 @@ See [doc/design/warm-volume-seeding.md](../design/warm-volume-seeding.md) for te
 | `internal/core/driver/cloudhypervisor/agent_integration_test.go` | TestAgentExec, TestAgentPTY, TestAgentSnapshotReattach | REPLACE — CH-specific driver; port agent-exec and agent-PTY behaviors, drop snapshot-reattach |
 | `internal/core/driver/cloudhypervisor/boot_integration_test.go` | TestBootLifecycle, TestBootToUserspace, TestBrokenBoot_StderrCaptured | REPLACE — CH-specific driver boot path |
 | `internal/core/driver/cloudhypervisor/ch_disk_lock_probe_integration_test.go` | TestCHDiskLockProbe | DROP — probes CH-specific concurrent-builder disk lock; not applicable to microsandbox |
-| `internal/core/driver/cloudhypervisor/ch_net_integration_test.go` | TestSandboxNet_NoLeakV4V6 | PORT — verify no v4/v6 leak through new substrate |
+| `internal/core/perimeter/egress_e2e_integration_test.go` | TestEgress_GuestOnWire_E2E | PORT — successor to the deleted `ch_net_integration_test.go` (`TestSandboxNet_NoLeakV4V6`); covers IPv6 zero-egress on the vhost-user substrate |
 | `internal/core/driver/cloudhypervisor/ch_netns_lifecycle_test.go` | TestLifecycle_NormalStop_NoLeaks, TestLifecycle_Crash_MemoryLost, TestLifecycle_StopBounded, TestLifecycle_ExplicitKillNoPdeathsig, TestStartCtxCancelDoesNotKillChild, TestLifecycle_ConsoleLogCreated, TestLifecycle_LauncherExitsOnCHDeath | REPLACE — tests CH netns lifecycle internals |
 | `internal/core/driver/cloudhypervisor/ch_netns_runtime_integration_test.go` | TestNetnsRuntime_KVMProof, TestNetnsRuntime_CHOrphanKill | REPLACE — CH netns runtime |
 | `internal/core/driver/cloudhypervisor/ch_netns_test.go` | TestNetnsSocketpairFiles, TestNetnsChildAttr, TestNetnsSocketpairCloseOrdering | REPLACE — CH netns socket internals |

@@ -163,7 +163,7 @@ nexus start <id|prefix|project/name>
 
 ## nexus stop
 
-Shut down a running sandbox.
+Shut down a running or paused sandbox. If the sandbox's supervisor process is dead, `nexus stop` clears the stale supervisor record and stops the VM through the driver directly.
 
 ```
 nexus stop <id|prefix|project/name>

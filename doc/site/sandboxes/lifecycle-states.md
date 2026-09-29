@@ -41,6 +41,7 @@ nexus stop my-app              # → stopped
 | 2 | `running` | `paused` | `pause` | user |
 | 3 | `paused` | `running` | `resume` | user |
 | 4 | `running` | `stopped` | `stop` | user |
+| 4b | `paused` | `stopped` | `stop` | user |
 | 5 | `stopped` | `running` | `start` | user |
 | S1 | `running` | `running` | `snapshot` | user (self-edge) |
 | S2 | `stopped` | `stopped` | `snapshot` | user (self-edge) |
@@ -55,18 +56,6 @@ nexus stop my-app              # → stopped
 | 13 | `running` | *(remove)* | `primary_command_exit` | system (`--rm` only) |
 
 ## What is explicitly illegal
-
-### `paused → stopped` via `stop`
-
-**Calling `nexus stop` on a paused sandbox returns an error.** Row 4 in the table has `running → stopped`; there is no `paused → stopped` row for the `stop` trigger.
-
-A paused sandbox holds its full memory state. Stopping it cleanly requires a resume first:
-
-```sh
-nexus resume my-app && nexus stop my-app
-```
-
-The `paused → stopped` edge exists only for substrate loss (trigger `substrate_lost`, row 6) — when the host reboots or the VMM is killed and the memory state is already gone.
 
 ### Snapshot from `paused`
 
@@ -95,6 +84,7 @@ stateDiagram-v2
     running --> paused  : pause
     paused  --> running : resume
     running --> stopped : stop
+    paused  --> stopped : stop (row 4b)
     stopped --> running : start
 
     running --> running : snapshot (self-edge)

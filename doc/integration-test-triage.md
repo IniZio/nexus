@@ -1,5 +1,7 @@
 # Triage: the `//go:build integration` suite
 
+> **Historical (2026-09-01).** Tap networking was retired in S9d: `ch_net_integration_test.go` and the TAP/bridge/`/dev/net/tun` statements below describe the pre-S9d tree only. The CAP_NET_ADMIN findings for the netns runtime remain valid.
+
 **Status as found (2026-09-01):** 44 files carried `//go:build integration`.
 `grep -rn "tags integration" Makefile .github/` returned **nothing**. None of
 them had ever run. "The suite is green" had never included any of them.
@@ -117,10 +119,11 @@ How each was repaired, and what it now asserts:
   discarding them with `_`: attachment order is guest device order, so dropping
   them would boot a VM missing `/dev/vdb…` while still compiling. Nothing
   narrowed — the first parameter and every existing assertion are unchanged.
-- **`EnableNetHook`** is obsolete rather than renamed. The two-TAP/L2-bridge
-  topology is no longer opt-in: every `CHDriver.Start` builds a `vmNetConfig`
-  and calls `VMCreateWithNet`, so `d.nets[id]` — and hence the `NetworkHook`
-  capability and its TAP fd — is populated unconditionally. Removing the field
+- **`EnableNetHook`** is obsolete rather than renamed. (Historical: the
+  two-TAP/L2-bridge topology described here was removed in S9d; networking is
+  vhost-user only.) At the time, every `CHDriver.Start` built a `vmNetConfig`
+  and called `VMCreateWithNet`, so `d.nets[id]` — and hence the `NetworkHook`
+  capability and its TAP fd — was populated unconditionally. Removing the field
   makes the test assert *more* than before (the hook must be present on a plain
   `Config`, not merely when explicitly enabled). Nothing narrowed.
 
@@ -145,7 +148,7 @@ These genuinely boot cloud-hypervisor microVMs under nested virt and pass.
 | `cloudhypervisor/boot_integration_test.go` | `TestBootLifecycle`, `TestBootToUserspace`, `TestBrokenBoot_StderrCaptured` | PASS |
 | `cloudhypervisor/ch_vsock_integration_test.go` | `TestDialGuest_Integration` | PASS **after a fix** (below) |
 | `cloudhypervisor/ch_disk_lock_probe_integration_test.go` | `TestCHDiskLockProbe` | PASS |
-| `cloudhypervisor/ch_net_integration_test.go` | `TestSandboxNet_NoLeakV4V6` | PASS (needs `/dev/net/tun` + CAP_NET_ADMIN, so not ordinary CI) |
+| ~~`cloudhypervisor/ch_net_integration_test.go`~~ | ~~`TestSandboxNet_NoLeakV4V6`~~ | REMOVED in S9d (tap networking retired; file deleted) |
 | `cloudhypervisor/disk_integration_test.go` | `TestDiskBoot` | PASS |
 | `cloudhypervisor/egress_smoke_test.go` | `TestBootEgressSmoke` | PASS |
 | `cloudhypervisor/fork_isolation_integration_test.go` | `TestForkDiskIsolation` | PASS |

@@ -35,9 +35,9 @@ Resolves TBD-PD-10. Every cell is filled or explicitly marked **unknown-and-assi
 | # | Kind | Creator | Freer | Owner Key | Abnormal Termination |
 |---|------|---------|-------|-----------|----------------------|
 | N1 | **Network namespace** (CLONE_NEWNET) | `driver/cloudhypervisor/ch_netns.go:136` `StartNetnsRuntime` → `clone()` syscall | Kernel: automatic reclamation when last process in the namespace exits | **None.** In-kernel; no named filesystem path. Process group ID is the transient handle. | Kernel reclaims automatically even on SIGKILL; no orphan possible for the namespace itself. |
-| N2 | **Guest TAP interface** (`nx3g-<10hex>`) | `ch_netns.go:333` `createTapBridge` inside netns child | Kernel auto-reclaims with netns; `ch_net.go:292` `deleteTapBridge` is the explicit fallback | **PARTIAL:** first 5 bytes of ULID encoded as 10 lowercase hex chars in the interface name (`nx3g-<first-5B-of-ULID>`). Not the full ULID; collisions are theoretically possible but rare given ULID monotonicity. | Kernel auto-reclaims when netns child process group dies (even SIGKILL). |
-| N3 | **Host TAP interface** (`nx3h-<10hex>`) | Same as N2 | Same as N2 | **PARTIAL:** same 10-hex suffix as N2 | Same as N2 |
-| N4 | **L2 bridge interface** (`nx3b-<10hex>`) | Same as N2 | Same as N2 | **PARTIAL:** same 10-hex suffix as N2 | Same as N2 |
+| N2 | ~~**Guest TAP interface** (`nx3g-<10hex>`)~~ **Removed in S9d** (tap networking retired; vhost-user only; `createTapBridge`/`deleteTapBridge` no longer exist). Historical row: | `ch_netns.go:333` `createTapBridge` inside netns child | Kernel auto-reclaims with netns; `ch_net.go:292` `deleteTapBridge` is the explicit fallback | **PARTIAL:** first 5 bytes of ULID encoded as 10 lowercase hex chars in the interface name (`nx3g-<first-5B-of-ULID>`). Not the full ULID; collisions are theoretically possible but rare given ULID monotonicity. | Kernel auto-reclaims when netns child process group dies (even SIGKILL). |
+| N3 | ~~**Host TAP interface** (`nx3h-<10hex>`)~~ **Removed in S9d.** Historical row: | Same as N2 | Same as N2 | **PARTIAL:** same 10-hex suffix as N2 | Same as N2 |
+| N4 | ~~**L2 bridge interface** (`nx3b-<10hex>`)~~ **Removed in S9d.** Historical row: | Same as N2 | Same as N2 | **PARTIAL:** same 10-hex suffix as N2 | Same as N2 |
 | N5 | **CloudHypervisor VMM process** | `ch_netns.go:338` `spawnVMM` inside netns child | `teardownSandboxNet` → `NetnsRuntime.Stop()` → `Kill(-childPgid, SIGKILL)` | YES: child process group ID derived from `cmd.Process.Pid`; stored in driver's in-process `nets` map | Process may remain orphaned if parent nexus is killed before `teardownSandboxNet`. Next `Observe` call reports Absent (a VMM with no VM). `recover` then resolves record to stopped but does **not** kill the orphan VMM — that requires an explicit `drv.Stop`. |
 
 ### A.4 — Unix Socket Files
@@ -205,7 +205,7 @@ Evidence:
 
 **Implication:** R1 must build a `ResourceIndex` that enumerates host resources by kind WITHOUT consulting any record, then compares against the record store to identify orphans.
 
-**Caveat on in-kernel resources:** TAP interfaces, bridge interfaces, and network namespaces are auto-reclaimed by the kernel when the CH process group dies — even under SIGKILL. These three kinds are NOT subject to the "record is the only handle" problem; the kernel is the handle. Their names encode a partial ULID (first 5 bytes = 10 hex), sufficient for correlation but not uniquely the full ULID.
+**Caveat on in-kernel resources:** (TAP and bridge interfaces were removed in S9d; the following is historical for them.) TAP interfaces, bridge interfaces, and network namespaces are auto-reclaimed by the kernel when the CH process group dies — even under SIGKILL. These three kinds are NOT subject to the "record is the only handle" problem; the kernel is the handle. Their names encode a partial ULID (first 5 bytes = 10 hex), sufficient for correlation but not uniquely the full ULID.
 
 ---
 

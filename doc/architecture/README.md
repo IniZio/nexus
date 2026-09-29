@@ -133,8 +133,9 @@ Tests that Start a sandbox (e.g. `fork_preflight_test.go`) seed a root disk firs
 ### Stale OCI bake detection
 
 `internal/core/service/create.go` re-pulls a cached base image when the guest agent changed since
-the bake, or when the cache entry predates agent-tag tracking. Tag mechanics:
-`doc/design/builder-and-storage.md`.
+the bake, or when the cache entry predates agent-tag tracking. Tag mechanics are
+documented in the comments above the stale-cache check in `create.go`
+(`builderimage.CacheTag`).
 
 ### User mount prefixes
 
