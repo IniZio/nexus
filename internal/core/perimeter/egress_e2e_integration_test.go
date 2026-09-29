@@ -72,8 +72,15 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// TestEgress_GuestOnWire_E2E is the on-wire egress proof.
+// TestEgress_GuestOnWire_E2E runs the on-wire proof once per net mode; both must pass identically.
 func TestEgress_GuestOnWire_E2E(t *testing.T) {
+	for _, mode := range []domain.NetMode{domain.NetModeTap, domain.NetModeVhostUser} {
+		t.Run(string(mode), func(t *testing.T) { runEgressGuestOnWire(t, mode) })
+	}
+}
+
+// runEgressGuestOnWire is the on-wire egress proof for one net mode.
+func runEgressGuestOnWire(t *testing.T, netMode domain.NetMode) {
 	// ── guard: /dev/kvm ────────────────────────────────────────────────────────
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skip("skipping: /dev/kvm not present")
@@ -202,6 +209,7 @@ func TestEgress_GuestOnWire_E2E(t *testing.T) {
 		MemoryMiB:        256,
 		StartTimeout:     30 * time.Second,
 		SerialOutputPath: serialPath,
+		NetMode:          netMode,
 	})
 	if err != nil {
 		t.Fatalf("cloudhypervisor.New: %v", err)

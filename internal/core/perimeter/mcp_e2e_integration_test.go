@@ -39,8 +39,15 @@ import (
 	"github.com/IniZio/nexus/internal/core/perimeter/netstack"
 )
 
-// TestMCPEgress_GuestOnWire_E2E boots a real VM and asserts MCP policy enforcement.
+// TestMCPEgress_GuestOnWire_E2E runs the on-wire proof once per net mode; both must pass identically.
 func TestMCPEgress_GuestOnWire_E2E(t *testing.T) {
+	for _, mode := range []domain.NetMode{domain.NetModeTap, domain.NetModeVhostUser} {
+		t.Run(string(mode), func(t *testing.T) { runMCPEgressGuestOnWire(t, mode) })
+	}
+}
+
+// runMCPEgressGuestOnWire boots a real VM and asserts MCP policy enforcement.
+func runMCPEgressGuestOnWire(t *testing.T, netMode domain.NetMode) {
 	// ── guard: /dev/kvm ────────────────────────────────────────────────────────
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skip("skipping: /dev/kvm not present")
@@ -148,6 +155,7 @@ func TestMCPEgress_GuestOnWire_E2E(t *testing.T) {
 		MemoryMiB:        256,
 		StartTimeout:     30 * time.Second,
 		SerialOutputPath: serialPath,
+		NetMode:          netMode,
 	})
 	if err != nil {
 		t.Fatalf("cloudhypervisor.New: %v", err)
