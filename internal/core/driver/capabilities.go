@@ -64,6 +64,12 @@ func Capabilities(drv Driver) []string { // names of optional capability interfa
 	return caps
 }
 
+// NetModeSetter is implemented by drivers whose NIC backing depends on the
+// sandbox's recorded net mode. Called once, before the driver's first Start.
+type NetModeSetter interface {
+	SetNetMode(mode domain.NetMode)
+}
+
 type NetnsStateProvider interface { // optional: netns adoption identity
 	NetnsState(id domain.SandboxID) (st NetnsIdentity, ok bool) // from most recent Start; safe to call from store.Update callback
 }
@@ -76,6 +82,7 @@ type NetnsIdentity struct { // everything to re-acquire running VM without reboo
 	ChildPGID      int
 	ChildStartTime uint64
 	GuestTap       string
+	VhostSocket    string
 	APISocket      string
 	ControlSocket  string
 	ControlToken   string

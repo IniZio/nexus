@@ -157,6 +157,9 @@ func ChildExtraDiskPath(childID domain.SandboxID, parentPath string) string {
 //
 // Implements driver.Forker.
 func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childIDs []domain.SandboxID) ([]string, error) {
+	if d.cfg.NetMode == domain.NetModeVhostUser {
+		return nil, fmt.Errorf("cloudhypervisor: fork: not supported in vhost-user net mode yet (S9b-6)")
+	}
 	// Confirm the commit marker is present and the payload length is intact.
 	if _, err := d.snapshotStore.Read(snap.ID); err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: fork: snapshot record: %w", err)

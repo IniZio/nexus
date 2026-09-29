@@ -595,6 +595,7 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 				rec.NetnsChildPGID = ns.ChildPGID
 				rec.NetnsChildStartTime = ns.ChildStartTime
 				rec.GuestTapName = ns.GuestTap
+				rec.VhostSocket = ns.VhostSocket
 				rec.CHAPISocket = ns.APISocket
 				rec.NetnsControlSocket = ns.ControlSocket
 				rec.NetnsControlToken = ns.ControlToken
@@ -606,6 +607,7 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 				rec.NetnsChildPGID = 0
 				rec.NetnsChildStartTime = 0
 				rec.GuestTapName = ""
+				rec.VhostSocket = ""
 				rec.CHAPISocket = ""
 				rec.NetnsControlSocket = ""
 				rec.NetnsControlToken = ""
@@ -616,6 +618,7 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 			rec.NetnsChildPGID = 0
 			rec.NetnsChildStartTime = 0
 			rec.GuestTapName = ""
+			rec.VhostSocket = ""
 			rec.CHAPISocket = ""
 			rec.NetnsControlSocket = ""
 			rec.NetnsControlToken = ""
@@ -691,6 +694,7 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 		rec.NetnsChildPGID = 0
 		rec.NetnsChildStartTime = 0
 		rec.GuestTapName = ""
+		rec.VhostSocket = ""
 		rec.CHAPISocket = ""
 		rec.NetnsControlSocket = ""
 		rec.NetnsControlToken = ""
@@ -1639,6 +1643,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 				child.NetnsChildPGID = ns.ChildPGID
 				child.NetnsChildStartTime = ns.ChildStartTime
 				child.GuestTapName = ns.GuestTap
+				child.VhostSocket = ns.VhostSocket
 				child.CHAPISocket = ns.APISocket
 				child.NetnsControlSocket = ns.ControlSocket
 				child.NetnsControlToken = ns.ControlToken

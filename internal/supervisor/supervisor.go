@@ -1209,6 +1209,7 @@ func reconcileVMDeath(ctx context.Context, r vmDeathReconciler, id domain.Sandbo
 		rec.NetnsChildPGID = 0
 		rec.NetnsChildStartTime = 0
 		rec.GuestTapName = ""
+		rec.VhostSocket = ""
 		rec.CHAPISocket = ""
 		return nil
 	})

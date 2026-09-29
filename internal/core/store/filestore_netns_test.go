@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -99,5 +100,34 @@ func TestNetnsFieldsRoundTrip(t *testing.T) {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("record.json is missing expected key %q", key)
 		}
+	}
+}
+
+func TestVhostSocketRoundTripOmitEmpty(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	st, err := store.NewFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := makeSandbox("vhost-rt", "testproject")
+	if err := st.Create(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := filepath.Join(root, "sandboxes", sb.ID.String(), "record.json")
+	data, _ := os.ReadFile(recordPath)
+	if strings.Contains(string(data), "vhost_socket") {
+		t.Errorf("empty VhostSocket must be omitted: %s", data)
+	}
+	const want = "/run/nexus/netns-control/vhost-x.sock"
+	if err := st.Update(ctx, sb.ID, func(rec *domain.Sandbox) error {
+		rec.VhostSocket = want
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Get(ctx, sb.ID)
+	if err != nil || got.VhostSocket != want || got.GuestTapName != "" {
+		t.Fatalf("got %+v err %v", got, err)
 	}
 }

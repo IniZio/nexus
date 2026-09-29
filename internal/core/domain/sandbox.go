@@ -142,6 +142,10 @@ type Sandbox struct {
 	// not create. Empty when no netns child is running.
 	GuestTapName string `json:"guest_tap_name,omitempty"`
 
+	// VhostSocket is the vhost-user net socket the netns child listens on in
+	// vhost-user mode. Empty in tap mode.
+	VhostSocket string `json:"vhost_socket,omitempty"`
+
 	// CHAPISocket is the absolute path of the cloud-hypervisor REST API
 	// Unix socket for this sandbox's VM (NetnsRuntime.APISocket). A
 	// non-parent adopter dials this socket directly; it does not need to be

@@ -1163,6 +1163,7 @@ func handoffLaunchSupervisor(
 			 */
 			CredsFile: service.DedicatedCredStorePathForProfile(claudeProfile),
 			Ephemeral: true,
+			NetMode:   sb.NetMode,
 		},
 		ReadyTimeout: 5 * time.Minute,
 	})

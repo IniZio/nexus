@@ -687,6 +687,7 @@ func (r *Recoverer) applyAbsent(rec *domain.Sandbox, out *SandboxOutcome) (wrote
 		rec.NetnsChildPGID = 0
 		rec.NetnsChildStartTime = 0
 		rec.GuestTapName = ""
+		rec.VhostSocket = ""
 		rec.CHAPISocket = ""
 		*out = SandboxOutcome{
 			ID:   rec.ID,
@@ -724,6 +725,7 @@ func (r *Recoverer) applyAbsent(rec *domain.Sandbox, out *SandboxOutcome) (wrote
 		rec.NetnsChildPGID = 0
 		rec.NetnsChildStartTime = 0
 		rec.GuestTapName = ""
+		rec.VhostSocket = ""
 		rec.CHAPISocket = ""
 		*out = SandboxOutcome{
 			ID:   rec.ID,

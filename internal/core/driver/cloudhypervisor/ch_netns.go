@@ -94,6 +94,11 @@ const (
 	// by StartNetnsRuntime when Config.NetMode is "none".
 	netnsEnvNoNet = "NEXUS_NETNS_NO_NET"
 
+	// netnsEnvNetMode marks the child's NIC backing; netnsEnvVhostSocket is the
+	// vhost-user socket it listens on. Absent means tap.
+	netnsEnvNetMode     = "NEXUS_NETNS_NET_MODE"
+	netnsEnvVhostSocket = "NEXUS_NETNS_VHOST_SOCKET"
+
 	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
 	// to vm.restore after spawning CH. When absent (empty), the child runs in
 	// boot mode: it just spawns CH and pumps frames; the parent issues
@@ -119,7 +124,11 @@ type NetnsRuntime struct {
 	APISocket string
 
 	// GuestTap is the guest-side TAP interface name to include in vm.create.
+	// Empty in vhost-user mode.
 	GuestTap string
+
+	// VhostSocket is the vhost-user net socket CH connects to. Empty in tap mode.
+	VhostSocket string
 
 	// ChildPID is the OS pid of the netns child process (the re-exec'd
 	// binary running inside the isolated user+network namespace). Exported
@@ -290,7 +299,11 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	if cfg.NetMode == "none" {
 		return startNetnsRuntimeNoNet(ctx, cfg, id, socketPath)
 	}
-	guestTap, hostTap, bridge := tapIfNames(id)
+	vhost := cfg.NetMode == domain.NetModeVhostUser
+	var guestTap, hostTap, bridge string
+	if !vhost {
+		guestTap, hostTap, bridge = tapIfNames(id)
+	}
 
 	// Create the socketpair as raw *os.File for ExtraFiles handoff.
 	perimFile, pumpFile, err := netnsSocketpairFiles()
@@ -352,15 +365,24 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	cmd.Env = []string{
 		NetnsRunEnv + "=1",
 		fmt.Sprintf("%s=%d", netnsEnvPumpFD, pumpFDInChild),
-		fmt.Sprintf("%s=%s", netnsEnvGuestTap, guestTap),
-		fmt.Sprintf("%s=%s", netnsEnvHostTap, hostTap),
-		fmt.Sprintf("%s=%s", netnsEnvBridge, bridge),
 		fmt.Sprintf("%s=%s", netnsEnvAPISocket, socketPath),
 		fmt.Sprintf("%s=%s", netnsEnvCHBin, cfg.BinaryPath),
 		fmt.Sprintf("%s=%d", netnsEnvStartTimeoutMS, startTimeoutMS),
 		fmt.Sprintf("%s=%s", netnsEnvControlDir, controlDir),
 		fmt.Sprintf("%s=%s", netnsEnvSandboxID, id.String()),
 		pathEnv,
+	}
+	vhostSocket := ""
+	if vhost {
+		vhostSocket = VhostSocketPath(controlDir, id.String())
+		cmd.Env = append(cmd.Env,
+			fmt.Sprintf("%s=%s", netnsEnvNetMode, domain.NetModeVhostUser),
+			fmt.Sprintf("%s=%s", netnsEnvVhostSocket, vhostSocket))
+	} else {
+		cmd.Env = append(cmd.Env,
+			fmt.Sprintf("%s=%s", netnsEnvGuestTap, guestTap),
+			fmt.Sprintf("%s=%s", netnsEnvHostTap, hostTap),
+			fmt.Sprintf("%s=%s", netnsEnvBridge, bridge))
 	}
 	// Restore mode: pass the snapshot URL so RunNetnsChild issues vm.restore
 	// after spawning CH instead of waiting for the parent to call vm.create+boot.
@@ -436,6 +458,7 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		PerimConn:      perimConn,
 		APISocket:      socketPath,
 		GuestTap:       guestTap,
+		VhostSocket:    vhostSocket,
 		ChildPID:       childPgid,
 		ChildPGID:      childPgid,
 		ChildStartTime: childStartTime,
@@ -773,6 +796,11 @@ func (rt *NetnsRuntime) Stop() {
 		if rt.PerimConn != nil {
 			_ = rt.PerimConn.Close()
 		}
+		for _, f := range []string{rt.VhostSocket, rt.ControlSocket, rt.ControlToken} {
+			if f != "" {
+				_ = os.Remove(f)
+			}
+		}
 	})
 }
 
@@ -865,6 +893,10 @@ func RunNetnsChild() {
 		fmt.Fprintf(os.Stderr, "netns child: parse %s: %v\n", netnsEnvPumpFD, err)
 		os.Exit(1)
 	}
+	vhostSocket := ""
+	if os.Getenv(netnsEnvNetMode) == string(domain.NetModeVhostUser) {
+		vhostSocket = os.Getenv(netnsEnvVhostSocket)
+	}
 	guestTap := os.Getenv(netnsEnvGuestTap)
 	hostTap := os.Getenv(netnsEnvHostTap)
 	bridge := os.Getenv(netnsEnvBridge)
@@ -888,22 +920,30 @@ func RunNetnsChild() {
 	}
 	defer pumpConn.Close()
 
-	// Set up the TAP/bridge topology inside the netns.
-	// createTapBridge calls applySandboxNetSysctls (LEAK-TIGHT).
-	if err := createTapBridge(guestTap, hostTap, bridge); err != nil {
-		fmt.Fprintf(os.Stderr, "netns child: createTapBridge: %v\n", err)
-		os.Exit(1)
+	var hostTapFile io.ReadWriteCloser // the vhost slot stands in for the tap fd
+	if vhostSocket != "" {
+		slot, serr := startVhostSlot(vhostSocket)
+		if serr != nil {
+			fmt.Fprintf(os.Stderr, "netns child: vhost-user socket: %v\n", serr)
+			os.Exit(1)
+		}
+		defer slot.Close()
+		hostTapFile = slot
+	} else {
+		// createTapBridge calls applySandboxNetSysctls (LEAK-TIGHT). No
+		// deleteTapBridge: the kernel destroys the netns interfaces on exit.
+		if err := createTapBridge(guestTap, hostTap, bridge); err != nil {
+			fmt.Fprintf(os.Stderr, "netns child: createTapBridge: %v\n", err)
+			os.Exit(1)
+		}
+		tapFile, err := openHostTap(hostTap)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "netns child: openHostTap(%s): %v\n", hostTap, err)
+			os.Exit(1)
+		}
+		defer tapFile.Close()
+		hostTapFile = tapFile
 	}
-	// deleteTapBridge is intentionally NOT deferred here: when the child exits
-	// (process death), the kernel destroys all interfaces in the netns
-	// automatically; no explicit cleanup is needed or possible after exit.
-
-	hostTapFile, err := openHostTap(hostTap)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "netns child: openHostTap(%s): %v\n", hostTap, err)
-		os.Exit(1)
-	}
-	defer hostTapFile.Close()
 
 	// Spawn CH inside the netns (CH inherits the child's netns).
 	// spawnVMMInGroup sets Setpgid:false so CH inherits this child's process

@@ -101,9 +101,17 @@ func buildMemoryConfig(cfg Config, memMiB uint64, vhostUserNet bool) *vmMemoryCo
 	return mc
 }
 
-func buildNets(cfg Config, guestTap string, id domain.SandboxID) []vmNetConfig {
-	if cfg.NetMode == "none" {
+func buildNets(cfg Config, guestTap, vhostSocket string, id domain.SandboxID) []vmNetConfig {
+	switch cfg.NetMode {
+	case "none":
 		return nil
+	case domain.NetModeVhostUser:
+		return []vmNetConfig{{
+			VhostUser: true,
+			Socket:    vhostSocket,
+			Mac:       sandboxMac(id),
+			NumQueues: 2,
+		}}
 	}
 	return []vmNetConfig{{
 		Tap:       guestTap,
@@ -848,7 +856,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 
 	// Build the memory config via the helper so the shared-memory condition is
 	// testable without a real VM (see TestBuildMemoryConfig).
-	memCfg := buildMemoryConfig(d.cfg, uint64(memMiB), false)
+	memCfg := buildMemoryConfig(d.cfg, uint64(memMiB), d.cfg.NetMode == domain.NetModeVhostUser)
 
 	vmcfg := vmConfig{
 		Payload: vmPayloadConfig{
@@ -918,7 +926,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		Socket: d.vsockPath(id),
 	}
 
-	nets := buildNets(d.cfg, rt.GuestTap, id)
+	nets := buildNets(d.cfg, rt.GuestTap, rt.VhostSocket, id)
 
 	fsCfgs, err := d.spawnVirtiofsdForMounts(apiCtx, id)
 	if err != nil {

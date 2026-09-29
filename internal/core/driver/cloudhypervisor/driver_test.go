@@ -845,7 +845,7 @@ func TestVmNetConfig_VhostUserMarshal(t *testing.T) {
 	if !strings.Contains(s, `"vhost_user":true`) {
 		t.Errorf("missing vhost_user:true in %s", s)
 	}
-	if !strings.Contains(s, `"socket":"/run/nexus/net.sock"`) {
+	if !strings.Contains(s, `"vhost_socket":"/run/nexus/net.sock"`) {
 		t.Errorf("missing socket in %s", s)
 	}
 	if strings.Contains(s, `"tap"`) {

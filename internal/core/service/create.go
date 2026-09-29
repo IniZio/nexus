@@ -894,6 +894,9 @@ func CreateAndBoot(
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: init driver: %w", project, name, err)
 	}
+	if nms, ok := bootDrv.(driver.NetModeSetter); ok {
+		nms.SetNetMode(netMode)
+	}
 
 	// Resolve this sandbox's agent profile ONCE, ahead of the record, so that
 	// the persisted AgentName and the credential seed delivered to the guest
@@ -1037,6 +1040,7 @@ func CreateAndBoot(
 				rec.NetnsChildPGID = ns.ChildPGID
 				rec.NetnsChildStartTime = ns.ChildStartTime
 				rec.GuestTapName = ns.GuestTap
+				rec.VhostSocket = ns.VhostSocket
 				rec.CHAPISocket = ns.APISocket
 				rec.NetnsControlSocket = ns.ControlSocket
 				rec.NetnsControlToken = ns.ControlToken

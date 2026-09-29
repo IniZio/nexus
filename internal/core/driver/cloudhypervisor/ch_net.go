@@ -87,7 +87,7 @@ func sandboxMac(id domain.SandboxID) string {
 type vmNetConfig struct {
 	Tap       string `json:"tap,omitempty"`
 	VhostUser bool   `json:"vhost_user,omitempty"`
-	Socket    string `json:"socket,omitempty"`
+	Socket    string `json:"vhost_socket,omitempty"`
 	Mac       string `json:"mac"`
 	NumQueues int    `json:"num_queues"`
 }
@@ -535,6 +535,7 @@ func (d *CHDriver) NetnsState(id domain.SandboxID) (driver.NetnsIdentity, bool) 
 		ChildPGID:      rt.ChildPGID,
 		ChildStartTime: rt.ChildStartTime,
 		GuestTap:       rt.GuestTap,
+		VhostSocket:    rt.VhostSocket,
 		APISocket:      rt.APISocket,
 		ControlSocket:  rt.ControlSocket,
 		ControlToken:   rt.ControlToken,
@@ -542,6 +543,15 @@ func (d *CHDriver) NetnsState(id domain.SandboxID) (driver.NetnsIdentity, bool) 
 }
 
 var _ driver.NetnsStateProvider = (*CHDriver)(nil)
+
+// SetNetMode applies the sandbox's recorded net mode; call before Start.
+func (d *CHDriver) SetNetMode(mode domain.NetMode) {
+	d.mu.Lock()
+	d.cfg.NetMode = mode
+	d.mu.Unlock()
+}
+
+var _ driver.NetModeSetter = (*CHDriver)(nil)
 
 // AdoptRuntime installs an already-adopted [NetnsRuntime] into the driver's
 // in-memory state, so [CHDriver.Observe], [CHDriver.Stop], and

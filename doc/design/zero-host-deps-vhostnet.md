@@ -3,7 +3,7 @@
 Package `internal/core/driver/cloudhypervisor/vhostnet` is a pure-Go vhost-user
 net **slave** for the cloud-hypervisor (CH) v53 master. It replaces the tap fd in
 the netns child's frame pump so CH can run in an empty user+net namespace with
-no tap, bridge, or `CAP_NET_ADMIN`. It is not yet wired into the driver (S9b-3).
+no tap, bridge, or `CAP_NET_ADMIN`. It is wired into the netns child by S9b-3 (below).
 
 ## API
 
@@ -119,7 +119,81 @@ kick/call, SCM_RIGHTS) following the CH activation sequence. `FuzzDecodeMessage`
 covers the decoder. Goroutine leaks are checked with `runtime.NumGoroutine`
 because `go.uber.org/goleak` is not in `go.mod`.
 
-## Open items for S9b-3
+## Placement in the driver (S9b-3, decision D-1)
 
-- Real CH v53 integration (DHCP, ping, fetch) is not covered by this slice.
-- Restore/ondemand (uffd) with shared memory is S9b-6.
+The vhost-user slave runs inside the existing re-exec'd
+`CLONE_NEWUSER|CLONE_NEWNET` child, not in the supervisor.
+
+Why the child and not the supervisor:
+
+- The child outlives the supervisor. CH holds the vhost-user connection; if the
+  slave lived in the supervisor, a supervisor crash or `supervisor-upgrade`
+  would drop the guest NIC and the virtqueue state with it.
+- Everything that already keeps the VM re-acquirable stays untouched: the
+  socketpair to `PerimConn`, the netstack `AcceptVfkit` loop, the swappable
+  pump, the control socket and `ReacquirePerimeter`. Only the tap fd that
+  `tapPump` reads and writes is replaced (`vhostSlot` in
+  `ch_netns_vhost_linux.go`).
+- The socket lives in the 0700 control directory next to the control socket, so
+  the same-uid boundary that protects the control token protects the NIC.
+
+Mechanics:
+
+- `StartNetnsRuntime` follows `Config.NetMode` only, never `NEXUS_NET_MODE`.
+  Vhost-user adds `NEXUS_NETNS_NET_MODE=vhost-user` and
+  `NEXUS_NETNS_VHOST_SOCKET`, and drops the tap/host-tap/bridge names.
+- The child listens on the socket before it spawns CH, so CH's connect never
+  races the listener. `vhostSlot` keeps accepting, so a master reconnect
+  replaces the device without ending the pump. Frames written while no master
+  is connected are dropped, like a tap with no reader.
+- The child runs no `ip`, opens no `/dev/net/tun` and needs no `CAP_NET_ADMIN`.
+  The live proof scrubs `ip` from `PATH`.
+- `vm.create` sends `net[]={vhost_user:true, vhost_socket, mac, num_queues:2}`
+  and `memory.shared=true` (CH refuses vhost-user devices on private memory).
+- `NetnsIdentity`, `NetnsState` and the record gain `vhost_socket`
+  (`omitempty`). `guest_tap_name` stays empty. Teardown never called
+  `deleteTapBridge` on the netns path (the kernel drops the interfaces with the
+  namespace); `Stop` now also removes the vhost socket and the control
+  socket/token that a SIGKILLed child cannot remove.
+- `CreateAndBoot` hands the recorded mode to the in-process boot driver through
+  `driver.NetModeSetter`; before this the create-time boot silently used tap.
+- `ForkFrom` refuses in vhost-user mode until S9b-6 rewrites the socket path.
+
+## Findings
+
+- **CH JSON field name.** The `NetConfig` field is `vhost_socket`, not
+  `socket` (`socket` is the CLI key). With `socket`, `vm.boot` fails with
+  `No socket provided when using vhost-user`. S9b-1 had the wrong tag.
+- **Device creation time.** CH connects to the socket at `vm.boot`, not at
+  `vm.create`, so the listener only has to exist by then.
+- **Guest side.** With no MRG_RXBUF and no offloads, the guest kernel posts
+  ordinary 1526-byte RX buffers; DHCP, ICMP to the gateway, DNS and TCP fetches
+  through the netstack all work with the 12-byte header.
+- **Backpressure.** `Device.Write` blocks until the guest posts an RX buffer,
+  so a stalled or paused guest blocks the pump's host-to-guest direction where
+  a tap would drop. The netstack sender absorbs this in its datagram socket
+  buffer. Worth measuring in S9b-7.
+- **Teardown timing.** After `Stop`, the group can linger briefly as a zombie
+  until init reaps it; tests poll `kill(-pgid, 0)` (`waitForGroupExit`).
+
+## Proof
+
+`TestVhostNet_GuestNetworking` (integration tag) boots CH v53 with `PATH`
+pointing at an empty directory. It appends a probe `/init` to the Alpine
+initramfs and reads the serial log for: DHCP lease `192.168.127.2/24`, ping to
+`192.168.127.1`, a fetch from an allowed IP, and DNS plus a fetch by name
+(needs a host-resolvable `example.com`; otherwise not asserted). It also asserts
+that the child and CH network namespaces differ from the host's, that `Stop`
+removes the group, socket and control files, and that the test process leaks
+no fds.
+
+Run it with:
+
+    TMPDIR=/var/tmp make test-integration GOTEST_PKGS=./internal/core/driver/cloudhypervisor/ GOTEST_ARGS='-run TestVhostNet'
+
+## Not covered yet
+
+- Adopt, reacquire, supervisor-upgrade, backfill: still refuse an empty
+  `GuestTapName` (S9b-5).
+- Snapshot, restore, fork, and ondemand (uffd) with shared memory (S9b-6).
+- Throughput against tap and the soak run (S9b-7).
