@@ -24,6 +24,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/registry"
 	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
@@ -301,6 +302,7 @@ type sandboxCreateFlags struct {
 	agentName        string
 	extraAgentNames  []string
 	allowHosts       []string                  // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
+	repoURL          string                    // --repo <git-url> (sprites clone source)
 	allowedRepo      string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
 	pathPolicies     domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
 	mcpPolicies      domain.EgressMCPPolicies
@@ -629,6 +631,10 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 				return f, &UsageError{Msg: "sandbox create: --repo requires owner/name"}
 			}
 			i++
+			if strings.Contains(args[i], "://") || strings.HasPrefix(args[i], "git@") {
+				f.repoURL = args[i]
+				break
+			}
 			if !strings.Contains(args[i], "/") {
 				return f, &UsageError{Msg: fmt.Sprintf("sandbox create: --repo %q is not in owner/name format", args[i])}
 			}
@@ -710,7 +716,7 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			"sandbox create: --vcpus-max %d is less than --vcpus %d; ceiling must exceed boot count",
 			f.vcpusMax, f.vcpus)}
 	}
-	if f.egressClosed && f.allowedRepo == "" {
+	if f.egressClosed && f.allowedRepo == "" && f.repoURL == "" {
 		return f, &UsageError{Msg: "sandbox create: --egress closed requires --repo owner/name " +
 			"(D-PD-36): GitHub is added to SecretHosts and the full-scope token would " +
 			"be unbounded without a per-repo path allowlist"}
@@ -993,6 +999,13 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	f, parseErr := parseSandboxCreateArgs(args)
 	if parseErr != nil {
 		return parseErr
+	}
+
+	if backend, _ := activeBackend(); backend == registry.Sprites {
+		return runSpritesCreate(ctx, f, out, svc)
+	}
+	if f.repoURL != "" {
+		return &UsageError{Msg: "sandbox create: --repo must be owner/name on this backend"}
 	}
 
 	if cfgErr := applyProjectConfig(&f); cfgErr != nil {

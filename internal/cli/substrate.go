@@ -119,6 +119,13 @@ func SelectSubstrate() (driver.Driver, *SubstrateError) {
 			Remediation: "Set NEXUS_BACKEND to a backend registered in this build (linux default: cloud-hypervisor).",
 		}
 	}
+	if backend == registry.Sprites {
+		drv, derr := newSpritesDriver()
+		if derr != nil {
+			return nil, &SubstrateError{Msg: derr.Error(), Remediation: "Set SPRITES_TOKEN (or SPRITES_API_TOKEN) and SPRITES_ORG."}
+		}
+		return drv, nil
+	}
 	if backend != registry.CloudHypervisor {
 		return nil, &SubstrateError{
 			Msg:         "backend " + backend + " provides no substrate driver in this build",
