@@ -197,7 +197,7 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 		return nil, fmt.Errorf("cloudhypervisor: fork: manifest verify: %w", err)
 	}
 
-	// Identify the parent's root disk and net TAP from config.json in the
+	// Identify the parent's root disk and net backend from config.json in the
 	// snapshot directory.
 	//   - For VMs booted via initramfs (no disk), disk isolation is skipped and
 	//     parentDiskPath is left empty.
@@ -307,9 +307,9 @@ func (d *CHDriver) reapTransientSnapshot(snap artifact.Snapshot) {
 //     device.
 //   - Net: when parentNet is set (snapshot from a networked VM), the
 //     child runs in an isolated user+network namespace (via StartNetnsRuntime)
-//     with a fresh TAP bridge created using tapIfNames(childID). config.json in
-//     the per-child restore dir has net[].tap rewritten to the child's guest TAP
-//     name, so CH can open it at vm.restore time. The re-exec'd child issues
+//     with its own vhost-user slot. config.json in the per-child restore dir
+//     has net[].vhost_socket rewritten to the child's socket path, so CH can
+//     connect to it at vm.restore time. The re-exec'd child issues
 //     vm.restore itself (restore mode); the parent polls VMInfo until Running.
 //   - Vsock-only snapshots (errNoNet): no netns is launched; the parent spawns
 //     a plain VMM and calls vm.restore directly (original path, unchanged).
@@ -331,18 +331,11 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	sourceURL := "file://" + snapDir
 	var restoreDir string
 
-	// The child runs in the snapshot's mode, whatever d.cfg.NetMode says.
 	childCfg := d.cfg
-	netRW := netRewrite{parent: parentNet.ref}
-	if parentNet.mode == domain.NetModeVhostUser {
-		childCfg.NetMode = domain.NetModeVhostUser
-		netRW.vhost = true
-		netRW.child = VhostSocketPath(netnsControlDir(d.cfg.SocketDir), childID.String())
-	} else {
-		childCfg.NetMode = ""
-		if parentNet.ref != "" {
-			netRW.child, _, _ = tapIfNames(childID)
-		}
+	childCfg.NoNet = false
+	netRW := netRewrite{
+		parent: parentNet.ref,
+		child:  VhostSocketPath(netnsControlDir(d.cfg.SocketDir), childID.String()),
 	}
 
 	// Compute the child's vsock socket path (per-sandbox, derived from childID).
@@ -388,7 +381,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 		}
 
 		// Create the per-child restore dir with all rewrites applied to
-		// config.json (all disk paths, net tap if present, vsock path if present).
+		// config.json (all disk paths, net vhost socket if present, vsock path if present).
 		var prepErr error
 		restoreDir, prepErr = prepareChildRestoreDir(
 			snapDir, childID,
@@ -424,8 +417,8 @@ func (d *CHDriver) spawnChildFromSnapshot(
 
 	// ── Netns path (snapshot has a net device) ──────────────────────────────
 	// Launch the child VMM inside an isolated user+network namespace with the
-	// child's own TAP bridge. The re-exec'd child (RunNetnsChild) detects the
-	// NEXUS_NETNS_RESTORE_URL env var and calls vm.restore before tapPump,
+	// child's own vhost-user slot. The re-exec'd child (RunNetnsChild) detects the
+	// NEXUS_NETNS_RESTORE_URL env var and calls vm.restore before framePump,
 	// so the VM reaches Running inside the netns without any parent API call.
 	if parentNet.ref != "" {
 		rt, err := StartNetnsRuntime(ctx, childCfg, childID, socketPath, sourceURL)
@@ -449,7 +442,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 
 		// Poll VMInfo until the child's vm.restore + vm.resume complete and
 		// the VM is Running. The netns child issues vm.restore then vm.resume
-		// before starting the tapPump; the parent does not call vm.create or
+		// before starting the framePump; the parent does not call vm.create or
 		// vm.boot.
 		//
 		// CH state machine for restore:
@@ -457,7 +450,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 		//
 		// Poll states:
 		//   - err != nil && isAbsent: CH socket not yet bound (child still
-		//     running createTapBridge + spawnVMM) — retry.
+		//     running startVhostSlot + spawnVMM) — retry.
 		//   - (Paused, nil): VMRestore done; vm.resume in progress — retry.
 		//   - (Running, nil): vm.resume complete; VM is executing — done.
 		startTimeout := d.cfg.StartTimeout
@@ -510,11 +503,11 @@ func (d *CHDriver) spawnChildFromSnapshot(
 
 	// ── Plain VMM path (vsock-only snapshot, no net device) ─────────────────
 	// Spawn a fresh VMM process and restore from snapshot. The parent issues
-	// vm.restore directly; no netns or TAP setup is needed.
+	// vm.restore directly; no netns setup is needed.
 	//
 	// UNREACHABLE FROM THE CURRENT CLI. CHDriver.Start calls StartNetnsRuntime
-	// unconditionally, so every sandbox the product creates carries a TAP/bridge
-	// net device. findNetTap therefore always succeeds for any snapshot taken
+	// unconditionally, so every sandbox the product creates carries a vhost-user
+	// net device. snapshotNetBackend therefore always succeeds for any snapshot taken
 	// from a current sandbox, errNoNet is never returned, and this branch never
 	// fires. The branch is kept deliberately: removing it would leave the netted
 	// path with no explicit refusal if Start's unconditional call were ever

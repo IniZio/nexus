@@ -10,7 +10,7 @@ package perimetertest
 //
 // # What it tests
 //
-//   - CHDriver, configured with NetModeVhostUser, sets up the vhost-user NIC slot
+//   - CHDriver sets up the vhost-user NIC slot
 //     at Start time and registers it with CH via the vm.create NetConfig payload.
 //   - The driver.NetworkHook capability is discoverable via type assertion on CHDriver.
 //   - GuestNetworkFD returns a live io.ReadWriteCloser backed by the vhost-user slot.
@@ -156,7 +156,6 @@ func TestNetworkHookTracer(t *testing.T) {
 		BinaryPath: chBin,
 		SocketDir:  socketDir,
 		KernelPath: kernelPath,
-		NetMode:    domain.NetModeVhostUser,
 		// Minimal VM: 1 vCPU, 256 MiB. Kernel must have virtio-net for frames.
 		VCPUs:     1,
 		MemoryMiB: 256,

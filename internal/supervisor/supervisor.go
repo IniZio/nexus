@@ -1991,7 +1991,6 @@ func buildSupervisorDriverConfig(
 		VirtiofsdPath:     cfg.VirtiofsdPath,
 		FreePageReporting: true,
 		NestedVirt:        cfg.NestedVirt,
-		NetMode:           cfg.NetMode,
 		ConsoleLogPath:    filepath.Join(cfg.StateDir, "console.log"),
 	}
 }

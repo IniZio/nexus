@@ -148,7 +148,6 @@ func TestMCPEgress_GuestOnWire_E2E(t *testing.T) {
 		MemoryMiB:        256,
 		StartTimeout:     30 * time.Second,
 		SerialOutputPath: serialPath,
-		NetMode:          domain.NetModeVhostUser,
 	})
 	if err != nil {
 		t.Fatalf("cloudhypervisor.New: %v", err)

@@ -38,7 +38,7 @@ import (
 
 // TestNetnsRuntime_KVMProof is the end-to-end proof:
 //   - boots CH through StartNetnsRuntime (inside rootless user+net ns)
-//   - calls vm.create(guestTap)+vm.boot over the shared api-socket
+//   - calls vm.create(vhost-user net)+vm.boot over the shared api-socket
 //   - reads guest-NIC Ethernet frames off PerimConn
 //   - asserts frames with the expected guest MAC arrive on the parent end
 //   - asserts the HOST process holds ZERO CAP_NET_ADMIN (CapEff bit 12 clear)
@@ -158,12 +158,13 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 		},
 		Memory: &vmMemoryConfig{
 			SizeBytes: 256 * 1024 * 1024,
+			Shared:    true,
 		},
 	}
 	nets := []vmNetConfig{
-		{Tap: rt.GuestTap, Mac: mac, NumQueues: 2},
+		{VhostUser: true, Socket: rt.VhostSocket, Mac: mac, NumQueues: 2},
 	}
-	t.Logf("vm.create: guestTap=%s mac=%s", rt.GuestTap, mac)
+	t.Logf("vm.create: vhostSocket=%s mac=%s", rt.VhostSocket, mac)
 	if err := c.VMCreateWithNet(apiCtx, vmcfg, nil, nets, nil); err != nil {
 		t.Fatalf("vm.create: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestNetnsRuntime_KVMProof(t *testing.T) {
 	t.Log("Waiting for Ethernet frames from guest NIC on parent PerimConn...")
 	rt.PerimConn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	buf := make([]byte, tapBufSize)
+	buf := make([]byte, frameBufSize)
 	var frameCount int
 	var guestMACFrames int
 

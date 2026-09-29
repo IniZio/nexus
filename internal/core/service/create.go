@@ -1035,7 +1035,6 @@ func CreateAndBoot(
 				rec.NetnsChildPID = ns.ChildPID
 				rec.NetnsChildPGID = ns.ChildPGID
 				rec.NetnsChildStartTime = ns.ChildStartTime
-				rec.GuestTapName = ns.GuestTap
 				rec.VhostSocket = ns.VhostSocket
 				rec.CHAPISocket = ns.APISocket
 				rec.NetnsControlSocket = ns.ControlSocket

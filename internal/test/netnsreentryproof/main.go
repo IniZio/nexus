@@ -34,7 +34,7 @@ type identity struct {
 	ChildPID       int    `json:"child_pid"`
 	ChildPGID      int    `json:"child_pgid"`
 	ChildStartTime uint64 `json:"child_start_time"`
-	GuestTap       string `json:"guest_tap"`
+	VhostSocket    string `json:"vhost_socket"`
 	APISocket      string `json:"api_socket"`
 	ControlSocket  string `json:"control_socket"`
 	ControlToken   string `json:"control_token"`
@@ -122,7 +122,7 @@ func runSupervisor(workdir string) {
 	}
 	fmt.Printf("SUPERVISOR pid=%d\n", os.Getpid())
 	fmt.Printf("NETNS CHILD pid=%d pgid=%d starttime=%d\n", rt.ChildPID, rt.ChildPGID, rt.ChildStartTime)
-	fmt.Printf("GUEST TAP %s\n", rt.GuestTap)
+	fmt.Printf("VHOST SOCKET %s\n", rt.VhostSocket)
 	fmt.Printf("CONTROL SOCKET %s\n", rt.ControlSocket)
 	fmt.Printf("CONTROL TOKEN  %s\n", rt.ControlToken)
 
@@ -151,7 +151,7 @@ func runSupervisor(workdir string) {
 
 	ident := identity{
 		SandboxID: id.String(), ChildPID: rt.ChildPID, ChildPGID: rt.ChildPGID,
-		ChildStartTime: rt.ChildStartTime, GuestTap: rt.GuestTap,
+		ChildStartTime: rt.ChildStartTime, VhostSocket: rt.VhostSocket,
 		APISocket: rt.APISocket, ControlSocket: rt.ControlSocket,
 		ControlToken: rt.ControlToken, CHPid: chPid,
 	}

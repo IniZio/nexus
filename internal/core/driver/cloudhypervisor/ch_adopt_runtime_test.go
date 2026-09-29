@@ -39,7 +39,7 @@ func newTestAdoptedRuntime(t *testing.T) *NetnsRuntime {
 		t.Fatalf("readProcStartTime(%d): %v", pid, err)
 	}
 
-	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, startTime, "nxg-test", "/tmp/nx-test.sock", perimFile)
+	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, startTime, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}

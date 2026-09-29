@@ -6,21 +6,16 @@
 //
 // The perimeter fd is one end of an AF_UNIX SOCK_DGRAM socketpair. The netns
 // child holds the pump end; the supervisor holds the perimeter end. When the
-// supervisor is SIGKILLed, its end dies — but the child, the TAP fd, and the
+// supervisor is SIGKILLed, its end dies — but the child, its vhost-user slot, and the
 // VM all survive. The guest goes network-dead in the host→guest direction
 // only, because that pump goroutine exited on the read error.
 //
-// The tap CANNOT be re-opened by a new process: openHostTap sets
-// IFF_TAP|IFF_NO_PI with no IFF_MULTI_QUEUE, so exactly one fd may be
-// attached, and the surviving child holds it (TUNSETIFF returns EBUSY for
-// anyone else). That is D-HSH-16 and it permanently closes tap re-entry.
-//
-// But the tap never needed to move. The child is already the per-workload
+// The NIC backend never needs to move. The child is already the per-workload
 // shim that outlives its manager (the shape containerd-shim and conmon use);
 // it just had no control channel. This file is that channel: an incoming
 // supervisor creates a FRESH socketpair, connects, sends the pump end over
 // SCM_RIGHTS, keeps the perimeter end, and the child swaps the new pump end
-// into its live tapPump. No tap fd moves, no pidfd_getfd, no systemd.
+// into its live framePump. No NIC fd moves, no pidfd_getfd, no systemd.
 //
 // # Authentication (why the prior art is NOT inheritable)
 //

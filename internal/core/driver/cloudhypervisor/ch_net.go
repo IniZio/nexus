@@ -1,39 +1,19 @@
 // Package-level network attachment for Cloud Hypervisor sandboxes.
 //
-// # Topology
-//
-// For each sandbox, three kernel interfaces are created:
-//
-//	GuestTAP (nxg-<id>)  — owned by CH after vm.boot (TUNSETIFF)
-//	HostTAP  (nxh-<id>)  — owned by nexus; pump goroutines bridge it to gvproxy
-//	Bridge   (nxb-<id>)  — unrouted L2 bridge connecting GuestTAP ↔ HostTAP
-//
-// The pump goroutines copy raw Ethernet frames (one read = one frame) between
-// the HostTAP fd and one end of an AF_UNIX SOCK_DGRAM socketpair. The other
-// end is returned to the perimeter layer via GuestNetworkFD.
-//
-// # Sysctl invariants
-//
-// No interface ever receives an IPv4 or IPv6 address:
-//   - No "ip addr add" is ever called (enforced by omission)
-//   - per-interface forwarding=0: /proc/sys first; RTM_SETLINK netlink fallback when read-only. HARD FAIL.
-//   - disable_ipv6=1: best-effort. IPv6 link-local cannot cross a CLONE_NEWNET
-//     boundary, so a read-only /proc/sys in unprivileged containers is harmless.
-//
-// These sysctl writes happen in applySandboxNetSysctls, called from createTapBridge.
+// Each sandbox NIC is a vhost-user device served by nexus inside the sandbox's
+// netns child; framePump copies raw Ethernet frames between the vhost slot and
+// one end of an AF_UNIX SOCK_DGRAM socketpair. The other end is returned to
+// the perimeter layer via GuestNetworkFD.
 package cloudhypervisor
 
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
-	"strings"
 	"sync"
 	"syscall"
 
@@ -41,31 +21,14 @@ import (
 	"github.com/IniZio/nexus/internal/core/driver"
 )
 
-// sysctlWrite is the function used to write sysctl values.
-// It is a package-level variable so tests can inject failures without root.
-var sysctlWrite = func(path string, data []byte, perm os.FileMode) error {
-	return os.WriteFile(path, data, perm)
-}
-
 const (
-	// tapBufSize is the read buffer for the pump goroutines.
+	// frameBufSize is the read buffer for the pump goroutines.
 	// Must be ≥ the maximum Ethernet frame size (including jumbo frames).
 	// AF_UNIX SOCK_DGRAM silently truncates datagrams that exceed the read
 	// buffer (MSG_TRUNC is set; excess bytes are discarded, no error returned).
 	// 65536 comfortably covers any MTU in use.
-	tapBufSize = 65536
+	frameBufSize = 65536
 )
-
-// tapIfNames returns deterministic Linux interface names (≤15 chars, IFNAMSIZ-1)
-// for a sandbox. All three names are distinct (different prefixes, same suffix).
-//
-//   - guestTap: "nxg-" + 10 hex chars  — CH will TUNSETIFF this at vm.boot
-//   - hostTap:  "nxh-" + 10 hex chars  — nexus holds the fd; bridged by pump
-//   - bridge:   "nxb-" + 10 hex chars  — unrouted L2 bridge; no IP assigned
-func tapIfNames(id domain.SandboxID) (guestTap, hostTap, bridge string) {
-	suffix := fmt.Sprintf("%x", id[:5]) // 10 lowercase hex chars
-	return "nxg-" + suffix, "nxh-" + suffix, "nxb-" + suffix
-}
 
 // sandboxMac derives a stable locally-administered unicast MAC from the sandbox ID.
 // Uses SHA-256 of the raw ID bytes to fill the vendor-specific octets.
@@ -78,16 +41,13 @@ func sandboxMac(id domain.SandboxID) string {
 
 // vmNetConfig is the JSON representation of a CH net device in vm.create.
 //
-// Tap and VhostUser/Socket are mutually exclusive:
-//   - Tap path: CH opens the named tap interface inside the netns child.
-//   - VhostUser path (S9b): CH connects to Socket as vhost-user client;
-//     the nexus process serves the backend on that socket.
+// CH connects to Socket as a vhost-user client; the nexus process serves the
+// backend on that socket.
 //
-// CH v53 NetConfig fields: tap (string), vhost_user (bool), vhost_socket
+// CH v53 NetConfig fields: vhost_user (bool), vhost_socket
 // (string), mac (string), num_queues (int). Source: CH OpenAPI schema at
 // github.com/cloud-hypervisor/cloud-hypervisor v53.0 vmm/src/api/openapi/cloud-hypervisor.yaml.
 type vmNetConfig struct {
-	Tap       string `json:"tap,omitempty"`
 	VhostUser bool   `json:"vhost_user,omitempty"`
 	Socket    string `json:"vhost_socket,omitempty"`
 	Mac       string `json:"mac"`
@@ -105,9 +65,8 @@ type vmConfigWithNet struct {
 	Fs    []vmFsConfig   `json:"fs,omitempty"`
 }
 
-// VMCreateWithNet sends PUT /vm.create with vsock, TAP network, and optional
-// virtiofs-fs devices. CH stores the config but does NOT call TUNSETIFF until
-// vm.boot; the named TAP interface must already exist at create time.
+// VMCreateWithNet sends PUT /vm.create with vsock, vhost-user network, and optional
+// virtiofs-fs devices.
 // Pass nil (or an empty slice) for fs when no virtiofs mounts are needed.
 func (c *client) VMCreateWithNet(ctx context.Context, cfg vmConfig, vsock *vmVsockConfig, nets []vmNetConfig, fs []vmFsConfig) error {
 	full := vmConfigWithNet{vmConfig: cfg, Vsock: vsock, Net: nets, Fs: fs}
@@ -125,7 +84,7 @@ func (c *client) VMCreateWithNet(ctx context.Context, cfg vmConfig, vsock *vmVso
 }
 
 // netState holds the per-sandbox network resources for the S1 netns path.
-// TAP/bridge/pump live inside the isolated user+network namespace managed by
+// The NIC pump lives inside the isolated user+network namespace managed by
 // rt; teardown calls rt.Stop() which kills the whole process group.
 type netState struct {
 	rt        *NetnsRuntime // always non-nil on the netns path; nil only in unit tests
@@ -140,9 +99,9 @@ type netState struct {
 // will ever read or write it again.
 var errPumpClosed = fmt.Errorf("cloudhypervisor: netns pump: permanently closed")
 
-// swappableConn lets a live tapPump replace its underlying conn without
-// either pump goroutine ever returning — see the tapPump doc comment for why
-// that invariant is load-bearing (D-HSH-17: a returned tapPump falls through
+// swappableConn lets a live framePump replace its underlying conn without
+// either pump goroutine ever returning — see the framePump doc comment for why
+// that invariant is load-bearing (D-HSH-17: a returned framePump falls through
 // to os.Exit(0) in RunNetnsChild, which takes the guest VM down via
 // Pdeathsig).
 //
@@ -176,7 +135,7 @@ func (s *swappableConn) current() (conn io.ReadWriteCloser, gen <-chan struct{},
 
 // write sends p on whatever conn is current at the moment of the call.
 // Errors are discarded — this preserves the pre-existing asymmetry
-// (ch_net.go tapPump doc): the guest→host direction never blocks or exits on
+// (ch_net.go framePump doc): the guest→host direction never blocks or exits on
 // a write failure, so a dead or not-yet-installed conn silently drops frames
 // instead of taking the pump down.
 func (s *swappableConn) write(p []byte) {
@@ -208,9 +167,9 @@ func (s *swappableConn) swap(newConn io.ReadWriteCloser) error {
 	return nil
 }
 
-// closePermanently marks the pump for real shutdown: the conn→tapFd
+// closePermanently marks the pump for real shutdown: the conn→nicFd
 // goroutine, if currently blocked waiting for a swap, wakes and exits
-// (sending to tapPump's done channel) instead of waiting forever. Idempotent.
+// (sending to framePump's done channel) instead of waiting forever. Idempotent.
 func (s *swappableConn) closePermanently() {
 	s.mu.Lock()
 	if s.closed {
@@ -226,19 +185,19 @@ func (s *swappableConn) closePermanently() {
 	_ = old.Close()
 }
 
-// tapPump copies raw Ethernet frames in both directions between tapFd and
+// framePump copies raw Ethernet frames in both directions between nicFd and
 // pump's current conn.
 //
 // Both sides are packet-mode (one Read = one complete frame):
-//   - tapFd is a TAP device fd opened with IFF_NO_PI — one Read = one Ethernet frame
+//   - nicFd is the NIC endpoint (vhost slot) — one Read = one Ethernet frame
 //   - pump's conn is an AF_UNIX SOCK_DGRAM connection — one Read = one datagram = one frame
 //
-// tapPump blocks until both goroutines exit. tapPump does NOT close tapFd or
+// framePump blocks until both goroutines exit. framePump does NOT close nicFd or
 // pump's conn; callers are responsible for cleanup.
 //
 // # Never-terminate invariant (D-HSH-17)
 //
-// The guest→host goroutine (tapFd.Read) exits, as before, on a tapFd read
+// The guest→host goroutine (nicFd.Read) exits, as before, on a nicFd read
 // error — that only happens when the process is really tearing down (the fd
 // itself is being closed), so its exit behaviour is unchanged.
 //
@@ -251,17 +210,17 @@ func (s *swappableConn) closePermanently() {
 // and retries with whatever conn pump.swap installs next. It only truly
 // exits when pump.closePermanently has been called (checked at the top of
 // each loop iteration, including the one after waking from a swap wait).
-func tapPump(tapFd io.ReadWriteCloser, pump *swappableConn) {
+func framePump(nicFd io.ReadWriteCloser, pump *swappableConn) {
 	done := make(chan struct{}, 2)
 
-	// tapFd → pump (guest → host / gvproxy direction). Unchanged: writes are
+	// nicFd → pump (guest → host / gvproxy direction). Unchanged: writes are
 	// always attempted against whatever conn is current and errors are
 	// discarded, so this goroutine automatically starts reaching a newly
 	// swapped-in conn on its next iteration with no special-casing needed.
 	go func() {
-		buf := make([]byte, tapBufSize)
+		buf := make([]byte, frameBufSize)
 		for {
-			n, err := tapFd.Read(buf)
+			n, err := nicFd.Read(buf)
 			if n > 0 {
 				pump.write(buf[:n])
 			}
@@ -272,9 +231,9 @@ func tapPump(tapFd io.ReadWriteCloser, pump *swappableConn) {
 		done <- struct{}{}
 	}()
 
-	// pump → tapFd (host / gvproxy → guest direction).
+	// pump → nicFd (host / gvproxy → guest direction).
 	go func() {
-		buf := make([]byte, tapBufSize)
+		buf := make([]byte, frameBufSize)
 		for {
 			c, gen, closed := pump.current()
 			if closed {
@@ -282,13 +241,13 @@ func tapPump(tapFd io.ReadWriteCloser, pump *swappableConn) {
 			}
 			n, err := c.Read(buf)
 			if n > 0 {
-				_, _ = tapFd.Write(buf[:n])
+				_, _ = nicFd.Write(buf[:n])
 			}
 			if err != nil {
 				// Do NOT exit: block until pump.swap (retry with the new
 				// conn) or pump.closePermanently (re-check closed, exit)
 				// wakes us. This is what lets a crashed supervisor's dead
-				// conn be replaced without ever letting tapPump return.
+				// conn be replaced without ever letting framePump return.
 				<-gen
 				continue
 			}
@@ -330,150 +289,11 @@ func unixgramPair() (net.Conn, net.Conn, error) {
 	return a, b, nil
 }
 
-// applySandboxNetSysctls writes per-interface sysctls on all three sandbox
-// interfaces. Must be called BEFORE ip link set <iface> up.
-//
-// Hard-fail: net.ipv4.conf.<iface>.forwarding=0. A new netns inherits IPv4
-// devconf from init_net, and hosts (Docker, k8s nodes) commonly run with
-// default.forwarding=1, so forwarding is not proven-zero without an explicit
-// successful set. When /proc/sys is read-only (non-privileged k8s pods), the
-// value is set over rtnetlink instead and read back to prove it is 0.
-//
-// Best-effort: net.ipv6.conf.<iface>.disable_ipv6=1. IPv6 link-local cannot
-// cross the CLONE_NEWNET boundary, so a failed write only warns.
-//
-// The global /proc/sys/net/ipv4/ip_forward is NEVER written — that is
-// host-wide state owned by the host network stack.
-func applySandboxNetSysctls(guestTap, hostTap, bridge string) error {
-	for _, iface := range []string{guestTap, hostTap, bridge} {
-		fwdpath := fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/forwarding", iface)
-		if procErr := sysctlWrite(fwdpath, []byte("0\n"), 0o644); procErr != nil {
-			if nlErr := setIfaceForwardingNetlink(iface); nlErr != nil {
-				return fmt.Errorf("applySandboxNetSysctls: forwarding=0 for %s: proc: %w; netlink: %v",
-					iface, procErr, nlErr)
-			}
-			if verErr := provenForwardingZero(iface); verErr != nil {
-				return fmt.Errorf("applySandboxNetSysctls: forwarding=0 for %s: not proven-zero: %w",
-					iface, verErr)
-			}
-		}
-		v6path := fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/disable_ipv6", iface)
-		if err := sysctlWrite(v6path, []byte("1\n"), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: disable_ipv6 for %s: %v (continuing)\n", iface, err)
-		}
-	}
-	return nil
-}
-
-// tapPermissionHint appends the remedy when a tap setup step failed with
-// EPERM, typically the AppArmor unprivileged-userns restriction.
-func tapPermissionHint(err error) error {
-	if !errors.Is(err, syscall.EPERM) && !strings.Contains(err.Error(), "Operation not permitted") {
-		return err
-	}
-	return fmt.Errorf("%w (tap networking needs CAP_NET_ADMIN in a user namespace; "+
-		"if kernel.apparmor_restrict_unprivileged_userns=1 blocks it, create the sandbox with "+
-		"NEXUS_NET_MODE=vhost-user)", err)
-}
-
-// createTapBridge creates the two-TAP/L2-bridge topology for a sandbox.
-// Requires CAP_NET_ADMIN.
-//
-// Order of operations:
-//  1. Create bridge interface
-//  2. Create guestTap (CH will TUNSETIFF this at vm.boot)
-//  3. Create hostTap (nexus opens this via openHostTap)
-//  4. Apply sysctls BEFORE bringing interfaces up (forwarding hard-fail; disable_ipv6 best-effort)
-//  5. Enslave both taps to the bridge
-//  6. Bring all three interfaces up
-//
-// No IP address is ever assigned to any interface.
-func createTapBridge(guestTap, hostTap, bridge string) error {
-	run := func(args ...string) error {
-		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
-		if err != nil {
-			return tapPermissionHint(fmt.Errorf("%s: %w: %s", args[0], err, out))
-		}
-		return nil
-	}
-
-	if err := run("ip", "link", "add", bridge, "type", "bridge"); err != nil {
-		return err
-	}
-	if err := run("ip", "tuntap", "add", guestTap, "mode", "tap"); err != nil {
-		_ = run("ip", "link", "del", bridge)
-		return err
-	}
-	if err := run("ip", "tuntap", "add", hostTap, "mode", "tap"); err != nil {
-		_ = run("ip", "tuntap", "del", guestTap, "mode", "tap")
-		_ = run("ip", "link", "del", bridge)
-		return err
-	}
-
-	// Apply sysctls BEFORE bringing interfaces up (forwarding hard-fail; disable_ipv6 best-effort).
-	if err := applySandboxNetSysctls(guestTap, hostTap, bridge); err != nil {
-		_ = run("ip", "tuntap", "del", hostTap, "mode", "tap")
-		_ = run("ip", "tuntap", "del", guestTap, "mode", "tap")
-		_ = run("ip", "link", "del", bridge)
-		return err
-	}
-
-	if err := run("ip", "link", "set", guestTap, "master", bridge); err != nil {
-		_ = run("ip", "tuntap", "del", hostTap, "mode", "tap")
-		_ = run("ip", "tuntap", "del", guestTap, "mode", "tap")
-		_ = run("ip", "link", "del", bridge)
-		return err
-	}
-	if err := run("ip", "link", "set", hostTap, "master", bridge); err != nil {
-		_ = run("ip", "tuntap", "del", hostTap, "mode", "tap")
-		_ = run("ip", "tuntap", "del", guestTap, "mode", "tap")
-		_ = run("ip", "link", "del", bridge)
-		return err
-	}
-	if err := run("ip", "link", "set", bridge, "up"); err != nil {
-		_ = run("ip", "tuntap", "del", hostTap, "mode", "tap")
-		_ = run("ip", "tuntap", "del", guestTap, "mode", "tap")
-		_ = run("ip", "link", "del", bridge)
-		return err
-	}
-	if err := run("ip", "link", "set", guestTap, "up"); err != nil {
-		_ = run("ip", "link", "set", bridge, "down")
-		_ = run("ip", "tuntap", "del", hostTap, "mode", "tap")
-		_ = run("ip", "tuntap", "del", guestTap, "mode", "tap")
-		_ = run("ip", "link", "del", bridge)
-		return err
-	}
-	if err := run("ip", "link", "set", hostTap, "up"); err != nil {
-		_ = run("ip", "link", "set", bridge, "down")
-		_ = run("ip", "link", "set", guestTap, "down")
-		_ = run("ip", "tuntap", "del", hostTap, "mode", "tap")
-		_ = run("ip", "tuntap", "del", guestTap, "mode", "tap")
-		_ = run("ip", "link", "del", bridge)
-		return err
-	}
-	return nil
-}
-
-// deleteTapBridge tears down the bridge and both TAP interfaces.
-// Best-effort: individual errors are silently ignored (interfaces may already
-// be gone if the VMM crashed). Called from teardownSandboxNet.
-func deleteTapBridge(guestTap, hostTap, bridge string) {
-	run := func(args ...string) {
-		_ = exec.Command(args[0], args[1:]...).Run()
-	}
-	run("ip", "link", "set", bridge, "down")
-	run("ip", "link", "set", guestTap, "down")
-	run("ip", "link", "set", hostTap, "down")
-	run("ip", "link", "del", guestTap)
-	run("ip", "link", "del", hostTap)
-	run("ip", "link", "del", bridge)
-}
-
 // teardownSandboxNet kills the netns child process group (child + CH
 // grandchild), waits for exit, and closes PerimConn. Idempotent. Must NOT be
 // called while d.mu is held (teardown acquires d.mu internally to remove the
 // entry). Kernel auto-reclaims the user+network namespace and all interfaces
-// (nxg-*, nxh-*, nxb-*) when the last process in the netns exits.
+// when the last process in the netns exits.
 func (d *CHDriver) teardownSandboxNet(id domain.SandboxID) {
 	d.mu.Lock()
 	ns, ok := d.nets[id]
@@ -547,7 +367,6 @@ func (d *CHDriver) NetnsState(id domain.SandboxID) (driver.NetnsIdentity, bool) 
 		ChildPID:       rt.ChildPID,
 		ChildPGID:      rt.ChildPGID,
 		ChildStartTime: rt.ChildStartTime,
-		GuestTap:       rt.GuestTap,
 		VhostSocket:    rt.VhostSocket,
 		APISocket:      rt.APISocket,
 		ControlSocket:  rt.ControlSocket,
@@ -556,15 +375,6 @@ func (d *CHDriver) NetnsState(id domain.SandboxID) (driver.NetnsIdentity, bool) 
 }
 
 var _ driver.NetnsStateProvider = (*CHDriver)(nil)
-
-// SetNetMode applies the sandbox's recorded net mode; call before Start.
-func (d *CHDriver) SetNetMode(mode domain.NetMode) {
-	d.mu.Lock()
-	d.cfg.NetMode = mode
-	d.mu.Unlock()
-}
-
-var _ driver.NetModeSetter = (*CHDriver)(nil)
 
 // AdoptRuntime installs an already-adopted [NetnsRuntime] into the driver's
 // in-memory state, so [CHDriver.Observe], [CHDriver.Stop], and

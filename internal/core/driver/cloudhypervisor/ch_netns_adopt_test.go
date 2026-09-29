@@ -20,7 +20,7 @@ import (
 
 // ── AdoptNetnsRuntime construction ──────────────────────────────────────────
 
-func TestAdoptNetnsRuntime_ModeAware(t *testing.T) {
+func TestAdoptNetnsRuntime_VhostSocket(t *testing.T) {
 	spawn := func(t *testing.T) (int, uint64) {
 		t.Helper()
 		cmd := exec.Command("sleep", "30")
@@ -40,36 +40,24 @@ func TestAdoptNetnsRuntime_ModeAware(t *testing.T) {
 		return pid, st
 	}
 
-	t.Run("vhost-user adopts with socket and no tap", func(t *testing.T) {
+	t.Run("adopts with socket", func(t *testing.T) {
 		perimFile, pumpFile, err := netnsSocketpairFiles()
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { pumpFile.Close() })
 		pid, st := spawn(t)
-		rt, err := AdoptVhostNetnsRuntime(context.Background(), pid, pid, st, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
+		rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, st, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
 		if err != nil {
-			t.Fatalf("AdoptVhostNetnsRuntime: %v", err)
+			t.Fatalf("AdoptNetnsRuntime: %v", err)
 		}
 		t.Cleanup(func() { rt.PerimConn.Close() })
-		if rt.VhostSocket != "/tmp/vhost.sock" || rt.GuestTap != "" {
-			t.Errorf("VhostSocket=%q GuestTap=%q", rt.VhostSocket, rt.GuestTap)
+		if rt.VhostSocket != "/tmp/vhost.sock" {
+			t.Errorf("VhostSocket=%q", rt.VhostSocket)
 		}
 	})
 
-	t.Run("vhost-user refuses empty socket", func(t *testing.T) {
-		perimFile, pumpFile, err := netnsSocketpairFiles()
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { pumpFile.Close(); perimFile.Close() })
-		pid, st := spawn(t)
-		if _, err := AdoptVhostNetnsRuntime(context.Background(), pid, pid, st, "", "/tmp/nx-test.sock", perimFile); err == nil {
-			t.Fatal("vhost adopt with empty socket accepted")
-		}
-	})
-
-	t.Run("tap with empty GuestTap still refused", func(t *testing.T) {
+	t.Run("refuses empty socket", func(t *testing.T) {
 		perimFile, pumpFile, err := netnsSocketpairFiles()
 		if err != nil {
 			t.Fatal(err)
@@ -77,14 +65,14 @@ func TestAdoptNetnsRuntime_ModeAware(t *testing.T) {
 		t.Cleanup(func() { pumpFile.Close(); perimFile.Close() })
 		pid, st := spawn(t)
 		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, st, "", "/tmp/nx-test.sock", perimFile)
-		if err == nil || !strings.Contains(err.Error(), "guestTap is empty") {
+		if err == nil || !strings.Contains(err.Error(), "vhostSocket is empty") {
 			t.Fatalf("err = %v", err)
 		}
 	})
 }
 
 // TestAdoptNetnsRuntime_Rebuilds verifies that AdoptNetnsRuntime wires the
-// four persisted values (childPID, childPGID, guestTap, apiSocket) plus the
+// four persisted values (childPID, childPGID, vhostSocket, apiSocket) plus the
 // transferred perimeter fd into an equivalent NetnsRuntime, with cmd left
 // nil (the non-parent marker Stop branches on).
 func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
@@ -111,7 +99,7 @@ func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
 		t.Fatalf("readProcStartTime(%d): %v", pid, err)
 	}
 
-	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, startTime, "nxg-test", "/tmp/nx-test.sock", perimFile)
+	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, startTime, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}
@@ -126,8 +114,8 @@ func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
 	if rt.ChildStartTime != startTime {
 		t.Errorf("ChildStartTime = %d, want %d", rt.ChildStartTime, startTime)
 	}
-	if rt.GuestTap != "nxg-test" {
-		t.Errorf("GuestTap = %q, want %q", rt.GuestTap, "nxg-test")
+	if rt.VhostSocket != "/tmp/vhost.sock" {
+		t.Errorf("VhostSocket = %q, want %q", rt.VhostSocket, "/tmp/vhost.sock")
 	}
 	if rt.APISocket != "/tmp/nx-test.sock" {
 		t.Errorf("APISocket = %q, want %q", rt.APISocket, "/tmp/nx-test.sock")
@@ -156,7 +144,7 @@ func TestAdoptNetnsRuntime_Rebuilds(t *testing.T) {
 // accepted into a NetnsRuntime with a nil PerimConn (which would panic or
 // hang the first time a caller reads guest frames).
 func TestAdoptNetnsRuntime_RejectsMissingPerimFile(t *testing.T) {
-	_, err := AdoptNetnsRuntime(context.Background(), 100, 100, 0, "nxg-test", "/tmp/nx-test.sock", nil)
+	_, err := AdoptNetnsRuntime(context.Background(), 100, 100, 0, "/tmp/vhost.sock", "/tmp/nx-test.sock", nil)
 	if err == nil {
 		t.Fatal("expected error for nil perimFile, got nil")
 	}
@@ -186,7 +174,7 @@ func TestAdoptNetnsRuntime_RejectsNonPositivePIDs(t *testing.T) {
 				t.Fatalf("netnsSocketpairFiles: %v", err)
 			}
 			defer pumpFile.Close()
-			_, err = AdoptNetnsRuntime(context.Background(), tc.childPID, tc.childPGID, 0, "nxg-test", "/tmp/nx-test.sock", perimFile)
+			_, err = AdoptNetnsRuntime(context.Background(), tc.childPID, tc.childPGID, 0, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
 			perimFile.Close()
 			if err == nil {
 				t.Errorf("expected error for %s, got nil", tc.name)
@@ -227,7 +215,7 @@ func TestAdoptNetnsRuntime_RejectsZeroStartTime(t *testing.T) {
 	defer pumpFile.Close()
 	defer perimFile.Close()
 
-	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, 0, "nxg-test", "/tmp/nx-test.sock", perimFile)
+	rt, err := AdoptNetnsRuntime(context.Background(), pid, pid, 0, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
 	if err == nil {
 		rt.PerimConn.Close()
 		t.Fatal("adoption with childStartTime=0 was ACCEPTED; the pid-reuse guard is disarmed")
@@ -277,7 +265,7 @@ func TestAdoptNetnsRuntime_RejectsStaleStartTime(t *testing.T) {
 		}
 		defer pumpFile.Close()
 
-		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, wrongST, "nxg-test", "/tmp/nx-test.sock", perimFile)
+		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, wrongST, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
 		perimFile.Close()
 		if err == nil {
 			t.Errorf("expected error for starttime mismatch (real=%d, passed=%d), got nil", realST, wrongST)
@@ -319,7 +307,7 @@ func TestAdoptNetnsRuntime_RejectsStaleStartTime(t *testing.T) {
 		defer pumpFile.Close()
 
 		// Even with the correct savedST, the pid is gone → must be rejected.
-		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, savedST, "nxg-test", "/tmp/nx-test.sock", perimFile)
+		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, savedST, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
 		perimFile.Close()
 		if err == nil {
 			t.Errorf("expected error for vanished pid %d (st=%d), got nil", pid, savedST)
@@ -439,7 +427,7 @@ func TestStop_AdoptedRuntime_KillsAndConfirms(t *testing.T) {
 		t.Fatalf("readProcStartTime(%d): %v", pgid, err)
 	}
 
-	rt, err := AdoptNetnsRuntime(context.Background(), pgid, pgid, childST, "nxg-test", "/tmp/nx-test.sock", perimFile)
+	rt, err := AdoptNetnsRuntime(context.Background(), pgid, pgid, childST, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
 	if err != nil {
 		t.Fatalf("AdoptNetnsRuntime: %v", err)
 	}
@@ -516,12 +504,12 @@ func TestStop_ParentOwnedRuntime_Unaffected(t *testing.T) {
 	}
 
 	rt := &NetnsRuntime{
-		PerimConn: perimConn,
-		APISocket: "/tmp/nx-test.sock",
-		GuestTap:  "nxg-test",
-		ChildPID:  pgid,
-		ChildPGID: pgid,
-		cmd:       cmd,
+		PerimConn:   perimConn,
+		APISocket:   "/tmp/nx-test.sock",
+		VhostSocket: "/tmp/vhost.sock",
+		ChildPID:    pgid,
+		ChildPGID:   pgid,
+		cmd:         cmd,
 	}
 
 	done := make(chan struct{})

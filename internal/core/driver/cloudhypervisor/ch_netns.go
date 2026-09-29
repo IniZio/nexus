@@ -1,5 +1,5 @@
-// ch_netns.go — "netns-runtime" mechanism: run the CH VMM + TAP/bridge +
-// frame pump inside a per-sandbox rootless user+network namespace so filtered
+// ch_netns.go — "netns-runtime" mechanism: run the CH VMM + vhost-user NIC
+// backend + frame pump inside a per-sandbox rootless user+network namespace so filtered
 // egress needs zero host CAP_NET_ADMIN.
 //
 // # Design
@@ -15,8 +15,8 @@
 //
 // Child (re-exec'd, inside user+network namespace):
 //  4. Detects NEXUS_NETNS_RUN=1. Has effective CAP_NET_ADMIN in-ns (uid 0).
-//  5. Calls createTapBridge → openHostTap → spawnVMM (CH inherits netns) →
-//     tapPump(hostTapFile, pumpConn).
+//  5. Starts the vhost-user slot → spawnVMM (CH inherits netns) →
+//     framePump(slot, pumpConn).
 //
 // The CH API socket lives under /tmp which is in the shared mount namespace, so
 // the parent can reach it from the host netns without any special handoff.
@@ -57,21 +57,12 @@ const (
 	NetnsRunEnv = "NEXUS_NETNS_RUN"
 
 	netnsEnvPumpFD         = "NEXUS_NETNS_PUMP_FD"
-	netnsEnvGuestTap       = "NEXUS_NETNS_GUEST_TAP"
-	netnsEnvHostTap        = "NEXUS_NETNS_HOST_TAP"
-	netnsEnvBridge         = "NEXUS_NETNS_BRIDGE"
 	netnsEnvAPISocket      = "NEXUS_NETNS_API_SOCKET"
 	netnsEnvCHBin          = "NEXUS_NETNS_CH_BIN"
 	netnsEnvStartTimeoutMS = "NEXUS_NETNS_START_TIMEOUT_MS"
 
-	// NetnsEnvGuestTap and NetnsEnvAPISocket are exported aliases of the
-	// unexported env-var names above, for ticket 11's netns identity
-	// backfill (internal/supervisor/netns_backfill.go). The backfill reads
-	// these two vars — plus NetnsRunEnv — from a live candidate child's
-	// /proc/<pid>/environ, verbatim from the same env StartNetnsRuntime set
-	// at spawn time (ch_netns.go:217-232), rather than inferring them from
-	// the process tree's shape.
-	NetnsEnvGuestTap  = netnsEnvGuestTap
+	// NetnsEnvAPISocket is the exported alias of netnsEnvAPISocket, read from
+	// a live child's /proc/<pid>/environ by the reaper.
 	NetnsEnvAPISocket = netnsEnvAPISocket
 
 	// netnsEnvControlDir and netnsEnvSandboxID carry what the child needs to
@@ -89,14 +80,12 @@ const (
 	// discards the stream while still draining the pipe (pipe-buffer safety).
 	netnsEnvConsoleLog = "NEXUS_NETNS_CONSOLE_LOG"
 
-	// netnsEnvNoNet signals the child to skip tap/bridge creation and the frame
+	// netnsEnvNoNet signals the child to skip the vhost-user slot and the frame
 	// pump; CH boots in an empty netns with no virtio-net device. Set to "1"
-	// by StartNetnsRuntime when Config.NetMode is "none".
+	// by StartNetnsRuntime when Config.NoNet is set.
 	netnsEnvNoNet = "NEXUS_NETNS_NO_NET"
 
-	// netnsEnvNetMode marks the child's NIC backing; netnsEnvVhostSocket is the
-	// vhost-user socket it listens on. Absent means tap.
-	netnsEnvNetMode     = "NEXUS_NETNS_NET_MODE"
+	// netnsEnvVhostSocket is the vhost-user socket the child listens on.
 	netnsEnvVhostSocket = "NEXUS_NETNS_VHOST_SOCKET"
 
 	// netnsEnvRestoreURL carries the "file://<dir>" URL the child should pass
@@ -104,12 +93,12 @@ const (
 	// boot mode: it just spawns CH and pumps frames; the parent issues
 	// vm.create + vm.boot over the shared API socket. When set (restore mode),
 	// the child issues vm.restore before starting the frame pump, so the VM is
-	// Running by the time tapPump blocks.
+	// Running by the time framePump blocks.
 	netnsEnvRestoreURL = "NEXUS_NETNS_RESTORE_URL"
 )
 
 // NetnsRuntime is the parent-side handle to a running netns-runtime child.
-// The child hosts the CH VMM, TAP/bridge topology, and frame pump inside an
+// The child hosts the CH VMM, vhost-user NIC backend, and frame pump inside an
 // isolated user+network namespace. The parent communicates with CH via the
 // shared API socket and receives guest Ethernet frames via PerimConn.
 type NetnsRuntime struct {
@@ -123,11 +112,8 @@ type NetnsRuntime struct {
 	// vm.create and vm.boot before reading frames from PerimConn.
 	APISocket string
 
-	// GuestTap is the guest-side TAP interface name to include in vm.create.
-	// Empty in vhost-user mode.
-	GuestTap string
-
-	// VhostSocket is the vhost-user net socket CH connects to. Empty in tap mode.
+	// VhostSocket is the vhost-user net socket CH connects to. Empty when
+	// the runtime has no NIC (Config.NoNet).
 	VhostSocket string
 
 	// ChildPID is the OS pid of the netns child process (the re-exec'd
@@ -282,7 +268,7 @@ func netnsSocketpairFiles() (perimFile, pumpFile *os.File, err error) {
 }
 
 // StartNetnsRuntime re-execs the current binary inside a new user+network
-// namespace to host the CH VMM, TAP/bridge topology, and frame pump.
+// namespace to host the CH VMM, vhost-user NIC backend, and frame pump.
 //
 // restoreURL selects the child's operating mode:
 //   - "" (empty, boot mode): child spawns CH and pumps frames; the caller must
@@ -296,13 +282,8 @@ func netnsSocketpairFiles() (perimFile, pumpFile *os.File, err error) {
 // (create) and the parent (connect); /tmp satisfies this because only the
 // mount namespace is shared.
 func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, socketPath, restoreURL string) (*NetnsRuntime, error) {
-	if cfg.NetMode == "none" {
+	if cfg.NoNet {
 		return startNetnsRuntimeNoNet(ctx, cfg, id, socketPath)
-	}
-	vhost := cfg.NetMode == domain.NetModeVhostUser
-	var guestTap, hostTap, bridge string
-	if !vhost {
-		guestTap, hostTap, bridge = tapIfNames(id)
 	}
 
 	// Create the socketpair as raw *os.File for ExtraFiles handoff.
@@ -328,8 +309,7 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	// (fd 0/1/2 are stdin/stdout/stderr; ExtraFiles[0] is the next available fd.)
 	const pumpFDInChild = 3
 
-	// Inherit PATH so the child can locate system tools (ip, etc.) used by
-	// createTapBridge and other helpers. Deliberately omit all other env vars
+	// Inherit PATH so the child can locate system tools. Deliberately omit all other env vars
 	// to keep the child's environment minimal and auditable.
 	pathEnv := "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	if p := os.Getenv("PATH"); p != "" {
@@ -348,7 +328,7 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	// frame pump — mid-exec, producing:
 	//
 	//   "agent: pump: read frame: EOF"                     (vsock dies)
-	//   "cannot receive packets from @...: i/o timeout"   (TAP conn dead)
+	//   "cannot receive packets from @...: i/o timeout"   (pump conn dead)
 	//
 	// The ctx here is used only to detect cancellation that happened BEFORE or
 	// DURING cmd.Start(); see the explicit ctx.Err() check below.
@@ -372,18 +352,8 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		fmt.Sprintf("%s=%s", netnsEnvSandboxID, id.String()),
 		pathEnv,
 	}
-	vhostSocket := ""
-	if vhost {
-		vhostSocket = VhostSocketPath(controlDir, id.String())
-		cmd.Env = append(cmd.Env,
-			fmt.Sprintf("%s=%s", netnsEnvNetMode, domain.NetModeVhostUser),
-			fmt.Sprintf("%s=%s", netnsEnvVhostSocket, vhostSocket))
-	} else {
-		cmd.Env = append(cmd.Env,
-			fmt.Sprintf("%s=%s", netnsEnvGuestTap, guestTap),
-			fmt.Sprintf("%s=%s", netnsEnvHostTap, hostTap),
-			fmt.Sprintf("%s=%s", netnsEnvBridge, bridge))
-	}
+	vhostSocket := VhostSocketPath(controlDir, id.String())
+	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", netnsEnvVhostSocket, vhostSocket))
 	// Restore mode: pass the snapshot URL so RunNetnsChild issues vm.restore
 	// after spawning CH instead of waiting for the parent to call vm.create+boot.
 	if restoreURL != "" {
@@ -457,7 +427,6 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	rt := &NetnsRuntime{
 		PerimConn:      perimConn,
 		APISocket:      socketPath,
-		GuestTap:       guestTap,
 		VhostSocket:    vhostSocket,
 		ChildPID:       childPgid,
 		ChildPGID:      childPgid,
@@ -477,7 +446,7 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 }
 
 // startNetnsRuntimeNoNet re-execs into CLONE_NEWUSER|CLONE_NEWNET without
-// creating any tap/bridge. CH runs in an empty netns with no virtio-net device.
+// a vhost-user slot. CH runs in an empty netns with no virtio-net device.
 // PerimConn is nil on the returned runtime; GuestNetworkFD returns a null conn.
 func startNetnsRuntimeNoNet(ctx context.Context, cfg Config, id domain.SandboxID, socketPath string) (*NetnsRuntime, error) {
 	self, err := os.Executable()
@@ -535,7 +504,6 @@ func startNetnsRuntimeNoNet(ctx context.Context, cfg Config, id domain.SandboxID
 	rt := &NetnsRuntime{
 		PerimConn:      nil,
 		APISocket:      socketPath,
-		GuestTap:       "",
 		ChildPID:       childPgid,
 		ChildPGID:      childPgid,
 		ChildStartTime: childStartTime,
@@ -619,7 +587,7 @@ func ReadProcStat(pid int) (ProcStat, error) {
 // AdoptNetnsRuntime rebuilds a NetnsRuntime for a netns child this process
 // did NOT fork, from state persisted by the process that did — the four
 // values [StartNetnsRuntime] captures on domain.Sandbox (NetnsChildPID,
-// NetnsChildPGID, GuestTapName, CHAPISocket) — plus the perimeter fd
+// NetnsChildPGID, VhostSocket, CHAPISocket) — plus the perimeter fd
 // transferred over the handoff transport.
 //
 // perimFile is the *os.File returned by internal/supervisor/handoff.Accept
@@ -641,20 +609,7 @@ func ReadProcStat(pid int) (ProcStat, error) {
 // The returned NetnsRuntime has cmd == nil: it was not produced by
 // exec.Command in this process, so Stop() cannot cmd.Wait() on it and takes
 // the non-parent confirmation path instead (see Stop).
-func AdoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartTime uint64, guestTap, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
-	return adoptNetnsRuntime(ctx, childPID, childPGID, childStartTime, guestTap, "", apiSocket, perimFile)
-}
-
-// AdoptVhostNetnsRuntime is [AdoptNetnsRuntime] for a vhost-user sandbox: the
-// NIC identity is the vhost socket path, not a tap name.
-func AdoptVhostNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartTime uint64, vhostSocket, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
-	if vhostSocket == "" {
-		return nil, fmt.Errorf("cloudhypervisor: AdoptVhostNetnsRuntime: vhostSocket is empty")
-	}
-	return adoptNetnsRuntime(ctx, childPID, childPGID, childStartTime, "", vhostSocket, apiSocket, perimFile)
-}
-
-func adoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartTime uint64, guestTap, vhostSocket, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
+func AdoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartTime uint64, vhostSocket, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
 	if perimFile == nil {
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: perimFile is nil")
 	}
@@ -667,8 +622,8 @@ func adoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartT
 	if apiSocket == "" {
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: apiSocket is empty")
 	}
-	if guestTap == "" && vhostSocket == "" {
-		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: guestTap is empty")
+	if vhostSocket == "" {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: vhostSocket is empty")
 	}
 
 	// PID-reuse guard: verify the process at childPID is still the same process
@@ -706,7 +661,6 @@ func adoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartT
 	rt := &NetnsRuntime{
 		PerimConn:      perimConn,
 		APISocket:      apiSocket,
-		GuestTap:       guestTap,
 		VhostSocket:    vhostSocket,
 		ChildPID:       childPID,
 		ChildPGID:      childPGID,
@@ -747,7 +701,7 @@ func (rt *NetnsRuntime) ChildStderr() string {
 //
 // Sending the kill is not enough: the caller needs to know the VM is
 // actually gone before it can safely reuse the sandbox's resources (socket
-// path, TAP names, cache-disk slot). A NetnsRuntime built by
+// path, cache-disk slot). A NetnsRuntime built by
 // [StartNetnsRuntime] can cmd.Wait() to get that confirmation, because this
 // process is cmd's parent. A NetnsRuntime built by [AdoptNetnsRuntime]
 // (cmd == nil) is not the child's parent — wait(2) only works on your own
@@ -798,11 +752,11 @@ func (rt *NetnsRuntime) Stop() {
 			// type would require updating all callers (t.Cleanup, goroutines,
 			// ch_net.go teardownSandboxNet) which span multiple slices; instead
 			// we log at warn so operators can detect a group that failed to
-			// reap within the timeout — which means TAP names, the socket path,
+			// reap within the timeout — which means the socket path
 			// and cache-disk slot may be transiently unavailable.
 			if !waitForGroupExit(rt.ChildPGID, netnsAdoptStopTimeout) {
 				slog.Warn("cloudhypervisor: Stop: process group did not confirm exit within timeout; "+
-					"socket, TAP, and cache-disk slot may be transiently unavailable",
+					"socket and cache-disk slot may be transiently unavailable",
 					"pgid", rt.ChildPGID,
 					"timeout", netnsAdoptStopTimeout)
 			}
@@ -846,7 +800,7 @@ func waitForGroupExit(pgid int, timeout time.Duration) bool {
 }
 
 // runNetnsChildNoNet is the child-side no-net entry point: spawns CH in the
-// empty netns without any tap/bridge, waits for CH to exit, then calls
+// empty netns without a NIC, waits for CH to exit, then calls
 // os.Exit(0). No packet pump or control socket is started.
 func runNetnsChildNoNet() {
 	socketPath := os.Getenv(netnsEnvAPISocket)
@@ -893,8 +847,8 @@ func runNetnsChildNoNet() {
 // It is invoked when the re-exec'd process detects NetnsRunEnv=1. It runs
 // entirely inside the new user+network namespace with effective CAP_NET_ADMIN.
 //
-// Sequence: createTapBridge → openHostTap → spawnVMM → tapPump (blocks).
-// The process exits when tapPump returns (both fds closed by parent teardown).
+// Sequence: startVhostSlot → spawnVMM → framePump (blocks).
+// The process exits when framePump returns (both fds closed by parent teardown).
 //
 // S1: wire this sentinel dispatch into cmd/nexus/main.go
 func RunNetnsChild() {
@@ -907,13 +861,11 @@ func RunNetnsChild() {
 		fmt.Fprintf(os.Stderr, "netns child: parse %s: %v\n", netnsEnvPumpFD, err)
 		os.Exit(1)
 	}
-	vhostSocket := ""
-	if os.Getenv(netnsEnvNetMode) == string(domain.NetModeVhostUser) {
-		vhostSocket = os.Getenv(netnsEnvVhostSocket)
+	vhostSocket := os.Getenv(netnsEnvVhostSocket)
+	if vhostSocket == "" {
+		fmt.Fprintf(os.Stderr, "netns child: %s is empty\n", netnsEnvVhostSocket)
+		os.Exit(1)
 	}
-	guestTap := os.Getenv(netnsEnvGuestTap)
-	hostTap := os.Getenv(netnsEnvHostTap)
-	bridge := os.Getenv(netnsEnvBridge)
 	socketPath := os.Getenv(netnsEnvAPISocket)
 	chBin := os.Getenv(netnsEnvCHBin)
 
@@ -934,30 +886,12 @@ func RunNetnsChild() {
 	}
 	defer pumpConn.Close()
 
-	var hostTapFile io.ReadWriteCloser // the vhost slot stands in for the tap fd
-	if vhostSocket != "" {
-		slot, serr := startVhostSlot(vhostSocket)
-		if serr != nil {
-			fmt.Fprintf(os.Stderr, "netns child: vhost-user socket: %v\n", serr)
-			os.Exit(1)
-		}
-		defer slot.Close()
-		hostTapFile = slot
-	} else {
-		// createTapBridge calls applySandboxNetSysctls (LEAK-TIGHT). No
-		// deleteTapBridge: the kernel destroys the netns interfaces on exit.
-		if err := createTapBridge(guestTap, hostTap, bridge); err != nil {
-			fmt.Fprintf(os.Stderr, "netns child: createTapBridge: %v\n", err)
-			os.Exit(1)
-		}
-		tapFile, err := openHostTap(hostTap)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "netns child: openHostTap(%s): %v\n", hostTap, err)
-			os.Exit(1)
-		}
-		defer tapFile.Close()
-		hostTapFile = tapFile
+	slot, serr := startVhostSlot(vhostSocket)
+	if serr != nil {
+		fmt.Fprintf(os.Stderr, "netns child: vhost-user socket: %v\n", serr)
+		os.Exit(1)
 	}
+	defer slot.Close()
 
 	// Spawn CH inside the netns (CH inherits the child's netns).
 	// spawnVMMInGroup sets Setpgid:false so CH inherits this child's process
@@ -1007,20 +941,18 @@ func RunNetnsChild() {
 	// Reap CH and exit this process when CH dies.
 	//
 	// Without this, a CH crash or kill leaves a zombie grandchild and this
-	// process stuck in tapPump forever — an orphaned launcher with ppid 1 and
+	// process stuck in framePump forever — an orphaned launcher with ppid 1 and
 	// a Z-state child.
 	//
-	// pumpConn.Close() alone is insufficient: tapPump has two goroutines and
-	// waits for BOTH to exit. Closing pumpConn unblocks the conn→TAP goroutine
-	// (net.Conn read returns an error). But the TAP→conn goroutine reads from
-	// hostTapFile which was opened with O_RDWR (no O_NONBLOCK) — a blocking fd
-	// that Go's netpoller does not manage. Closing hostTapFile from this
-	// goroutine does not interrupt the blocking read() in the TAP→conn
-	// goroutine, so tapPump never returns regardless.
+	// pumpConn.Close() alone is insufficient: framePump has two goroutines and
+	// waits for BOTH to exit. Closing pumpConn unblocks the conn→NIC goroutine
+	// (net.Conn read returns an error), but the NIC→conn goroutine may sit in
+	// a blocking read on the vhost slot that closing from this goroutine does
+	// not interrupt, so framePump never returns regardless.
 	//
 	// os.Exit(0) is the correct termination path: this process's sole purpose
 	// was to host CH and pump frames; once CH exits there is nothing left to do.
-	// All goroutines — including the stuck TAP read — are torn down by the
+	// All goroutines — including the stuck NIC read — are torn down by the
 	// process exit, and the kernel closes every fd.
 	//
 	// When rt.Stop() kills the whole process group first: this goroutine is
@@ -1058,9 +990,9 @@ func RunNetnsChild() {
 	}()
 
 	// Wrap the pump end so a replacement supervisor can swap a fresh one in
-	// after the original supervisor dies, WITHOUT tapPump ever returning
+	// after the original supervisor dies, WITHOUT framePump ever returning
 	// (returning here falls through to the os.Exit(0) above, which takes CH
-	// and the VM down via Pdeathsig — see the tapPump doc comment).
+	// and the VM down via Pdeathsig — see the framePump doc comment).
 	pump := newSwappableConn(pumpConn)
 
 	// Serve the control socket for the life of this child. Without it the VM
@@ -1079,8 +1011,8 @@ func RunNetnsChild() {
 	}
 
 	// Step 5 (cont.): run the frame pump. Blocks until both fds are closed.
-	// tapPump copies Ethernet frames between the host TAP fd and the pump-end
+	// framePump copies Ethernet frames between the vhost slot and the pump-end
 	// of the socketpair. The parent reads frames from the perimeter end.
-	tapPump(hostTapFile, pump)
-	// tapPump returned; both goroutines exited. Child exits cleanly.
+	framePump(slot, pump)
+	// framePump returned; both goroutines exited. Child exits cleanly.
 }

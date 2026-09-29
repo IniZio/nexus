@@ -86,7 +86,6 @@ type NetnsIdentity struct { // everything to re-acquire running VM without reboo
 	ChildPID       int
 	ChildPGID      int
 	ChildStartTime uint64
-	GuestTap       string
 	VhostSocket    string
 	APISocket      string
 	ControlSocket  string

@@ -12,54 +12,21 @@ import (
 	"github.com/IniZio/nexus/internal/core/driver"
 )
 
-// errNoNet is returned by findNetTap when config.json has no "net" field or
-// the net array is empty. This is expected for vsock-only VMs; callers should
-// skip net isolation in that case, exactly as errNoDisks skips disk isolation
-// for initramfs-only VMs.
+// errNoNet is returned by snapshotNetBackend when config.json has no "net"
+// field or the net array is empty. This is expected for vsock-only VMs;
+// callers should skip net isolation in that case, exactly as errNoDisks skips
+// disk isolation for initramfs-only VMs.
 var errNoNet = errors.New("no net devices configured in config.json")
-
-// findNetTap parses a CH config.json blob and returns the "tap" name of the
-// first net device entry.
-//
-// Returns errNoNet when config.json has no "net" field or the array is empty —
-// the caller should skip net isolation for vsock-only snapshots.
-func findNetTap(configJSON []byte) (string, error) {
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(configJSON, &top); err != nil {
-		return "", fmt.Errorf("unmarshal config.json: %w", err)
-	}
-	netRaw, ok := top["net"]
-	if !ok {
-		return "", errNoNet
-	}
-	var nets []map[string]json.RawMessage
-	if err := json.Unmarshal(netRaw, &nets); err != nil {
-		return "", fmt.Errorf("unmarshal net array: %w", err)
-	}
-	if len(nets) == 0 {
-		return "", errNoNet
-	}
-	tapRaw, ok := nets[0]["tap"]
-	if !ok {
-		return "", fmt.Errorf("net[0] has no \"tap\" field")
-	}
-	var tap string
-	if err := json.Unmarshal(tapRaw, &tap); err != nil {
-		return "", fmt.Errorf("decode net[0].tap: %w", err)
-	}
-	return tap, nil
-}
 
 type netBackend struct {
 	mode domain.NetMode
-	ref  string // tap name or vhost-user socket path
+	ref  string // vhost-user socket path
 }
 
 // snapshotNetBackend derives the mode from net[0]'s shape; errNoNet if netless.
 func snapshotNetBackend(configJSON []byte) (netBackend, error) {
 	var top struct {
 		Net []struct {
-			Tap       string `json:"tap"`
 			VhostUser bool   `json:"vhost_user"`
 			Socket    string `json:"vhost_socket"`
 		} `json:"net"`
@@ -77,22 +44,15 @@ func snapshotNetBackend(configJSON []byte) (netBackend, error) {
 		}
 		return netBackend{mode: domain.NetModeVhostUser, ref: n.Socket}, nil
 	}
-	if n.Tap == "" {
-		return netBackend{}, fmt.Errorf("net[0] has no \"tap\" field")
-	}
-	return netBackend{mode: domain.NetModeTap, ref: n.Tap}, nil
+	return netBackend{}, fmt.Errorf("net[0] is not vhost_user: tap networking was removed in S9d; run nexus stop X && nexus start X to migrate")
 }
 
 type netRewrite struct {
-	vhost         bool
 	parent, child string
 }
 
 func (r netRewrite) apply(configJSON []byte) ([]byte, error) {
-	if r.vhost {
-		return rewriteConfigNetVhostSocket(configJSON, r.parent, r.child)
-	}
-	return rewriteConfigNetTap(configJSON, r.parent, r.child)
+	return rewriteConfigNetVhostSocket(configJSON, r.parent, r.child)
 }
 
 // SnapshotNetMode reports a snapshot's NIC mode (zero when netless).
@@ -109,21 +69,6 @@ func (d *CHDriver) SnapshotNetMode(snap artifact.Snapshot) (domain.NetMode, erro
 }
 
 var _ driver.SnapshotNetModer = (*CHDriver)(nil)
-
-// rewriteConfigNetTap returns a rewritten copy of configJSON in which the net
-// entry whose "tap" == oldTap has its "tap" replaced by newTap. All other
-// top-level fields and all other per-net-entry fields are preserved verbatim
-// via a map[string]json.RawMessage round-trip — unknown fields are never
-// dropped.
-//
-// If multiple net entries are present, only the first one matching oldTap is
-// rewritten; others are left unchanged. This mirrors the single-entry rewrite
-// used by rewriteConfigDiskPath.
-//
-// Returns an error if no net entry with tap == oldTap is found.
-func rewriteConfigNetTap(configJSON []byte, oldTap, newTap string) ([]byte, error) {
-	return rewriteConfigNetField(configJSON, "tap", oldTap, newTap)
-}
 
 func rewriteConfigNetVhostSocket(configJSON []byte, oldSocket, newSocket string) ([]byte, error) {
 	return rewriteConfigNetField(configJSON, "vhost_socket", oldSocket, newSocket)

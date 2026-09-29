@@ -15,11 +15,11 @@ import (
 	"time"
 )
 
-// newControlHarness stands up the REAL production pair: a live tapPump
+// newControlHarness stands up the REAL production pair: a live framePump
 // bridging a fake TAP socketpair to a swappable pump conn, plus a real
 // netnsControlServer bound on a real Unix socket serving that same pump.
 //
-// This is deliberately not a stand-in for the production call site. tapPump,
+// This is deliberately not a stand-in for the production call site. framePump,
 // newSwappableConn, startNetnsControlServer, and ReacquirePerimeter are the
 // exact functions RunNetnsChild and the supervisor use; only the TAP fd is
 // simulated (a socketpair, which is packet-mode like a real IFF_NO_PI tap),
@@ -82,7 +82,7 @@ func newControlHarness(t *testing.T) *controlHarness {
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(tapChild, pump)
+		framePump(tapChild, pump)
 	}()
 
 	h := &controlHarness{
@@ -96,7 +96,7 @@ func newControlHarness(t *testing.T) *controlHarness {
 		select {
 		case <-pumpDone:
 		case <-time.After(5 * time.Second):
-			t.Error("tapPump did not return after closePermanently")
+			t.Error("framePump did not return after closePermanently")
 		}
 	})
 	return h
@@ -122,7 +122,7 @@ func assertFrameReachesGuest(t *testing.T, perim net.Conn, tapGuest net.Conn, pa
 		t.Fatalf("write frame to perimeter: %v", err)
 	}
 	_ = tapGuest.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buf := make([]byte, tapBufSize)
+	buf := make([]byte, frameBufSize)
 	n, err := tapGuest.Read(buf)
 	if err != nil {
 		t.Fatalf("frame did not reach the guest (host→guest direction is dead): %v", err)
@@ -135,8 +135,8 @@ func assertFrameReachesGuest(t *testing.T, perim net.Conn, tapGuest net.Conn, pa
 // TestReacquire_RestoresHostToGuestAfterSupervisorDeath is the core proof:
 // after the supervisor's perimeter end is destroyed (simulating kill -9), the
 // host→guest direction is dead; after a re-acquisition through the control
-// socket it is live again, and tapPump NEVER returned — which is what keeps
-// the VM alive (a returned tapPump exits the child and kills CH via
+// socket it is live again, and framePump NEVER returned — which is what keeps
+// the VM alive (a returned framePump exits the child and kills CH via
 // Pdeathsig).
 func TestReacquire_RestoresHostToGuestAfterSupervisorDeath(t *testing.T) {
 	h := newControlHarness(t)
@@ -191,7 +191,7 @@ func TestReacquire_GuestToHostSurvivesSwap(t *testing.T) {
 		t.Fatalf("guest write: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buf := make([]byte, tapBufSize)
+	buf := make([]byte, frameBufSize)
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatalf("guest→host frame did not reach the new perimeter: %v", err)
@@ -470,9 +470,9 @@ func allZero(b []byte) bool {
 	return true
 }
 
-// TestTapPump_ConnGoroutineSurvivesConnDeath is the hazard-1 guard.
+// TestFramePump_ConnGoroutineSurvivesConnDeath is the hazard-1 guard.
 //
-// It deliberately does NOT assert "tapPump did not return": that property is
+// It deliberately does NOT assert "framePump did not return": that property is
 // held up by the OTHER goroutine (tapFd.Read is still blocked), so it stays
 // true even if the conn→tap goroutine exits, and a test asserting it would
 // pass against the very bug it is meant to catch.
@@ -482,7 +482,7 @@ func allZero(b []byte) bool {
 // has returned cannot be swapped into later; there is no stack left to
 // resume. The only way to observe "still alive" from outside is to swap a
 // fresh conn in and watch a frame come out of the tap.
-func TestTapPump_ConnGoroutineSurvivesConnDeath(t *testing.T) {
+func TestFramePump_ConnGoroutineSurvivesConnDeath(t *testing.T) {
 	tapChild, tapGuest := newTestConnPair(t)
 	perimChild, perimHost := newTestConnPair(t)
 
@@ -490,7 +490,7 @@ func TestTapPump_ConnGoroutineSurvivesConnDeath(t *testing.T) {
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		tapPump(tapChild, pump)
+		framePump(tapChild, pump)
 	}()
 
 	// The supervisor dies: its end of the socketpair goes away.
@@ -513,7 +513,7 @@ func TestTapPump_ConnGoroutineSurvivesConnDeath(t *testing.T) {
 	select {
 	case <-returned:
 	case <-time.After(5 * time.Second):
-		t.Fatal("tapPump did not return after closePermanently — real teardown would hang")
+		t.Fatal("framePump did not return after closePermanently — real teardown would hang")
 	}
 }
 
@@ -627,11 +627,11 @@ func TestControlSocketPath_DerivedFromSandboxID(t *testing.T) {
 // deleted" guard (the ticket-06 trap: deleting the production wiring left
 // two whole packages passing).
 //
-// The tests above exercise startNetnsControlServer and tapPump directly. That
+// The tests above exercise startNetnsControlServer and framePump directly. That
 // proves the mechanism works, but NOT that RunNetnsChild actually builds it —
 // delete the block in RunNetnsChild and every one of them still passes. This
 // test reads the production source and asserts the wiring is present: the
-// child must construct a swappable pump, pass THAT to tapPump, and start the
+// child must construct a swappable pump, pass THAT to framePump, and start the
 // control server on it.
 //
 // A source-level assertion is the right tool here specifically because the
@@ -653,7 +653,7 @@ func TestRunNetnsChild_WiresControlSocket(t *testing.T) {
 	for _, want := range []string{
 		"newSwappableConn(pumpConn)",
 		"startNetnsControlServer(",
-		"tapPump(hostTapFile, pump)",
+		"framePump(slot, pump)",
 		"go ctrl.Serve()",
 		"netnsEnvControlDir",
 		"netnsEnvSandboxID",
@@ -665,8 +665,8 @@ func TestRunNetnsChild_WiresControlSocket(t *testing.T) {
 
 	// The pre-swap form must be gone: passing the raw conn would compile but
 	// silently disable every swap.
-	if strings.Contains(fn, "tapPump(hostTapFile, pumpConn)") {
-		t.Error("RunNetnsChild still passes the raw pumpConn to tapPump; swaps would be impossible")
+	if strings.Contains(fn, "framePump(slot, pumpConn)") {
+		t.Error("RunNetnsChild still passes the raw pumpConn to framePump; swaps would be impossible")
 	}
 }
 

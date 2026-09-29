@@ -357,7 +357,7 @@ func TestVmFsConfig_NumQueues(t *testing.T) {
 func TestVmFsConfig_OmitWhenAbsent(t *testing.T) {
 	cfg := vmConfigWithNet{
 		vmConfig: vmConfig{Payload: vmPayloadConfig{Kernel: "/boot/vmlinux"}},
-		Net:      []vmNetConfig{{Tap: "tap0", Mac: "52:54:00:aa:bb:cc", NumQueues: 2}},
+		Net:      []vmNetConfig{{VhostUser: true, Socket: "/run/vhost.sock", Mac: "52:54:00:aa:bb:cc", NumQueues: 2}},
 	}
 	b, _ := json.Marshal(cfg)
 	var m map[string]any

@@ -700,7 +700,7 @@ func writeSyntheticVhostProcess(t *testing.T, procDir string, pid int, apiSocket
 		t.Fatal(err)
 	}
 	environ := "NEXUS_NETNS_RUN=1\x00NEXUS_NETNS_API_SOCKET=" + apiSocket +
-		"\x00NEXUS_NETNS_NET_MODE=vhost-user\x00NEXUS_NETNS_VHOST_SOCKET=" + vhostSocket + "\x00"
+		"\x00NEXUS_NETNS_VHOST_SOCKET=" + vhostSocket + "\x00"
 	if err := os.WriteFile(filepath.Join(pidDir, "environ"), []byte(environ), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,7 @@ package service_test
 // adoption identity fields for networked forked children (D-HSH-25, AC-1..4).
 //
 // The five fields — NetnsChildPID, NetnsChildPGID, NetnsChildStartTime,
-// GuestTapName, CHAPISocket — are the ones supervisor-upgrade guards at
+// VhostSocket, CHAPISocket — are the ones supervisor-upgrade guards at
 // cmd_supervisor_upgrade.go:159-165. A networked forked child missing any one
 // of them is treated identically to a vsock-only child: supervisor-upgrade
 // refuses with supervisor_upgrade_incomplete_netns_code. These tests prove the
@@ -90,7 +90,7 @@ var sentinel = driver.NetnsIdentity{
 	ChildPID:       12345,
 	ChildPGID:      12340,
 	ChildStartTime: 9876543210,
-	GuestTap:       "tap-test-0",
+	VhostSocket:    "/run/nexus/vhost-test.sock",
 	APISocket:      "/run/nexus/test.sock",
 	ControlSocket:  "/run/nexus/ctrl.sock",
 	ControlToken:   "tok-abc",
@@ -134,8 +134,8 @@ func TestFork_NetnsIdentity_Networked(t *testing.T) {
 	if child.NetnsChildStartTime != sentinel.ChildStartTime {
 		t.Errorf("NetnsChildStartTime = %d, want %d", child.NetnsChildStartTime, sentinel.ChildStartTime)
 	}
-	if child.GuestTapName != sentinel.GuestTap {
-		t.Errorf("GuestTapName = %q, want %q", child.GuestTapName, sentinel.GuestTap)
+	if child.VhostSocket != sentinel.VhostSocket {
+		t.Errorf("VhostSocket = %q, want %q", child.VhostSocket, sentinel.VhostSocket)
 	}
 	if child.CHAPISocket != sentinel.APISocket {
 		t.Errorf("CHAPISocket = %q, want %q", child.CHAPISocket, sentinel.APISocket)

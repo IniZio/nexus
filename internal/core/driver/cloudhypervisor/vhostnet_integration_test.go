@@ -157,7 +157,7 @@ func TestVhostNet_GuestNetworking(t *testing.T) {
 
 	fdsBefore := openFDCount(t)
 	id := domain.NewSandboxID()
-	cfg := Config{BinaryPath: chBin, SocketDir: dir, StartTimeout: 20 * time.Second, NetMode: domain.NetModeVhostUser}
+	cfg := Config{BinaryPath: chBin, SocketDir: dir, StartTimeout: 20 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	sock := filepath.Join(dir, "ch.sock")
@@ -166,8 +166,8 @@ func TestVhostNet_GuestNetworking(t *testing.T) {
 		t.Fatalf("StartNetnsRuntime: %v", err)
 	}
 	t.Cleanup(rt.Stop)
-	if rt.GuestTap != "" || rt.VhostSocket == "" {
-		t.Fatalf("rt tap=%q vhost=%q", rt.GuestTap, rt.VhostSocket)
+	if rt.VhostSocket == "" {
+		t.Fatal("rt has no vhost socket")
 	}
 
 	go func() { _ = stack.Run(ctx, id, rt.PerimConn) }()
@@ -194,13 +194,13 @@ func TestVhostNet_GuestNetworking(t *testing.T) {
 	vmcfg := vmConfig{
 		Payload: vmPayloadConfig{Kernel: kernel, Initramfs: initramfs, Cmdline: "console=ttyS0 panic=5"},
 		CPUs:    &vmCPUsConfig{BootVCPUs: 1, MaxVCPUs: 1},
-		Memory:  buildMemoryConfig(cfg, 256, true),
+		Memory:  buildMemoryConfig(cfg, 256),
 		Serial:  &vmSerialConfig{Mode: "File", File: serial},
 	}
 	if !vmcfg.Memory.Shared {
 		t.Fatal("memory not shared")
 	}
-	if err := c.VMCreateWithNet(ctx, vmcfg, nil, buildNets(cfg, rt.GuestTap, rt.VhostSocket, id), nil); err != nil {
+	if err := c.VMCreateWithNet(ctx, vmcfg, nil, buildNets(cfg, rt.VhostSocket, id), nil); err != nil {
 		t.Fatalf("vm.create: %v\nchild stderr:\n%s", err, rt.ChildStderr())
 	}
 	if err := c.VMBoot(ctx); err != nil {

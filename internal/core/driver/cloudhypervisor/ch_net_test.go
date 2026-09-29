@@ -2,14 +2,9 @@ package cloudhypervisor
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"net"
-	"os"
-	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -45,50 +40,25 @@ func setReadDeadline(t *testing.T, conn io.ReadWriteCloser, d time.Duration) {
 	}
 }
 
-// TestTapIfNames verifies that all three interface names are within the
-// IFNAMSIZ-1 (15-char) limit and are mutually distinct for diverse IDs.
-func TestTapIfNames(t *testing.T) {
-	ids := []domain.SandboxID{
-		{0x00, 0x00, 0x00, 0x00, 0x00}, // all zeros
-		{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
-		{0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF},
-		{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE},
-	}
-	for _, id := range ids {
-		g, h, b := tapIfNames(id)
-		for _, name := range []string{g, h, b} {
-			if len(name) > 15 {
-				t.Errorf("tapIfNames(%x): name %q len=%d exceeds IFNAMSIZ-1 (15)", id[:5], name, len(name))
-			}
-			if len(name) == 0 {
-				t.Errorf("tapIfNames(%x): got empty name", id[:5])
-			}
-		}
-		if g == h || g == b || h == b {
-			t.Errorf("tapIfNames(%x): names not distinct: g=%q h=%q b=%q", id[:5], g, h, b)
-		}
-	}
-}
-
-// TestTapPump_GuestToHost verifies that a frame written to the "fake TAP" side
+// TestFramePump_GuestToHost verifies that a frame written to the "fake TAP" side
 // appears intact on the perimeter side (guest→host direction).
 //
 // The key property: AF_UNIX SOCK_DGRAM is packet-mode, so one Write = one
 // datagram = one Read. No framing is needed and boundaries are preserved.
-func TestTapPump_GuestToHost(t *testing.T) {
-	// fakeTapA/B simulate the host TAP fd (packet-mode reads/writes).
+func TestFramePump_GuestToHost(t *testing.T) {
+	// fakeNICA/B simulate the host TAP fd (packet-mode reads/writes).
 	// perimA/B simulate the socketpair ends the pump uses internally.
-	fakeTapA, fakeTapB := newTestSocketpair(t)
+	fakeNICA, fakeNICB := newTestSocketpair(t)
 	perimA, perimB := newTestSocketpair(t)
 	testPump := newSwappableConn(perimA)
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, testPump) // bridge: fakeTapA ↔ perimA
+		framePump(fakeNICA, testPump) // bridge: fakeNICA ↔ perimA
 	}()
 	t.Cleanup(func() {
-		fakeTapA.Close()
+		fakeNICA.Close()
 		testPump.closePermanently()
 		select {
 		case <-pumpDone:
@@ -98,11 +68,11 @@ func TestTapPump_GuestToHost(t *testing.T) {
 	})
 
 	want := []byte("hello-ethernet-frame-0123456789abcdef")
-	if _, err := fakeTapB.Write(want); err != nil {
+	if _, err := fakeNICB.Write(want); err != nil {
 		t.Fatalf("write to fake TAP: %v", err)
 	}
 
-	buf := make([]byte, tapBufSize)
+	buf := make([]byte, frameBufSize)
 	setReadDeadline(t, perimB, 2*time.Second)
 	n, err := perimB.Read(buf)
 	if err != nil {
@@ -113,20 +83,20 @@ func TestTapPump_GuestToHost(t *testing.T) {
 	}
 }
 
-// TestTapPump_HostToGuest verifies that a frame written to the perimeter side
+// TestFramePump_HostToGuest verifies that a frame written to the perimeter side
 // appears intact on the "fake TAP" side (host→guest direction).
-func TestTapPump_HostToGuest(t *testing.T) {
-	fakeTapA, fakeTapB := newTestSocketpair(t)
+func TestFramePump_HostToGuest(t *testing.T) {
+	fakeNICA, fakeNICB := newTestSocketpair(t)
 	perimA, perimB := newTestSocketpair(t)
 	testPump := newSwappableConn(perimA)
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, testPump)
+		framePump(fakeNICA, testPump)
 	}()
 	t.Cleanup(func() {
-		fakeTapA.Close()
+		fakeNICA.Close()
 		testPump.closePermanently()
 		select {
 		case <-pumpDone:
@@ -140,9 +110,9 @@ func TestTapPump_HostToGuest(t *testing.T) {
 		t.Fatalf("write to perim: %v", err)
 	}
 
-	buf := make([]byte, tapBufSize)
-	setReadDeadline(t, fakeTapB, 2*time.Second)
-	n, err := fakeTapB.Read(buf)
+	buf := make([]byte, frameBufSize)
+	setReadDeadline(t, fakeNICB, 2*time.Second)
+	n, err := fakeNICB.Read(buf)
 	if err != nil {
 		t.Fatalf("read from fake TAP: %v", err)
 	}
@@ -151,20 +121,20 @@ func TestTapPump_HostToGuest(t *testing.T) {
 	}
 }
 
-// TestTapPump_Bidirectional sends N frames in each direction concurrently and
+// TestFramePump_Bidirectional sends N frames in each direction concurrently and
 // verifies all arrive intact and in order.
-func TestTapPump_Bidirectional(t *testing.T) {
-	fakeTapA, fakeTapB := newTestSocketpair(t)
+func TestFramePump_Bidirectional(t *testing.T) {
+	fakeNICA, fakeNICB := newTestSocketpair(t)
 	perimA, perimB := newTestSocketpair(t)
 	testPump := newSwappableConn(perimA)
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, testPump)
+		framePump(fakeNICA, testPump)
 	}()
 	t.Cleanup(func() {
-		fakeTapA.Close()
+		fakeNICA.Close()
 		testPump.closePermanently()
 		select {
 		case <-pumpDone:
@@ -176,20 +146,20 @@ func TestTapPump_Bidirectional(t *testing.T) {
 	const n = 10
 	var wg sync.WaitGroup
 
-	// Guest→host: write to fakeTapB, read from perimB
+	// Guest→host: write to fakeNICB, read from perimB
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < n; i++ {
 			frame := []byte{byte(i), 0x01, 0x02, 0x03, 0x04, 0x05, byte(i * 2)}
-			if _, err := fakeTapB.Write(frame); err != nil {
+			if _, err := fakeNICB.Write(frame); err != nil {
 				t.Errorf("G→H write %d: %v", i, err)
 				return
 			}
 		}
 	}()
 
-	// Host→guest: write to perimB, read from fakeTapB
+	// Host→guest: write to perimB, read from fakeNICB
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -206,7 +176,7 @@ func TestTapPump_Bidirectional(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, tapBufSize)
+		buf := make([]byte, frameBufSize)
 		for i := 0; i < n; i++ {
 			setReadDeadline(t, perimB, 2*time.Second)
 			nRead, err := perimB.Read(buf)
@@ -220,14 +190,14 @@ func TestTapPump_Bidirectional(t *testing.T) {
 		}
 	}()
 
-	// Read n frames from fakeTapB (H→G)
+	// Read n frames from fakeNICB (H→G)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, tapBufSize)
+		buf := make([]byte, frameBufSize)
 		for i := 0; i < n; i++ {
-			setReadDeadline(t, fakeTapB, 2*time.Second)
-			nRead, err := fakeTapB.Read(buf)
+			setReadDeadline(t, fakeNICB, 2*time.Second)
+			nRead, err := fakeNICB.Read(buf)
 			if err != nil {
 				t.Errorf("H→G read %d: %v", i, err)
 				return
@@ -241,7 +211,7 @@ func TestTapPump_Bidirectional(t *testing.T) {
 	wg.Wait()
 }
 
-// TestTapPump_FrameBoundary is the core correctness test for P1-S0b.
+// TestFramePump_FrameBoundary is the core correctness test for P1-S0b.
 //
 // AF_UNIX SOCK_DGRAM is packet-mode: one Write = one datagram = one Read.
 // This test verifies that frame boundaries are preserved through the pump:
@@ -250,18 +220,18 @@ func TestTapPump_Bidirectional(t *testing.T) {
 //
 // This test cannot pass with a byte-stream (SOCK_STREAM / net.Pipe) pair —
 // which is why the pump tests MUST use SOCK_DGRAM, not net.Pipe.
-func TestTapPump_FrameBoundary(t *testing.T) {
-	fakeTapA, fakeTapB := newTestSocketpair(t)
+func TestFramePump_FrameBoundary(t *testing.T) {
+	fakeNICA, fakeNICB := newTestSocketpair(t)
 	perimA, perimB := newTestSocketpair(t)
 	testPump := newSwappableConn(perimA)
 
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, testPump)
+		framePump(fakeNICA, testPump)
 	}()
 	t.Cleanup(func() {
-		fakeTapA.Close()
+		fakeNICA.Close()
 		testPump.closePermanently()
 		select {
 		case <-pumpDone:
@@ -284,13 +254,13 @@ func TestTapPump_FrameBoundary(t *testing.T) {
 
 	// Write all three frames back-to-back.
 	for i, f := range frames {
-		if _, err := fakeTapB.Write(f); err != nil {
+		if _, err := fakeNICB.Write(f); err != nil {
 			t.Fatalf("write frame %d: %v", i, err)
 		}
 	}
 
 	// Read all three frames and verify each is intact and the right size.
-	buf := make([]byte, tapBufSize)
+	buf := make([]byte, frameBufSize)
 	for i, want := range frames {
 		setReadDeadline(t, perimB, 2*time.Second)
 		n, err := perimB.Read(buf)
@@ -310,11 +280,11 @@ func TestTapPump_FrameBoundary(t *testing.T) {
 	}
 }
 
-// TestTapPump_CloseUnblocks verifies that closing the TAP side unblocks the
+// TestFramePump_CloseUnblocks verifies that closing the TAP side unblocks the
 // pump goroutine within a reasonable deadline.
-func TestTapPump_CloseUnblocks(t *testing.T) {
-	fakeTapA, fakeTapB := newTestSocketpair(t)
-	defer fakeTapB.Close()
+func TestFramePump_CloseUnblocks(t *testing.T) {
+	fakeNICA, fakeNICB := newTestSocketpair(t)
+	defer fakeNICB.Close()
 	perimA, perimB := newTestSocketpair(t)
 	testPump := newSwappableConn(perimA)
 	defer perimB.Close()
@@ -322,11 +292,11 @@ func TestTapPump_CloseUnblocks(t *testing.T) {
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
-		tapPump(fakeTapA, testPump)
+		framePump(fakeNICA, testPump)
 	}()
 
 	// Close both sides to unblock both goroutines.
-	fakeTapA.Close()
+	fakeNICA.Close()
 	testPump.closePermanently()
 
 	select {
@@ -347,59 +317,6 @@ func TestGuestNetworkFD_NoState(t *testing.T) {
 	_, err := d.GuestNetworkFD(context.Background(), id)
 	if err == nil {
 		t.Fatal("expected error for unknown sandbox, got nil")
-	}
-}
-
-// TestApplySandboxNetSysctls_ForwardingHardFail verifies that a write failure
-// on net.ipv4.conf.<iface>.forwarding causes applySandboxNetSysctls to return
-// a non-nil error. This is the hard-fail path: Docker sets default.forwarding=1
-// in the parent netns, so new interfaces may inherit it; the write must succeed.
-//
-// Mutation proof: reverting the forwarding branch to best-effort (log + continue)
-// makes this test go RED because applySandboxNetSysctls would return nil.
-func TestApplySandboxNetSysctls_ForwardingHardFail(t *testing.T) {
-	injected := errors.New("injected: read-only filesystem")
-	orig := sysctlWrite
-	t.Cleanup(func() { sysctlWrite = orig })
-
-	sysctlWrite = func(path string, data []byte, perm os.FileMode) error {
-		// Fail all forwarding writes; succeed on everything else.
-		if len(path) > 0 && path[len(path)-len("forwarding"):] == "forwarding" {
-			return injected
-		}
-		return nil
-	}
-
-	err := applySandboxNetSysctls("nxg-test", "nxh-test", "nxb-test")
-	if err == nil {
-		t.Fatal("expected non-nil error from forwarding hard-fail, got nil")
-	}
-	if !errors.Is(err, injected) {
-		t.Errorf("error chain does not contain injected error: %v", err)
-	}
-}
-
-// TestApplySandboxNetSysctls_DisableIPv6BestEffort verifies that a write
-// failure on net.ipv6.conf.<iface>.disable_ipv6 does NOT cause
-// applySandboxNetSysctls to return an error. IPv6 link-local cannot cross a
-// CLONE_NEWNET boundary, so a read-only /proc/sys in unprivileged containers
-// is harmless; the 697de17 best-effort reasoning stands for this sysctl.
-func TestApplySandboxNetSysctls_DisableIPv6BestEffort(t *testing.T) {
-	orig := sysctlWrite
-	t.Cleanup(func() { sysctlWrite = orig })
-
-	sysctlWrite = func(path string, data []byte, perm os.FileMode) error {
-		// Fail all disable_ipv6 writes; succeed on forwarding.
-		if len(path) > len("disable_ipv6") &&
-			path[len(path)-len("disable_ipv6"):] == "disable_ipv6" {
-			return errors.New("injected: read-only filesystem")
-		}
-		return nil
-	}
-
-	err := applySandboxNetSysctls("nxg-test", "nxh-test", "nxb-test")
-	if err != nil {
-		t.Fatalf("expected nil error for best-effort disable_ipv6 failure, got: %v", err)
 	}
 }
 
@@ -450,23 +367,5 @@ func TestGuestNetworkFD_OneCallGuard(t *testing.T) {
 	_, err2 := d.GuestNetworkFD(ctx, id)
 	if err2 == nil {
 		t.Fatal("second call: expected error (one-call guard), got nil")
-	}
-}
-
-func TestTapPermissionHint(t *testing.T) {
-	for _, err := range []error{
-		syscall.EPERM,
-		fmt.Errorf("ip: exit status 2: RTNETLINK answers: Operation not permitted"),
-	} {
-		got := tapPermissionHint(err).Error()
-		for _, want := range []string{"NEXUS_NET_MODE=vhost-user", "kernel.apparmor_restrict_unprivileged_userns"} {
-			if !strings.Contains(got, want) {
-				t.Errorf("hint for %v = %q, missing %q", err, got, want)
-			}
-		}
-	}
-	other := fmt.Errorf("ip: file exists")
-	if got := tapPermissionHint(other); got != other {
-		t.Errorf("non-EPERM error rewritten: %v", got)
 	}
 }

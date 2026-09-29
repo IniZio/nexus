@@ -20,7 +20,7 @@ func VhostSocketPath(dir, id string) string {
 	return filepath.Join(dir, "vhost-"+id+".sock")
 }
 
-// vhostSlot is the NIC side of tapPump in vhost-user mode. It exposes the
+// vhostSlot is the NIC side of framePump in vhost-user mode. It exposes the
 // vhostnet.Device of the current master connection as one stable
 // io.ReadWriteCloser: reads block until CH has connected, frames written
 // before that are dropped like a tap with no reader.

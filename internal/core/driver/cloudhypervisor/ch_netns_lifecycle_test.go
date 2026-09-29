@@ -135,7 +135,7 @@ func lcBootCH(t *testing.T, chBin, kernelPath string, id domain.SandboxID, socke
 //
 // NOTE on zombie CH: cloud-hypervisor starts without a VM kernel (only
 // --api-socket is passed), so it may exit shortly after socket creation.
-// When CH exits, the netns child (its parent, blocked in tapPump) does not
+// When CH exits, the netns child (its parent, blocked in framePump) does not
 // call wait(), so CH becomes a zombie. Zombies retain their /proc entry and
 // kill(zombie, 0) returns 0, so ESRCH-based "is it dead?" probing fails.
 // The canonical "CH is down" signal used by the recovery layer is the socket
@@ -568,7 +568,7 @@ func TestLifecycle_ExplicitKillNoPdeathsig(t *testing.T) {
 	// CH dying via its own fds. Either outcome is acceptable — what matters is
 	// that rt.Stop() reaps whatever is left.
 	if e := syscall.Kill(childPgid, 0); e == nil {
-		t.Log("child pgid still alive after CH crash (expected: tapPump still looping on fds)")
+		t.Log("child pgid still alive after CH crash (expected: framePump still looping on fds)")
 	} else if errors.Is(e, syscall.ESRCH) {
 		t.Log("child pgid already gone after CH crash (also acceptable: pump saw EOF)")
 	} else {
@@ -682,7 +682,7 @@ func TestStartCtxCancelDoesNotKillChild(t *testing.T) {
 // returns as soon as CH exits, without waiting for pipe-draining io.Copy
 // goroutines) and then calls os.Exit(0), terminating the entire launcher
 // process — including the stuck TAP-read goroutine that would otherwise hold
-// tapPump open forever.
+// framePump open forever.
 //
 // Mutation proof: removing the goroutine (replacing it with _ = proc) means
 // syscall.Wait4 is never called; os.Exit(0) is never called; the launcher
@@ -775,7 +775,7 @@ func TestLifecycle_ConsoleLogCreated(t *testing.T) {
 		wantStr, pollTimeout, len(content), content)
 }
 
-// stays stuck in tapPump until rt.Stop() kills it. rt.cmd.Wait() never returns.
+// stays stuck in framePump until rt.Stop() kills it. rt.cmd.Wait() never returns.
 // The substitution count for the mutation is 1 (the single "_ = proc" line).
 func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {
 	chBin, kernelPath := lcGuards(t)
@@ -793,7 +793,7 @@ func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {
 	childPID := rt.ChildPID
 	t.Logf("netns child pid=%d (pgid=%d)", childPID, rt.ChildPGID)
 
-	// Wait for the netns child to advance past spawnVMMInGroup and into tapPump.
+	// Wait for the netns child to advance past spawnVMMInGroup and into framePump.
 	//
 	// lcBootCH polls CH's API socket from the TEST process. When it returns
 	// "ready", the netns child's own spawnVMMInGroup polling loop may not have
@@ -809,7 +809,7 @@ func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {
 
 	// The launcher must exit within 5 s: the fix goroutine in RunNetnsChild
 	// calls syscall.Wait4 (waits for CH to exit) then os.Exit(0) to kill the
-	// entire process — including the stuck TAP-read goroutine inside tapPump.
+	// entire process — including the stuck TAP-read goroutine inside framePump.
 	//
 	// We observe exit via rt.deathCh (closed by watchParentOwnedDeath when
 	// cmd.Wait() returns), NOT by calling rt.cmd.Wait() directly. Rationale:
@@ -823,7 +823,7 @@ func TestLifecycle_LauncherExitsOnCHDeath(t *testing.T) {
 	//
 	// Without the goroutine (mutation: replace goroutine with _ = proc),
 	// syscall.Wait4 is never called; os.Exit(0) is never called; the netns
-	// child is stuck in tapPump forever → deathCh never closes → test FAILS.
+	// child is stuck in framePump forever → deathCh never closes → test FAILS.
 	const timeout = 5 * time.Second
 	select {
 	case <-rt.deathCh:

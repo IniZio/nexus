@@ -803,28 +803,20 @@ func TestObserve_hungServerIsNotAbsent(t *testing.T) {
 	}
 }
 
-// TestBuildMemoryConfig verifies the shared-memory gating logic.
-// Default VMs must not have Shared set (preserves snapshot/ondemand paths).
-// Shared is enabled only when live mounts or vhost-user net are present.
+// TestBuildMemoryConfig verifies guest RAM is always shared (vhost-user-net
+// and virtiofs need it) and that MemoryMaxMiB grows the size.
 func TestBuildMemoryConfig(t *testing.T) {
-	mount := domain.LiveMount{HostPath: "/tmp/x", GuestPath: "/mnt/x"}
-
-	// default: no live mounts, no vhost-user net → Shared false
-	got := buildMemoryConfig(Config{MemoryMiB: 512}, 512, false)
-	if got.Shared {
-		t.Errorf("Shared = true for default VM, want false")
+	got := buildMemoryConfig(Config{MemoryMiB: 512}, 512)
+	if !got.Shared {
+		t.Errorf("Shared = false, want true")
+	}
+	if got.SizeBytes != 512*1024*1024 {
+		t.Errorf("SizeBytes = %d", got.SizeBytes)
 	}
 
-	// live mounts → Shared true
-	got2 := buildMemoryConfig(Config{MemoryMiB: 512, LiveMounts: []domain.LiveMount{mount}}, 512, false)
-	if !got2.Shared {
-		t.Errorf("Shared = false with live mounts, want true")
-	}
-
-	// vhost-user net → Shared true
-	got3 := buildMemoryConfig(Config{MemoryMiB: 512}, 512, true)
-	if !got3.Shared {
-		t.Errorf("Shared = false with vhost-user net, want true")
+	got2 := buildMemoryConfig(Config{MemoryMiB: 512, MemoryMaxMiB: 1024}, 512)
+	if !got2.Shared || got2.SizeBytes != 1024*1024*1024 {
+		t.Errorf("max-memory config = %+v", got2)
 	}
 }
 
@@ -853,26 +845,14 @@ func TestVmNetConfig_VhostUserMarshal(t *testing.T) {
 	}
 }
 
-// TestVmNetConfig_TapMarshal verifies that tap is emitted and vhost_user/socket
-// are omitted when using the tap path (existing default behaviour).
-func TestVmNetConfig_TapMarshal(t *testing.T) {
-	cfg := vmNetConfig{
-		Tap:       "nxg-aabbccddee",
-		Mac:       "52:54:00:aa:bb:cc",
-		NumQueues: 2,
+// TestBuildNets verifies the single vhost-user net device and NoNet omission.
+func TestBuildNets(t *testing.T) {
+	id := domain.NewSandboxID()
+	nets := buildNets(Config{}, "/run/x/vhost.sock", id)
+	if len(nets) != 1 || !nets[0].VhostUser || nets[0].Socket != "/run/x/vhost.sock" || nets[0].NumQueues != 2 || nets[0].Mac != sandboxMac(id) {
+		t.Fatalf("nets = %+v", nets)
 	}
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	s := string(b)
-	if !strings.Contains(s, `"tap":"nxg-aabbccddee"`) {
-		t.Errorf("missing tap in %s", s)
-	}
-	if strings.Contains(s, `"vhost_user"`) {
-		t.Errorf("vhost_user should be omitted on tap path, got %s", s)
-	}
-	if strings.Contains(s, `"socket"`) {
-		t.Errorf("socket should be omitted on tap path, got %s", s)
+	if got := buildNets(Config{NoNet: true}, "/run/x/vhost.sock", id); got != nil {
+		t.Errorf("NoNet: nets = %+v, want nil", got)
 	}
 }

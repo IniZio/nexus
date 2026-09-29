@@ -30,10 +30,6 @@ var bundledTools = map[string]bool{
 	"mkfs.ext4":        true,
 }
 
-// TODO(S9b): the tap path execs `ip` (createTapBridge/deleteTapBridge in
-// internal/core/driver/cloudhypervisor/ch_net.go) through a non-literal
-// wrapper, so this list never sees it. It is retired with tap mode (S9d).
-//
 // hostExecAllowlist maps a host program name to the package dirs (relative
 // to the module root) permitted to exec it, each with a reason.
 var hostExecAllowlist = map[string]map[string]string{

@@ -92,14 +92,9 @@ func reacquirePreflight(sb domain.Sandbox) error {
 }
 
 func adoptRuntimeForRecord(ctx context.Context, sb domain.Sandbox, perimFile *os.File) (*cloudhypervisor.NetnsRuntime, error) {
-	if sb.NetMode == domain.NetModeVhostUser {
-		return cloudhypervisor.AdoptVhostNetnsRuntime(ctx,
-			sb.NetnsChildPID, sb.NetnsChildPGID, sb.NetnsChildStartTime,
-			sb.VhostSocket, sb.CHAPISocket, perimFile)
-	}
 	return cloudhypervisor.AdoptNetnsRuntime(ctx,
 		sb.NetnsChildPID, sb.NetnsChildPGID, sb.NetnsChildStartTime,
-		sb.GuestTapName, sb.CHAPISocket, perimFile)
+		sb.VhostSocket, sb.CHAPISocket, perimFile)
 }
 
 type runtimeAdopter interface {

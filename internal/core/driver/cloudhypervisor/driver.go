@@ -81,19 +81,16 @@ func buildCmdline(base string, memoryMaxMiB uint32) string {
 
 // buildMemoryConfig constructs the CH MemoryConfig for a sandbox.
 //
-// Shared memory (memfd-backed) is enabled when live mounts are present OR a
-// vhost-user net device is configured — CH requires shared memory for any
-// vhost-user device (virtiofs or vhost-user-net). Default VMs with neither
-// use ordinary memory to avoid the memfd overhead and preserve snapshot/restore
-// and ondemand userfaultfd behaviour.
+// Shared memory (memfd-backed) is always on: CH requires it for any
+// vhost-user device (virtiofs or vhost-user-net).
 //
 // hugepages is NOT used: it requires host-level huge page pre-allocation.
-func buildMemoryConfig(cfg Config, memMiB uint64, vhostUserNet bool) *vmMemoryConfig {
+func buildMemoryConfig(cfg Config, memMiB uint64) *vmMemoryConfig {
 	mc := &vmMemoryConfig{
 		SizeBytes: memMiB * 1024 * 1024,
-	}
-	if len(cfg.LiveMounts) > 0 || vhostUserNet {
-		mc.Shared = true
+		// vhost-user-net and virtiofs both need guest RAM shared with the
+		// backend processes.
+		Shared: true,
 	}
 	if cfg.MemoryMaxMiB > uint32(memMiB) {
 		mc.SizeBytes = uint64(cfg.MemoryMaxMiB) * 1024 * 1024
@@ -101,20 +98,13 @@ func buildMemoryConfig(cfg Config, memMiB uint64, vhostUserNet bool) *vmMemoryCo
 	return mc
 }
 
-func buildNets(cfg Config, guestTap, vhostSocket string, id domain.SandboxID) []vmNetConfig {
-	switch cfg.NetMode {
-	case "none":
+func buildNets(cfg Config, vhostSocket string, id domain.SandboxID) []vmNetConfig {
+	if cfg.NoNet {
 		return nil
-	case domain.NetModeVhostUser:
-		return []vmNetConfig{{
-			VhostUser: true,
-			Socket:    vhostSocket,
-			Mac:       sandboxMac(id),
-			NumQueues: 2,
-		}}
 	}
 	return []vmNetConfig{{
-		Tap:       guestTap,
+		VhostUser: true,
+		Socket:    vhostSocket,
 		Mac:       sandboxMac(id),
 		NumQueues: 2,
 	}}
@@ -330,9 +320,8 @@ type Config struct {
 	// Set via the NEXUS_NESTED_VIRT=1 env var or by setting this field directly.
 	NestedVirt bool
 
-	// NetMode is the sandbox's recorded net mode. Empty means tap. "none" is
-	// honoured for tests only.
-	NetMode domain.NetMode
+	// NoNet boots the VM with no NIC. Test-only.
+	NoNet bool
 }
 
 // CHDriver implements driver.Driver, driver.PauseResumer, driver.Snapshotter,
@@ -856,7 +845,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 
 	// Build the memory config via the helper so the shared-memory condition is
 	// testable without a real VM (see TestBuildMemoryConfig).
-	memCfg := buildMemoryConfig(d.cfg, uint64(memMiB), d.cfg.NetMode == domain.NetModeVhostUser)
+	memCfg := buildMemoryConfig(d.cfg, uint64(memMiB))
 
 	vmcfg := vmConfig{
 		Payload: vmPayloadConfig{
@@ -926,7 +915,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 		Socket: d.vsockPath(id),
 	}
 
-	nets := buildNets(d.cfg, rt.GuestTap, rt.VhostSocket, id)
+	nets := buildNets(d.cfg, rt.VhostSocket, id)
 
 	fsCfgs, err := d.spawnVirtiofsdForMounts(apiCtx, id, rt.ChildPGID)
 	if err != nil {

@@ -601,7 +601,6 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 				rec.NetnsChildPID = ns.ChildPID
 				rec.NetnsChildPGID = ns.ChildPGID
 				rec.NetnsChildStartTime = ns.ChildStartTime
-				rec.GuestTapName = ns.GuestTap
 				rec.VhostSocket = ns.VhostSocket
 				rec.CHAPISocket = ns.APISocket
 				rec.NetnsControlSocket = ns.ControlSocket
@@ -1689,7 +1688,6 @@ func (s *Service) recordNetnsIdentity(child *domain.Sandbox) {
 	child.NetnsChildPID = ns.ChildPID
 	child.NetnsChildPGID = ns.ChildPGID
 	child.NetnsChildStartTime = ns.ChildStartTime
-	child.GuestTapName = ns.GuestTap
 	child.VhostSocket = ns.VhostSocket
 	child.CHAPISocket = ns.APISocket
 	child.NetnsControlSocket = ns.ControlSocket
