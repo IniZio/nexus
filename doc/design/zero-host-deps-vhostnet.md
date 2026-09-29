@@ -235,3 +235,17 @@ Run it with:
 ## Not covered yet
 
 - Throughput against tap and the soak run (S9b-7).
+
+## Known gap under `kernel.apparmor_restrict_unprivileged_userns=1` (S9b-8, S9c)
+
+Single-file `--mount` re-execs with `CLONE_NEWUSER|CLONE_NEWNS`, which needs
+`CAP_SYS_ADMIN` in the new user namespace. With the restriction set to 1 the
+unprivileged userns loses its capabilities, so single-file mounts are expected
+to fail there in both net modes. Directory mounts do not use that path.
+Tracked for S9c.
+
+Builder VMs follow the same rule as sandboxes: `NEXUS_NET_MODE` is read once at
+`create --file` and passed to the detached builder supervisor as `--net-mode`,
+so the build runs vhost-user with no tap or bridge. A tap failure with EPERM now
+names `NEXUS_NET_MODE=vhost-user` and the sysctl. `scripts/s9b-restricted.sh`
+runs the end-to-end check once the sysctl is 1.

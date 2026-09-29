@@ -26,12 +26,14 @@ package cloudhypervisor
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -363,6 +365,17 @@ func applySandboxNetSysctls(guestTap, hostTap, bridge string) error {
 	return nil
 }
 
+// tapPermissionHint appends the remedy when a tap setup step failed with
+// EPERM, typically the AppArmor unprivileged-userns restriction.
+func tapPermissionHint(err error) error {
+	if !errors.Is(err, syscall.EPERM) && !strings.Contains(err.Error(), "Operation not permitted") {
+		return err
+	}
+	return fmt.Errorf("%w (tap networking needs CAP_NET_ADMIN in a user namespace; "+
+		"if kernel.apparmor_restrict_unprivileged_userns=1 blocks it, create the sandbox with "+
+		"NEXUS_NET_MODE=vhost-user)", err)
+}
+
 // createTapBridge creates the two-TAP/L2-bridge topology for a sandbox.
 // Requires CAP_NET_ADMIN.
 //
@@ -379,7 +392,7 @@ func createTapBridge(guestTap, hostTap, bridge string) error {
 	run := func(args ...string) error {
 		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("%s: %w: %s", args[0], err, out)
+			return tapPermissionHint(fmt.Errorf("%s: %w: %s", args[0], err, out))
 		}
 		return nil
 	}

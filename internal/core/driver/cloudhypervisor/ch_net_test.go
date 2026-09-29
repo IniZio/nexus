@@ -3,10 +3,13 @@ package cloudhypervisor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -447,5 +450,23 @@ func TestGuestNetworkFD_OneCallGuard(t *testing.T) {
 	_, err2 := d.GuestNetworkFD(ctx, id)
 	if err2 == nil {
 		t.Fatal("second call: expected error (one-call guard), got nil")
+	}
+}
+
+func TestTapPermissionHint(t *testing.T) {
+	for _, err := range []error{
+		syscall.EPERM,
+		fmt.Errorf("ip: exit status 2: RTNETLINK answers: Operation not permitted"),
+	} {
+		got := tapPermissionHint(err).Error()
+		for _, want := range []string{"NEXUS_NET_MODE=vhost-user", "kernel.apparmor_restrict_unprivileged_userns"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("hint for %v = %q, missing %q", err, got, want)
+			}
+		}
+	}
+	other := fmt.Errorf("ip: file exists")
+	if got := tapPermissionHint(other); got != other {
+		t.Errorf("non-EPERM error rewritten: %v", got)
 	}
 }

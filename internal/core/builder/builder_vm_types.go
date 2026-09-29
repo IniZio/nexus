@@ -1,6 +1,9 @@
 package builder
 
-import "github.com/IniZio/nexus/internal/core/perimeter/cred"
+import (
+	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+)
 
 // GoArchToVendorArch converts Go's runtime.GOARCH value to the vendor-specific
 // architecture name used by recipe package checksums (e.g. in Node.js tarballs
@@ -86,6 +89,10 @@ type BuilderVMSpec struct {
 
 	// MemoryMiB is the guest memory in mebibytes. Defaults used by G3 when zero.
 	MemoryMiB uint16
+
+	// NetMode is the NIC backing for the builder VM, read once at create time.
+	// Empty means tap.
+	NetMode domain.NetMode
 
 	// ToolRecipe is the agent profile's declared install recipe (AC-1,
 	// D-TP-01, D-TP-02). When non-empty it is serialised to JSON and passed

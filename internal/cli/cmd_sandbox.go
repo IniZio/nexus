@@ -1243,7 +1243,12 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 			defer builder.ReleaseCacheDiskLeases(cacheDiskLeases)
 
+			builderNetMode, err := service.NetModeFromEnv()
+			if err != nil {
+				return errSandbox("sandbox create", fmt.Errorf("--file: NEXUS_NET_MODE: %w", err))
+			}
 			spec := builder.BuilderVMSpec{
+				NetMode:          builderNetMode,
 				RootfsDiskPath:   builderRootfs,
 				ContextDiskPath:  ctxDiskPath,
 				ArtifactDiskPath: artifactDiskPath,

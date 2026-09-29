@@ -86,6 +86,8 @@ func TestBuilderVMSpec_Fields(t *testing.T) {
 		// S7: agent tool install recipe — see comment above.
 		"ToolRecipe": true,
 		"TargetArch": true,
+		// S9b-8: NIC backing only; the perimeter and Envelope are unchanged.
+		"NetMode": true,
 	}
 
 	rt := reflect.TypeOf(builder.BuilderVMSpec{})

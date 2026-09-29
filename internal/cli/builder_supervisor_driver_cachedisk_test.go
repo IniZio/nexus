@@ -72,3 +72,14 @@ func TestBuilderSupervisorDriver_HandsCacheDiskLeasesToTheSupervisor(t *testing.
 		t.Fatal("forwarded descriptor does not refer to the slot's lock file")
 	}
 }
+
+func TestBuilderSupervisorDriver_ForwardsNetMode(t *testing.T) {
+	d := &supervisorBuilderDriver{storeRoot: t.TempDir(), stateBase: t.TempDir()}
+	if got := d.buildSpawnConfig(domain.NewSandboxID(), t.TempDir()).NetMode; got != "" {
+		t.Fatalf("default NetMode = %q, want empty (tap)", got)
+	}
+	d.SetNetMode(domain.NetModeVhostUser)
+	if got := d.buildSpawnConfig(domain.NewSandboxID(), t.TempDir()).NetMode; got != domain.NetModeVhostUser {
+		t.Fatalf("NetMode = %q, want vhost-user", got)
+	}
+}

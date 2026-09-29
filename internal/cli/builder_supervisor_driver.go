@@ -78,6 +78,7 @@ type supervisorBuilderDriver struct {
 	bootMemMiB uint32
 	bootVCPUs  uint32
 	logPath    string
+	netMode    domain.NetMode
 	// cacheDiskMountPaths holds the in-guest mount paths for the cache disks
 	// at extraDisks[2+] (i.e. /dev/vdd, /dev/vde, …). These are appended to
 	// the kernel cmdline as --cache-disk=<dev>:<mountpath> so that PID-1
@@ -99,6 +100,9 @@ type supervisorBuilderDriver struct {
 	sockPath  string           // supervisor.sock path; read by Stop
 	watchdogW *os.File         // write end of parent-watchdog pipe; closed by Stop
 }
+
+// SetNetMode satisfies driver.NetModeSetter; BuildInVM calls it before Start.
+func (d *supervisorBuilderDriver) SetNetMode(mode domain.NetMode) { d.netMode = mode }
 
 // Name satisfies driver.Driver.
 func (d *supervisorBuilderDriver) Name() string { return "supervisor-builder" }
@@ -190,6 +194,7 @@ func (d *supervisorBuilderDriver) buildSpawnConfig(sandboxID domain.SandboxID, s
 			// --cache-disk=<dev>:<path> entries) comes after.
 			Cmdline:        diskBootCmdlineBase + " --" + d.ar.PID1Args + cacheDiskCmdline,
 			Ephemeral:      true,
+			NetMode:        d.netMode,
 			CacheDiskSlots: cacheSlotPaths,
 		},
 		LogPath:             d.logPath,
