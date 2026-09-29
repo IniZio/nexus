@@ -32,7 +32,7 @@ func newDeadSupervisorSandbox(t *testing.T, withControlSocket bool) (store.Store
 		State:         domain.Running,
 		SupervisorPID: 424242,
 		NetnsChildPID: 4242, NetnsChildPGID: 4242, NetnsChildStartTime: 987654,
-		GuestTapName: "nxh-0102030405", CHAPISocket: "/tmp/x.sock",
+		VhostSocket: "/tmp/x-vhost.sock", CHAPISocket: "/tmp/x.sock",
 	}
 	if withControlSocket {
 		sb.NetnsControlSocket = "/tmp/netns-control/x.sock"

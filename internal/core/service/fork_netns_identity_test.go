@@ -191,8 +191,8 @@ func TestFork_NetnsIdentity_Vsock(t *testing.T) {
 	if child.NetnsChildStartTime != 0 {
 		t.Errorf("vsock child NetnsChildStartTime = %d, want 0", child.NetnsChildStartTime)
 	}
-	if child.GuestTapName != "" {
-		t.Errorf("vsock child GuestTapName = %q, want empty", child.GuestTapName)
+	if child.VhostSocket != "" {
+		t.Errorf("vsock child VhostSocket = %q, want empty", child.VhostSocket)
 	}
 	if child.CHAPISocket != "" {
 		t.Errorf("vsock child CHAPISocket = %q, want empty", child.CHAPISocket)

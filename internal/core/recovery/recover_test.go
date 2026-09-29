@@ -1364,7 +1364,7 @@ func setNetnsFields(t *testing.T, ctx context.Context, st store.Store, id domain
 		rec.NetnsChildPID = 12345
 		rec.NetnsChildPGID = 12346
 		rec.NetnsChildStartTime = 999999
-		rec.GuestTapName = "tap0"
+		rec.VhostSocket = "/run/vhost.sock"
 		rec.CHAPISocket = "/run/ch.sock"
 		return nil
 	}); err != nil {
@@ -1385,8 +1385,8 @@ func assertNetnsFieldsZeroed(t *testing.T, sb domain.Sandbox) {
 	if sb.NetnsChildStartTime != 0 {
 		t.Errorf("NetnsChildStartTime = %d, want 0", sb.NetnsChildStartTime)
 	}
-	if sb.GuestTapName != "" {
-		t.Errorf("GuestTapName = %q, want empty", sb.GuestTapName)
+	if sb.VhostSocket != "" {
+		t.Errorf("VhostSocket = %q, want empty", sb.VhostSocket)
 	}
 	if sb.CHAPISocket != "" {
 		t.Errorf("CHAPISocket = %q, want empty", sb.CHAPISocket)

@@ -39,7 +39,7 @@ const currentSchemaVersion = 1
 //   - fork lineage:     Provenance (omitted for non-fork sandboxes)
 //   - git anchor:       BaseRef (40-hex SHA; omitted for sandboxes without a git workspace)
 //   - netns adoption:   NetnsChildPID, NetnsChildPGID, NetnsChildStartTime,
-//     GuestTapName, CHAPISocket (all omitted when zero/empty)
+//     CHAPISocket (all omitted when zero/empty)
 type record struct {
 	SchemaVersion int              `json:"schema_version"`
 	ID            domain.SandboxID `json:"id"`
@@ -76,14 +76,13 @@ type record struct {
 	// AgentName records the agent profile the sandbox was created for (TBD-PD-32).
 	// Empty for plain sandboxes and for records written before the field existed.
 	AgentName string `json:"agent_name,omitempty"`
-	// Netns adoption fields — five values the supervisor captures from
+	// Netns adoption fields — values the supervisor captures from
 	// StartNetnsRuntime so a replacement supervisor can call AdoptNetnsRuntime
 	// without re-deriving them from ps/nsenter. All omitted when zero/empty
 	// (i.e. when no netns child is running).
 	NetnsChildPID       int            `json:"netns_child_pid,omitempty"`
 	NetnsChildPGID      int            `json:"netns_child_pgid,omitempty"`
 	NetnsChildStartTime uint64         `json:"netns_child_start_time,omitempty"`
-	GuestTapName        string         `json:"guest_tap_name,omitempty"`
 	VhostSocket         string         `json:"vhost_socket,omitempty"`
 	NetMode             domain.NetMode `json:"net_mode,omitempty"`
 	CHAPISocket         string         `json:"ch_api_socket,omitempty"`
@@ -128,7 +127,6 @@ func toRecord(sb domain.Sandbox) record {
 		NetnsChildPID:       sb.NetnsChildPID,
 		NetnsChildPGID:      sb.NetnsChildPGID,
 		NetnsChildStartTime: sb.NetnsChildStartTime,
-		GuestTapName:        sb.GuestTapName,
 		VhostSocket:         sb.VhostSocket,
 		NetMode:             sb.NetMode,
 		CHAPISocket:         sb.CHAPISocket,
@@ -184,7 +182,6 @@ func (r record) toDomain() domain.Sandbox {
 		NetnsChildPID:       r.NetnsChildPID,
 		NetnsChildPGID:      r.NetnsChildPGID,
 		NetnsChildStartTime: r.NetnsChildStartTime,
-		GuestTapName:        r.GuestTapName,
 		VhostSocket:         r.VhostSocket,
 		NetMode:             r.NetMode,
 		CHAPISocket:         r.CHAPISocket,

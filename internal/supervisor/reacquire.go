@@ -77,10 +77,7 @@ func reacquirePreflight(sb domain.Sandbox) error {
 	case sb.NetnsChildStartTime == 0:
 		return fmt.Errorf("%w: %s has no netns child starttime; refusing to re-acquire without a pid-reuse guard", ErrNotReacquirable, sb.ID)
 	case !sb.HasNICIdentity():
-		if sb.NetMode == domain.NetModeVhostUser {
-			return fmt.Errorf("%w: %s has no vhost socket", ErrNotReacquirable, sb.ID)
-		}
-		return fmt.Errorf("%w: %s has no guest tap name", ErrNotReacquirable, sb.ID)
+		return fmt.Errorf("%w: %s has no vhost socket", ErrNotReacquirable, sb.ID)
 	case sb.CHAPISocket == "":
 		return fmt.Errorf("%w: %s has no CH API socket", ErrNotReacquirable, sb.ID)
 	case sb.NetnsControlSocket == "":

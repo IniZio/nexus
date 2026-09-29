@@ -153,7 +153,7 @@ func newReacquirableTestFixture(t *testing.T) (store.Store, driver.Driver, domai
 		rec.NetnsChildPID = 4242
 		rec.NetnsChildPGID = 4242
 		rec.NetnsChildStartTime = 987654
-		rec.GuestTapName = "nxh-0102030405"
+		rec.VhostSocket = "/tmp/nexus/x-vhost.sock"
 		rec.CHAPISocket = "/tmp/nexus/x.sock"
 		rec.NetnsControlSocket = "/tmp/nexus/netns-control/x.sock"
 		rec.NetnsControlToken = "/tmp/nexus/netns-control/x.token"

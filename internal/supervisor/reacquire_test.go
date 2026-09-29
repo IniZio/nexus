@@ -27,7 +27,7 @@ func completeReacquirableSandbox() domain.Sandbox {
 		NetnsChildPID:       4242,
 		NetnsChildPGID:      4242,
 		NetnsChildStartTime: 987654,
-		GuestTapName:        "nxh-0102030405",
+		VhostSocket:         "/tmp/nexus/sock/netns-control/vhost-x.sock",
 		CHAPISocket:         "/tmp/nexus/sock/x.sock",
 		NetnsControlSocket:  "/tmp/nexus/sock/netns-control/x.sock",
 		NetnsControlToken:   "/tmp/nexus/sock/netns-control/x.token",
@@ -48,7 +48,7 @@ func TestReacquirePreflight_RefusesIncompleteIdentity(t *testing.T) {
 		{"negative child pid", func(s *domain.Sandbox) { s.NetnsChildPID = -1 }, "no netns child pid"},
 		{"zero child pgid", func(s *domain.Sandbox) { s.NetnsChildPGID = 0 }, "no netns child pgid"},
 		{"zero starttime", func(s *domain.Sandbox) { s.NetnsChildStartTime = 0 }, "pid-reuse guard"},
-		{"empty guest tap", func(s *domain.Sandbox) { s.GuestTapName = "" }, "no guest tap name"},
+		{"empty vhost socket", func(s *domain.Sandbox) { s.VhostSocket = "" }, "no vhost socket"},
 		{"empty api socket", func(s *domain.Sandbox) { s.CHAPISocket = "" }, "no CH API socket"},
 		{"empty control socket", func(s *domain.Sandbox) { s.NetnsControlSocket = "" }, "no netns control socket"},
 		{"empty control token", func(s *domain.Sandbox) { s.NetnsControlToken = "" }, "no netns control token"},
@@ -70,32 +70,6 @@ func TestReacquirePreflight_RefusesIncompleteIdentity(t *testing.T) {
 				t.Fatalf("err = %q, want it to contain %q", err, tc.wantSub)
 			}
 		})
-	}
-}
-
-func TestReacquirePreflight_VhostUserModeAware(t *testing.T) {
-	vhost := completeReacquirableSandbox()
-	vhost.NetMode = domain.NetModeVhostUser
-	vhost.GuestTapName = ""
-	vhost.VhostSocket = "/tmp/nexus/sock/netns-control/vhost-x.sock"
-	if err := reacquirePreflight(vhost); err != nil {
-		t.Fatalf("vhost-user record with socket and no tap refused: %v", err)
-	}
-
-	noSock := vhost
-	noSock.VhostSocket = ""
-	noSock.GuestTapName = "nxh-0102030405"
-	err := reacquirePreflight(noSock)
-	if err == nil || !errors.Is(err, ErrNotReacquirable) || !strings.Contains(err.Error(), "no vhost socket") {
-		t.Fatalf("vhost-user record without socket: err = %v", err)
-	}
-
-	tap := completeReacquirableSandbox()
-	tap.GuestTapName = ""
-	tap.VhostSocket = "/tmp/nexus/sock/netns-control/vhost-x.sock"
-	err = reacquirePreflight(tap)
-	if err == nil || !strings.Contains(err.Error(), "no guest tap name") {
-		t.Fatalf("tap record with empty GuestTap must still be refused: err = %v", err)
 	}
 }
 
@@ -180,7 +154,7 @@ func TestRunReacquire_RefusesIncompleteIdentity(t *testing.T) {
 		ID: domain.NewSandboxID(), Name: "no-ctl", Project: "hsh",
 		State:         domain.Running,
 		NetnsChildPID: 4242, NetnsChildPGID: 4242, NetnsChildStartTime: 987654,
-		GuestTapName: "nxh-0102030405", CHAPISocket: "/tmp/x.sock",
+		VhostSocket: "/tmp/x-vhost.sock", CHAPISocket: "/tmp/x.sock",
 	}
 	if err := st.Create(ctx, sb); err != nil {
 		t.Fatalf("Create: %v", err)

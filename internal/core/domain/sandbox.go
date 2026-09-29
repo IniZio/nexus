@@ -36,14 +36,10 @@ const (
 	NetModeVhostUser NetMode = "vhost-user"
 )
 
-// HasNICIdentity reports whether the record carries the persisted NIC handle
-// its net mode needs to adopt a running netns child: the vhost socket path in
-// vhost-user mode, the guest tap name otherwise.
+// HasNICIdentity reports whether the record carries the persisted vhost socket
+// path needed to adopt a running netns child.
 func (s Sandbox) HasNICIdentity() bool {
-	if s.NetMode == NetModeVhostUser {
-		return s.VhostSocket != ""
-	}
-	return s.GuestTapName != ""
+	return s.VhostSocket != ""
 }
 
 // ParseNetMode validates a user-supplied mode. Empty parses to the zero value.
@@ -145,15 +141,8 @@ type Sandbox struct {
 	// environment. Empty means tap.
 	NetMode NetMode `json:"net_mode,omitempty"`
 
-	// GuestTapName is the guest-facing TAP interface name passed to CH's
-	// vm.create for this sandbox's network device. A non-parent adopter
-	// needs this to re-derive the network device configuration without
-	// re-deriving it from scratch or re-reading netns-internal state it did
-	// not create. Empty when no netns child is running.
-	GuestTapName string `json:"guest_tap_name,omitempty"`
-
 	// VhostSocket is the vhost-user net socket the netns child listens on in
-	// vhost-user mode. Empty in tap mode.
+	// vhost-user mode. Empty when no netns child is running.
 	VhostSocket string `json:"vhost_socket,omitempty"`
 
 	// CHAPISocket is the absolute path of the cloud-hypervisor REST API

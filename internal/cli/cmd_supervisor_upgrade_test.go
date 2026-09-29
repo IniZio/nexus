@@ -163,7 +163,7 @@ func setCompleteNetnsIdentity(t *testing.T, sb domain.Sandbox) {
 		rec.NetnsChildPID = 4242
 		rec.NetnsChildPGID = 4242
 		rec.NetnsChildStartTime = 123456
-		rec.GuestTapName = "nxg-test"
+		rec.VhostSocket = "/tmp/fake-vhost.sock"
 		rec.CHAPISocket = "/tmp/fake.sock"
 		return nil
 	}); err != nil {
@@ -313,7 +313,7 @@ func TestSupervisorUpgrade_IncompleteNetnsIdentity_Refuses(t *testing.T) {
 	svc, sb, stateDir := newSupervisorUpgradeTestSandbox(t)
 	sockPath := listenFakeSupervisorSock(t, stateDir)
 	markRunningWithLiveSupervisor(t, sb, sockPath)
-	// Deliberately leave NetnsChildPID/PGID/StartTime/GuestTapName/CHAPISocket
+	// Deliberately leave NetnsChildPID/PGID/StartTime/VhostSocket/CHAPISocket
 	// at their zero values — this is the incomplete-identity case.
 
 	out, _, _ := capture(false)
@@ -376,27 +376,27 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 		{"only PID", func(rec *domain.Sandbox) { rec.NetnsChildPID = 4242 }},
 		{"only PGID", func(rec *domain.Sandbox) { rec.NetnsChildPGID = 4242 }},
 		{"only StartTime", func(rec *domain.Sandbox) { rec.NetnsChildStartTime = 123456 }},
-		{"only GuestTapName", func(rec *domain.Sandbox) { rec.GuestTapName = "nxg-test" }},
+		{"only VhostSocket", func(rec *domain.Sandbox) { rec.VhostSocket = "/tmp/fake-vhost.sock" }},
 		{"only CHAPISocket", func(rec *domain.Sandbox) { rec.CHAPISocket = "/tmp/fake.sock" }},
 		{"missing only PID", func(rec *domain.Sandbox) {
 			rec.NetnsChildPGID = 4242
 			rec.NetnsChildStartTime = 123456
-			rec.GuestTapName = "nxg-test"
+			rec.VhostSocket = "/tmp/fake-vhost.sock"
 			rec.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only PGID", func(rec *domain.Sandbox) {
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildStartTime = 123456
-			rec.GuestTapName = "nxg-test"
+			rec.VhostSocket = "/tmp/fake-vhost.sock"
 			rec.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only StartTime", func(rec *domain.Sandbox) {
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildPGID = 4242
-			rec.GuestTapName = "nxg-test"
+			rec.VhostSocket = "/tmp/fake-vhost.sock"
 			rec.CHAPISocket = "/tmp/fake.sock"
 		}},
-		{"missing only GuestTapName", func(rec *domain.Sandbox) {
+		{"missing only VhostSocket", func(rec *domain.Sandbox) {
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildPGID = 4242
 			rec.NetnsChildStartTime = 123456
@@ -406,7 +406,7 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildPGID = 4242
 			rec.NetnsChildStartTime = 123456
-			rec.GuestTapName = "nxg-test"
+			rec.VhostSocket = "/tmp/fake-vhost.sock"
 		}},
 	}
 	for _, tc := range cases {
@@ -429,49 +429,6 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 			ce, ok := err.(*CodedError)
 			if !ok || ce.Code != supervisorUpgradeIncompleteNetnsCode {
 				t.Fatalf("case %q: expected %q, got %v", tc.name, supervisorUpgradeIncompleteNetnsCode, err)
-			}
-		})
-	}
-}
-
-func TestSupervisorUpgrade_NICIdentityIsModeAware_WrongHandleRefuses(t *testing.T) {
-	cases := []struct {
-		name string
-		set  func(rec *domain.Sandbox)
-	}{
-		{"tap record, empty GuestTap, vhost socket present", func(rec *domain.Sandbox) {
-			rec.VhostSocket = "/tmp/vhost.sock"
-		}},
-		{"vhost record, no vhost socket, tap present", func(rec *domain.Sandbox) {
-			rec.NetMode = domain.NetModeVhostUser
-			rec.GuestTapName = "nxg-test"
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			svc, sb, stateDir := newSupervisorUpgradeTestSandbox(t)
-			sockPath := listenFakeSupervisorSock(t, stateDir)
-			markRunningWithLiveSupervisor(t, sb, sockPath)
-
-			storeRoot, _ := store.DefaultRoot()
-			st, _ := store.NewFileStore(storeRoot)
-			if err := st.Update(context.Background(), sb.ID, func(rec *domain.Sandbox) error {
-				rec.NetnsChildPID = 4242
-				rec.NetnsChildPGID = 4242
-				rec.NetnsChildStartTime = 123456
-				rec.CHAPISocket = "/tmp/fake.sock"
-				rec.GuestTapName = ""
-				tc.set(rec)
-				return nil
-			}); err != nil {
-				t.Fatalf("st.Update: %v", err)
-			}
-
-			out, _, _ := capture(false)
-			err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc)
-			ce, ok := err.(*CodedError)
-			if !ok || ce.Code != supervisorUpgradeIncompleteNetnsCode {
-				t.Fatalf("expected %q, got %v", supervisorUpgradeIncompleteNetnsCode, err)
 			}
 		})
 	}

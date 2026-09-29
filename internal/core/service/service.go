@@ -612,7 +612,6 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 				rec.NetnsChildPID = 0
 				rec.NetnsChildPGID = 0
 				rec.NetnsChildStartTime = 0
-				rec.GuestTapName = ""
 				rec.VhostSocket = ""
 				rec.CHAPISocket = ""
 				rec.NetnsControlSocket = ""
@@ -623,7 +622,6 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 			rec.NetnsChildPID = 0
 			rec.NetnsChildPGID = 0
 			rec.NetnsChildStartTime = 0
-			rec.GuestTapName = ""
 			rec.VhostSocket = ""
 			rec.CHAPISocket = ""
 			rec.NetnsControlSocket = ""
@@ -699,7 +697,6 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 		rec.NetnsChildPID = 0
 		rec.NetnsChildPGID = 0
 		rec.NetnsChildStartTime = 0
-		rec.GuestTapName = ""
 		rec.VhostSocket = ""
 		rec.CHAPISocket = ""
 		rec.NetnsControlSocket = ""

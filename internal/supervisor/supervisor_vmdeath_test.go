@@ -111,7 +111,7 @@ func TestVMDeath_ReconcileVMDeath_AdoptionFieldsCleared(t *testing.T) {
 		NetnsChildPID:       12345,
 		NetnsChildPGID:      12345,
 		NetnsChildStartTime: 9876543210,
-		GuestTapName:        "nxg-test",
+		VhostSocket:         "/tmp/vhost.sock",
 		CHAPISocket:         "/tmp/ch.sock",
 	}}
 
@@ -129,8 +129,8 @@ func TestVMDeath_ReconcileVMDeath_AdoptionFieldsCleared(t *testing.T) {
 	if r.NetnsChildStartTime != 0 {
 		t.Errorf("NetnsChildStartTime not cleared: %d", r.NetnsChildStartTime)
 	}
-	if r.GuestTapName != "" {
-		t.Errorf("GuestTapName not cleared: %q", r.GuestTapName)
+	if r.VhostSocket != "" {
+		t.Errorf("VhostSocket not cleared: %q", r.VhostSocket)
 	}
 	if r.CHAPISocket != "" {
 		t.Errorf("CHAPISocket not cleared: %q", r.CHAPISocket)

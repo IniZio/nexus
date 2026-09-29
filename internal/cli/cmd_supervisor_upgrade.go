@@ -105,7 +105,7 @@ func supervisorSockLooksAlive(pid int, sockPath string) bool {
 //     construction, since these are typed ints/strings on the record — an
 //     unreadable record fails earlier at ResolveRef) unreadable
 //     NetnsChildPID, NetnsChildPGID, or NetnsChildStartTime, or an empty
-//     GuestTapName/CHAPISocket, REFUSES. There is no "skip when absent, for
+//     VhostSocket/CHAPISocket, REFUSES. There is no "skip when absent, for
 //     old records" branch — a sandbox whose record predates these fields
 //     looks identical to one where they were lost, and both must refuse.
 //   - the running supervisor already reports the same binary-identity hash

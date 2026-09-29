@@ -729,7 +729,7 @@ func TestReap_ApplyKillsVhostOrphanNeverLiveTapChild(t *testing.T) {
 	st := newEmptyStore(t)
 	if err := st.Create(context.Background(), domain.Sandbox{
 		ID: tapID, Name: "t", Project: "p", State: domain.Running,
-		CHAPISocket: tapSocket, GuestTapName: "nxg-t",
+		CHAPISocket: tapSocket, VhostSocket: "/tmp/nxg-t-vhost.sock",
 	}); err != nil {
 		t.Fatal(err)
 	}

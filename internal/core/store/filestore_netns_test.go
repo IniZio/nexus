@@ -1,6 +1,6 @@
 package store_test
 
-// TestNetnsFieldsRoundTrip verifies that all five netns adoption identity
+// TestNetnsFieldsRoundTrip verifies that all four netns adoption identity
 // fields on domain.Sandbox survive a store.Update → disk write → store.Get
 // round-trip with their non-zero values intact.
 //
@@ -8,7 +8,7 @@ package store_test
 // passed in — catching any codec gap (missing JSON tag, omitempty on a value
 // that should survive, wrong type) that a simple in-memory check would miss.
 //
-// Mutation discipline: stop writing any one of the five fields, the
+// Mutation discipline: stop writing any one of the four fields, the
 // corresponding assertion here goes RED. This is verified manually as part of
 // every change to the field set; the mutation instructions are inline.
 import (
@@ -38,18 +38,16 @@ func TestNetnsFieldsRoundTrip(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Write all five fields via store.Update (the path the live supervisor takes).
+	// Write all four fields via store.Update (the path the live supervisor takes).
 	wantPID := 12345
 	wantPGID := 12345
 	wantStartTime := uint64(9876543210)
-	wantTap := "tap0-abc123"
 	wantSock := "/run/nexus/netns-rt/ch.sock"
 
 	if err := st.Update(ctx, sb.ID, func(rec *domain.Sandbox) error {
 		rec.NetnsChildPID = wantPID
 		rec.NetnsChildPGID = wantPGID
 		rec.NetnsChildStartTime = wantStartTime
-		rec.GuestTapName = wantTap
 		rec.CHAPISocket = wantSock
 		return nil
 	}); err != nil {
@@ -71,9 +69,6 @@ func TestNetnsFieldsRoundTrip(t *testing.T) {
 	if got.NetnsChildStartTime != wantStartTime {
 		t.Errorf("NetnsChildStartTime: got %d, want %d", got.NetnsChildStartTime, wantStartTime)
 	}
-	if got.GuestTapName != wantTap {
-		t.Errorf("GuestTapName: got %q, want %q", got.GuestTapName, wantTap)
-	}
 	if got.CHAPISocket != wantSock {
 		t.Errorf("CHAPISocket: got %q, want %q", got.CHAPISocket, wantSock)
 	}
@@ -94,7 +89,6 @@ func TestNetnsFieldsRoundTrip(t *testing.T) {
 		"netns_child_pid",
 		"netns_child_pgid",
 		"netns_child_start_time",
-		"guest_tap_name",
 		"ch_api_socket",
 	} {
 		if _, ok := raw[key]; !ok {
@@ -127,7 +121,7 @@ func TestVhostSocketRoundTripOmitEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := st.Get(ctx, sb.ID)
-	if err != nil || got.VhostSocket != want || got.GuestTapName != "" {
+	if err != nil || got.VhostSocket != want {
 		t.Fatalf("got %+v err %v", got, err)
 	}
 }

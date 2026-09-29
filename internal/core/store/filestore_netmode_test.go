@@ -3,14 +3,15 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 )
 
-const legacyTapRecord = `{"schema_version":1,"id":"sb-04106000000000000000000000","name":"tapbox","project":"proj","state":"stopped","envelope":{"ImageDigest":"","AllowedHosts":null,"SSHPublicKey":"","SecretHosts":null,"SecretSpecs":null},"instance_id":"iid-1","remove_on_exit":false,"removal_marker":false,"stop_reason":"clean","supervisor_pid":4242,"guest_tap_name":"nxg-aabbccddee"}`
+const legacyTapRecord = `{"schema_version":1,"id":"sb-04106000000000000000000000","name":"tapbox","project":"proj","state":"stopped","envelope":{"ImageDigest":"","AllowedHosts":null,"SSHPublicKey":"","SecretHosts":null,"SecretSpecs":null},"instance_id":"iid-1","remove_on_exit":false,"removal_marker":false,"stop_reason":"clean","supervisor_pid":4242,"guest_tap_name":"nxt-aabbccddee","net_mode":""}`
 
-func TestNetMode_LegacyRecordLoadsAsTapAndReserialisesIdentically(t *testing.T) {
+func TestNetMode_LegacyTapRecordLoadsAndRewritesClean(t *testing.T) {
 	dir := t.TempDir()
 	in := filepath.Join(dir, "in.json")
 	out := filepath.Join(dir, "out.json")
@@ -31,8 +32,8 @@ func TestNetMode_LegacyRecordLoadsAsTapAndReserialisesIdentically(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != legacyTapRecord {
-		t.Errorf("re-serialised record differs\n got: %s\nwant: %s", got, legacyTapRecord)
+	if strings.Contains(string(got), "guest_tap_name") {
+		t.Errorf("re-serialised record still carries guest_tap_name: %s", got)
 	}
 }
 

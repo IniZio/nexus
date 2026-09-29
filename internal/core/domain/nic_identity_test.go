@@ -8,13 +8,10 @@ func TestSandboxHasNICIdentity(t *testing.T) {
 		sb   Sandbox
 		want bool
 	}{
-		{"tap with tap name", Sandbox{GuestTapName: "nxg-1"}, true},
-		{"tap record with empty GuestTap", Sandbox{}, false},
-		{"tap record with only vhost socket", Sandbox{VhostSocket: "/s"}, false},
-		{"explicit tap with empty GuestTap", Sandbox{NetMode: NetModeTap, VhostSocket: "/s"}, false},
+		{"empty record", Sandbox{}, false},
+		{"socket without mode", Sandbox{VhostSocket: "/s"}, true},
 		{"vhost with socket", Sandbox{NetMode: NetModeVhostUser, VhostSocket: "/s"}, true},
 		{"vhost without socket", Sandbox{NetMode: NetModeVhostUser}, false},
-		{"vhost with only tap name", Sandbox{NetMode: NetModeVhostUser, GuestTapName: "nxg-1"}, false},
 	}
 	for _, tc := range cases {
 		if got := tc.sb.HasNICIdentity(); got != tc.want {

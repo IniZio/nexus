@@ -40,7 +40,7 @@ func TestRunAdopt_IncompleteNetnsIdentity_Refuses(t *testing.T) {
 		Project: "proj",
 		Name:    "adopt-refuse",
 		State:   domain.Running,
-		// NetnsChildPID/PGID/StartTime, GuestTapName, CHAPISocket all left
+		// NetnsChildPID/PGID/StartTime, VhostSocket, CHAPISocket all left
 		// at their zero value: the incomplete-identity case.
 	}
 	if err := st.Create(context.Background(), sb); err != nil {
@@ -84,27 +84,27 @@ func TestRunAdopt_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing.T) {
 		{"only PID", func(sb *domain.Sandbox) { sb.NetnsChildPID = 4242 }},
 		{"only PGID", func(sb *domain.Sandbox) { sb.NetnsChildPGID = 4242 }},
 		{"only StartTime", func(sb *domain.Sandbox) { sb.NetnsChildStartTime = 123456 }},
-		{"only GuestTapName", func(sb *domain.Sandbox) { sb.GuestTapName = "nxg-test" }},
+		{"only VhostSocket", func(sb *domain.Sandbox) { sb.VhostSocket = "/tmp/fake-vhost.sock" }},
 		{"only CHAPISocket", func(sb *domain.Sandbox) { sb.CHAPISocket = "/tmp/fake.sock" }},
 		{"missing only PID", func(sb *domain.Sandbox) {
 			sb.NetnsChildPGID = 4242
 			sb.NetnsChildStartTime = 123456
-			sb.GuestTapName = "nxg-test"
+			sb.VhostSocket = "/tmp/fake-vhost.sock"
 			sb.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only PGID", func(sb *domain.Sandbox) {
 			sb.NetnsChildPID = 4242
 			sb.NetnsChildStartTime = 123456
-			sb.GuestTapName = "nxg-test"
+			sb.VhostSocket = "/tmp/fake-vhost.sock"
 			sb.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only StartTime", func(sb *domain.Sandbox) {
 			sb.NetnsChildPID = 4242
 			sb.NetnsChildPGID = 4242
-			sb.GuestTapName = "nxg-test"
+			sb.VhostSocket = "/tmp/fake-vhost.sock"
 			sb.CHAPISocket = "/tmp/fake.sock"
 		}},
-		{"missing only GuestTapName", func(sb *domain.Sandbox) {
+		{"missing only VhostSocket", func(sb *domain.Sandbox) {
 			sb.NetnsChildPID = 4242
 			sb.NetnsChildPGID = 4242
 			sb.NetnsChildStartTime = 123456
@@ -114,7 +114,7 @@ func TestRunAdopt_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing.T) {
 			sb.NetnsChildPID = 4242
 			sb.NetnsChildPGID = 4242
 			sb.NetnsChildStartTime = 123456
-			sb.GuestTapName = "nxg-test"
+			sb.VhostSocket = "/tmp/fake-vhost.sock"
 		}},
 	}
 	for _, tc := range cases {
