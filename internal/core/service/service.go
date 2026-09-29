@@ -270,34 +270,16 @@ type CreateOptions struct {
 	NetMode domain.NetMode
 }
 
-// NetModeFromEnv reads NEXUS_NET_MODE. It is the only reader; call it at create.
-func NetModeFromEnv() (domain.NetMode, error) {
-	return domain.ParseNetMode(os.Getenv("NEXUS_NET_MODE"))
-}
+// netModeEnvTombstone is the CheckNetModeEnv error text.
+const netModeEnvTombstone = "NEXUS_NET_MODE is no longer supported (tap networking was removed in S9d; vhost-user is the only mode): unset NEXUS_NET_MODE"
 
-// TapProbe reports whether tap networking works in an unprivileged userns. A
-// blocked host returns an error wrapping syscall.EPERM. Nil disables probing.
-var TapProbe func() error
-
-// ResolveCreateNetMode picks the mode for a NEW sandbox: vhost-user unless
-// NEXUS_NET_MODE=tap. It is the only caller of TapProbe, and only probes for an
-// explicit tap request. Start, restore, fork, adopt and upgrade use the
-// recorded mode, where an empty value stays tap.
-func ResolveCreateNetMode() (domain.NetMode, error) {
-	mode, err := NetModeFromEnv()
-	if err != nil {
-		return "", err
+// CheckNetModeEnv rejects any non-empty NEXUS_NET_MODE, including vhost-user,
+// so scripts that still set it fail loudly instead of being silently ignored.
+func CheckNetModeEnv() error {
+	if os.Getenv("NEXUS_NET_MODE") != "" {
+		return errors.New(netModeEnvTombstone)
 	}
-	if mode == "" {
-		return domain.NetModeVhostUser, nil
-	}
-	if mode != domain.NetModeTap || TapProbe == nil {
-		return mode, nil
-	}
-	if perr := TapProbe(); perr != nil && errors.Is(perr, syscall.EPERM) {
-		return "", fmt.Errorf("NEXUS_NET_MODE=tap: %w", perr)
-	}
-	return mode, nil
+	return nil
 }
 
 // Create mints a new sandbox record in state Created.
