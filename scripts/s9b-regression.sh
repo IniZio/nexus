@@ -1,26 +1,8 @@
 #!/usr/bin/env bash
 # S9b-R: upgrade-survival regression harness.
-#
-# Proves a tap-mode sandbox created by an OLD nexus binary keeps working (and
-# stays tap, with its record.json untouched except lifecycle fields) after the
-# install is atomically swapped to a NEW binary, even with
 # NEXUS_NET_MODE=vhost-user exported. NEXUS_NET_MODE is a create-time input
-# only (plan invariant); every later lifecycle op must use the recorded mode.
-#
-# Usage:
-#   scripts/s9b-regression.sh --old /path/nexus-old --new /path/nexus-new \
-#       [--state /var/tmp/s9br] [--image alpine:3.21] [--keep]
-#
-# Build the binaries first (see doc/design/s9b-regression.md); never use bare
-# `go test ./...` in this repo.
-#
-# Isolation: HOME, XDG_RUNTIME_DIR and TMPDIR live under --state; the
-# environment is scrubbed (env -i). Only the sandbox s9br/fixture and volume
-# s9brvol created here are ever removed, by exact name. Processes are only
-# signalled after their cmdline is verified to contain this fixture's id.
-#
-# Exit status: 0 iff no step FAILed (SKIPs are reported, not failures).
 
+# Usage and design: doc/design/s9b-regression.md
 set -u
 
 OLD=""
@@ -86,7 +68,6 @@ trap cleanup EXIT
 # Fields that legitimately change across supervisor/VM lifecycle.
 LIFECYCLE='["state","instance_id","supervisor_pid","supervisor_sock","netns_child_pid","netns_child_pgid","netns_child_start_time","guest_tap_name","ch_api_socket","netns_control_socket","netns_control_token","stop_reason","updated_at"]'
 
-# check_record <label> <prev-snapshot> : AC4 assertions on the current record.
 check_record() {
   local label=$1 prev=$2 cur changed bad
   cur=$(recfile)
@@ -109,7 +90,6 @@ check_record() {
   record PASS "$label record" "net_mode absent; changed=[${changed}] all lifecycle; tap=$(jq -r '.guest_tap_name // "-"' "$cur")"
 }
 
-# check_tap <label> : tap device lives in the sandbox netns; supervisor argv has no --net-mode.
 check_tap() {
   local label=$1 cpid tap bad=""
   tap=$(jq -r '.guest_tap_name // ""' "$(recfile)")
@@ -129,11 +109,8 @@ check_tap() {
   fi
 }
 
-# gexec <seconds> <shell-snippet> : run a snippet in the guest with a hard cap.
 gexec() { timeout "$1" env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus exec "$HANDLE" -- sh -c "$2" 2>&1; }
 
-# probe <label> <n> : DNS, allowed/denied egress, volume, rw mount. Each check is
-# its own capped exec so a hang is attributed to the exact operation.
 probe() {
   local label=$1 n=$2 dns allow deny vol volw mntr mntw
   dns=$(gexec 60 "nslookup example.com 2>&1 | awk '/^Name:/{f=1} f&&/^Address/{c++} END{print c+0}'")
@@ -164,7 +141,6 @@ wait_running() { # wait until record state=running and exec answers
   return 1
 }
 
-# ---------------------------------------------------------------- fixture
 echo "== fixture: create with OLD binary ($OLD)"
 cp "$OLD" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
 EXTRA=()
@@ -189,18 +165,15 @@ timeout 60 env -i "${BASEENV[@]}" nexus exec "$HANDLE" -- sh -c 'echo volfile >/
 snap_record 00-created
 probe "pre-upgrade" 0
 
-# ---------------------------------------------------------------- upgrade
 echo "== atomic-rename upgrade to NEW binary ($NEW); NEXUS_NET_MODE=vhost-user from here on"
 cp "$NEW" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
 EXTRA=(NEXUS_NET_MODE=vhost-user)
 
-# (a) running supervisor (old binary process) under new CLI.
 probe "(a) running" 1
 snap_record 01-running
 check_record "(a) running" "$STATE/rec/00-created.json"
 check_tap "(a) running"
 
-# (b) supervisor-upgrade (adopt).
 oldpid=$(jq -r .supervisor_pid "$(recfile)")
 if out=$(timeout 180 env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus supervisor-upgrade "$HANDLE" 2>&1); then
   newpid=$(jq -r .supervisor_pid "$(recfile)")
@@ -217,7 +190,6 @@ snap_record 02-adopt
 check_record "(b) adopt" "$STATE/rec/01-running.json"
 check_tap "(b) adopt"
 
-# (c) stop -> start.
 timeout 120 env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus sandbox stop "$HANDLE" >/dev/null 2>&1
 snap_record 03-stopped
 check_record "(c) stopped" "$STATE/rec/02-adopt.json"
@@ -231,7 +203,6 @@ snap_record 04-restarted
 check_record "(c) restarted" "$STATE/rec/03-stopped.json"
 check_tap "(c) restarted"
 
-# (d)/(e) snapshot/restore/fork: only testable if a CLI verb exists.
 HAVE_SNAP=0
 for bin in "$OLD" "$NEW"; do
   verbs=$("$bin" --help 2>&1 | awk '/^Commands:/{f=1;next} /^Flags:/{f=0} f{print $1}')
@@ -246,7 +217,6 @@ if [ "$HAVE_SNAP" = 0 ]; then
   record SKIP "(e) fork" "no CLI verb in OLD or NEW; service-level only"
 fi
 
-# (f) SIGKILL this fixture's supervisor; replacement must reacquire perimeter.
 spid=$(jq -r .supervisor_pid "$(recfile)")
 if tr '\0' ' ' <"/proc/$spid/cmdline" 2>/dev/null | grep -q "__supervisor.*$ID"; then
   kill -9 "$spid"
@@ -269,10 +239,8 @@ probe "(f) post-kill" 5
 check_record "(f) post-kill" "$STATE/rec/04-restarted.json"
 check_tap "(f) post-kill"
 
-# AC4 overall: created record vs final record.
 check_record "overall(created->final)" "$STATE/rec/00-created.json"
 
-# ---------------------------------------------------------------- report
 echo
 echo "== SUMMARY"
 for r in "${RESULTS[@]}"; do IFS='|' read -r s l e <<<"$r"; printf '%-5s %-34s %s\n' "$s" "$l" "$e"; done
