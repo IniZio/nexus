@@ -112,7 +112,7 @@ fi
 
 echo "== port forward"
 gexec 30 s9b8/main '(setsid sh -c "while true; do printf \"HTTP/1.0 200 OK\r\n\r\nhello-fwd\n\" | nc -l -p 8080; done" >/dev/null 2>&1 &); sleep 1' >/dev/null
-nx nexus forward s9b8/main 18988:8080 >"$STATE/fwd.log" 2>&1 &
+env -i "${BASEENV[@]}" nexus forward s9b8/main 18988:8080 >"$STATE/fwd.log" 2>&1 &
 FWDPID=$!
 for _ in 1 2 3 4 5 6; do
   sleep 2
