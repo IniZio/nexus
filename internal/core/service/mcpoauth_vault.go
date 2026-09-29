@@ -39,7 +39,7 @@ func readRawMCPOAuthEntries(credPath string) ([]rawMCPOAuthEntry, error) {
 	}
 	var raw rawCredentials
 	if err := json.Unmarshal(data, &raw); err != nil {
-		slog.Warn("mcpoauth_vault: failed to parse credentials.json", "path", credPath, "err", err)
+		slog.Warn("mcpoauth: failed to parse credentials.json", "path", credPath, "err", err)
 		return nil, nil
 	}
 	if len(raw.MCPOAuth) == 0 {

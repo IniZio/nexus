@@ -1,14 +1,13 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
+	"time"
 )
 
 // MCPOAuthBind pairs one OAuth MCP server with its host-side SecretBind so the
@@ -57,7 +56,13 @@ type MCPOAuthRefreshConfig struct {
 // performs a real HTTP GET; tests override it to avoid network calls.
 var discoverTokenEndpoint = func(authServerURL string) (string, error) {
 	metaURL := strings.TrimRight(authServerURL, "/") + "/.well-known/oauth-authorization-server"
-	resp, err := http.Get(metaURL) //nolint:noctx
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metaURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -106,38 +111,14 @@ type rawMCPOAuthEntry struct {
 // A missing file or absent/empty mcpOAuth map is non-fatal: nil, nil, nil is
 // returned. Parse errors for individual entries are logged and skipped.
 func BuildMCPOAuthBinds(credPath string) (binds []MCPOAuthBind, refresh []MCPOAuthRefreshConfig, err error) {
-	if credPath == "" {
-		credPath = filepath.Join(os.Getenv("HOME"), ".claude", ".credentials.json")
-	}
-
-	data, err := os.ReadFile(credPath)
+	entries, err := readRawMCPOAuthEntries(credPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil, nil
-		}
 		return nil, nil, err
 	}
 
-	var raw rawCredentials
-	if err := json.Unmarshal(data, &raw); err != nil {
-		slog.Warn("mcpoauth: failed to parse credentials.json", "path", credPath, "err", err)
-		return nil, nil, nil
-	}
-	if len(raw.MCPOAuth) == 0 {
-		return nil, nil, nil
-	}
-
-	// Sort entry keys for deterministic output.
-	keys := make([]string, 0, len(raw.MCPOAuth))
-	for k := range raw.MCPOAuth {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		e := raw.MCPOAuth[key]
+	for i, e := range entries {
 		if e.ServerName == "" {
-			slog.Warn("mcpoauth: entry missing serverName, skipping", "key", key)
+			slog.Warn("mcpoauth: entry missing serverName, skipping", "index", i)
 			continue
 		}
 		if e.AccessToken == "" {
