@@ -11,6 +11,7 @@ func checkHerdrProcesses(ctx context.Context, lister func(context.Context) ([]He
 	cr := CheckResult{
 		Name:        "herdr_processes",
 		Description: "herdr-related process health (stale duplicates)",
+		Optional:    true,
 	}
 
 	procs, err := lister(ctx)
