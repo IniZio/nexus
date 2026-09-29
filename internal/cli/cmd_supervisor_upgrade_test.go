@@ -184,7 +184,7 @@ func TestSupervisorUpgrade_SameBinaryHealthy_Noop(t *testing.T) {
 	setCompleteNetnsIdentity(t, sb)
 
 	out, _, _ := capture(false)
-	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
+	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc)
 	ce, ok := err.(*CodedError)
 	if !ok || ce.Code != supervisorUpgradeNoopCode {
 		t.Fatalf("expected %q, got %v", supervisorUpgradeNoopCode, err)
@@ -209,7 +209,7 @@ func TestSupervisorUpgrade_SameBinaryButChannelDown_ProceedsPastNoop(t *testing.
 	setCompleteNetnsIdentity(t, sb)
 
 	out, _, _ := capture(false)
-	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
+	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc)
 	ce, ok := err.(*CodedError)
 	if !ok {
 		t.Fatalf("expected *CodedError, got %T: %v", err, err)
@@ -238,7 +238,7 @@ func TestSupervisorUpgrade_Force_SkipsNoopEvenWhenHealthy(t *testing.T) {
 	setCompleteNetnsIdentity(t, sb)
 
 	out, _, _ := capture(false)
-	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), true, out, svc)
+	err = runSupervisorUpgradeWith(context.Background(), sb.Handle(), true, false, out, svc)
 	ce, ok := err.(*CodedError)
 	if !ok || ce.Code != supervisorUpgradeNoSpawnSpecCode {
 		t.Fatalf("expected --force to proceed to %q, got %v", supervisorUpgradeNoSpawnSpecCode, err)
@@ -252,7 +252,7 @@ func TestSupervisorUpgrade_NotRunning_Refuses(t *testing.T) {
 	svc, sb, _ := newSupervisorUpgradeTestSandbox(t)
 
 	out, _, _ := capture(false)
-	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
+	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc)
 	if err == nil {
 		t.Fatal("expected error for a non-running sandbox")
 	}
@@ -289,7 +289,7 @@ func TestSupervisorUpgrade_NoSupervisor_Refuses(t *testing.T) {
 	_ = stateDir // no socket file created: supervisor looks absent
 
 	out, _, _ := capture(false)
-	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
+	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc)
 	if err == nil {
 		t.Fatal("expected error for a sandbox with no live supervisor")
 	}
@@ -317,7 +317,7 @@ func TestSupervisorUpgrade_IncompleteNetnsIdentity_Refuses(t *testing.T) {
 	// at their zero values — this is the incomplete-identity case.
 
 	out, _, _ := capture(false)
-	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
+	err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc)
 	if err == nil {
 		t.Fatal("expected error for a sandbox with an incomplete netns identity")
 	}
@@ -425,7 +425,7 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 			}
 
 			out, _, _ := capture(false)
-			err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc)
+			err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc)
 			ce, ok := err.(*CodedError)
 			if !ok || ce.Code != supervisorUpgradeIncompleteNetnsCode {
 				t.Fatalf("case %q: expected %q, got %v", tc.name, supervisorUpgradeIncompleteNetnsCode, err)
@@ -484,7 +484,7 @@ func TestSupervisorUpgrade_SuccessLineNamesTheBinary(t *testing.T) {
 	}
 
 	out, stdout, _ := capture(false)
-	if err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc); err != nil {
+	if err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -559,7 +559,7 @@ func TestSupervisorUpgrade_GovBoundsPassedToSpawn(t *testing.T) {
 	}
 
 	out, _, _ := capture(false)
-	if err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, out, svc); err != nil {
+	if err := runSupervisorUpgradeWith(context.Background(), sb.Handle(), false, false, out, svc); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 

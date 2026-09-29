@@ -41,17 +41,19 @@ const (
 	supervisorUpgradeSpawnFailedCode     = "supervisor_upgrade_spawn_failed"
 	supervisorUpgradeHandoffFailedCode   = "supervisor_upgrade_handoff_failed"
 	supervisorUpgradeHandoffRefusedCode  = "supervisor_upgrade_handoff_refused"
+	supervisorUpgradeMountsWouldBreak    = "supervisor_upgrade_live_mounts_would_break"
 )
 
 func runSupervisorUpgrade(ctx context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("supervisor-upgrade", flag.ContinueOnError)
 	forceFlag := fs.Bool("force", false, "upgrade even when the running supervisor already reports the current binary")
+	dropMountsFlag := fs.Bool("force-drop-mounts", false, "upgrade even though live mounts served by the current supervisor will be lost")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: err.Error()}
 	}
 	positionals := fs.Args()
 	if len(positionals) != 1 {
-		return &UsageError{Msg: "supervisor-upgrade: usage: supervisor-upgrade [--force] <sandbox>"}
+		return &UsageError{Msg: "supervisor-upgrade: usage: supervisor-upgrade [--force] [--force-drop-mounts] <sandbox>"}
 	}
 	ref := positionals[0]
 
@@ -59,7 +61,7 @@ func runSupervisorUpgrade(ctx context.Context, args []string, out *Output) error
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "supervisor-upgrade: " + err.Error(), Err: err}
 	}
-	return runSupervisorUpgradeWith(ctx, ref, *forceFlag, out, svc)
+	return runSupervisorUpgradeWith(ctx, ref, *forceFlag, *dropMountsFlag, out, svc)
 }
 
 // supervisorSockLooksAlive reports whether pid is alive AND sockPath accepts
@@ -123,9 +125,12 @@ func supervisorSockLooksAlive(pid int, sockPath string) bool {
 //   - forceFlag bypasses BOTH of the above and always proceeds — the
 //     explicit escape hatch for an operator who already knows the
 //     supervisor needs replacing.
+//   - the sandbox has live mounts whose virtiofsd sits outside the netns
+//     process group (forked by a pre-fix binary, Pdeathsig armed on this
+//     supervisor); forceDropMounts overrides this and only this
 //   - no persisted spawn spec exists for the sandbox (spawnPersistedSupervisor
 //     already refuses the same way for a boot-mode respawn)
-func runSupervisorUpgradeWith(ctx context.Context, ref string, force bool, out *Output, svc *service.Service) error {
+func runSupervisorUpgradeWith(ctx context.Context, ref string, force, forceDropMounts bool, out *Output, svc *service.Service) error {
 	sb, err := svc.ResolveRef(ctx, ref)
 	if err != nil {
 		return errSandbox("supervisor-upgrade", err)
@@ -161,6 +166,17 @@ func runSupervisorUpgradeWith(ctx context.Context, ref string, force bool, out *
 		return &CodedError{
 			Code: supervisorUpgradeIncompleteNetnsCode,
 			Msg:  fmt.Sprintf("supervisor-upgrade: sandbox %s has an incomplete netns identity; refusing to adopt", sb.ID),
+		}
+	}
+
+	if !forceDropMounts && len(sb.LiveMounts) > 0 {
+		if n := virtiofsdOutsideGroup(scanVirtiofsd(sb.ID), sb.NetnsChildPGID); n > 0 {
+			return &CodedError{
+				Code: supervisorUpgradeMountsWouldBreak,
+				Msg: fmt.Sprintf("supervisor-upgrade: sandbox %s has %d live mount(s) owned by the current supervisor that would be lost; "+
+					"use `nexus sandbox stop %s && nexus sandbox start %s` to pick up the fix, or pass --force-drop-mounts to accept the loss",
+					sb.ID, n, ref, ref),
+			}
 		}
 	}
 

@@ -122,6 +122,20 @@ func runRecoverWith(ctx context.Context, st store.Store, drv driver.Driver, out 
 		}
 	}
 
+	for _, o := range report.Outcomes {
+		if o.Kind != recovery.OutcomeAdopted {
+			continue
+		}
+		sb, gerr := st.Get(ctx, o.ID)
+		if gerr != nil || len(sb.LiveMounts) == 0 || sb.NetnsChildPGID <= 0 {
+			continue
+		}
+		procs := scanVirtiofsd(sb.ID)
+		if len(procs) == virtiofsdOutsideGroup(procs, sb.NetnsChildPGID) {
+			fmt.Fprintf(out.Stderr(), "%s: warning: live mounts lost; restart the sandbox (stop && start)\n", o.ID)
+		}
+	}
+
 	out.EmitSuccess("recover", report,
 		fmt.Sprintf("recovery complete: examined %d sandbox(es)", len(report.Outcomes)))
 	return nil
