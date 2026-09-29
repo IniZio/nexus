@@ -2251,8 +2251,6 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 			_ = svc.ClearSupervisor(ctx, sb.ID)
 		}
 		if sb.State != domain.Stopped {
-			// Supervisor gone but the VM is still recorded up: stop it through
-			// the driver rather than reporting a stop that did not happen.
 			stopped, stopErr := svc.Stop(ctx, args[0])
 			if stopErr != nil {
 				return errSandbox("sandbox stop", stopErr)
