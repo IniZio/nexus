@@ -487,29 +487,6 @@ func TestLifecycle_Crash_MemoryLost(t *testing.T) {
 	}
 }
 
-// itoa converts an int to string without importing strconv.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	pos := len(buf)
-	for n > 0 {
-		pos--
-		buf[pos] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		pos--
-		buf[pos] = '-'
-	}
-	return string(buf[pos:])
-}
-
 // ─── Test 3: Stop is time-bounded after abrupt CH death ───────────────────────
 
 // TestLifecycle_StopBounded verifies that rt.Stop() completes within a

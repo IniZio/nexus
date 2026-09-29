@@ -1768,6 +1768,7 @@ func handoffHumanSupervisor(
 		mcpOAuthRefreshConfigs,
 		agentProfile,
 	)
+	cfg.NetMode = sb.NetMode
 	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
 		return err
 	}

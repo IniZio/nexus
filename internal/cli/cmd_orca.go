@@ -703,6 +703,7 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 		opts.Workspace != nil,
 		orcaHostHome,
 	)
+	spawnCfg.NetMode = sb.NetMode
 	// Non-ephemeral supervisor: watchdog pipe is nil (orca sandbox persists after CLI exit).
 	pid, _, err := supervisor.SpawnDetached(spawnCfg)
 	if err != nil {

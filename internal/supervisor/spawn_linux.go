@@ -114,6 +114,9 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	if cfg.NestedVirt {
 		args = append(args, "--nested")
 	}
+	if cfg.NetMode != "" {
+		args = append(args, "--net-mode", string(cfg.NetMode))
+	}
 	if cfg.HasWorkspaceDisk {
 		args = append(args, "--workspace-disk-index", strconv.Itoa(cfg.WorkspaceDiskIndex))
 	}

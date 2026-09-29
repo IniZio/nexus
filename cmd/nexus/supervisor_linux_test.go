@@ -154,6 +154,7 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 		LiveMounts:    []domain.LiveMount{{HostPath: "/h", GuestPath: "/g", ReadOnly: true}},
 		VirtiofsdPath: "/usr/libexec/virtiofsd",
 		NestedVirt:    true,
+		NetMode:       domain.NetModeVhostUser,
 		Ephemeral:     true,
 		ParentPipeFD:  7,
 		// CacheDiskSlots / CacheDiskLeaseFDs: the builder cache-disk slot
@@ -275,6 +276,27 @@ func TestMCPOAuthRefreshConfigs_SpawnSpecRoundTrip(t *testing.T) {
 
 // TestParseSupervisorFlags_MissingRequired asserts the required-flag guard
 // fires with the first missing flag name.
+func TestParseSupervisorFlags_NetMode(t *testing.T) {
+	base := []string{
+		"--sandbox-ref", "s", "--store-root", "/a", "--state-dir", "/b",
+		"--ch-bin", "/c", "--socket-dir", "/d", "--kernel", "/k", "--disk", "/x",
+	}
+	got, _, _, err := parseSupervisorFlags(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NetMode != "" {
+		t.Errorf("missing --net-mode: got %q, want empty (tap)", got.NetMode)
+	}
+	got, _, _, err = parseSupervisorFlags(append(append([]string{}, base...), "--net-mode", "tap"))
+	if err != nil || got.NetMode != domain.NetModeTap {
+		t.Errorf("--net-mode tap: got %q err %v", got.NetMode, err)
+	}
+	if _, _, _, err = parseSupervisorFlags(append(append([]string{}, base...), "--net-mode", "bogus")); err == nil {
+		t.Error("--net-mode bogus: want error")
+	}
+}
+
 func TestParseSupervisorFlags_MissingRequired(t *testing.T) {
 	_, _, _, err := parseSupervisorFlags([]string{"--sandbox-ref", "sb-x"})
 	if err == nil || err.Error() != "supervisor: --store-root is required" {
