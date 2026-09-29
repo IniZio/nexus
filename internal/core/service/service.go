@@ -266,7 +266,7 @@ type CreateOptions struct {
 	// resolveAgentPosture (flag OR user-global / project config default).
 	AgentName string
 
-	// NetMode is stamped on the record. Empty means tap.
+	// NetMode is stamped on the record. Empty means tap (legacy records).
 	NetMode domain.NetMode
 }
 
@@ -279,22 +279,25 @@ func NetModeFromEnv() (domain.NetMode, error) {
 // blocked host returns an error wrapping syscall.EPERM. Nil disables probing.
 var TapProbe func() error
 
-// ResolveCreateNetMode picks the mode for a NEW sandbox. It is the only caller
-// of TapProbe: start, restore, fork, adopt and upgrade use the recorded mode.
+// ResolveCreateNetMode picks the mode for a NEW sandbox: vhost-user unless
+// NEXUS_NET_MODE=tap. It is the only caller of TapProbe, and only probes for an
+// explicit tap request. Start, restore, fork, adopt and upgrade use the
+// recorded mode, where an empty value stays tap.
 func ResolveCreateNetMode() (domain.NetMode, error) {
 	mode, err := NetModeFromEnv()
-	if err != nil || mode == domain.NetModeVhostUser || TapProbe == nil {
-		return mode, err
+	if err != nil {
+		return "", err
 	}
-	perr := TapProbe()
-	if perr == nil || !errors.Is(perr, syscall.EPERM) {
+	if mode == "" {
+		return domain.NetModeVhostUser, nil
+	}
+	if mode != domain.NetModeTap || TapProbe == nil {
 		return mode, nil
 	}
-	if mode == domain.NetModeTap {
+	if perr := TapProbe(); perr != nil && errors.Is(perr, syscall.EPERM) {
 		return "", fmt.Errorf("NEXUS_NET_MODE=tap: %w", perr)
 	}
-	fmt.Fprintln(os.Stderr, "tap networking unavailable (AppArmor userns restriction); using vhost-user")
-	return domain.NetModeVhostUser, nil
+	return mode, nil
 }
 
 // Create mints a new sandbox record in state Created.

@@ -134,7 +134,7 @@ func TestDoctor_UsernsNet(t *testing.T) {
 		t.Fatalf("want passing userns_net naming vhost-user, got %+v ok=%v", c, ok)
 	}
 	nm, ok := checkByName(checks, "net_mode")
-	if !ok || !nm.OK || !nm.Optional || !strings.Contains(nm.Detail, "vhost-user (tap blocked by AppArmor userns restriction)") {
+	if !ok || !nm.OK || !nm.Optional || !strings.Contains(nm.Detail, "vhost-user (default; tap blocked by AppArmor userns restriction)") {
 		t.Errorf("net_mode = %+v ok=%v", nm, ok)
 	}
 
@@ -143,7 +143,7 @@ func TestDoctor_UsernsNet(t *testing.T) {
 	if c, _ := checkByName(checks, "userns_net"); !c.OK || c.Detail != "not restricted" {
 		t.Errorf("unrestricted must be OK, got %+v", c)
 	}
-	if nm, _ := checkByName(checks, "net_mode"); !strings.HasPrefix(nm.Detail, "tap") {
+	if nm, _ := checkByName(checks, "net_mode"); !strings.HasPrefix(nm.Detail, "vhost-user (default") {
 		t.Errorf("net_mode = %+v", nm)
 	}
 

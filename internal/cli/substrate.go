@@ -424,9 +424,9 @@ func netModeCheck(p probes, netErr error) CheckResult {
 			chk.Remediation = "unset NEXUS_NET_MODE or set NEXUS_NET_MODE=vhost-user"
 		}
 	case netErr != nil:
-		chk.Detail = "vhost-user (tap blocked by AppArmor userns restriction)"
+		chk.Detail = "vhost-user (default; tap blocked by AppArmor userns restriction)"
 	default:
-		chk.Detail = "tap (tap networking available)"
+		chk.Detail = "vhost-user (default; set NEXUS_NET_MODE=tap for tap)"
 	}
 	return chk
 }

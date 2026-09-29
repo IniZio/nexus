@@ -53,9 +53,10 @@ func TestResolveCreateNetMode(t *testing.T) {
 		wantErr   bool
 		wantCalls int
 	}{
-		{"unset ok", "", func() error { return nil }, "", false, 1},
-		{"unset eperm", "", blocked, domain.NetModeVhostUser, false, 1},
-		{"unset other error", "", func() error { return errors.New("boom") }, "", false, 1},
+		{"unset ok", "", func() error { return nil }, domain.NetModeVhostUser, false, 0},
+		{"unset eperm", "", blocked, domain.NetModeVhostUser, false, 0},
+		{"unset no probe", "", nil, domain.NetModeVhostUser, false, 0},
+		{"tap other error", "tap", func() error { return errors.New("boom") }, domain.NetModeTap, false, 1},
 		{"tap eperm", "tap", blocked, "", true, 1},
 		{"tap ok", "tap", func() error { return nil }, domain.NetModeTap, false, 1},
 		{"vhost-user no probe", "vhost-user", blocked, domain.NetModeVhostUser, false, 0},
@@ -63,7 +64,15 @@ func TestResolveCreateNetMode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("NEXUS_NET_MODE", tc.env)
-			calls := withTapProbe(t, tc.probe)
+			if tc.probe == nil {
+				old := TapProbe
+				TapProbe = nil
+				t.Cleanup(func() { TapProbe = old })
+			}
+			calls := new(int)
+			if tc.probe != nil {
+				calls = withTapProbe(t, tc.probe)
+			}
 			got, err := ResolveCreateNetMode()
 			if (err != nil) != tc.wantErr || got != tc.want || *calls != tc.wantCalls {
 				t.Errorf("got %q err %v calls %d, want %q wantErr=%v calls %d",
@@ -87,5 +96,16 @@ func TestResolveCreateNetMode_ProbeOnlyFromCreate(t *testing.T) {
 		if n != "service.go" && (strings.Contains(string(b), "TapProbe") || strings.Contains(string(b), "ResolveCreateNetMode()")) && n != "create.go" {
 			t.Errorf("%s references the create-time probe; only create.go may", n)
 		}
+	}
+}
+
+func TestLegacyEmptyNetModeStaysTap(t *testing.T) {
+	// Empty persisted net_mode is judged by the tap NIC identity, not vhost.
+	legacy := domain.Sandbox{GuestTapName: "tap0", VhostSocket: "/run/x.sock"}
+	if !legacy.HasNICIdentity() {
+		t.Error("empty net_mode with a tap name must be adoptable as tap")
+	}
+	if (domain.Sandbox{VhostSocket: "/run/x.sock"}).HasNICIdentity() {
+		t.Error("empty net_mode must not treat a vhost socket as its NIC identity")
 	}
 }
