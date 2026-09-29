@@ -126,7 +126,8 @@ var skipDirs = map[string]bool{
 }
 
 // walkSourceFiles visits every non-test .go file in modRoot, skipping
-// hostbinRel, vendor, testdata, and dot-dirs.
+// hostbinRel, vendor, testdata, dot-dirs, and the top-level doc/ tree (docs,
+// not product code).
 func walkSourceFiles(modRoot, hostbinRel string, fn func(path string, data []byte) error) error {
 	return filepath.WalkDir(modRoot, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
@@ -134,7 +135,7 @@ func walkSourceFiles(modRoot, hostbinRel string, fn func(path string, data []byt
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if skipDirs[name] || strings.HasPrefix(name, ".") {
+			if skipDirs[name] || strings.HasPrefix(name, ".") || (name == "doc" && filepath.Dir(path) == modRoot) {
 				return filepath.SkipDir
 			}
 			rel, _ := filepath.Rel(modRoot, path)

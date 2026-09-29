@@ -179,7 +179,7 @@ func scanExecSites(t *testing.T, root string, skip func(rel string) bool) []exec
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if path != root && (skipDirs[name] || strings.HasPrefix(name, ".")) {
+			if path != root && (skipDirs[name] || strings.HasPrefix(name, ".") || (name == "doc" && filepath.Dir(path) == root)) {
 				return filepath.SkipDir
 			}
 			return nil
