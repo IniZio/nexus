@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/service"
+	"github.com/IniZio/nexus/internal/core/store"
 )
 
 // TBD-PD-39. `nexus stop` on a sandbox with a detached supervisor announced
@@ -38,8 +43,10 @@ func stopWaitFixture(t *testing.T) (*service.Service, domain.Sandbox) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	sock := filepath.Join(t.TempDir(), "supervisor.sock")
-	if err := svc.SetSupervisor(ctx, started.ID, 4242, sock); err != nil {
+	// A live pid plus a listening socket: runSandboxStop only takes the
+	// wait-for-supervisor path for a supervisor CheckAndReconcile calls alive.
+	sock := listenFakeSupervisorSock(t, t.TempDir())
+	if err := svc.SetSupervisor(ctx, started.ID, os.Getpid(), sock); err != nil {
 		t.Fatalf("SetSupervisor: %v", err)
 	}
 	fresh, err := svc.GetSandboxByID(ctx, started.ID)
@@ -142,4 +149,82 @@ func TestSandboxStop_EnvelopeStateMatchesItsKind(t *testing.T) {
 	if env.Data.State != "stopped" {
 		t.Errorf("envelope kind is sandbox.stopped but data.state is %q — the contract contradicts itself", env.Data.State)
 	}
+}
+
+// A supervisor that died leaves the VM up with the record still `running`.
+// Stop used to ask the dead supervisor (conn refused), clear its fields and
+// report a timeout while never touching the VM. It must fall back to the
+// driver. vhost distinguishes the vhost-user record from the legacy tap one.
+func runDeadSupervisorStop(t *testing.T, vhost string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	fk := fake.New()
+	svc := service.New(st, fk, lifecycle.New())
+	sb, err := svc.Create(ctx, "st", "dead", service.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.Start(ctx, sb.ID.String()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Reaped child pid: guaranteed dead, so CheckAndReconcile reports it gone.
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatalf("run true: %v", err)
+	}
+	sock := filepath.Join(t.TempDir(), "supervisor.sock")
+	if err := st.Update(ctx, sb.ID, func(rec *domain.Sandbox) error {
+		rec.SupervisorPID = dead.Process.Pid
+		rec.SupervisorSock = sock
+		rec.NetnsChildPID = 999999
+		rec.VhostSocket = vhost
+		return nil
+	}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	orig := supervisorWaitForExit
+	t.Cleanup(func() { supervisorWaitForExit = orig })
+	supervisorWaitForExit = func(context.Context, string) error { return nil }
+
+	fk.ResetCalls()
+	out, _, _ := newTestOutput(false)
+	if err := runSandboxStop(ctx, []string{sb.ID.String()}, out, svc); err != nil {
+		t.Fatalf("runSandboxStop: %v", err)
+	}
+
+	got, err := svc.GetSandboxByID(ctx, sb.ID)
+	if err != nil {
+		t.Fatalf("GetSandboxByID: %v", err)
+	}
+	if got.State != domain.Stopped {
+		t.Errorf("state = %s, want stopped", got.State)
+	}
+	stopped := false
+	for _, c := range fk.Calls() {
+		if c.Kind == fake.CallStop && c.ID == sb.ID {
+			stopped = true
+		}
+	}
+	if !stopped {
+		t.Error("driver Stop was never called; the VM would stay up")
+	}
+	if got.SupervisorPID != 0 || got.SupervisorSock != "" {
+		t.Errorf("supervisor fields not cleared: pid=%d sock=%q", got.SupervisorPID, got.SupervisorSock)
+	}
+	if got.NetnsChildPID != 0 || got.VhostSocket != "" {
+		t.Errorf("netns fields not cleared: pid=%d vhost=%q", got.NetnsChildPID, got.VhostSocket)
+	}
+}
+
+func TestSandboxStop_DeadSupervisorFallsBackToDriverStop(t *testing.T) {
+	runDeadSupervisorStop(t, "/run/nexus/vhost.sock")
+}
+
+func TestSandboxStop_DeadSupervisorLegacyTapFallsBackToDriverStop(t *testing.T) {
+	runDeadSupervisorStop(t, "")
 }

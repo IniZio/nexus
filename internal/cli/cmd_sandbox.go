@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -1916,9 +1917,13 @@ func ensureDetachedSupervisor(ctx context.Context, svc *service.Service, sb doma
 
 const supervisorExitTimeout = 15 * time.Second
 
-func stopDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain.Sandbox) {
+// stopDetachedSupervisor asks the supervisor to stop and waits for it to exit.
+// The record's supervisor fields are cleared only once the supervisor is known
+// gone; on a wait timeout it may still own the VM, so they are kept and the
+// wait error is returned.
+func stopDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain.Sandbox) error {
 	if sb.SupervisorSock == "" {
-		return
+		return nil
 	}
 	if err := supervisor.StopSupervisor(ctx, sb.SupervisorSock); err != nil {
 		slog.Warn("sandbox: StopSupervisor", "sock", sb.SupervisorSock, "err", err)
@@ -1928,8 +1933,28 @@ func stopDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain
 	if err := supervisorWaitForExit(waitCtx, filepath.Dir(sb.SupervisorSock)); err != nil {
 		slog.Warn("sandbox: supervisor did not exit within timeout; state may lag",
 			"sock", sb.SupervisorSock, "timeout", supervisorExitTimeout, "err", err)
+		return err
 	}
 	_ = svc.ClearSupervisor(ctx, sb.ID)
+	return nil
+}
+
+// killStaleNetnsGroup SIGKILLs the netns child's process group recorded on sb
+// when it is still the same process (pgid and start time match). It covers a
+// VM whose CH API socket is gone: CHDriver.Stop treats an absent socket as
+// "nothing to do" and would leave the VM running. The start-time check keeps a
+// recycled pid from being signalled.
+func killStaleNetnsGroup(sb domain.Sandbox) {
+	if sb.NetnsChildPID <= 0 || sb.NetnsChildPGID <= 0 || sb.NetnsChildStartTime == 0 {
+		return
+	}
+	st, err := cloudhypervisor.ReadProcStat(sb.NetnsChildPID)
+	if err != nil || st.StartTime != sb.NetnsChildStartTime || st.PGID != sb.NetnsChildPGID {
+		return
+	}
+	if err := syscall.Kill(-sb.NetnsChildPGID, syscall.SIGKILL); err != nil {
+		slog.Warn("sandbox: kill stale netns group", "pgid", sb.NetnsChildPGID, "err", err)
+	}
 }
 
 var supervisorWaitForExit = supervisor.WaitForExit
@@ -2207,18 +2232,33 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 		return errSandbox("sandbox stop", err)
 	}
 	if sb.SupervisorSock != "" {
-		stopDetachedSupervisor(ctx, svc, sb)
-		fresh, getErr := svc.GetSandboxByID(ctx, sb.ID)
-		if getErr == nil {
-			sb = fresh
+		alive, _ := supervisor.CheckAndReconcile(sb.SupervisorPID, sb.SupervisorSock)
+		if alive {
+			waitErr := stopDetachedSupervisor(ctx, svc, sb)
+			if fresh, getErr := svc.GetSandboxByID(ctx, sb.ID); getErr == nil {
+				sb = fresh
+			}
+			if waitErr != nil && sb.State != domain.Stopped {
+				return &CodedError{
+					Code: ErrCodeInternalError,
+					Msg: fmt.Sprintf(
+						"sandbox stop: supervisor for %s did not finish within %s; sandbox is still %s — re-run `nexus ps` in a moment, or `nexus reap` if it stays this way",
+						sb.Handle(), supervisorExitTimeout, sb.State),
+				}
+			}
+		} else {
+			// A dead supervisor cannot stop the VM it used to own.
+			_ = svc.ClearSupervisor(ctx, sb.ID)
 		}
 		if sb.State != domain.Stopped {
-			return &CodedError{
-				Code: ErrCodeInternalError,
-				Msg: fmt.Sprintf(
-					"sandbox stop: supervisor for %s did not finish within %s; sandbox is still %s — re-run `nexus ps` in a moment, or `nexus reap` if it stays this way",
-					sb.Handle(), supervisorExitTimeout, sb.State),
+			// Supervisor gone but the VM is still recorded up: stop it through
+			// the driver rather than reporting a stop that did not happen.
+			stopped, stopErr := svc.Stop(ctx, args[0])
+			if stopErr != nil {
+				return errSandbox("sandbox stop", stopErr)
 			}
+			killStaleNetnsGroup(sb)
+			sb = stopped
 		}
 	} else {
 		stopped, stopErr := svc.Stop(ctx, args[0])
