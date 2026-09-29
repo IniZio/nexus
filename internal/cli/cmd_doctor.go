@@ -24,6 +24,7 @@ type doctorCheckJSON struct {
 	OK          bool   `json:"ok"`
 	Detail      string `json:"detail"`
 	Remediation string `json:"remediation,omitempty"`
+	Class       string `json:"class"`
 }
 
 type doctorDataJSON struct {
@@ -38,9 +39,9 @@ type doctorDataJSON struct {
 
 // runDoctor is the implementation of the `nexus doctor` subcommand.
 //
-// Doctor always exits 0 — reporting "here is what is broken" is success.
-// It never calls EmitError; it always calls EmitSuccess (possibly with
-// selected=false). Emitting an error envelope here would produce the
+// Doctor exits non-zero (via ExitCodeError, no error envelope) only when a
+// required check fails; optional check failures never affect the exit code.
+// It always calls EmitSuccess (possibly with selected=false). Emitting an error envelope here would produce the
 // double-envelope problem described in cmd_recover.go.
 //
 // Doctor does not invoke any driver methods (no Observe, Start, or Stop).
@@ -51,7 +52,10 @@ func runDoctor(_ context.Context, args []string, out *Output) error {
 		return &UsageError{Msg: err.Error()}
 	}
 
-	envVal := os.Getenv("NEXUS_SUBSTRATE")
+	return doctorWith(out, defaultProbes(), os.Getenv("NEXUS_SUBSTRATE"))
+}
+
+func doctorWith(out *Output, p probes, envVal string) error {
 
 	// Handle overrides that bypass capability checks.
 	switch envVal {
@@ -90,7 +94,7 @@ func runDoctor(_ context.Context, args []string, out *Output) error {
 
 	// Run all capability checks. Doctor always runs every check and reports
 	// all results, even after the first failure.
-	rawChecks, drv := runAllChecks(defaultProbes())
+	rawChecks, drv := runAllChecks(p)
 	checks := toDoctorChecksJSON(rawChecks)
 
 	substrate := "none"
@@ -109,7 +113,27 @@ func runDoctor(_ context.Context, args []string, out *Output) error {
 	// Human-readable output.
 	msg := formatDoctorHuman(substrate, selected, rawChecks)
 	out.EmitSuccess("doctor", data, msg)
+	if requiredFailed(rawChecks) {
+		return &ExitCodeError{Code: 1}
+	}
 	return nil
+}
+
+func checkClass(c CheckResult) string {
+	if c.Optional {
+		return "optional"
+	}
+	return "required"
+}
+
+// requiredFailed reports whether any non-optional check failed.
+func requiredFailed(checks []CheckResult) bool {
+	for _, c := range checks {
+		if !c.OK && !c.Optional {
+			return true
+		}
+	}
+	return false
 }
 
 // toDoctorChecksJSON converts the raw CheckResult slice from runAllChecks into
@@ -124,6 +148,7 @@ func toDoctorChecksJSON(checks []CheckResult) []doctorCheckJSON {
 			OK:          c.OK,
 			Detail:      c.Detail,
 			Remediation: c.Remediation,
+			Class:       checkClass(c),
 		})
 	}
 	return out
@@ -137,15 +162,23 @@ func formatDoctorHuman(substrate string, selected bool, checks []CheckResult) st
 	} else {
 		fmt.Fprintf(&sb, "substrate: none [not selected]\n")
 	}
-	sb.WriteString("\nCapability checks:\n")
-	for _, c := range checks {
-		status := "OK  "
-		if !c.OK {
-			status = "FAIL"
-		}
-		fmt.Fprintf(&sb, "  [%s] %-16s %s\n", status, c.Name, c.Detail)
-		if !c.OK && c.Remediation != "" {
-			fmt.Fprintf(&sb, "         remediation: %s\n", c.Remediation)
+	for _, group := range []struct {
+		title    string
+		optional bool
+	}{{"Required", false}, {"Optional", true}} {
+		fmt.Fprintf(&sb, "\n%s:\n", group.title)
+		for _, c := range checks {
+			if c.Optional != group.optional {
+				continue
+			}
+			status := "OK  "
+			if !c.OK {
+				status = "FAIL"
+			}
+			fmt.Fprintf(&sb, "  [%s] %-16s %s\n", status, c.Name, c.Detail)
+			if !c.OK && c.Remediation != "" {
+				fmt.Fprintf(&sb, "         remediation: %s\n", c.Remediation)
+			}
 		}
 	}
 	if selected {
@@ -154,7 +187,7 @@ func formatDoctorHuman(substrate string, selected bool, checks []CheckResult) st
 		sb.WriteString("\nNo substrate selected.")
 		// Print the first failing check's remediation prominently.
 		for _, c := range checks {
-			if !c.OK && c.Remediation != "" {
+			if !c.OK && !c.Optional && c.Remediation != "" {
 				fmt.Fprintf(&sb, "\n\nTo fix: %s", c.Remediation)
 				break
 			}

@@ -86,8 +86,8 @@ func TestHerdrPluginDoctor_PrintsSubstrateChecks(t *testing.T) {
 		t.Fatalf("herdrPluginDoctor returned error: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "Capability checks:") {
-		t.Errorf("output should contain 'Capability checks:', got:\n%s", out)
+	if !strings.Contains(out, "Required:") || !strings.Contains(out, "Optional:") {
+		t.Errorf("output should contain 'Required:', got:\n%s", out)
 	}
 	if !strings.Contains(out, "platform") {
 		t.Errorf("output should contain 'platform' check, got:\n%s", out)

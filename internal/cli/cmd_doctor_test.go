@@ -2,18 +2,140 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
-// TestDoctor_ExitZero_WithSubstrate verifies that the doctor command exits 0
-// regardless of whether a substrate is available. Doctor is a diagnostic; it
-// must never exit non-zero.
-func TestDoctor_ExitZero_WithSubstrate(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	code := Run([]string{"doctor"})
-	if code != 0 {
-		t.Errorf("doctor: exit code = %d, want 0", code)
+func doctorTestProbes() probes {
+	return probes{
+		goos:     "linux",
+		lookPath: func(string) (string, error) { return "/usr/bin/x", nil },
+		openKVM:  func() error { return nil },
+		userns:   func() error { return nil },
+		resolveHostBin: func(_ context.Context, name string) (hostbin.Resolved, error) {
+			return hostbin.Resolved{Path: "/opt/" + name, Source: hostbin.SourceEmbedded}, nil
+		},
+		resolveAgent: func() error { return nil },
+	}
+}
+
+func checkByName(checks []CheckResult, name string) (CheckResult, bool) {
+	for _, c := range checks {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return CheckResult{}, false
+}
+
+func TestDoctor_Classification(t *testing.T) {
+	checks, _ := runAllChecks(doctorTestProbes())
+	required := []string{"platform", "binary", "kvm", "userns", "agent", "virtiofsd", "tool_mke2fs", "tool_e2fsck", "tool_resize2fs"}
+	for _, n := range required {
+		c, ok := checkByName(checks, n)
+		if !ok {
+			if n == "virtiofsd" {
+				continue
+			}
+			t.Errorf("required check %q missing", n)
+			continue
+		}
+		if c.Optional {
+			t.Errorf("check %q must be required", n)
+		}
+	}
+	for _, n := range []string{"git", "ssh", "gh", "lsof", "ss", "ps", "kernel"} {
+		c, ok := checkByName(checks, n)
+		if !ok {
+			if n == "kernel" {
+				continue
+			}
+			t.Errorf("optional check %q missing", n)
+			continue
+		}
+		if !c.Optional {
+			t.Errorf("check %q must be optional", n)
+		}
+	}
+	if c, _ := checkByName(checks, "git"); !strings.Contains(c.Detail, "worktree sandboxes") {
+		t.Errorf("git detail must name its feature, got %q", c.Detail)
+	}
+}
+
+func TestDoctor_RequiredMessagesNamePackages(t *testing.T) {
+	p := doctorTestProbes()
+	p.openKVM = func() error { return os.ErrPermission }
+	p.userns = func() error { return errors.New("disabled") }
+	p.resolveAgent = func() error { return errors.New("missing") }
+	p.resolveHostBin = func(_ context.Context, name string) (hostbin.Resolved, error) {
+		return hostbin.Resolved{}, errors.New("missing " + name)
+	}
+	checks, _ := runAllChecks(p)
+	banned := regexp.MustCompile(`(?i)\b(apt|apt-get|dnf|yum|pacman|brew|zypper|apk)\b|e2fsprogs`)
+	for _, c := range checks {
+		if c.Optional {
+			continue
+		}
+		if banned.MatchString(c.Detail + " " + c.Remediation + " " + c.Description) {
+			t.Errorf("required check %q names a distro package: %q / %q", c.Name, c.Detail, c.Remediation)
+		}
+	}
+}
+
+func TestDoctor_OptionalFailureDoesNotFailExit(t *testing.T) {
+	p := doctorTestProbes()
+	p.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	checks, _ := runAllChecks(p)
+	var optFailed bool
+	for _, c := range checks {
+		if c.Optional && !c.OK {
+			optFailed = true
+		}
+	}
+	if !optFailed {
+		t.Fatal("expected optional failures with empty PATH")
+	}
+	if requiredFailed([]CheckResult{{Name: "git", Optional: true}}) {
+		t.Error("optional-only failure must not count as required failure")
+	}
+	baseline, _ := runAllChecks(doctorTestProbes())
+	if requiredFailed(checks) != requiredFailed(baseline) {
+		t.Error("optional tool failures changed the required verdict")
+	}
+}
+
+func TestDoctor_RequiredFailureExitsNonZero(t *testing.T) {
+	p := doctorTestProbes()
+	p.openKVM = func() error { return os.ErrNotExist }
+	out, stdout, _ := capture(true)
+	err := doctorWith(out, p, "")
+	var ec *ExitCodeError
+	if !errors.As(err, &ec) || ec.Code == 0 {
+		t.Fatalf("want non-zero ExitCodeError, got %v", err)
+	}
+	var env map[string]any
+	decodeOne(t, stdout, &env)
+	if env["kind"] != "doctor" {
+		t.Errorf("kind = %v, want doctor", env["kind"])
+	}
+}
+
+func TestFormatDoctorHuman_Groups(t *testing.T) {
+	out := formatDoctorHuman("none", false, []CheckResult{
+		{Name: "kvm", OK: true},
+		{Name: "git", OK: false, Optional: true, Detail: "git: worktree sandboxes"},
+	})
+	ri, oi := strings.Index(out, "Required:"), strings.Index(out, "Optional:")
+	if ri < 0 || oi < ri {
+		t.Errorf("want Required before Optional headings, got:\n%s", out)
+	}
+	if strings.Index(out, "kvm") > oi || strings.Index(out, "git") < oi {
+		t.Errorf("checks under wrong heading:\n%s", out)
 	}
 }
 

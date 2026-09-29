@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -41,6 +42,9 @@ type CheckResult struct {
 	OK          bool
 	Detail      string
 	Remediation string
+	// Optional marks a check whose failure disables a feature but does not
+	// block core sandbox create/exec/--mount.
+	Optional bool
 }
 
 type probes struct {
@@ -53,6 +57,8 @@ type probes struct {
 	getenv            func(string) string
 	executable        func() (string, error)
 	resolveHostBin    func(ctx context.Context, name string) (hostbin.Resolved, error)
+	userns            func() error
+	resolveAgent      func() error
 }
 
 func defaultProbes() probes {
@@ -62,6 +68,11 @@ func defaultProbes() probes {
 		getenv:         os.Getenv,
 		executable:     os.Executable,
 		resolveHostBin: (&hostbin.Resolver{}).Resolve,
+		userns:         usernsAvailable,
+		resolveAgent: func() error {
+			_, err := (&hostbin.Resolver{}).ResolveAgent(nil)
+			return err
+		},
 		openKVM: func() error {
 			f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 			if err != nil {
@@ -195,17 +206,15 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		kernelPath, kernelErr := resolveKernelPath()
 		kernelCheck := CheckResult{
 			Name:        "kernel",
-			Description: "guest kernel image (vmlinux) exists",
+			Description: "guest kernel image (vmlinux); auto-fetched on first use",
+			Optional:    true,
 		}
 		if kernelErr != nil {
 			kernelCheck.OK = false
 			kernelCheck.Detail = kernelErr.Error()
 			kernelCheck.Remediation = "run: nexus kernel install"
 			checks = append(checks, kernelCheck)
-			if p.listHerdrProcs != nil {
-				checks = append(checks, checkHerdrProcesses(context.Background(), p.listHerdrProcs))
-			}
-			return checks, nil
+			return appendHostChecks(checks, p, platOK), nil
 		}
 		kernelCheck.OK = true
 		kernelCheck.Detail = kernelPath
@@ -222,7 +231,8 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 			}
 			baseImgCheck := CheckResult{
 				Name:        "base_image",
-				Description: "base sandbox image in local cache",
+				Description: "base sandbox image in local cache; pulled on first create",
+				Optional:    true,
 			}
 			if found {
 				baseImgCheck.OK = true
@@ -272,6 +282,12 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		}
 	}
 
+	return appendHostChecks(checks, p, platOK), drv
+}
+
+// appendHostChecks adds the embedded-tool, userns, agent and optional checks
+// that do not depend on kernel resolution.
+func appendHostChecks(checks []CheckResult, p probes, platOK bool) []CheckResult {
 	if p.resolveHostBin != nil {
 		for _, name := range []string{"mke2fs", "e2fsck", "resize2fs"} {
 			chk := CheckResult{
@@ -291,11 +307,85 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		}
 	}
 
+	if p.userns != nil && platOK {
+		chk := CheckResult{
+			Name:        "userns",
+			Description: "unprivileged user namespaces (rootless virtiofsd for --mount)",
+			OK:          true,
+			Detail:      "available",
+		}
+		if err := p.userns(); err != nil {
+			chk.OK = false
+			chk.Detail = err.Error()
+			chk.Remediation = "Enable user namespaces: set sysctl user.max_user_namespaces to a non-zero value and kernel.unprivileged_userns_clone=1."
+		}
+		checks = append(checks, chk)
+	}
+
+	if p.resolveAgent != nil {
+		chk := CheckResult{
+			Name:        "agent",
+			Description: "nexus-agent guest binary (embedded)",
+			OK:          true,
+			Detail:      "resolved",
+		}
+		if err := p.resolveAgent(); err != nil {
+			chk.OK = false
+			chk.Detail = err.Error()
+			chk.Remediation = fmt.Sprintf("rebuild nexus with `make artifacts` or set %s", hostbin.AgentEnvVar)
+		}
+		checks = append(checks, chk)
+	}
+
+	checks = append(checks, optionalToolChecks(p)...)
+
 	if p.listHerdrProcs != nil {
 		checks = append(checks, checkHerdrProcesses(context.Background(), p.listHerdrProcs))
 	}
 
-	return checks, drv
+	return checks
+}
+
+// optionalTools maps host executables to the feature each one enables.
+var optionalTools = []struct{ name, feature string }{
+	{"git", "worktree sandboxes"},
+	{"ssh", "git-over-ssh relay"},
+	{"gh", "GitHub PR workflows"},
+	{"lsof", "port discovery"},
+	{"ss", "listening-socket inspection"},
+	{"ps", "herdr process health"},
+}
+
+func optionalToolChecks(p probes) []CheckResult {
+	if p.lookPath == nil {
+		return nil
+	}
+	var out []CheckResult
+	for _, t := range optionalTools {
+		chk := CheckResult{
+			Name:        t.name,
+			Description: t.name + ": " + t.feature,
+			Optional:    true,
+		}
+		if path, err := p.lookPath(t.name); err == nil {
+			chk.OK = true
+			chk.Detail = fmt.Sprintf("%s (enables %s)", path, t.feature)
+		} else {
+			chk.Detail = fmt.Sprintf("not found in PATH; %s unavailable", t.feature)
+		}
+		out = append(out, chk)
+	}
+	return out
+}
+
+func usernsAvailable() error {
+	if b, err := os.ReadFile("/proc/sys/user/max_user_namespaces"); err == nil && strings.TrimSpace(string(b)) == "0" {
+		return errors.New("user.max_user_namespaces is 0")
+	}
+	if b, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil && strings.TrimSpace(string(b)) == "0" {
+		return errors.New("kernel.unprivileged_userns_clone is 0")
+	}
+	return nil
 }
 
 // selectWith is the testable substrate selection logic.
