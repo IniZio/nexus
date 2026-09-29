@@ -1,3 +1,5 @@
+//go:build linux
+
 package service_test
 
 // Tests for the netns-process sweep added to Reap (ticket 10:

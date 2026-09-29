@@ -46,6 +46,9 @@ const (
 )
 
 func runSupervisorUpgrade(ctx context.Context, args []string, out *Output) error {
+	if err := requireBackend("supervisor upgrade"); err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("supervisor-upgrade", flag.ContinueOnError)
 	forceFlag := fs.Bool("force", false, "upgrade even when the running supervisor already reports the current binary")
 	dropMountsFlag := fs.Bool("force-drop-mounts", false, "upgrade even though live mounts served by the current supervisor will be lost")

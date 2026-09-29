@@ -40,7 +40,6 @@ import (
 	"github.com/IniZio/nexus/internal/core/builder"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/vmcfg"
 	"github.com/IniZio/nexus/internal/supervisor"
@@ -65,7 +64,7 @@ import (
 type supervisorBuilderDriver struct {
 	// dialerDrv is used for DialGuest only. Shares socketDir with the
 	// supervisor's CHDriver so vsock paths resolve correctly from the CLI.
-	dialerDrv *cloudhypervisor.CHDriver
+	dialerDrv driver.Driver
 
 	// ── static config (set at construction) ──────────────────────────────────
 	storeRoot  string // FileStore root; the supervisor opens the same store
@@ -247,7 +246,11 @@ func (d *supervisorBuilderDriver) Stop(ctx context.Context, _ domain.SandboxID) 
 // AF_UNIX multiplexer. Delegates to dialerDrv which shares socketDir with
 // the supervisor's CHDriver, so the vsock socket path is correct.
 func (d *supervisorBuilderDriver) DialGuest(ctx context.Context, id domain.SandboxID, port uint32) (net.Conn, error) {
-	return d.dialerDrv.DialGuest(ctx, id, port)
+	gd, ok := d.dialerDrv.(driver.GuestDialer)
+	if !ok {
+		return nil, fmt.Errorf("builder dialer driver %q cannot dial guest", d.dialerDrv.Name())
+	}
+	return gd.DialGuest(ctx, id, port)
 }
 
 func (d *supervisorBuilderDriver) Exec(ctx context.Context, id domain.SandboxID, o driver.ExecOptions) (int32, error) {

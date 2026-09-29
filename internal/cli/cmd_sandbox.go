@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -25,7 +24,6 @@ import (
 	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
@@ -141,13 +139,13 @@ func sandboxCodeFor(err error) string {
 		return sandboxErrCodeIllegalTransition
 	case errors.Is(err, service.ErrNoSubstrate):
 		return sandboxErrCodeNoSubstrate
-	case errors.Is(err, cloudhypervisor.ErrNoKernelConfigured):
+	case isChMissingKernelErr(err):
 		return sandboxErrCodeNoGuestImage
 	case errors.Is(err, service.ErrAgentUnreachable):
 		return sandboxErrCodeAgentUnreachable
 	case errors.Is(err, service.ErrNotBootable):
 		return sandboxErrCodeNotBootable
-	case errors.Is(err, cloudhypervisor.ErrNoRootDisk):
+	case isChNoRootDiskErr(err):
 		return sandboxErrCodeNotBootable
 	default:
 		return ErrCodeInternalError
@@ -720,20 +718,6 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 	return f, nil
 }
 
-func buildCHConfig(kernelPath, ext4Path string, memMiB, vcpus uint32) cloudhypervisor.Config {
-	cfg := cloudhypervisor.Config{
-		KernelPath:    kernelPath,
-		DiskImagePath: ext4Path,
-	}
-	if memMiB > 0 {
-		cfg.MemoryMiB = memMiB
-	}
-	if vcpus > 0 {
-		cfg.VCPUs = vcpus
-	}
-	return cfg
-}
-
 const diskBootCmdlineBase = "root=/dev/vda rw init=/sbin/nexus-agent console=ttyS0"
 
 func sandboxHandleHostname(handle string) string {
@@ -1271,17 +1255,20 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				return errSandbox("sandbox create", fmt.Errorf("--file: builder socket dir: %w", err))
 			}
 
-			dialerCfg := buildCHConfig(kernelPath, builderRootfs,
-				builderBootMemMiB, builderBootVCPUs)
-			dialerCfg.SocketDir = builderSocketDir
-			dialerCfg.MemoryMaxMiB = builderAR.MemoryMaxMiB
-			dialerCfg.VCPUMax = builderAR.VCPUMax
 			chBinPath, err := hostbin.Resolve(ctx, hostbin.CloudHypervisor)
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: resolve cloud-hypervisor: %w", err))
 			}
-			dialerCfg.BinaryPath = chBinPath
-			dialerDrv, err := cloudhypervisor.New(dialerCfg)
+			dialerDrv, err := newCHDriverFromParams(chDriverParams{
+				KernelPath:   kernelPath,
+				DiskPath:     builderRootfs,
+				SocketDir:    builderSocketDir,
+				BinaryPath:   chBinPath,
+				MemoryMiB:    builderBootMemMiB,
+				VCPUs:        builderBootVCPUs,
+				MemoryMaxMiB: builderAR.MemoryMaxMiB,
+				VCPUMax:      builderAR.VCPUMax,
+			})
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: builder dialer driver: %w", err))
 			}
@@ -1786,19 +1773,6 @@ func handoffHumanSupervisor(
 	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
 }
 
-func wireLiveMountsToConfig(cfg *cloudhypervisor.Config, mounts []domain.LiveMount) (virtiofsdPath string, err error) {
-	cfg.LiveMounts = mounts
-	if len(mounts) == 0 {
-		return "", nil
-	}
-	vres, verr := resolveVirtiofsdPath()
-	if verr != nil {
-		return "", fmt.Errorf("--mount requires virtiofsd: %w", verr)
-	}
-	cfg.VirtiofsdPath = vres.Path
-	return vres.Path, nil
-}
-
 func buildHumanSupervisorConfig(
 	sandboxRef, storeRoot, stateDir string,
 	kernelPath string,
@@ -1983,24 +1957,6 @@ func stopDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain
 	}
 	_ = svc.ClearSupervisor(ctx, sb.ID)
 	return nil
-}
-
-// killStaleNetnsGroup SIGKILLs the netns child's process group recorded on sb
-// when it is still the same process (pgid and start time match). It covers a
-// VM whose CH API socket is gone: CHDriver.Stop treats an absent socket as
-// "nothing to do" and would leave the VM running. The start-time check keeps a
-// recycled pid from being signalled.
-func killStaleNetnsGroup(sb domain.Sandbox) {
-	if sb.NetnsChildPID <= 0 || sb.NetnsChildPGID <= 0 || sb.NetnsChildStartTime == 0 {
-		return
-	}
-	st, err := cloudhypervisor.ReadProcStat(sb.NetnsChildPID)
-	if err != nil || st.StartTime != sb.NetnsChildStartTime || st.PGID != sb.NetnsChildPGID {
-		return
-	}
-	if err := syscall.Kill(-sb.NetnsChildPGID, syscall.SIGKILL); err != nil {
-		slog.Warn("sandbox: kill stale netns group", "pgid", sb.NetnsChildPGID, "err", err)
-	}
 }
 
 var supervisorWaitForExit = supervisor.WaitForExit
@@ -2464,7 +2420,7 @@ func liveMountsToGuestMounts(mounts []domain.LiveMount) []agent.GuestMount {
 	out := make([]agent.GuestMount, len(mounts))
 	for i, m := range mounts {
 		out[i] = agent.GuestMount{
-			Device:      cloudhypervisor.VirtiofsTag(i),
+			Device:      chVirtiofsTag(i),
 			Target:      m.GuestPath,
 			FSType:      "virtiofs",
 			ReadOnly:    m.ReadOnly,

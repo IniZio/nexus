@@ -1,3 +1,5 @@
+//go:build linux
+
 package supervisor
 
 // handoff_runtime_predicate_test.go is the end-to-end proof for ticket 14

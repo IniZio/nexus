@@ -14,7 +14,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/driver/registry"
 	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/service"
@@ -112,6 +112,19 @@ func defaultProbes() probes {
 // SelectSubstrate selects and returns a usable driver.Driver based on
 // capability probes and the NEXUS_SUBSTRATE environment variable.
 func SelectSubstrate() (driver.Driver, *SubstrateError) {
+	backend, err := activeBackend()
+	if err != nil {
+		return nil, &SubstrateError{
+			Msg:         err.Error(),
+			Remediation: "Set NEXUS_BACKEND to a backend registered in this build (linux default: cloud-hypervisor).",
+		}
+	}
+	if backend != registry.CloudHypervisor {
+		return nil, &SubstrateError{
+			Msg:         "backend " + backend + " provides no substrate driver in this build",
+			Remediation: "Unset NEXUS_BACKEND or set it to cloud-hypervisor.",
+		}
+	}
 	return selectWith(defaultProbes(), os.Getenv("NEXUS_SUBSTRATE"))
 }
 
@@ -268,11 +281,7 @@ func runAllChecks(p probes) (checks []CheckResult, drv driver.Driver) {
 		}
 		checks = append(checks, virtiofsdCheck)
 
-		d, err := cloudhypervisor.New(cloudhypervisor.Config{
-			BinaryPath: binaryPath,
-			KernelPath: kernelPath,
-			DiskDir:    diskDir,
-		})
+		d, err := newCHDriver(binaryPath, kernelPath, diskDir)
 		if err != nil {
 			checks = append(checks, CheckResult{
 				Name:        "driver_init",

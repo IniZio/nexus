@@ -3,16 +3,15 @@
 package supervisor
 
 import (
-	"errors"
 	"os"
 	"time"
+
+	"github.com/IniZio/nexus/internal/core/driver/registry"
 )
 
-// errSpawnUnsupportedPlatform: the detached supervisor re-execs the nexus
-// binary to own a local microVM, which only runs on Linux. The nexus client on
-// other platforms drives a Linux host via `nexus orca ... --remote` and never
-// spawns a local supervisor.
-var errSpawnUnsupportedPlatform = errors.New("supervisor: detached spawn is only supported on Linux (host-only); use --remote")
+func errSpawnUnsupportedPlatform() error {
+	return registry.Unsupported(registry.CloudHypervisor, "detached supervisor spawn")
+}
 
 // SpawnConfig mirrors the Linux definition so callers compile cross-platform.
 type SpawnConfig struct {
@@ -20,16 +19,28 @@ type SpawnConfig struct {
 	Exe          string
 	LogPath      string
 	ReadyTimeout time.Duration
+
+	AdoptHandoffSock    string
+	CacheDiskLeaseFiles []*os.File
+	Reacquire           bool
 }
 
 // SpawnDetached is unsupported off Linux.
 // The *os.File return value (parent-watchdog pipe write end) is always nil
 // on non-Linux platforms.
 func SpawnDetached(cfg SpawnConfig) (int, *os.File, error) {
-	return 0, nil, errSpawnUnsupportedPlatform
+	return 0, nil, errSpawnUnsupportedPlatform()
 }
 
 // SpawnReacquireDetached is unsupported off Linux.
 func SpawnReacquireDetached(cfg SpawnConfig) (int, error) {
-	return 0, errSpawnUnsupportedPlatform
+	return 0, errSpawnUnsupportedPlatform()
 }
+
+// SpawnAdoptDetached is unsupported off Linux.
+func SpawnAdoptDetached(cfg SpawnConfig) (int, error) {
+	return 0, errSpawnUnsupportedPlatform()
+}
+
+// BuildSupervisorArgv is unsupported off Linux; returns nil.
+func BuildSupervisorArgv(cfg SpawnConfig) []string { return nil }

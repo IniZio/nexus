@@ -1,3 +1,5 @@
+//go:build linux
+
 package service_test
 
 // TBD-PD-38: during the fork window, the shadow copies ForkFrom writes for

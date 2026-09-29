@@ -23,6 +23,9 @@ func init() {
 }
 
 func runVolume(ctx context.Context, args []string, out *Output) error {
+	if err := requireBackend("volume"); err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		return &UsageError{Msg: "volume: missing subcommand; usage: volume <create|ls|rm|prune|restore>"}
 	}

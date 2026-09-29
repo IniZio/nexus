@@ -19,10 +19,6 @@ var zeroChunk = make([]byte, chunkSize)
 // cloneFunc clones src into dst by extent sharing.
 type cloneFunc func(dst, src *os.File) error
 
-func ficlone(dst, src *os.File) error {
-	return unix.IoctlFileClone(int(dst.Fd()), int(src.Fd()))
-}
-
 // CopyFileReflink copies src to a newly created dst. It tries a FICLONE
 // extent clone first and falls back to a sparse copy that keeps source holes
 // and skips all-zero blocks. dst must not exist. The source mode is kept.

@@ -83,6 +83,9 @@ type imagePruneTemplateJSON struct {
 // It constructs the production ImageService and delegates to runImageWithService.
 // Tests call runImageWithService directly with an injected service instance.
 func runImage(ctx context.Context, args []string, out *Output) error {
+	if err := requireBackend("image"); err != nil {
+		return err
+	}
 	svc, err := newImageService()
 	if err != nil {
 		out.EmitError(ErrCodeInternalError, err.Error())

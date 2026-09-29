@@ -55,7 +55,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/builder"
 	"github.com/IniZio/nexus/internal/core/domain"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/govern"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/perimeter"
@@ -511,10 +511,6 @@ func RunDetached(cfg Config) error {
 	defer builder.ReleaseCacheDiskLeases(cacheLeases)
 
 	// ── 2. Construct per-sandbox driver ───────────────────────────────────────
-	extraDisks := make([]cloudhypervisor.ExtraDisk, 0, len(cfg.ExtraDisks))
-	for _, p := range cfg.ExtraDisks {
-		extraDisks = append(extraDisks, cloudhypervisor.ExtraDisk{Path: p})
-	}
 	// Derive MemoryMaxMiB and VCPUMax from GovBounds so the supervisor's boot
 	// reserves the same VirtioMem hotplug region and vCPU headroom as the
 	// initial CLI boot. Without these, MemoryMaxMiB=0 → no hotplug region →
@@ -525,7 +521,7 @@ func RunDetached(cfg Config) error {
 		memMaxMiB = uint32(cfg.GovBounds.MemMaxBytes / (1024 * 1024)) //nolint:gosec // bytes→MiB; fits uint32 for any sane ceiling
 	}
 	vcpuMax := uint32(cfg.GovBounds.VCPUMax) //nolint:gosec // int32→uint32; VCPUMax is always non-negative by construction
-	drv, err := cloudhypervisor.New(buildSupervisorDriverConfig(cfg, memMaxMiB, vcpuMax, extraDisks))
+	drv, err := newSupervisorDriver(cfg, memMaxMiB, vcpuMax)
 	if err != nil {
 		return fmt.Errorf("supervisor: init driver: %w", err)
 	}
@@ -641,8 +637,7 @@ func RunDetached(cfg Config) error {
 		if resolveErr != nil {
 			return AgentHealth{State: AgentChannelUnknown, ControlErr: fmt.Sprintf("sandbox not resolved: %v", resolveErr)}
 		}
-		// drv (*cloudhypervisor.CHDriver) implements driver.GuestDialer
-		// unconditionally (see ch_vsock.go's compile-time assertion) — no
+		// drv is a supervisorDriver, which embeds driver.GuestDialer — no
 		// comma-ok needed here, unlike agentClientFor's interface-typed driver.
 		return checkAgentHealth(hctx, drv, preSB.ID)
 	})
@@ -734,7 +729,10 @@ func RunDetached(cfg Config) error {
 	if bootVCPUs == 0 {
 		bootVCPUs = 1 // matches cloudhypervisor driver: Config.VCPUs=0 → 1 vCPU
 	}
-	resizer := cloudhypervisor.NewSandboxResizer(drv, sb.ID, cfg.GovBounds, int64(cfg.MemoryMiB)*1024*1024, bootVCPUs)
+	resizer, err := newSandboxResizer(drv, sb.ID, cfg.GovBounds, int64(cfg.MemoryMiB)*1024*1024, bootVCPUs)
+	if err != nil {
+		return fmt.Errorf("supervisor: init resizer: %w", err)
+	}
 	vsockTel := govern.NewVsockTelemetry(drv, sb.ID)
 	var govTel resize.TelemetrySource = vsockTel
 	govTel = newBalloonNormSource(vsockTel, drv, sb.ID)
@@ -1937,22 +1935,6 @@ func seedHumanSecrets(
 	return false, guestEverResponded
 }
 
-// buildSupervisorDriverConfig assembles the cloudhypervisor.Config the detached
-// supervisor boots its VM with.
-//
-// It exists as a separate function so a test can observe the config WITHOUT
-// booting a VM. That matters because of the bug this function was extracted to
-// prevent: VCPUs was simply absent from this literal, so the driver fell back
-// to its 1-vCPU default while VCPUMax still advertised the hotplug ceiling.
-// Every supervisor-backed sandbox therefore booted with exactly one CPU and
-// N-1 empty slots (/sys/devices/system/cpu present=0, possible=0-15) no matter
-// what --vcpus asked for.
-//
-// It stayed invisible because BootVCPUs WAS forwarded over argv as
-// --boot-vcpus and WAS consumed by the resize governor, so the argv test kept
-// passing: it asserted the value was TRANSPORTED, never that it reached the VM.
-// A test over this function closes the config half only — that the supervisor
-// actually calls it is proven by booting a sandbox and reading nproc.
 func buildClaudeRefreshers(credsFile string, broker *cred.Broker) []*cred.Refresher {
 	if credsFile == "" {
 		return nil
@@ -1974,27 +1956,17 @@ func buildClaudeRefreshers(credsFile string, broker *cred.Broker) []*cred.Refres
 	return rs
 }
 
-func buildSupervisorDriverConfig(
-	cfg Config,
-	memMaxMiB, vcpuMax uint32,
-	extraDisks []cloudhypervisor.ExtraDisk,
-) cloudhypervisor.Config {
-	return cloudhypervisor.Config{
-		BinaryPath:        cfg.CHBin,
-		SocketDir:         cfg.SocketDir,
-		KernelPath:        cfg.KernelPath,
-		DiskImagePath:     cfg.DiskPath,
-		StartTimeout:      30 * time.Second,
-		MemoryMiB:         cfg.MemoryMiB,
-		MemoryMaxMiB:      memMaxMiB,
-		VCPUs:             cfg.BootVCPUs, // boot_vcpus — see doc comment above
-		VCPUMax:           vcpuMax,
-		ExtraDisks:        extraDisks,
-		Cmdline:           cfg.Cmdline,
-		LiveMounts:        cfg.LiveMounts,
-		VirtiofsdPath:     cfg.VirtiofsdPath,
-		FreePageReporting: true,
-		NestedVirt:        cfg.NestedVirt,
-		ConsoleLogPath:    filepath.Join(cfg.StateDir, "console.log"),
-	}
+// supervisorDriver is the driver surface Run needs beyond driver.Driver; the
+// cloud-hypervisor driver satisfies it (see chdriver_linux.go).
+type supervisorDriver interface {
+	driver.Driver
+	driver.GuestDialer
+	driver.MemoryModeReporter
+	RuntimeDeathCh(id domain.SandboxID) <-chan struct{}
+}
+
+type supervisorResizer interface {
+	resize.MemoryResizer
+	resize.CPUResizer
+	resize.DiskResizer
 }

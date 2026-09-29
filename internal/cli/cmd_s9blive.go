@@ -1,4 +1,4 @@
-//go:build s9blive
+//go:build linux && s9blive
 
 package cli
 

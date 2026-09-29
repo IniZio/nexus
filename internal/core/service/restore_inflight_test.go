@@ -1,3 +1,5 @@
+//go:build linux
+
 package service_test
 
 // TBD-PD-38, sibling path. `RestoreFromSnapshot` had NO intent leases at all —

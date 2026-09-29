@@ -25,7 +25,6 @@ import (
 	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
@@ -1274,13 +1273,11 @@ func newLaunchDeps() (launchDeps, error) {
 	var diskPath string
 	newDriver := service.DriverFactory(func(ext4Path string, _ []service.ExtraDisk) (driver.Driver, error) {
 		diskPath = ext4Path
-		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
 		chBin, resolveErr := hostbin.Resolve(context.Background(), hostbin.CloudHypervisor)
 		if resolveErr != nil {
 			return nil, fmt.Errorf("resolve cloud-hypervisor: %w", resolveErr)
 		}
-		cfg.BinaryPath = chBin
-		return cloudhypervisor.New(cfg)
+		return newCHDriverFromParams(chDriverParams{KernelPath: kernelPath, DiskPath: ext4Path, BinaryPath: chBin})
 	})
 
 	return launchDeps{

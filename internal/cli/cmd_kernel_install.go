@@ -20,6 +20,9 @@ func init() {
 }
 
 func runKernelInstall(ctx context.Context, args []string, out *Output) error {
+	if err := requireBackend("kernel install"); err != nil {
+		return err
+	}
 	p, ok := activeKernelPin()
 	if !ok {
 		return fmt.Errorf("kernel install: no pin found for %q", kernelPinName)

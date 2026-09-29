@@ -5,10 +5,9 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/agent"
-	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/service"
 )
 
@@ -77,40 +76,35 @@ type sandboxDriverCaptures struct {
 // supervisor handoff (sandbox create path only).
 func buildSandboxDriverFactory(spec sandboxDriverSpec, caps *sandboxDriverCaptures) service.DriverFactory {
 	return func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
-		cfg := buildCHConfig(spec.KernelPath, ext4Path, spec.MemoryMiB, spec.VCPUs)
-		cfg.NestedVirt = spec.NestedVirt
+		p := chDriverParams{
+			KernelPath: spec.KernelPath, DiskPath: ext4Path,
+			MemoryMiB: spec.MemoryMiB, VCPUs: spec.VCPUs,
+			LiveMounts: spec.LiveMounts,
+		}
 		effectiveBootMem := spec.MemoryMiB
 		if effectiveBootMem == 0 {
 			effectiveBootMem = 512
 		}
 		if spec.MemoryMaxMiB > effectiveBootMem {
-			cfg.MemoryMaxMiB = spec.MemoryMaxMiB
+			p.MemoryMaxMiB = spec.MemoryMaxMiB
 		}
 		effectiveBootCPUs := spec.VCPUs
 		if effectiveBootCPUs == 0 {
 			effectiveBootCPUs = 1
 		}
 		if spec.VCPUMax > effectiveBootCPUs {
-			cfg.VCPUMax = spec.VCPUMax
+			p.VCPUMax = spec.VCPUMax
 		}
 		var capturedExtras []string
 		for _, ed := range extraDisks {
-			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
+			p.ExtraDiskPaths = append(p.ExtraDiskPaths, ed.Path)
 			capturedExtras = append(capturedExtras, ed.Path)
-		}
-		// Wire virtiofs live mounts (sandbox create --mount path only).
-		var virtiofsdPath string
-		if len(spec.LiveMounts) > 0 {
-			vp, verr := wireLiveMountsToConfig(&cfg, spec.LiveMounts)
-			if verr != nil {
-				return nil, verr
-			}
-			virtiofsdPath = vp
 		}
 		// Assemble kernel cmdline.
 		// When SBHandle is set or GuestMounts are present, use guestBootCmdline.
 		// Otherwise fall back to the simple disk-boot base + PID1Args form that
 		// ephemeral/run paths use (preserves pre-existing behavior there).
+		var cmdline string
 		if spec.SBHandle != "" || len(spec.GuestMounts) > 0 {
 			// scratchIdx is -1 unless a scratch disk was explicitly attached.
 			// Use spec.HasScratchDisk — not len(GuestMounts) — as the guard:
@@ -119,21 +113,25 @@ func buildSandboxDriverFactory(spec sandboxDriverSpec, caps *sandboxDriverCaptur
 			// Invariant when true: scratch is always len(ExtraDisks)-1 (D-DC-32).
 			scratchIdx := -1
 			if spec.HasScratchDisk {
-				scratchIdx = len(cfg.ExtraDisks) - 1
+				scratchIdx = len(p.ExtraDiskPaths) - 1
 			}
-			cfg.Cmdline = guestBootCmdline(spec.GuestMounts, spec.PID1Args, spec.SBHandle, scratchIdx, spec.HostHome)
+			cmdline = guestBootCmdline(spec.GuestMounts, spec.PID1Args, spec.SBHandle, scratchIdx, spec.HostHome)
 		} else if spec.PID1Args != "" {
-			cfg.Cmdline = diskBootCmdlineBase + " --" + spec.PID1Args
+			cmdline = diskBootCmdlineBase + " --" + spec.PID1Args
 		}
 		// Resolve socket directory consistently across CLI, MCP, and supervisor.
 		var socketDir string
 		if sd, err := orcaSocketDir(); err == nil {
-			cfg.SocketDir = sd
+			p.SocketDir = sd
 			socketDir = sd
 		}
 		// Resolve cloud-hypervisor binary.
-		if p, err := hostbin.Resolve(context.Background(), hostbin.CloudHypervisor); err == nil {
-			cfg.BinaryPath = p
+		if bin, err := hostbin.Resolve(context.Background(), hostbin.CloudHypervisor); err == nil {
+			p.BinaryPath = bin
+		}
+		drv, virtiofsdPath, err := newSeamCHDriver(p, spec.NestedVirt, cmdline)
+		if err != nil {
+			return nil, err
 		}
 		// Populate captures for supervisor handoff (sandbox create path only).
 		if caps != nil {
@@ -141,9 +139,9 @@ func buildSandboxDriverFactory(spec sandboxDriverSpec, caps *sandboxDriverCaptur
 			caps.ExtraDisks = capturedExtras
 			caps.VirtiofsdPath = virtiofsdPath
 			caps.SocketDir = socketDir
-			caps.Cmdline = cfg.Cmdline
-			caps.CHBin = cfg.BinaryPath
+			caps.Cmdline = cmdline
+			caps.CHBin = p.BinaryPath
 		}
-		return cloudhypervisor.New(cfg)
+		return drv, nil
 	}
 }

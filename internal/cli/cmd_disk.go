@@ -24,6 +24,9 @@ func init() {
 const diskUsageText = "disk: usage: disk usage [--json]"
 
 func runDisk(ctx context.Context, args []string, out *Output) error {
+	if err := requireBackend("disk"); err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		return &UsageError{Msg: diskUsageText}
 	}

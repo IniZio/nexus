@@ -797,7 +797,7 @@ func (c *Cache) ListBuilderTemplates(_ context.Context) ([]BuilderTemplate, erro
 			Path:     path,
 			Size:     st.Blocks * 512,
 			AgentTag: tag,
-			ModTime:  time.Unix(st.Mtim.Sec, st.Mtim.Nsec),
+			ModTime:  statMtime(&st),
 		})
 	}
 	return out, nil

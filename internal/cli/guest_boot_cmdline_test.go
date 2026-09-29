@@ -1,3 +1,5 @@
+//go:build linux
+
 package cli
 
 // The boot cmdline is built once by `nexus sandbox create` and again by the

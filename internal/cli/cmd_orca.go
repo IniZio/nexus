@@ -15,10 +15,9 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/agent"
 	"github.com/IniZio/nexus/internal/core/builder/toolcache"
-	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/resize"
@@ -569,16 +568,12 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	newDriver := service.DriverFactory(func(ext4Path string, extraDisks []service.ExtraDisk) (driver.Driver, error) {
 		capturedDiskPath = ext4Path
 		capturedExtraDisks = nil // reset on each call (CreateAndBoot calls once)
-		cfg := buildCHConfig(kernelPath, ext4Path, 0, 0)
-		cfg.SocketDir = socketDir // explicit so it matches supervisor + svc
-		if chBin != "" {
-			cfg.BinaryPath = chBin
-		}
+		p := chDriverParams{KernelPath: kernelPath, DiskPath: ext4Path, SocketDir: socketDir, BinaryPath: chBin}
 		for _, ed := range extraDisks {
-			cfg.ExtraDisks = append(cfg.ExtraDisks, cloudhypervisor.ExtraDisk{Path: ed.Path})
+			p.ExtraDiskPaths = append(p.ExtraDiskPaths, ed.Path)
 			capturedExtraDisks = append(capturedExtraDisks, ed.Path)
 		}
-		return cloudhypervisor.New(cfg)
+		return newCHDriverFromParams(p)
 	})
 
 	// Probe: wait for the guest agent control port to answer via vsock.
@@ -724,12 +719,9 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// The supervisor now owns the VM. Create a shadow CHDriver that talks to
 	// the same API/vsock sockets (same socketDir) without owning the process.
 	if pubKey != "" {
-		shadowCfg := buildCHConfig(kernelPath, capturedDiskPath, 0, 0)
-		shadowCfg.SocketDir = socketDir
-		if chBin != "" {
-			shadowCfg.BinaryPath = chBin
-		}
-		shadowDrv, shadowErr := cloudhypervisor.New(shadowCfg)
+		shadowDrv, shadowErr := newCHDriverFromParams(chDriverParams{
+			KernelPath: kernelPath, DiskPath: capturedDiskPath, SocketDir: socketDir, BinaryPath: chBin,
+		})
 		if shadowErr == nil {
 			if gd, ok := driver.Driver(shadowDrv).(driver.GuestDialer); ok {
 				// Wait for agent under the supervisor-owned VM.

@@ -1,3 +1,5 @@
+//go:build linux
+
 package supervisor
 
 // reacquire_ca_test.go proves the crash path actually SEEDS the persisted MITM

@@ -7,23 +7,13 @@ import (
 	_ "github.com/IniZio/nexus/internal/core/hostbin/embedded"
 
 	"github.com/IniZio/nexus/internal/cli"
-	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
+	"github.com/IniZio/nexus/internal/core/driver/backends"
 	"github.com/IniZio/nexus/internal/supervisor"
 )
 
 func main() {
-	// Sentinel dispatch: when re-exec'd into a user+network namespace by
-	// StartNetnsRuntime, this binary runs as the netns child process.
-	// This must be first — before any flag/cobra/CLI parsing.
-	if os.Getenv(cloudhypervisor.NetnsRunEnv) == "1" {
-		cloudhypervisor.RunNetnsChild()
-		return
-	}
-
-	if os.Getenv(cloudhypervisor.VirtiofsRunEnv) == "1" {
-		cloudhypervisor.RunVirtiofsdChild()
-		return
-	}
+	// Re-exec'd netns/virtiofsd children must dispatch before any CLI parsing.
+	backends.MaybeRunChild()
 
 	// Hidden subcommand: detached per-sandbox supervisor.
 	// Dispatched before CLI routing so the supervisor process never enters the

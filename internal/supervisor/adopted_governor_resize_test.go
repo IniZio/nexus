@@ -1,3 +1,5 @@
+//go:build linux
+
 package supervisor
 
 // TestAdoptedGovernorResizes proves AC-5 of the nexus-host-supervisor-hotswap

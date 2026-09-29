@@ -1,3 +1,5 @@
+//go:build linux
+
 package service_test
 
 // TestForkWorkspaceReap_Fix verifies D-PD-80(b): the child workspace disk
