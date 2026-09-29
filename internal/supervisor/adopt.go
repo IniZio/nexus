@@ -44,7 +44,7 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 	}
 
 	if sb.NetnsChildPID <= 0 || sb.NetnsChildPGID <= 0 || sb.NetnsChildStartTime == 0 ||
-		sb.GuestTapName == "" || sb.CHAPISocket == "" {
+		!sb.HasNICIdentity() || sb.CHAPISocket == "" {
 		return fmt.Errorf("supervisor: adopt: sandbox %s has an incomplete netns identity; refusing to adopt", sb.ID)
 	}
 
@@ -119,10 +119,7 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 		return fmt.Errorf("supervisor: adopt: %s", reason)
 	}
 
-	rt, err := cloudhypervisor.AdoptNetnsRuntime(ctx,
-		sb.NetnsChildPID, sb.NetnsChildPGID, sb.NetnsChildStartTime,
-		sb.GuestTapName, sb.CHAPISocket, fdFile,
-	)
+	rt, err := adoptRuntimeForRecord(ctx, sb, fdFile)
 	if err != nil {
 		_ = handoff.Refuse(conn, err.Error())
 		return fmt.Errorf("supervisor: adopt: adopt netns runtime: %w", err)

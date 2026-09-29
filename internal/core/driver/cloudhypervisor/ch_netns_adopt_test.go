@@ -20,6 +20,69 @@ import (
 
 // ── AdoptNetnsRuntime construction ──────────────────────────────────────────
 
+func TestAdoptNetnsRuntime_ModeAware(t *testing.T) {
+	spawn := func(t *testing.T) (int, uint64) {
+		t.Helper()
+		cmd := exec.Command("sleep", "30")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep: %v", err)
+		}
+		pid := cmd.Process.Pid
+		t.Cleanup(func() {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+		})
+		st, err := readProcStartTime(pid)
+		if err != nil {
+			t.Fatalf("readProcStartTime: %v", err)
+		}
+		return pid, st
+	}
+
+	t.Run("vhost-user adopts with socket and no tap", func(t *testing.T) {
+		perimFile, pumpFile, err := netnsSocketpairFiles()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pumpFile.Close() })
+		pid, st := spawn(t)
+		rt, err := AdoptVhostNetnsRuntime(context.Background(), pid, pid, st, "/tmp/vhost.sock", "/tmp/nx-test.sock", perimFile)
+		if err != nil {
+			t.Fatalf("AdoptVhostNetnsRuntime: %v", err)
+		}
+		t.Cleanup(func() { rt.PerimConn.Close() })
+		if rt.VhostSocket != "/tmp/vhost.sock" || rt.GuestTap != "" {
+			t.Errorf("VhostSocket=%q GuestTap=%q", rt.VhostSocket, rt.GuestTap)
+		}
+	})
+
+	t.Run("vhost-user refuses empty socket", func(t *testing.T) {
+		perimFile, pumpFile, err := netnsSocketpairFiles()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pumpFile.Close(); perimFile.Close() })
+		pid, st := spawn(t)
+		if _, err := AdoptVhostNetnsRuntime(context.Background(), pid, pid, st, "", "/tmp/nx-test.sock", perimFile); err == nil {
+			t.Fatal("vhost adopt with empty socket accepted")
+		}
+	})
+
+	t.Run("tap with empty GuestTap still refused", func(t *testing.T) {
+		perimFile, pumpFile, err := netnsSocketpairFiles()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pumpFile.Close(); perimFile.Close() })
+		pid, st := spawn(t)
+		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, st, "", "/tmp/nx-test.sock", perimFile)
+		if err == nil || !strings.Contains(err.Error(), "guestTap is empty") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
 // TestAdoptNetnsRuntime_Rebuilds verifies that AdoptNetnsRuntime wires the
 // four persisted values (childPID, childPGID, guestTap, apiSocket) plus the
 // transferred perimeter fd into an equivalent NetnsRuntime, with cmd left

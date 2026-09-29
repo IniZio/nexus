@@ -76,7 +76,10 @@ func reacquirePreflight(sb domain.Sandbox) error {
 		return fmt.Errorf("%w: %s has no netns child pgid", ErrNotReacquirable, sb.ID)
 	case sb.NetnsChildStartTime == 0:
 		return fmt.Errorf("%w: %s has no netns child starttime; refusing to re-acquire without a pid-reuse guard", ErrNotReacquirable, sb.ID)
-	case sb.GuestTapName == "":
+	case !sb.HasNICIdentity():
+		if sb.NetMode == domain.NetModeVhostUser {
+			return fmt.Errorf("%w: %s has no vhost socket", ErrNotReacquirable, sb.ID)
+		}
 		return fmt.Errorf("%w: %s has no guest tap name", ErrNotReacquirable, sb.ID)
 	case sb.CHAPISocket == "":
 		return fmt.Errorf("%w: %s has no CH API socket", ErrNotReacquirable, sb.ID)
@@ -86,6 +89,17 @@ func reacquirePreflight(sb domain.Sandbox) error {
 		return fmt.Errorf("%w: %s has no netns control token", ErrNotReacquirable, sb.ID)
 	}
 	return nil
+}
+
+func adoptRuntimeForRecord(ctx context.Context, sb domain.Sandbox, perimFile *os.File) (*cloudhypervisor.NetnsRuntime, error) {
+	if sb.NetMode == domain.NetModeVhostUser {
+		return cloudhypervisor.AdoptVhostNetnsRuntime(ctx,
+			sb.NetnsChildPID, sb.NetnsChildPGID, sb.NetnsChildStartTime,
+			sb.VhostSocket, sb.CHAPISocket, perimFile)
+	}
+	return cloudhypervisor.AdoptNetnsRuntime(ctx,
+		sb.NetnsChildPID, sb.NetnsChildPGID, sb.NetnsChildStartTime,
+		sb.GuestTapName, sb.CHAPISocket, perimFile)
 }
 
 type runtimeAdopter interface {
@@ -106,10 +120,7 @@ func ReacquirePerimeterForSandbox(ctx context.Context, sb domain.Sandbox, drv ru
 		return ReacquireResult{}, fmt.Errorf("supervisor: reacquire %s: %w", sb.ID, err)
 	}
 
-	rt, err := cloudhypervisor.AdoptNetnsRuntime(ctx,
-		sb.NetnsChildPID, sb.NetnsChildPGID, sb.NetnsChildStartTime,
-		sb.GuestTapName, sb.CHAPISocket, perimFile,
-	)
+	rt, err := adoptRuntimeForRecord(ctx, sb, perimFile)
 	if err != nil {
 		perimFile.Close()
 		return ReacquireResult{}, fmt.Errorf("supervisor: reacquire %s: adopt netns runtime: %w", sb.ID, err)

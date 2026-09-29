@@ -642,6 +642,19 @@ func ReadProcStat(pid int) (ProcStat, error) {
 // exec.Command in this process, so Stop() cannot cmd.Wait() on it and takes
 // the non-parent confirmation path instead (see Stop).
 func AdoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartTime uint64, guestTap, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
+	return adoptNetnsRuntime(ctx, childPID, childPGID, childStartTime, guestTap, "", apiSocket, perimFile)
+}
+
+// AdoptVhostNetnsRuntime is [AdoptNetnsRuntime] for a vhost-user sandbox: the
+// NIC identity is the vhost socket path, not a tap name.
+func AdoptVhostNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartTime uint64, vhostSocket, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
+	if vhostSocket == "" {
+		return nil, fmt.Errorf("cloudhypervisor: AdoptVhostNetnsRuntime: vhostSocket is empty")
+	}
+	return adoptNetnsRuntime(ctx, childPID, childPGID, childStartTime, "", vhostSocket, apiSocket, perimFile)
+}
+
+func adoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartTime uint64, guestTap, vhostSocket, apiSocket string, perimFile *os.File) (*NetnsRuntime, error) {
 	if perimFile == nil {
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: perimFile is nil")
 	}
@@ -654,7 +667,7 @@ func AdoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartT
 	if apiSocket == "" {
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: apiSocket is empty")
 	}
-	if guestTap == "" {
+	if guestTap == "" && vhostSocket == "" {
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: guestTap is empty")
 	}
 
@@ -694,6 +707,7 @@ func AdoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartT
 		PerimConn:      perimConn,
 		APISocket:      apiSocket,
 		GuestTap:       guestTap,
+		VhostSocket:    vhostSocket,
 		ChildPID:       childPID,
 		ChildPGID:      childPGID,
 		ChildStartTime: childStartTime,

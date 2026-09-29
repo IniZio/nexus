@@ -70,6 +70,10 @@ type ReapEntry struct {
 	// process group (ProcessPGID), not by removing a file.
 	ProcessPID  int
 	ProcessPGID int
+
+	// ProcessStartTime is /proc/<pid>/stat field 22 at classification; --apply
+	// re-reads it before killing the group. Zero when unreadable.
+	ProcessStartTime uint64
 }
 
 // ReapFailure records an orphan that --apply tried and failed to reclaim.
@@ -422,6 +426,17 @@ func Reap(ctx context.Context, st store.Store, idx *ResourceIndex, apply bool, o
 			// with NO netns entries (common in non-netns tests) is not rejected.
 			if opt.ProcDir != "/proc" && opt.NetnsKillFn == nil {
 				return nil, fmt.Errorf("reap: apply=true with a synthetic ProcDir requires NetnsKillFn in ReapOptions; prevents accidentally reaching the real syscall.Kill via a pgid discovered from a synthetic /proc entry")
+			}
+			if entry.ProcessStartTime != 0 {
+				if cur, stErr := readProcStartTime(opt.ProcDir, entry.ProcessPID); stErr == nil && cur != entry.ProcessStartTime {
+					report.Failed = append(report.Failed, ReapFailure{
+						Path:   entry.Resource.Path,
+						Kind:   entry.Resource.Kind,
+						Reason: fmt.Sprintf("pid %d starttime changed since classification (%d -> %d); refusing to kill a possibly recycled pid", entry.ProcessPID, entry.ProcessStartTime, cur),
+					})
+					report.Entries = append(report.Entries, entry)
+					continue
+				}
 			}
 			if err := effectiveKillFn(entry.ProcessPGID); err != nil {
 				report.Failed = append(report.Failed, ReapFailure{
@@ -1199,6 +1214,8 @@ func sweepOrphanNetnsProcesses(
 			pgid = livePgid
 		}
 
+		startTime, _ := readProcStartTime(procDir, pid)
+
 		if idErr != nil {
 			out = append(out, ReapEntry{
 				Status: ReapStatusSuspect,
@@ -1220,9 +1237,10 @@ func sweepOrphanNetnsProcesses(
 				Path:    apiSocket,
 				OwnerID: id,
 			},
-			Reason:      fmt.Sprintf("pid %d: live netns child (api socket %s) matches no store record and no in-flight create intent — orphaned by a prior failed/retried create; holds memfd-backed guest RAM, a tap, and a netns", pid, apiSocket),
-			ProcessPID:  pid,
-			ProcessPGID: pgid,
+			Reason:           fmt.Sprintf("pid %d: live netns child (api socket %s) matches no store record and no in-flight create intent — orphaned by a prior failed/retried create; holds memfd-backed guest RAM, a tap, and a netns", pid, apiSocket),
+			ProcessPID:       pid,
+			ProcessPGID:      pgid,
+			ProcessStartTime: startTime,
 		})
 	}
 	return out, zombies, inaccessible, nil
@@ -1308,6 +1326,24 @@ func readProcPGID(procDir string, pid int) (int, error) {
 		return 0, fmt.Errorf("parse /proc/%d/stat: too few fields after ')': got %d, want >=3", pid, len(fields))
 	}
 	return strconv.Atoi(fields[2]) // fields[2] = pgid (field 5)
+}
+
+// readProcStartTime reads field 22 (starttime) of /proc/<pid>/stat.
+func readProcStartTime(procDir string, pid int) (uint64, error) {
+	data, err := os.ReadFile(filepath.Join(procDir, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, err
+	}
+	line := strings.TrimRight(string(data), "\n")
+	idx := strings.LastIndex(line, ")")
+	if idx < 0 {
+		return 0, fmt.Errorf("parse /proc/%d/stat: no ')' found", pid)
+	}
+	fields := strings.Fields(line[idx+1:])
+	if len(fields) < 20 {
+		return 0, fmt.Errorf("parse /proc/%d/stat: too few fields", pid)
+	}
+	return strconv.ParseUint(fields[19], 10, 64)
 }
 
 // isNumeric returns true if s consists entirely of ASCII digits.

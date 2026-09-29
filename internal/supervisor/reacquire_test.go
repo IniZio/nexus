@@ -73,6 +73,32 @@ func TestReacquirePreflight_RefusesIncompleteIdentity(t *testing.T) {
 	}
 }
 
+func TestReacquirePreflight_VhostUserModeAware(t *testing.T) {
+	vhost := completeReacquirableSandbox()
+	vhost.NetMode = domain.NetModeVhostUser
+	vhost.GuestTapName = ""
+	vhost.VhostSocket = "/tmp/nexus/sock/netns-control/vhost-x.sock"
+	if err := reacquirePreflight(vhost); err != nil {
+		t.Fatalf("vhost-user record with socket and no tap refused: %v", err)
+	}
+
+	noSock := vhost
+	noSock.VhostSocket = ""
+	noSock.GuestTapName = "nxh-0102030405"
+	err := reacquirePreflight(noSock)
+	if err == nil || !errors.Is(err, ErrNotReacquirable) || !strings.Contains(err.Error(), "no vhost socket") {
+		t.Fatalf("vhost-user record without socket: err = %v", err)
+	}
+
+	tap := completeReacquirableSandbox()
+	tap.GuestTapName = ""
+	tap.VhostSocket = "/tmp/nexus/sock/netns-control/vhost-x.sock"
+	err = reacquirePreflight(tap)
+	if err == nil || !strings.Contains(err.Error(), "no guest tap name") {
+		t.Fatalf("tap record with empty GuestTap must still be refused: err = %v", err)
+	}
+}
+
 // TestReacquirePreflight_AcceptsCompleteIdentity is the positive control: it
 // proves the negative cases above fail for the reason claimed (the one
 // zeroed field) rather than because the fixture never passed at all.

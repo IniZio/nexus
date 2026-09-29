@@ -162,7 +162,7 @@ func runSupervisorUpgradeWith(ctx context.Context, ref string, force, forceDropM
 	// no compatibility branch that treats an absent field as "skip the
 	// check" — that has shipped three fail-open defects in this motive.
 	if sb.NetnsChildPID <= 0 || sb.NetnsChildPGID <= 0 || sb.NetnsChildStartTime == 0 ||
-		sb.GuestTapName == "" || sb.CHAPISocket == "" {
+		!sb.HasNICIdentity() || sb.CHAPISocket == "" {
 		return &CodedError{
 			Code: supervisorUpgradeIncompleteNetnsCode,
 			Msg:  fmt.Sprintf("supervisor-upgrade: sandbox %s has an incomplete netns identity; refusing to adopt", sb.ID),

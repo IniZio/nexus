@@ -36,6 +36,16 @@ const (
 	NetModeVhostUser NetMode = "vhost-user"
 )
 
+// HasNICIdentity reports whether the record carries the persisted NIC handle
+// its net mode needs to adopt a running netns child: the vhost socket path in
+// vhost-user mode, the guest tap name otherwise.
+func (s Sandbox) HasNICIdentity() bool {
+	if s.NetMode == NetModeVhostUser {
+		return s.VhostSocket != ""
+	}
+	return s.GuestTapName != ""
+}
+
 // ParseNetMode validates a user-supplied mode. Empty parses to the zero value.
 func ParseNetMode(s string) (NetMode, error) {
 	switch NetMode(s) {

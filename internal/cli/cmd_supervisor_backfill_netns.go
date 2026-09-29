@@ -102,7 +102,7 @@ func runSupervisorBackfillNetnsIdentityWith(ctx context.Context, ref string, out
 	}
 
 	if sb.NetnsChildPID > 0 && sb.NetnsChildPGID > 0 && sb.NetnsChildStartTime != 0 &&
-		sb.GuestTapName != "" && sb.CHAPISocket != "" {
+		sb.HasNICIdentity() && sb.CHAPISocket != "" {
 		return &CodedError{
 			Code: backfillNetnsAlreadyPresentCode,
 			Msg:  fmt.Sprintf("supervisor-backfill-netns-identity: sandbox %s already has a complete netns identity; nothing to backfill", sb.ID),

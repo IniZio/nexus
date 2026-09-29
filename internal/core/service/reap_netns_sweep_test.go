@@ -674,3 +674,115 @@ func TestNetnsZombieSkip(t *testing.T) {
 		t.Errorf("UninspectableProcesses = %d, want 0; zombie must not bleed into inaccessible count", report.UninspectableProcesses)
 	}
 }
+
+func writeSyntheticStatWithStart(t *testing.T, procDir string, pid, pgid int, start uint64) {
+	t.Helper()
+	pidDir := filepath.Join(procDir, itoa(pid))
+	if err := os.MkdirAll(pidDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// fields after ')': state ppid pgid then filler up to starttime (field 22).
+	fields := []string{"S", "1", itoa(pgid)}
+	for len(fields) < 19 {
+		fields = append(fields, "0")
+	}
+	fields = append(fields, fmt.Sprintf("%d", start))
+	content := fmt.Sprintf("%d (sleep) %s\n", pid, strings.Join(fields, " "))
+	if err := os.WriteFile(filepath.Join(pidDir, "stat"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSyntheticVhostProcess(t *testing.T, procDir string, pid int, apiSocket, vhostSocket string) {
+	t.Helper()
+	pidDir := filepath.Join(procDir, itoa(pid))
+	if err := os.MkdirAll(pidDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	environ := "NEXUS_NETNS_RUN=1\x00NEXUS_NETNS_API_SOCKET=" + apiSocket +
+		"\x00NEXUS_NETNS_NET_MODE=vhost-user\x00NEXUS_NETNS_VHOST_SOCKET=" + vhostSocket + "\x00"
+	if err := os.WriteFile(filepath.Join(pidDir, "environ"), []byte(environ), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A vhost-user orphan is reaped; a live tap child with a record, in the same
+// sweep, is never signalled.
+func TestReap_ApplyKillsVhostOrphanNeverLiveTapChild(t *testing.T) {
+	stateRoot := t.TempDir()
+	sockDir := t.TempDir()
+	procDir := t.TempDir()
+
+	orphan := spawnSleeperForTest(t)
+	tapChild := spawnSleeperForTest(t)
+
+	orphanID := domain.NewSandboxID()
+	orphanSocket := filepath.Join(sockDir, orphanID.String()+".sock")
+	writeSyntheticVhostProcess(t, procDir, orphan.Process.Pid, orphanSocket, filepath.Join(sockDir, "vhost-x.sock"))
+	writeSyntheticStat(t, procDir, orphan.Process.Pid, orphan.Process.Pid)
+
+	tapID := domain.NewSandboxID()
+	tapSocket := filepath.Join(sockDir, tapID.String()+".sock")
+	writeSyntheticNetnsProcess(t, procDir, tapChild.Process.Pid, tapSocket)
+	writeSyntheticStat(t, procDir, tapChild.Process.Pid, tapChild.Process.Pid)
+
+	st := newEmptyStore(t)
+	if err := st.Create(context.Background(), domain.Sandbox{
+		ID: tapID, Name: "t", Project: "p", State: domain.Running,
+		CHAPISocket: tapSocket, GuestTapName: "nxg-t",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := service.NewResourceIndex(service.IndexConfig{StateRoot: stateRoot, SocketDir: sockDir})
+
+	var killed []int
+	report, err := service.Reap(context.Background(), st, idx, true, service.ReapOptions{
+		ProcDir: procDir,
+		NetnsKillFn: func(pgid int) error {
+			killed = append(killed, pgid)
+			return syscall.Kill(-pgid, syscall.SIGKILL)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if len(killed) != 1 || killed[0] != orphan.Process.Pid {
+		t.Fatalf("killed = %v, want only vhost orphan pgid %d", killed, orphan.Process.Pid)
+	}
+	if len(report.KilledPIDs) != 1 {
+		t.Fatalf("KilledPIDs = %v", report.KilledPIDs)
+	}
+	if err := waitForProcessExit(orphan.Process.Pid); err != nil {
+		t.Error(err)
+	}
+	if err := syscall.Kill(tapChild.Process.Pid, 0); err != nil {
+		t.Errorf("live tap child was signalled: %v", err)
+	}
+}
+
+// The sweep records the child's starttime so --apply can verify identity.
+func TestReap_NetnsOrphanRecordsStartTime(t *testing.T) {
+	sockDir := t.TempDir()
+	procDir := t.TempDir()
+	id := domain.NewSandboxID()
+	sock := filepath.Join(sockDir, id.String()+".sock")
+	const pid = 500002
+	writeSyntheticVhostProcess(t, procDir, pid, sock, filepath.Join(sockDir, "vhost-x.sock"))
+	writeSyntheticStatWithStart(t, procDir, pid, pid, 111)
+
+	st := newEmptyStore(t)
+	idx := service.NewResourceIndex(service.IndexConfig{StateRoot: t.TempDir(), SocketDir: sockDir})
+	report, err := service.Reap(context.Background(), st, idx, false, service.ReapOptions{ProcDir: procDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got service.ReapEntry
+	for _, e := range report.Entries {
+		if e.Resource.Kind == service.KindNetnsProcess {
+			got = e
+		}
+	}
+	if got.ProcessStartTime != 111 {
+		t.Fatalf("ProcessStartTime = %d, want 111 (entry %+v)", got.ProcessStartTime, got)
+	}
+}
