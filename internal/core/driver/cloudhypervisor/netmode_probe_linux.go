@@ -21,28 +21,30 @@ const (
 	netnsProbeTimeout  = 15 * time.Second
 	netModeProbeFile   = "netmode-probe.json"
 	netModeProbeBootID = "/proc/sys/kernel/random/boot_id"
+	netModeProbeUserns = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 )
 
 var tapProbeRunner = probeTapInChild
 
 type tapProbeRecord struct {
 	BootID  string `json:"boot_id"`
+	Userns  string `json:"userns"`
 	Blocked bool   `json:"blocked"`
 }
 
 // ProbeTapCached reports whether the tap/bridge ops work in a throwaway
-// user+net namespace. The verdict is cached per boot in dir. A blocked host
+// user+net namespace. The verdict is cached in dir per boot and userns sysctl value. A blocked host
 // returns an error wrapping syscall.EPERM.
 func ProbeTapCached(dir string) error {
-	return probeTapCached(dir, readBootID(), tapProbeRunner)
+	return probeTapCached(dir, readBootID(), readUserns(), tapProbeRunner)
 }
 
-func probeTapCached(dir, bootID string, run func() error) error {
+func probeTapCached(dir, bootID, userns string, run func() error) error {
 	path := filepath.Join(dir, netModeProbeFile)
 	if bootID != "" {
 		if b, err := os.ReadFile(path); err == nil {
 			var rec tapProbeRecord
-			if json.Unmarshal(b, &rec) == nil && rec.BootID == bootID {
+			if json.Unmarshal(b, &rec) == nil && rec.BootID == bootID && rec.Userns == userns {
 				if rec.Blocked {
 					return tapPermissionHint(fmt.Errorf("tap probe (cached): %w", syscall.EPERM))
 				}
@@ -53,7 +55,7 @@ func probeTapCached(dir, bootID string, run func() error) error {
 	err := run()
 	blocked := err != nil && errors.Is(err, syscall.EPERM)
 	if bootID != "" && (err == nil || blocked) {
-		if b, merr := json.Marshal(tapProbeRecord{BootID: bootID, Blocked: blocked}); merr == nil {
+		if b, merr := json.Marshal(tapProbeRecord{BootID: bootID, Userns: userns, Blocked: blocked}); merr == nil {
 			if os.MkdirAll(dir, 0o700) == nil {
 				tmp := path + fmt.Sprintf(".%d.tmp", os.Getpid())
 				if os.WriteFile(tmp, b, 0o600) == nil {
@@ -71,6 +73,14 @@ func readBootID() string {
 	b, err := os.ReadFile(netModeProbeBootID)
 	if err != nil {
 		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func readUserns() string {
+	b, err := os.ReadFile(netModeProbeUserns)
+	if err != nil {
+		return "absent"
 	}
 	return strings.TrimSpace(string(b))
 }
