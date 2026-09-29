@@ -136,38 +136,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build static e2fsprogs
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/hostbin/e2fs/${{ matrix.goarch }}"
-          docker run --rm \
-            -v "$PWD/scripts/e2fsprogs:/scripts:ro" \
-            -v "$RUNNER_TEMP/hostbin/e2fs/${{ matrix.goarch }}:/out/e2fs" \
-            -e OUT=/out/e2fs \
-            docker.io/library/alpine@sha256:3c81aa9a3d770b316568f4499e30461a5cd3fbd7180bd89e28e34894c7845832 \
-            sh -c 'apk add --no-cache gcc musl-dev make wget xz util-linux-dev linux-headers file && sh /scripts/build.sh'
-
-      - name: Build static virtiofsd
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/hostbin/virtiofsd/${{ matrix.goarch }}"
-          docker run --rm \
-            -v "$PWD/scripts/virtiofsd:/scripts:ro" \
-            -v "$RUNNER_TEMP/hostbin/virtiofsd/${{ matrix.goarch }}:/out" \
-            -e OUT=/out/virtiofsd \
-            docker.io/library/alpine:3.20 \
-            sh /scripts/build-static.sh
-
       # UNCAPPED: systemd-run memory scope is unavailable on hosted runners
       - name: Embed host artifacts (make artifacts)
         env:
           NEXUS_ALLOW_UNCAPPED: "1"
         run: |
           set -euo pipefail
-          make artifacts \
-            HOSTBIN_GOARCH=${{ matrix.goarch }} \
-            E2FS_DIR="$RUNNER_TEMP/hostbin/e2fs" \
-            VIRTIOFSD_DIR="$RUNNER_TEMP/hostbin/virtiofsd"
+          make artifacts HOSTBIN_GOARCH=${{ matrix.goarch }}
           ls -l internal/core/hostbin/embedded/${{ matrix.goarch }}
 
       - name: Build nexus binary
