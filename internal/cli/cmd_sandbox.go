@@ -1243,7 +1243,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 			}
 			defer builder.ReleaseCacheDiskLeases(cacheDiskLeases)
 
-			builderNetMode, err := service.NetModeFromEnv()
+			builderNetMode, err := service.ResolveCreateNetMode()
 			if err != nil {
 				return errSandbox("sandbox create", fmt.Errorf("--file: NEXUS_NET_MODE: %w", err))
 			}

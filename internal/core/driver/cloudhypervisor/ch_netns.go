@@ -898,6 +898,10 @@ func runNetnsChildNoNet() {
 //
 // S1: wire this sentinel dispatch into cmd/nexus/main.go
 func RunNetnsChild() {
+	if os.Getenv(netnsProbeEnv) == "1" {
+		runTapProbeChild()
+		return
+	}
 	if os.Getenv(netnsEnvNoNet) == "1" {
 		runNetnsChildNoNet()
 		return

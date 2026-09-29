@@ -328,18 +328,18 @@ func appendHostChecks(checks []CheckResult, p probes, platOK bool) []CheckResult
 	}
 
 	if p.usernsNet != nil && platOK {
+		nerr := p.usernsNet()
 		chk := CheckResult{
 			Name:        "userns_net",
 			Description: "tap networking in unprivileged userns",
 			OK:          true,
 			Detail:      "not restricted",
 		}
-		if err := p.usernsNet(); err != nil {
-			chk.OK = false
-			chk.Detail = err.Error()
-			chk.Remediation = "AppArmor restricts unprivileged user namespaces; sandbox networking needs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (persist in /etc/sysctl.d) until the rootless vhost-user-net backend lands."
+		if nerr != nil {
+			chk.Detail = "tap blocked; vhost-user will be used"
 		}
 		checks = append(checks, chk)
+		checks = append(checks, netModeCheck(p, nerr))
 	}
 
 	if p.resolveAgent != nil {
@@ -406,6 +406,29 @@ func usernsAvailable() error {
 		return errors.New("kernel.unprivileged_userns_clone is 0")
 	}
 	return nil
+}
+
+// netModeCheck reports the net mode a new sandbox would get and why.
+func netModeCheck(p probes, netErr error) CheckResult {
+	chk := CheckResult{Name: "net_mode", Description: "network mode for new sandboxes", Optional: true, OK: true}
+	env := ""
+	if p.getenv != nil {
+		env = p.getenv("NEXUS_NET_MODE")
+	}
+	switch {
+	case env != "":
+		chk.Detail = env + " (from NEXUS_NET_MODE)"
+		if env == string(domain.NetModeTap) && netErr != nil {
+			chk.OK = false
+			chk.Detail += "; tap blocked by AppArmor userns restriction"
+			chk.Remediation = "unset NEXUS_NET_MODE or set NEXUS_NET_MODE=vhost-user"
+		}
+	case netErr != nil:
+		chk.Detail = "vhost-user (tap blocked by AppArmor userns restriction)"
+	default:
+		chk.Detail = "tap (tap networking available)"
+	}
+	return chk
 }
 
 func usernsNetAvailable() error {

@@ -275,6 +275,28 @@ func NetModeFromEnv() (domain.NetMode, error) {
 	return domain.ParseNetMode(os.Getenv("NEXUS_NET_MODE"))
 }
 
+// TapProbe reports whether tap networking works in an unprivileged userns. A
+// blocked host returns an error wrapping syscall.EPERM. Nil disables probing.
+var TapProbe func() error
+
+// ResolveCreateNetMode picks the mode for a NEW sandbox. It is the only caller
+// of TapProbe: start, restore, fork, adopt and upgrade use the recorded mode.
+func ResolveCreateNetMode() (domain.NetMode, error) {
+	mode, err := NetModeFromEnv()
+	if err != nil || mode == domain.NetModeVhostUser || TapProbe == nil {
+		return mode, err
+	}
+	perr := TapProbe()
+	if perr == nil || !errors.Is(perr, syscall.EPERM) {
+		return mode, nil
+	}
+	if mode == domain.NetModeTap {
+		return "", fmt.Errorf("NEXUS_NET_MODE=tap: %w", perr)
+	}
+	fmt.Fprintln(os.Stderr, "tap networking unavailable (AppArmor userns restriction); using vhost-user")
+	return domain.NetModeVhostUser, nil
+}
+
 // Create mints a new sandbox record in state Created.
 //
 // The Envelope is frozen at creation time. No method on Service ever mutates

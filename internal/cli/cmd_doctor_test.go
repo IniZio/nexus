@@ -130,22 +130,33 @@ func TestDoctor_UsernsNet(t *testing.T) {
 	p.usernsNet = func() error { return errors.New("restricted") }
 	checks, _ := runAllChecks(p)
 	c, ok := checkByName(checks, "userns_net")
-	if !ok || c.OK || c.Optional {
-		t.Fatalf("want required failing userns_net, got %+v ok=%v", c, ok)
+	if !ok || !c.OK || c.Optional || !strings.Contains(c.Detail, "vhost-user will be used") {
+		t.Fatalf("want passing userns_net naming vhost-user, got %+v ok=%v", c, ok)
 	}
-	if !strings.Contains(c.Remediation, "apparmor_restrict_unprivileged_userns=0") {
-		t.Errorf("remediation missing sysctl: %q", c.Remediation)
-	}
-	out, _, _ := capture(true)
-	var ec *ExitCodeError
-	if err := doctorWith(out, p, ""); !errors.As(err, &ec) || ec.Code != 1 {
-		t.Errorf("want exit 1, got %v", err)
+	nm, ok := checkByName(checks, "net_mode")
+	if !ok || !nm.OK || !nm.Optional || !strings.Contains(nm.Detail, "vhost-user (tap blocked by AppArmor userns restriction)") {
+		t.Errorf("net_mode = %+v ok=%v", nm, ok)
 	}
 
 	p.usernsNet = func() error { return nil }
 	checks, _ = runAllChecks(p)
-	if c, _ := checkByName(checks, "userns_net"); !c.OK {
+	if c, _ := checkByName(checks, "userns_net"); !c.OK || c.Detail != "not restricted" {
 		t.Errorf("unrestricted must be OK, got %+v", c)
+	}
+	if nm, _ := checkByName(checks, "net_mode"); !strings.HasPrefix(nm.Detail, "tap") {
+		t.Errorf("net_mode = %+v", nm)
+	}
+
+	p.usernsNet = func() error { return errors.New("restricted") }
+	p.getenv = func(k string) string {
+		if k == "NEXUS_NET_MODE" {
+			return "tap"
+		}
+		return ""
+	}
+	checks, _ = runAllChecks(p)
+	if nm, _ := checkByName(checks, "net_mode"); nm.OK || nm.Remediation == "" {
+		t.Errorf("explicit tap on restricted host must fail net_mode, got %+v", nm)
 	}
 }
 

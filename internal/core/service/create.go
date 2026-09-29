@@ -525,7 +525,7 @@ func CreateAndBoot(
 ) (domain.Sandbox, error) {
 	var netMode domain.NetMode
 	if project != "__builder" {
-		nm, nmErr := NetModeFromEnv()
+		nm, nmErr := ResolveCreateNetMode()
 		if nmErr != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: NEXUS_NET_MODE: %w", project, name, nmErr)
 		}
