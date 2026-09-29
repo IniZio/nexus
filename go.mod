@@ -9,6 +9,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/cucumber/godog v0.16.0
 	github.com/elazarl/goproxy v1.9.0
+	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.21.6
 	github.com/mdlayher/vsock v1.3.0
 	github.com/moby/buildkit v0.31.1
@@ -65,7 +66,6 @@ require (
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.2 // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
