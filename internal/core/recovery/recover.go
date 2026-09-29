@@ -554,9 +554,6 @@ func (r *Recoverer) applySupervisorLiveness(rec *domain.Sandbox, out *SandboxOut
 		return false
 	}
 
-	// A pre-S9d tap VM cannot be adopted by a replacement supervisor, and
-	// recovery must not stop it: report it with the remedy and leave the
-	// record untouched. NetnsChildPID==0 (fake/netless) keeps old behaviour.
 	if rec.NetnsChildPID > 0 && !rec.HasNICIdentity() {
 		ref := rec.Name
 		if ref == "" {

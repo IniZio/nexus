@@ -330,8 +330,6 @@ func TestPruneSkipsDotPrefixedEntries(t *testing.T) {
 		t.Fatalf("write warm meta: %v", err)
 	}
 
-	// Place disk.ext4 directly under .warm/ so that without the dot-prefix skip,
-	// pruneEntry classifies .warm/ as an orphan and would remove this file.
 	shallowDisk := filepath.Join(root, ".warm", "disk.ext4")
 	if err := os.WriteFile(shallowDisk, []byte("shallow"), 0o644); err != nil {
 		t.Fatalf("write shallow disk: %v", err)

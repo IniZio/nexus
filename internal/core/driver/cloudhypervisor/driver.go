@@ -88,9 +88,7 @@ func buildCmdline(base string, memoryMaxMiB uint32) string {
 func buildMemoryConfig(cfg Config, memMiB uint64) *vmMemoryConfig {
 	mc := &vmMemoryConfig{
 		SizeBytes: memMiB * 1024 * 1024,
-		// vhost-user-net and virtiofs both need guest RAM shared with the
-		// backend processes.
-		Shared: true,
+		Shared:    true,
 	}
 	if cfg.MemoryMaxMiB > uint32(memMiB) {
 		mc.SizeBytes = uint64(cfg.MemoryMaxMiB) * 1024 * 1024

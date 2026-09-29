@@ -43,8 +43,6 @@ func dispatchInnerEvent(ctx context.Context, ev socketmode.Event, a *Adapter, h 
 		if a.userID != "" && strings.Contains(inner.Text, "<@"+a.userID+">") {
 			return nil
 		}
-		// Allow file_share and thread_broadcast; drop all other non-empty subtypes
-		// (bot_message, message_changed, message_deleted, etc.).
 		st := inner.SubType
 		if st != "" && st != "file_share" && st != "thread_broadcast" {
 			return nil

@@ -730,7 +730,6 @@ func buildUserMountScript(manifest UserMountManifest) string {
 	var b strings.Builder
 	b.WriteString("set -eu\n\n")
 
-	// Step 1: Rebind product mounts. These virtiofs shares are staged outside
 	for _, m := range manifest.Mounts {
 		if !m.Rebind {
 			continue
