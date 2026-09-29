@@ -125,6 +125,30 @@ func TestDoctor_RequiredFailureExitsNonZero(t *testing.T) {
 	}
 }
 
+func TestDoctor_UsernsNet(t *testing.T) {
+	p := doctorTestProbes()
+	p.usernsNet = func() error { return errors.New("restricted") }
+	checks, _ := runAllChecks(p)
+	c, ok := checkByName(checks, "userns_net")
+	if !ok || c.OK || c.Optional {
+		t.Fatalf("want required failing userns_net, got %+v ok=%v", c, ok)
+	}
+	if !strings.Contains(c.Remediation, "apparmor_restrict_unprivileged_userns=0") {
+		t.Errorf("remediation missing sysctl: %q", c.Remediation)
+	}
+	out, _, _ := capture(true)
+	var ec *ExitCodeError
+	if err := doctorWith(out, p, ""); !errors.As(err, &ec) || ec.Code != 1 {
+		t.Errorf("want exit 1, got %v", err)
+	}
+
+	p.usernsNet = func() error { return nil }
+	checks, _ = runAllChecks(p)
+	if c, _ := checkByName(checks, "userns_net"); !c.OK {
+		t.Errorf("unrestricted must be OK, got %+v", c)
+	}
+}
+
 func TestFormatDoctorHuman_Groups(t *testing.T) {
 	out := formatDoctorHuman("none", false, []CheckResult{
 		{Name: "kvm", OK: true},

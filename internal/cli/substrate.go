@@ -58,6 +58,7 @@ type probes struct {
 	executable        func() (string, error)
 	resolveHostBin    func(ctx context.Context, name string) (hostbin.Resolved, error)
 	userns            func() error
+	usernsNet         func() error
 	resolveAgent      func() error
 }
 
@@ -69,6 +70,7 @@ func defaultProbes() probes {
 		executable:     os.Executable,
 		resolveHostBin: (&hostbin.Resolver{}).Resolve,
 		userns:         usernsAvailable,
+		usernsNet:      usernsNetAvailable,
 		resolveAgent: func() error {
 			_, err := (&hostbin.Resolver{}).ResolveAgent(nil)
 			return err
@@ -317,7 +319,25 @@ func appendHostChecks(checks []CheckResult, p probes, platOK bool) []CheckResult
 		if err := p.userns(); err != nil {
 			chk.OK = false
 			chk.Detail = err.Error()
-			chk.Remediation = "Enable user namespaces: set sysctl user.max_user_namespaces to a non-zero value and kernel.unprivileged_userns_clone=1."
+			chk.Remediation = "Enable user namespaces: set sysctl user.max_user_namespaces to a non-zero value."
+			if _, serr := os.Stat("/proc/sys/kernel/unprivileged_userns_clone"); serr == nil {
+				chk.Remediation += " Also set kernel.unprivileged_userns_clone=1."
+			}
+		}
+		checks = append(checks, chk)
+	}
+
+	if p.usernsNet != nil && platOK {
+		chk := CheckResult{
+			Name:        "userns_net",
+			Description: "tap networking in unprivileged userns",
+			OK:          true,
+			Detail:      "not restricted",
+		}
+		if err := p.usernsNet(); err != nil {
+			chk.OK = false
+			chk.Detail = err.Error()
+			chk.Remediation = "AppArmor restricts unprivileged user namespaces; sandbox networking needs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (persist in /etc/sysctl.d) until the rootless vhost-user-net backend lands."
 		}
 		checks = append(checks, chk)
 	}
@@ -384,6 +404,13 @@ func usernsAvailable() error {
 	}
 	if b, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil && strings.TrimSpace(string(b)) == "0" {
 		return errors.New("kernel.unprivileged_userns_clone is 0")
+	}
+	return nil
+}
+
+func usernsNetAvailable() error {
+	if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil && strings.TrimSpace(string(b)) == "1" {
+		return errors.New("kernel.apparmor_restrict_unprivileged_userns=1: tap/bridge creation in a user namespace is denied (EPERM)")
 	}
 	return nil
 }
