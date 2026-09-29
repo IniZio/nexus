@@ -1535,14 +1535,6 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 		return nil, fmt.Errorf("service: fork %s: snapshot integrity: %w", parent.ID, err)
 	}
 
-	childNetMode, err := s.snapshotNetMode(snap, parent.NetMode)
-	if err != nil {
-		if remover, ok := s.driver.(driver.SnapshotRemover); ok {
-			_ = remover.RemoveSnapshot(snap.ID)
-		}
-		return nil, fmt.Errorf("service: fork %s: %w", parent.ID, err)
-	}
-
 	// Mint child IDs. Each ID is a UUIDv7 and is globally unique; using the
 	// full base32 tail for the child name guarantees collision-free names even
 	// when many children are minted in the same millisecond.
@@ -1647,7 +1639,6 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 				ParentID:       parent.ID,
 				SourceSnapshot: string(snap.ID),
 			},
-			NetMode: childNetMode,
 		}
 		s.recordNetnsIdentity(&child)
 		if err := s.store.Create(ctx, child); err != nil {
@@ -1704,27 +1695,6 @@ func (s *Service) recordNetnsIdentity(child *domain.Sandbox) {
 	child.CHAPISocket = ns.APISocket
 	child.NetnsControlSocket = ns.ControlSocket
 	child.NetnsControlToken = ns.ControlToken
-}
-
-// snapshotNetMode returns the mode a child inherits: the snapshot's own,
-// which must agree with the origin record; the environment is never read.
-func (s *Service) snapshotNetMode(snap artifact.Snapshot, recorded domain.NetMode) (domain.NetMode, error) {
-	nm, ok := s.driver.(driver.SnapshotNetModer)
-	if !ok {
-		return recorded, nil
-	}
-	got, err := nm.SnapshotNetMode(snap)
-	if err != nil {
-		return "", err
-	}
-	want := recorded
-	if want == "" {
-		want = domain.NetModeTap
-	}
-	if got != "" && recorded != "none" && got != want {
-		return "", fmt.Errorf("snapshot %s was taken in net mode %q but the origin record says %q", snap.ID, got, want)
-	}
-	return recorded, nil
 }
 
 // SnapshotList returns all valid snapshots from the attached artifact store,
@@ -1856,11 +1826,6 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 		return nil, fmt.Errorf("service: restore %s: origin sandbox %s unavailable — cannot reconstruct egress policy (D-PD-33): %w", snapID, snap.SandboxID, originErr)
 	}
 
-	childNetMode, err := s.snapshotNetMode(snap, origin.NetMode)
-	if err != nil {
-		return nil, fmt.Errorf("service: restore %s: %w", snapID, err)
-	}
-
 	// Lease every child's disks before the driver writes them (TBD-PD-38).
 	// Restore had NO leases at all: both the ULID-keyed <childID>.raw and the
 	// handle-keyed shadow copies were exposed to a concurrent reap for the
@@ -1908,7 +1873,6 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 				ParentID:       snap.SandboxID,
 				SourceSnapshot: string(snapID),
 			},
-			NetMode: childNetMode,
 		}
 		s.recordNetnsIdentity(&child)
 		if err := s.store.Create(ctx, child); err != nil {

@@ -80,14 +80,13 @@ type record struct {
 	// StartNetnsRuntime so a replacement supervisor can call AdoptNetnsRuntime
 	// without re-deriving them from ps/nsenter. All omitted when zero/empty
 	// (i.e. when no netns child is running).
-	NetnsChildPID       int            `json:"netns_child_pid,omitempty"`
-	NetnsChildPGID      int            `json:"netns_child_pgid,omitempty"`
-	NetnsChildStartTime uint64         `json:"netns_child_start_time,omitempty"`
-	VhostSocket         string         `json:"vhost_socket,omitempty"`
-	NetMode             domain.NetMode `json:"net_mode,omitempty"`
-	CHAPISocket         string         `json:"ch_api_socket,omitempty"`
-	NetnsControlSocket  string         `json:"netns_control_socket,omitempty"`
-	NetnsControlToken   string         `json:"netns_control_token,omitempty"`
+	NetnsChildPID       int    `json:"netns_child_pid,omitempty"`
+	NetnsChildPGID      int    `json:"netns_child_pgid,omitempty"`
+	NetnsChildStartTime uint64 `json:"netns_child_start_time,omitempty"`
+	VhostSocket         string `json:"vhost_socket,omitempty"`
+	CHAPISocket         string `json:"ch_api_socket,omitempty"`
+	NetnsControlSocket  string `json:"netns_control_socket,omitempty"`
+	NetnsControlToken   string `json:"netns_control_token,omitempty"`
 	// CacheDiskSlot persists domain.Sandbox.CacheDiskSlot (D-HSH-07). Without
 	// it the field would be set in memory by the booting supervisor and lost
 	// on the next read, so an adopting or re-acquiring supervisor could never
@@ -128,7 +127,6 @@ func toRecord(sb domain.Sandbox) record {
 		NetnsChildPGID:      sb.NetnsChildPGID,
 		NetnsChildStartTime: sb.NetnsChildStartTime,
 		VhostSocket:         sb.VhostSocket,
-		NetMode:             sb.NetMode,
 		CHAPISocket:         sb.CHAPISocket,
 		NetnsControlSocket:  sb.NetnsControlSocket,
 		NetnsControlToken:   sb.NetnsControlToken,
@@ -183,7 +181,6 @@ func (r record) toDomain() domain.Sandbox {
 		NetnsChildPGID:      r.NetnsChildPGID,
 		NetnsChildStartTime: r.NetnsChildStartTime,
 		VhostSocket:         r.VhostSocket,
-		NetMode:             r.NetMode,
 		CHAPISocket:         r.CHAPISocket,
 		NetnsControlSocket:  r.NetnsControlSocket,
 		NetnsControlToken:   r.NetnsControlToken,

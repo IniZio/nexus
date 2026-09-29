@@ -4,11 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
-	"github.com/IniZio/nexus/internal/core/artifact"
-	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 )
 
@@ -19,11 +15,10 @@ import (
 var errNoNet = errors.New("no net devices configured in config.json")
 
 type netBackend struct {
-	mode domain.NetMode
-	ref  string // vhost-user socket path
+	ref string // vhost-user socket path
 }
 
-// snapshotNetBackend derives the mode from net[0]'s shape; errNoNet if netless.
+// snapshotNetBackend reads net[0]'s vhost socket; errNoNet if netless.
 func snapshotNetBackend(configJSON []byte) (netBackend, error) {
 	var top struct {
 		Net []struct {
@@ -42,7 +37,7 @@ func snapshotNetBackend(configJSON []byte) (netBackend, error) {
 		if n.Socket == "" {
 			return netBackend{}, fmt.Errorf("net[0] is vhost_user but has no \"vhost_socket\"")
 		}
-		return netBackend{mode: domain.NetModeVhostUser, ref: n.Socket}, nil
+		return netBackend{ref: n.Socket}, nil
 	}
 	return netBackend{}, fmt.Errorf("net[0] is not vhost_user: %w", driver.ErrTapSnapshot)
 }
@@ -54,21 +49,6 @@ type netRewrite struct {
 func (r netRewrite) apply(configJSON []byte) ([]byte, error) {
 	return rewriteConfigNetVhostSocket(configJSON, r.parent, r.child)
 }
-
-// SnapshotNetMode reports a snapshot's NIC mode (zero when netless).
-func (d *CHDriver) SnapshotNetMode(snap artifact.Snapshot) (domain.NetMode, error) {
-	cfg, err := os.ReadFile(filepath.Join(d.snapshotDirPath(snap.ID), "config.json"))
-	if err != nil {
-		return "", fmt.Errorf("cloudhypervisor: snapshot net mode: %w", err)
-	}
-	nb, err := snapshotNetBackend(cfg)
-	if errors.Is(err, errNoNet) {
-		return "", nil
-	}
-	return nb.mode, err
-}
-
-var _ driver.SnapshotNetModer = (*CHDriver)(nil)
 
 func rewriteConfigNetVhostSocket(configJSON []byte, oldSocket, newSocket string) ([]byte, error) {
 	return rewriteConfigNetField(configJSON, "vhost_socket", oldSocket, newSocket)

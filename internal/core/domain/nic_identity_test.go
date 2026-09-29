@@ -9,9 +9,7 @@ func TestSandboxHasNICIdentity(t *testing.T) {
 		want bool
 	}{
 		{"empty record", Sandbox{}, false},
-		{"socket without mode", Sandbox{VhostSocket: "/s"}, true},
-		{"vhost with socket", Sandbox{NetMode: NetModeVhostUser, VhostSocket: "/s"}, true},
-		{"vhost without socket", Sandbox{NetMode: NetModeVhostUser}, false},
+		{"with socket", Sandbox{VhostSocket: "/s"}, true},
 	}
 	for _, tc := range cases {
 		if got := tc.sb.HasNICIdentity(); got != tc.want {

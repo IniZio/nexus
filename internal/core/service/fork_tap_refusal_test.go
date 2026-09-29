@@ -17,15 +17,7 @@ import (
 // tapSnapDriver reports every snapshot as a tap snapshot and records removals.
 type tapSnapDriver struct {
 	*fake.FakeDriver
-	tap     bool
 	removed []artifact.SnapshotID
-}
-
-func (d *tapSnapDriver) SnapshotNetMode(artifact.Snapshot) (domain.NetMode, error) {
-	if d.tap {
-		return "", driver.ErrTapSnapshot
-	}
-	return "", nil
 }
 
 func (d *tapSnapDriver) RemoveSnapshot(id artifact.SnapshotID) error {
@@ -45,8 +37,9 @@ func countCalls(f *fake.FakeDriver, k fake.CallKind) int {
 
 func TestFork_TapSnapshotCleansTransient(t *testing.T) {
 	st := newTestStore(t)
-	drv := &tapSnapDriver{FakeDriver: fake.New(), tap: true}
+	drv := &tapSnapDriver{FakeDriver: fake.New()}
 	svc := service.New(st, drv, lifecycle.New())
+	drv.SetForkError(driver.ErrTapSnapshot)
 	sb := makeSandbox("tap-parent", "test", domain.Running)
 	if err := st.Create(context.Background(), sb); err != nil {
 		t.Fatal(err)
@@ -115,5 +108,36 @@ func TestSnapshot_NetlessStillWorks(t *testing.T) {
 	}
 	if n := countCalls(f, fake.CallTakeSnapshot); n != 1 {
 		t.Errorf("TakeSnapshot calls = %d, want 1", n)
+	}
+}
+
+// A stopped pre-S9d record carries no NIC identity. Start must
+// not refuse it: the driver boots vhost-user and the identity is recorded.
+func TestStart_LegacyStoppedRecordBootsVhostUser(t *testing.T) {
+	st := newTestStore(t)
+	wantSock := "/run/n/vhost-legacy.sock"
+	drv := &forkNetnsDriver{
+		FakeDriver:   fake.New(),
+		wantIdentity: driver.NetnsIdentity{ChildPID: 77, VhostSocket: wantSock},
+		returnOK:     true,
+	}
+	svc := service.New(st, drv, lifecycle.New())
+	sb := makeSandbox("legacy-stopped", "test", domain.Stopped)
+	if sb.HasNICIdentity() {
+		t.Fatal("fixture must start without NIC identity")
+	}
+	if err := st.Create(context.Background(), sb); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Start(context.Background(), sb.ID.String())
+	if err != nil {
+		t.Fatalf("Start legacy record: %v", err)
+	}
+	if got.State != domain.Running || got.VhostSocket != wantSock || !got.HasNICIdentity() {
+		t.Fatalf("after Start: state=%v VhostSocket=%q", got.State, got.VhostSocket)
+	}
+	stored, err := st.Get(context.Background(), sb.ID)
+	if err != nil || stored.VhostSocket != wantSock {
+		t.Fatalf("persisted VhostSocket = %q, err %v; want %q", stored.VhostSocket, err, wantSock)
 	}
 }

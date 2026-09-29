@@ -24,7 +24,7 @@ func TestSnapshotNetBackend(t *testing.T) {
 		want      netBackend
 		wantErr   error
 	}{
-		{"vhost-user", vhostNetConfig, netBackend{domain.NetModeVhostUser, "/run/n/vhost-A.sock"}, nil},
+		{"vhost-user", vhostNetConfig, netBackend{"/run/n/vhost-A.sock"}, nil},
 		{"no net field", `{"cpus":{}}`, netBackend{}, errNoNet},
 		{"empty net", `{"net":[]}`, netBackend{}, errNoNet},
 	}
@@ -88,9 +88,5 @@ func TestForkFromTapSnapshotRefused(t *testing.T) {
 	}
 	if _, err := d.ForkFrom(context.Background(), snap, []domain.SandboxID{domain.NewSandboxID()}); !errors.Is(err, driver.ErrTapSnapshot) {
 		t.Fatalf("ForkFrom err = %v, want ErrTapSnapshot", err)
-	}
-	got, err := d.SnapshotNetMode(snap)
-	if !errors.Is(err, driver.ErrTapSnapshot) {
-		t.Fatalf("SnapshotNetMode = %q, %v; want ErrTapSnapshot", got, err)
 	}
 }

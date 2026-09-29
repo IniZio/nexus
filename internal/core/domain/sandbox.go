@@ -27,15 +27,6 @@ const (
 	StopReasonMemoryLost StopReason = "memory_lost"
 )
 
-// NetMode selects how a sandbox's guest NIC is backed. The zero value means
-// tap. See doc/design/net-mode.md.
-type NetMode string
-
-const (
-	NetModeTap       NetMode = "tap"
-	NetModeVhostUser NetMode = "vhost-user"
-)
-
 // HasNICIdentity reports whether the record carries the persisted vhost socket
 // path needed to adopt a running netns child.
 func (s Sandbox) HasNICIdentity() bool {
@@ -47,17 +38,6 @@ func (s Sandbox) HasNICIdentity() bool {
 // sandbox name or id.
 func LegacyNICMessage(x string) string {
 	return fmt.Sprintf("sandbox %s has no vhost-user NIC identity (tap-mode VM from before S9d, or identity lost); run `nexus stop %s && nexus start %s` to migrate", x, x, x)
-}
-
-// ParseNetMode validates a user-supplied mode. Empty parses to the zero value.
-func ParseNetMode(s string) (NetMode, error) {
-	switch NetMode(s) {
-	case "":
-		return "", nil
-	case NetModeTap, NetModeVhostUser:
-		return NetMode(s), nil
-	}
-	return "", fmt.Errorf("invalid net mode %q (want tap or vhost-user)", s)
 }
 
 // Sandbox is the ONE durable entity in nexus. There is no separate VM or
@@ -143,10 +123,6 @@ type Sandbox struct {
 	// signalling the PID alone leaves CH (and any grandchildren) running.
 	// Zero when NetnsChildPID is zero.
 	NetnsChildPGID int `json:"netns_child_pgid,omitempty"`
-
-	// NetMode is recorded once at create and never re-read from the
-	// environment. Empty means tap.
-	NetMode NetMode `json:"net_mode,omitempty"`
 
 	// VhostSocket is the vhost-user net socket the netns child listens on in
 	// vhost-user mode. Empty when no netns child is running.
