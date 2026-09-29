@@ -36,7 +36,6 @@ BASEENV=(HOME="$STATE/home" XDG_RUNTIME_DIR="$STATE/run" TMPDIR="$STATE/t"
   USER="${USER:-root}" LOGNAME="${LOGNAME:-${USER:-root}}"
   PATH="$STATE/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 [ -n "${SSH_AUTH_SOCK:-}" ] && BASEENV+=(SSH_AUTH_SOCK="$SSH_AUTH_SOCK")
-VU=(NEXUS_NET_MODE=vhost-user)
 
 nx() { env -i "${BASEENV[@]}" "$@"; }
 gexec() { timeout "$1" env -i "${BASEENV[@]}" nexus exec "$2" -- sh -c "$3" 2>&1; }
@@ -47,7 +46,7 @@ record() {
   printf '%-8s %-26s %s\n' "$1" "$2" "$3"
 }
 
-HANDLES=(s9b8/main s9b8/file s9b8/snap s9b8/git s9b8/tap)
+HANDLES=(s9b8/main s9b8/file s9b8/snap s9b8/git)
 cleanup() {
   local h
   for h in "${HANDLES[@]}"; do nx nexus rm "$h" >/dev/null 2>&1; done
@@ -76,8 +75,8 @@ net_probe() { # label handle
   if [ "$deny" = blocked ]; then record PASS "$1 egress-deny" "google.com blocked"; else record FAIL "$1 egress-deny" "deny=[$deny]"; fi
 }
 
-echo "== main: image create under vhost-user"
-if timeout 300 env -i "${BASEENV[@]}" "${VU[@]}" nexus sandbox create s9b8/main --image "$IMAGE" \
+echo "== main: image create "
+if timeout 300 env -i "${BASEENV[@]}" nexus sandbox create s9b8/main --image "$IMAGE" \
   --mount "$STATE/mnt:/mnt/host" --egress closed --repo octocat/hello-world --allow-host example.com \
   >"$STATE/create-main.log" 2>&1; then
   record PASS "create --image" "s9b8/main"
@@ -88,8 +87,8 @@ out=$(gexec 30 s9b8/main "echo up")
 if [ "$out" = up ]; then record PASS "exec" "echo up"; else record FAIL "exec" "[$out]"; fi
 net_probe "main" s9b8/main
 
-mode=$(jq -r '.net_mode // "tap"' "$STATE"/home/.local/state/nexus/sandboxes/*/record.json 2>/dev/null | sort -u | tr '\n' ' ')
-record INFO "record net_mode" "$mode"
+vs=$(jq -r '.vhost_socket // ""' "$STATE"/home/.local/state/nexus/sandboxes/*/record.json 2>/dev/null | grep -c .)
+if [ "$vs" -ge 1 ]; then record PASS "record vhost_socket" "set on $vs record(s)"; else record FAIL "record vhost_socket" "unset"; fi
 
 echo "== dir mount rw"
 r=$(gexec 30 s9b8/main "cat /mnt/host/marker.txt")
@@ -102,7 +101,7 @@ fi
 
 echo "== stop/start"
 gexec 30 s9b8/main "echo persisted >/root/p; sync" >/dev/null
-if timeout 120 env -i "${BASEENV[@]}" "${VU[@]}" nexus sandbox stop s9b8/main >"$STATE/stop.log" 2>&1 && timeout 240 env -i "${BASEENV[@]}" "${VU[@]}" nexus sandbox start s9b8/main >"$STATE/start.log" 2>&1; then
+if timeout 120 env -i "${BASEENV[@]}" nexus sandbox stop s9b8/main >"$STATE/stop.log" 2>&1 && timeout 240 env -i "${BASEENV[@]}" nexus sandbox start s9b8/main >"$STATE/start.log" 2>&1; then
   out=$(gexec 60 s9b8/main "cat /root/p")
   if [ "$out" = persisted ]; then record PASS "stop/start" "state kept"; else record FAIL "stop/start" "out=[$out]"; fi
   net_probe "restarted" s9b8/main
@@ -122,8 +121,8 @@ done
 kill "$FWDPID" 2>/dev/null; FWDPID=""
 case "$out" in *hello-fwd*) record PASS "port forward" "hello-fwd" ;; *) record FAIL "port forward" "[${out:0:100}]" ;; esac
 
-echo "== create --file (builder VM under vhost-user)"
-if timeout 900 env -i "${BASEENV[@]}" "${VU[@]}" nexus sandbox create s9b8/file --file "$STATE/ctx" \
+echo "== create --file (builder VM )"
+if timeout 900 env -i "${BASEENV[@]}" nexus sandbox create s9b8/file --file "$STATE/ctx" \
   --egress closed --repo octocat/hello-world --allow-host example.com >"$STATE/create-file.log" 2>&1; then
   out=$(gexec 30 s9b8/file "cat /x")
   if [ "$out" = hi ]; then record PASS "create --file" "cat /x = hi"; else record FAIL "create --file" "cat /x=[$out]"; fi
@@ -134,7 +133,7 @@ fi
 echo "== git-ssh relay"
 if [ -z "${SSH_AUTH_SOCK:-}" ]; then
   record SKIP "git-ssh clone" "SSH_AUTH_SOCK unset"
-elif timeout 600 env -i "${BASEENV[@]}" "${VU[@]}" nexus sandbox create s9b8/git --image "$GIT_IMAGE" \
+elif timeout 600 env -i "${BASEENV[@]}" nexus sandbox create s9b8/git --image "$GIT_IMAGE" \
   --egress closed --repo octocat/hello-world --allow-host example.com \
   --egress-policy-json '{"":{"github.com":{"Paths":["/octocat/Hello-World/**"]}}}' >"$STATE/create-git.log" 2>&1; then
   out=$(gexec 120 s9b8/git "GIT_SSH_COMMAND=/sbin/nexus-agent\ git-ssh git clone -q git@github.com:octocat/Hello-World.git /tmp/hw && git -C /tmp/hw rev-parse --short HEAD")
@@ -144,10 +143,10 @@ else
 fi
 
 echo "== snapshot / restore"
-if timeout 300 env -i "${BASEENV[@]}" "${VU[@]}" nexus sandbox create s9b8/snap --image "$IMAGE" --memory 512 --memory-max 1024 \
+if timeout 300 env -i "${BASEENV[@]}" nexus sandbox create s9b8/snap --image "$IMAGE" --memory 512 --memory-max 1024 \
   --egress closed --repo octocat/hello-world --allow-host example.com >"$STATE/create-snap.log" 2>&1; then
   gexec 30 s9b8/snap "echo snap-marker >/root/m; sync" >/dev/null
-  live() { timeout 300 env -i "${BASEENV[@]}" "${VU[@]}" nexus-live s9b-live "$@" 2>>"$STATE/live.err"; }
+  live() { timeout 300 env -i "${BASEENV[@]}" nexus-live s9b-live "$@" 2>>"$STATE/live.err"; }
   out=$(live snapshot s9b8/snap); sid=$(awk '/^snapshot /{print $2}' <<<"$out")
   if [ -n "$sid" ]; then
     out=$(live restore "$sid" 1)
@@ -169,14 +168,15 @@ else
   record FAIL "snapshot/restore" "create: $(tail -3 "$STATE/create-snap.log")"
 fi
 
-echo "== tap-mode create (expected to FAIL when restricted)"
-if timeout 300 env -i "${BASEENV[@]}" NEXUS_NET_MODE=tap nexus sandbox create s9b8/tap --image "$IMAGE" \
+echo "== NEXUS_NET_MODE=tap create (tombstone)"
+if timeout 300 env -i "${BASEENV[@]}" NEXUS_NET_MODE=tap nexus sandbox create s9b8/tombstone --image "$IMAGE" \
   --egress closed --repo octocat/hello-world --allow-host example.com >"$STATE/create-tap.log" 2>&1; then
-  record NOTRESTR "tap create" "succeeded: host is not restricted"
-elif grep -q 'NEXUS_NET_MODE=vhost-user' "$STATE/create-tap.log"; then
-  record PASS "tap create fails" "message names NEXUS_NET_MODE=vhost-user"
+  nx nexus rm s9b8/tombstone >/dev/null 2>&1
+  record FAIL "NEXUS_NET_MODE=tap create" "unexpectedly succeeded"
+elif grep -q 'unset NEXUS_NET_MODE' "$STATE/create-tap.log"; then
+  record PASS "NEXUS_NET_MODE=tap create" "fails; message contains 'unset NEXUS_NET_MODE'"
 else
-  record FAIL "tap create fails" "no fix named: $(tail -3 "$STATE/create-tap.log")"
+  record FAIL "NEXUS_NET_MODE=tap create" "no tombstone message: $(tail -3 "$STATE/create-tap.log")"
 fi
 
 echo "== $FAILS failure(s); cleanup by exact name on exit"

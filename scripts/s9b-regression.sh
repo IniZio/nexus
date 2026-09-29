@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# S9b-R: upgrade-survival regression harness.
-# NEXUS_NET_MODE=vhost-user exported. NEXUS_NET_MODE is a create-time input
-
+# S9b-R: vhost-user lifecycle regression harness + S9d legacy-tap cutover.
+# Main flow runs only the NEW binary (vhost-user is the sole net mode).
+# Cutover section (needs --old-bin, a pre-S9d build e.g. 01b1794) creates tap
+# fixtures with the old binary, then checks the new binary migrates/refuses them.
 # Usage and design: doc/design/s9b-regression.md
 set -u
 
@@ -12,12 +13,14 @@ IMAGE=alpine:3.21
 KEEP=0
 HANDLE=s9br/fixture
 SNAPH=s9br/snapfix
+CUTA=s9br/cutA
+CUTB=s9br/cutB
 VOL=s9brvol
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --old) OLD=$2; shift 2 ;;
+    --old-bin) OLD=$2; shift 2 ;;
     --new) NEW=$2; shift 2 ;;
     --state) STATE=$2; shift 2 ;;
     --image) IMAGE=$2; shift 2 ;;
@@ -25,10 +28,10 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
-if ! { [ -x "$OLD" ] && [ -x "$NEW" ]; }; then echo "usage: $0 --old BIN --new BIN [--state DIR] [--image REF] [--keep]" >&2; exit 2; fi
+if ! [ -x "$NEW" ] || { [ -n "$OLD" ] && ! [ -x "$OLD" ]; }; then echo "usage: $0 --new BIN [--old-bin PRE_S9D_BIN] [--state DIR] [--image REF] [--keep]" >&2; exit 2; fi
 command -v jq >/dev/null || { echo "jq required" >&2; exit 2; }
 
-OLD=$(readlink -f "$OLD")
+[ -n "$OLD" ] && OLD=$(readlink -f "$OLD")
 NEW=$(readlink -f "$NEW")
 mkdir -p "$STATE/home" "$STATE/run" "$STATE/t" "$STATE/mnt" "$STATE/bin" "$STATE/rec"
 chmod 700 "$STATE/run"
@@ -57,6 +60,8 @@ cleanup() {
   EXTRA=()
   nx rm "$HANDLE" >/dev/null 2>&1
   nx rm "$SNAPH" >/dev/null 2>&1
+  nx rm "$CUTA" >/dev/null 2>&1
+  nx rm "$CUTB" >/dev/null 2>&1
   nx volume rm "$VOL" >/dev/null 2>&1
   if [ "$KEEP" = 0 ] && [ -n "$ID" ]; then
     for p in $(pgrep -f "$ID" 2>/dev/null); do
@@ -69,13 +74,13 @@ cleanup() {
 trap cleanup EXIT
 
 # Fields that legitimately change across supervisor/VM lifecycle.
-LIFECYCLE='["state","instance_id","supervisor_pid","supervisor_sock","netns_child_pid","netns_child_pgid","netns_child_start_time","guest_tap_name","ch_api_socket","netns_control_socket","netns_control_token","stop_reason","updated_at"]'
+LIFECYCLE='["state","instance_id","supervisor_pid","supervisor_sock","netns_child_pid","netns_child_pgid","netns_child_start_time","vhost_socket","ch_api_socket","netns_control_socket","netns_control_token","stop_reason","updated_at"]'
 
 check_record() {
   local label=$1 prev=$2 cur changed bad
   cur=$(recfile)
-  if jq -e 'has("net_mode")' "$cur" >/dev/null; then
-    record FAIL "$label record" "net_mode written on legacy record: $(jq -c '.net_mode' "$cur")"
+  if jq -e 'has("net_mode") or has("guest_tap_name")' "$cur" >/dev/null; then
+    record FAIL "$label record" "legacy net field written: $(jq -c '{net_mode,guest_tap_name}' "$cur")"
     return
   fi
   bad=$(jq -n --slurpfile a "$prev" --slurpfile b "$cur" --argjson ok "$LIFECYCLE" '
@@ -86,29 +91,35 @@ check_record() {
     record FAIL "$label record" "non-lifecycle fields changed: $bad"
     return
   fi
-  if [ "$(jq -r '.state' "$cur")" = running ] && [ -z "$(jq -r '.guest_tap_name // ""' "$cur")" ]; then
-    record FAIL "$label record" "running but guest_tap_name empty"
+  if [ "$(jq -r '.state' "$cur")" = running ] && [ -z "$(jq -r '.vhost_socket // ""' "$cur")" ]; then
+    record FAIL "$label record" "running but vhost_socket empty"
     return
   fi
-  record PASS "$label record" "net_mode absent; changed=[${changed}] all lifecycle; tap=$(jq -r '.guest_tap_name // "-"' "$cur")"
+  record PASS "$label record" "net_mode/guest_tap_name absent; changed=[${changed}] all lifecycle; vhost_socket=$(jq -r '.vhost_socket // "-"' "$cur")"
 }
 
-check_tap() {
-  local label=$1 cpid tap bad=""
-  tap=$(jq -r '.guest_tap_name // ""' "$(recfile)")
-  cpid=$(jq -r '.netns_child_pid // 0' "$(recfile)")
-  if ! grep -q "^ *$tap:" "/proc/$cpid/net/dev" 2>/dev/null; then
-    bad="tap $tap not in netns of pid $cpid"
+# check_vhost LABEL ID: vhost_socket set, no nx[ghb]- iface in netns, no --net-mode in supervisor argv
+check_vhost() {
+  local label=$1 rf cpid spid vs bad=""
+  rf=$(rec_of "$2")
+  vs=$(jq -r '.vhost_socket // ""' "$rf")
+  cpid=$(jq -r '.netns_child_pid // 0' "$rf")
+  spid=$(jq -r '.supervisor_pid // 0' "$rf")
+  [ -n "$vs" ] || bad="vhost_socket empty"
+  if [ "$cpid" -gt 0 ]; then
+    if [ ! -r "/proc/$cpid/net/dev" ]; then
+      bad="$bad; /proc/$cpid/net/dev unreadable"
+    elif grep -Eq '^ *nx[ghb]-' "/proc/$cpid/net/dev"; then
+      bad="$bad; tap iface in netns of pid $cpid: $(grep -Eo '^ *nx[ghb]-[^:]*' "/proc/$cpid/net/dev" | tr -d ' ' | tr '\n' ',')"
+    fi
   fi
-  local spid
-  spid=$(jq -r '.supervisor_pid // 0' "$(recfile)")
-  if tr '\0' ' ' <"/proc/$spid/cmdline" 2>/dev/null | grep -q -- '--net-mode'; then
-    bad="$bad; supervisor argv carries --net-mode: $(tr '\0' ' ' <"/proc/$spid/cmdline" | grep -o -- '--net-mode [a-z-]*')"
+  if [ "$spid" -gt 0 ] && tr '\0' ' ' <"/proc/$spid/cmdline" 2>/dev/null | grep -q -- '--net-mode'; then
+    bad="$bad; supervisor argv carries --net-mode"
   fi
-  if [ -n "$bad" ]; then
-    record FAIL "$label tap" "$bad"
+  if [ -z "$bad" ]; then
+    record PASS "$label vhost" "vhost_socket set; no nx[ghb]- iface in /proc/$cpid/net/dev; no --net-mode in supervisor argv"
   else
-    record PASS "$label tap" "$tap present in /proc/$cpid/net/dev; no --net-mode in supervisor argv"
+    record FAIL "$label vhost" "$bad"
   fi
 }
 
@@ -148,24 +159,17 @@ probe_net() { # label handle: DNS + allowed + denied egress only
   if [ "$deny" = blocked ]; then record PASS "$label egress-deny" "https://google.com blocked"; else record FAIL "$label egress-deny" "deny=[$deny]"; fi
 }
 
-check_child_tap() { # label child-id: tap, net_mode absent, no --net-mode argv, guest state survived
-  local label=$1 cid=$2 rf cpid tap spid bad="" marker
+check_child_vhost() { # label child-id: vhost checks + guest state survived
+  local label=$1 cid=$2 rf marker
   rf=$(rec_of "$cid")
-  tap=$(jq -r '.guest_tap_name // ""' "$rf")
-  cpid=$(jq -r '.netns_child_pid // 0' "$rf")
-  spid=$(jq -r '.supervisor_pid // 0' "$rf")
-  jq -e 'has("net_mode")' "$rf" >/dev/null && bad="net_mode written: $(jq -c .net_mode "$rf")"
-  jq -e 'has("vhost_socket") and (.vhost_socket != null and .vhost_socket != "")' "$rf" >/dev/null && bad="$bad; vhost_socket set"
-  [ -n "$tap" ] || bad="$bad; guest_tap_name empty"
-  grep -q "^ *$tap:" "/proc/$cpid/net/dev" 2>/dev/null || bad="$bad; tap $tap not in netns of pid $cpid"
-  if [ "$spid" -gt 0 ] && tr '\0' ' ' <"/proc/$spid/cmdline" 2>/dev/null | grep -q -- '--net-mode'; then bad="$bad; supervisor argv carries --net-mode"; fi
+  check_vhost "$label" "$cid"
+  jq -e 'has("net_mode") or has("guest_tap_name")' "$rf" >/dev/null && record FAIL "$label record" "legacy net field written"
   TARGET=$cid marker=$(gexec 30 "cat /root/s9b-marker")
   TARGET=
-  [ "$marker" = snap-marker ] || bad="$bad; guest marker [${marker:0:60}]"
-  if [ -z "$bad" ]; then
-    record PASS "$label tap" "$tap in /proc/$cpid/net/dev; net_mode absent; no vhost_socket; marker survived"
+  if [ "$marker" = snap-marker ]; then
+    record PASS "$label marker" "guest marker survived"
   else
-    record FAIL "$label tap" "$bad"
+    record FAIL "$label marker" "guest marker [${marker:0:60}]"
   fi
 }
 
@@ -187,8 +191,8 @@ wait_running() { # wait until record state=running and exec answers
   return 1
 }
 
-echo "== fixture: create with OLD binary ($OLD)"
-cp "$OLD" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
+echo "== fixture: create with NEW binary ($NEW)"
+cp "$NEW" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
 EXTRA=()
 if nx sandbox list 2>/dev/null | grep -q "^$HANDLE "; then echo "fixture $HANDLE already exists in $STATE; remove it first" >&2; exit 2; fi
 nx volume create "$VOL" >/dev/null 2>&1
@@ -201,10 +205,10 @@ ID=$(nx sandbox list | awk -v h="$HANDLE" '$1==h{print $NF}')
 
 if jq -e '.envelope.open_egress // false | not' "$(recfile)" >/dev/null &&
   [ "$(jq -r '.envelope.AllowedHosts | join(",")' "$(recfile)")" = example.com ] &&
-  [ -n "$(jq -r '.guest_tap_name // ""' "$(recfile)")" ] && ! jq -e 'has("net_mode")' "$(recfile)" >/dev/null; then
-  record PASS "fixture record" "tap ($(jq -r .guest_tap_name "$(recfile)")), open_egress false, allow=[example.com], net_mode absent"
+  [ -n "$(jq -r '.vhost_socket // ""' "$(recfile)")" ] && ! jq -e 'has("net_mode") or has("guest_tap_name")' "$(recfile)" >/dev/null; then
+  record PASS "fixture record" "vhost_socket set, open_egress false, allow=[example.com], net_mode/guest_tap_name absent"
 else
-  record FAIL "fixture record" "$(jq -c '{envelope,guest_tap_name,net_mode}' "$(recfile)")"
+  record FAIL "fixture record" "$(jq -c '{envelope,vhost_socket,net_mode,guest_tap_name}' "$(recfile)")"
   exit 1
 fi
 timeout 60 env -i "${BASEENV[@]}" nexus exec "$HANDLE" -- sh -c 'echo volfile >/data/x; sync' >/dev/null 2>&1
@@ -216,20 +220,18 @@ if timeout 300 env -i "${BASEENV[@]}" nexus sandbox create "$SNAPH" --image "$IM
   --egress closed --repo octocat/hello-world --allow-host example.com >"$STATE/create2.log" 2>&1 &&
   timeout 60 env -i "${BASEENV[@]}" nexus exec "$SNAPH" -- sh -c 'echo snap-marker >/root/s9b-marker; sync' >/dev/null 2>&1; then
   SNAPID=$(nx sandbox list | awk -v h="$SNAPH" '$1==h{print $NF}')
-  record PASS "snapfix create" "tap fixture without mounts/volume: $SNAPH ($SNAPID)"
+  record PASS "snapfix create" "fixture without mounts/volume: $SNAPH ($SNAPID)"
 else
   record FAIL "snapfix create" "$(tail -3 "$STATE/create2.log")"
   SNAPID=""
 fi
 
-echo "== atomic-rename upgrade to NEW binary ($NEW); NEXUS_NET_MODE=vhost-user from here on"
-cp "$NEW" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
-EXTRA=(NEXUS_NET_MODE=vhost-user)
+echo "== lifecycle on NEW binary"
 
 probe "(a) running" 1
 snap_record 01-running
 check_record "(a) running" "$STATE/rec/00-created.json"
-check_tap "(a) running"
+check_vhost "(a) running" "$ID"
 
 oldpid=$(jq -r .supervisor_pid "$(recfile)")
 if out=$(timeout 180 env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus supervisor-upgrade "$HANDLE" 2>&1); then
@@ -245,7 +247,7 @@ fi
 probe "(b) adopt" 2
 snap_record 02-adopt
 check_record "(b) adopt" "$STATE/rec/01-running.json"
-check_tap "(b) adopt"
+check_vhost "(b) adopt" "$ID"
 
 timeout 120 env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus sandbox stop "$HANDLE" >/dev/null 2>&1
 snap_record 03-stopped
@@ -258,11 +260,11 @@ fi
 probe "(c) stop-start" 3
 snap_record 04-restarted
 check_record "(c) restarted" "$STATE/rec/03-stopped.json"
-check_tap "(c) restarted"
+check_vhost "(c) restarted" "$ID"
 
 (cd "$ROOT" && go build -tags s9blive -o "$STATE/bin/nexus-live.new" ./cmd/nexus) >"$STATE/live-build.log" 2>&1 &&
   mv -f "$STATE/bin/nexus-live.new" "$STATE/bin/nexus-live"
-EXTRA=(NEXUS_NET_MODE=vhost-user)
+EXTRA=()
 if [ -x "$STATE/bin/nexus-live" ] && [ -n "$SNAPID" ]; then
   if out=$(live snapshot "$HANDLE"); then
     record FAIL "(d) snapshot mount guard" "snapshot of mount+volume fixture unexpectedly succeeded: $out"
@@ -282,8 +284,8 @@ if [ -x "$STATE/bin/nexus-live" ] && [ -n "$SNAPID" ]; then
     cid=$(awk '/^child /{print $2}' <<<"$out" | head -1)
     chandle=$(awk '/^child /{print $3}' <<<"$out" | head -1)
     if [ -n "$cid" ] && wait_child "$cid"; then
-      record PASS "(d) restore" "child $chandle running under NEW binary, NEXUS_NET_MODE=vhost-user exported"
-      check_child_tap "(d) restored" "$cid"
+      record PASS "(d) restore" "child $chandle running under NEW binary"
+      check_child_vhost "(d) restored" "$cid"
       probe_net "(d) restored" "$cid"
     else
       record FAIL "(d) restore" "out=[${out:0:200}] err=[$(tail -2 "$STATE/live.err")]"
@@ -303,7 +305,7 @@ if [ -x "$STATE/bin/nexus-live" ] && [ -n "$SNAPID" ]; then
     for k in "${kids[@]}"; do
       cid=${k% *}; chandle=${k#* }
       if wait_child "$cid"; then
-        check_child_tap "(e) fork child ${cid: -6}" "$cid"
+        check_child_vhost "(e) fork child ${cid: -6}" "$cid"
         probe_net "(e) fork child ${cid: -6}" "$cid"
         taps="$taps $(jq -r .netns_child_pid "$(rec_of "$cid")")"
       else
@@ -311,7 +313,7 @@ if [ -x "$STATE/bin/nexus-live" ] && [ -n "$SNAPID" ]; then
       fi
     done
     if [ "$(tr ' ' '\n' <<<"$taps" | sort -u | grep -c .)" = 2 ]; then
-      record PASS "(e) fork distinct netns" "own netns child pids:$taps (tap names may repeat: one tap per netns)"
+      record PASS "(e) fork distinct netns" "own netns child pids:$taps"
     else
       record FAIL "(e) fork distinct netns" "netns child pids=[$taps]"
     fi
@@ -323,7 +325,7 @@ if [ -x "$STATE/bin/nexus-live" ] && [ -n "$SNAPID" ]; then
 else
   record FAIL "(d,e) snapshot/fork" "nexus-live missing ($(tail -2 "$STATE/live-build.log" 2>/dev/null)) or no snapfix"
 fi
-EXTRA=(NEXUS_NET_MODE=vhost-user)
+EXTRA=()
 
 spid=$(jq -r .supervisor_pid "$(recfile)")
 if tr '\0' ' ' <"/proc/$spid/cmdline" 2>/dev/null | grep -q "__supervisor.*$ID"; then
@@ -345,8 +347,82 @@ else
 fi
 probe "(f) post-kill" 5
 check_record "(f) post-kill" "$STATE/rec/04-restarted.json"
-check_tap "(f) post-kill"
+check_vhost "(f) post-kill" "$ID"
 
+echo "== cutover: legacy tap fixtures from OLD binary ($OLD)"
+if [ -z "$OLD" ]; then
+  record SKIP "cutover" "no --old-bin given"
+else
+  EXTRA=()
+  cp "$OLD" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
+  cut_ok=1
+  for h in "$CUTA" "$CUTB"; do
+    if ! timeout 300 env -i "${BASEENV[@]}" NEXUS_NET_MODE=tap nexus sandbox create "$h" --image "$IMAGE" \
+      --egress closed --repo octocat/hello-world --allow-host example.com >"$STATE/create-cut.log" 2>&1; then
+      record FAIL "cutover fixture $h" "$(tail -3 "$STATE/create-cut.log")"; cut_ok=0
+    fi
+  done
+  if [ "$cut_ok" = 1 ]; then
+    CIDA=$(nx sandbox list | awk -v h="$CUTA" '$1==h{print $NF}')
+    CIDB=$(nx sandbox list | awk -v h="$CUTB" '$1==h{print $NF}')
+    if [ -n "$(jq -r '.guest_tap_name // ""' "$(rec_of "$CIDA")")" ] && [ -n "$(jq -r '.guest_tap_name // ""' "$(rec_of "$CIDB")")" ]; then
+      record PASS "cutover fixtures" "A=$CIDA B=$CIDB are tap (guest_tap_name set)"
+    else
+      record FAIL "cutover fixtures" "old binary did not produce tap fixtures: A=$(jq -c '{guest_tap_name,vhost_socket}' "$(rec_of "$CIDA")") B=$(jq -c '{guest_tap_name,vhost_socket}' "$(rec_of "$CIDB")")"
+    fi
+    timeout 120 env -i "${BASEENV[@]}" nexus sandbox stop "$CUTB" >/dev/null 2>&1
+    if [ "$(jq -r .state "$(rec_of "$CIDB")")" = stopped ]; then
+      record PASS "cutover B stopped" "B stopped under OLD"
+    else
+      record FAIL "cutover B stopped" "state=$(jq -r .state "$(rec_of "$CIDB")")"
+    fi
+
+    cp "$NEW" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
+    # B: stopped legacy record -> start under NEW migrates to vhost-user
+    if timeout 240 env -i "${BASEENV[@]}" nexus sandbox start "$CUTB" >"$STATE/start-cutb.log" 2>&1 && wait_child "$CIDB"; then
+      rf=$(rec_of "$CIDB")
+      if [ -n "$(jq -r '.vhost_socket // ""' "$rf")" ] && ! jq -e 'has("net_mode") or has("guest_tap_name")' "$rf" >/dev/null; then
+        record PASS "cutover B start" "vhost_socket set; net_mode/guest_tap_name absent"
+      else
+        record FAIL "cutover B start" "$(jq -c '{vhost_socket,net_mode,guest_tap_name}' "$rf")"
+      fi
+      check_vhost "cutover B" "$CIDB"
+      probe_net "cutover B" "$CUTB"
+    else
+      record FAIL "cutover B start" "$(tail -3 "$STATE/start-cutb.log")"
+    fi
+
+    # A: running legacy tap VM -> supervisor-upgrade refused
+    rfa=$(rec_of "$CIDA")
+    apid=$(jq -r .supervisor_pid "$rfa")
+    if out=$(timeout 180 env -i "${BASEENV[@]}" nexus supervisor-upgrade "$CUTA" 2>&1); then
+      record FAIL "cutover A upgrade refused" "supervisor-upgrade unexpectedly succeeded: $(tail -2 <<<"$out")"
+    elif grep -q supervisor_upgrade_legacy_nic <<<"$out"; then
+      if [ "$(jq -r .supervisor_pid "$rfa")" = "$apid" ] && TARGET=$CUTA gexec 20 true >/dev/null 2>&1; then
+        record PASS "cutover A upgrade refused" "supervisor_upgrade_legacy_nic; supervisor $apid untouched, guest still answers"
+      else
+        record FAIL "cutover A upgrade refused" "code returned but A disturbed: pid $apid -> $(jq -r .supervisor_pid "$rfa")"
+      fi
+    else
+      record FAIL "cutover A upgrade refused" "no supervisor_upgrade_legacy_nic: $(tail -3 <<<"$out")"
+    fi
+
+    # A: stop + start migrates
+    if timeout 120 env -i "${BASEENV[@]}" nexus sandbox stop "$CUTA" >/dev/null 2>&1 &&
+      timeout 240 env -i "${BASEENV[@]}" nexus sandbox start "$CUTA" >"$STATE/start-cuta.log" 2>&1 && wait_child "$CIDA"; then
+      if [ -n "$(jq -r '.vhost_socket // ""' "$rfa")" ] && ! jq -e 'has("net_mode") or has("guest_tap_name")' "$rfa" >/dev/null; then
+        record PASS "cutover A stop+start" "migrated: vhost_socket set; net_mode/guest_tap_name absent"
+      else
+        record FAIL "cutover A stop+start" "$(jq -c '{vhost_socket,net_mode,guest_tap_name}' "$rfa")"
+      fi
+      check_vhost "cutover A" "$CIDA"
+      probe_net "cutover A" "$CUTA"
+    else
+      record FAIL "cutover A stop+start" "$(tail -3 "$STATE/start-cuta.log" 2>/dev/null)"
+    fi
+  fi
+  EXTRA=()
+fi
 check_record "overall(created->final)" "$STATE/rec/00-created.json"
 
 echo
