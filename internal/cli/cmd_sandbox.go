@@ -1247,7 +1247,6 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				return errSandbox("sandbox create", fmt.Errorf("--file: %w", err))
 			}
 			spec := builder.BuilderVMSpec{
-				NetMode:          domain.NetModeVhostUser,
 				RootfsDiskPath:   builderRootfs,
 				ContextDiskPath:  ctxDiskPath,
 				ArtifactDiskPath: artifactDiskPath,
@@ -1772,7 +1771,6 @@ func handoffHumanSupervisor(
 		mcpOAuthRefreshConfigs,
 		agentProfile,
 	)
-	cfg.NetMode = sb.NetMode
 	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
 		return err
 	}

@@ -526,7 +526,6 @@ func CreateAndBoot(
 	if nmErr := CheckNetModeEnv(); nmErr != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: %w", project, name, nmErr)
 	}
-	netMode := domain.NetModeVhostUser
 
 	// 1. Resolve ext4 path from the image spec
 	ext4Path, resolvedDigest, err := resolveExt4WithTools(ctx, opts.Image, cache, opts.CacheRoot, opts.AgentBytes, opts.SandboxTools)
@@ -890,9 +889,6 @@ func CreateAndBoot(
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create-and-boot %s/%s: init driver: %w", project, name, err)
 	}
-	if nms, ok := bootDrv.(driver.NetModeSetter); ok {
-		nms.SetNetMode(netMode)
-	}
 
 	// Resolve this sandbox's agent profile ONCE, ahead of the record, so that
 	// the persisted AgentName and the credential seed delivered to the guest
@@ -922,7 +918,6 @@ func CreateAndBoot(
 		Labels:    opts.Labels,
 		State:     domain.Created,
 		Principal: principal,
-		NetMode:   netMode,
 		Envelope: domain.Envelope{
 			ImageDigest:        resolvedDigest,
 			AllowedHosts:       opts.AllowedHosts, // frozen at creation (P1-S6)

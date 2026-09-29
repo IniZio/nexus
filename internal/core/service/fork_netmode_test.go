@@ -34,57 +34,6 @@ func newSnapModeSvc(t *testing.T, snapMode domain.NetMode) *service.Service {
 	return service.New(st, &snapModeDriver{FakeDriver: fake.New(), mode: snapMode}, lifecycle.New())
 }
 
-func TestForkAndRestoreInheritNetModeFromSnapshot(t *testing.T) {
-	cases := []struct {
-		name     string
-		env      string
-		recorded domain.NetMode
-		snapMode domain.NetMode
-	}{
-		{"tap ignores env vhost-user", "vhost-user", "", domain.NetModeTap},
-		{"tap ignores env none", "none", "", domain.NetModeTap},
-		{"explicit tap record", "vhost-user", domain.NetModeTap, domain.NetModeTap},
-		{"vhost-user ignores env tap", "tap", domain.NetModeVhostUser, domain.NetModeVhostUser},
-		{"vhost-user without env", "", domain.NetModeVhostUser, domain.NetModeVhostUser},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			t.Setenv("NEXUS_NET_MODE", c.env)
-			svc := newSnapModeSvc(t, c.snapMode)
-			ctx := ctx()
-			parent, err := svc.Create(ctx, "proj", "p", service.CreateOptions{NetMode: c.recorded})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := svc.Start(ctx, parent.ID.String()); err != nil {
-				t.Fatal(err)
-			}
-			kids, err := svc.Fork(ctx, parent.ID.String(), 2)
-			if err != nil {
-				t.Fatalf("Fork: %v", err)
-			}
-			for _, k := range kids {
-				if k.NetMode != c.recorded {
-					t.Errorf("fork child NetMode = %q, want %q", k.NetMode, c.recorded)
-				}
-			}
-
-			aStore := makeArtifactStore(t)
-			svc = svc.WithArtifacts(aStore)
-			writeSnapWithOrigin(t, aStore, "netmode-snap-00000000000", parent.ID, artifact.KindRetained)
-			kids, err = svc.RestoreFromSnapshot(ctx, "netmode-snap-00000000000", 2)
-			if err != nil {
-				t.Fatalf("RestoreFromSnapshot: %v", err)
-			}
-			for _, k := range kids {
-				if k.NetMode != c.recorded {
-					t.Errorf("restore child NetMode = %q, want %q", k.NetMode, c.recorded)
-				}
-			}
-		})
-	}
-}
-
 func TestForkRefusesSnapshotNetModeMismatch(t *testing.T) {
 	svc := newSnapModeSvc(t, domain.NetModeVhostUser)
 	ctx := ctx()

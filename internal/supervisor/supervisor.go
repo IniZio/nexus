@@ -255,10 +255,6 @@ type Config struct {
 	// persistent sandbox.
 	Ephemeral bool
 
-	// NetMode is the sandbox's recorded net mode, forwarded as --net-mode.
-	// Empty means tap.
-	NetMode domain.NetMode
-
 	// ParentPipeFD is a file descriptor number (≥ 3) for the read end of a
 	// pipe whose write end is held by the spawning CLI process. Used only when
 	// Ephemeral is true.

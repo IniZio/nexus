@@ -109,28 +109,3 @@ func TestBuildInVM_BuilderCarriesNoSecrets(t *testing.T) {
 		t.Error("builder record carries SecretSpecs — open egress + secrets is not an acceptable posture")
 	}
 }
-
-type netModeRecordingDriver struct {
-	*stopTrackingDriver
-	mode domain.NetMode
-	set  bool
-}
-
-func (d *netModeRecordingDriver) SetNetMode(m domain.NetMode) { d.mode, d.set = m, true }
-
-func TestBuildInVM_PassesNetModeToDriverAndRecord(t *testing.T) {
-	st := &capturingBuilderStore{}
-	seq := &seqCounter{}
-	drv := &netModeRecordingDriver{stopTrackingDriver: newStopTracker(seq)}
-	et := newExecTracker(seq)
-
-	spec := builder.BuilderVMSpec{RootfsDiskPath: "/dev/null", NetMode: domain.NetModeVhostUser}
-	_, _ = builder.BuildInVM(context.Background(), drv, spec, nil, et.fn, st)
-
-	if !drv.set || drv.mode != domain.NetModeVhostUser {
-		t.Errorf("driver net mode = %q (set=%v), want vhost-user", drv.mode, drv.set)
-	}
-	if got := st.first(t).NetMode; got != domain.NetModeVhostUser {
-		t.Errorf("transient record NetMode = %q, want vhost-user", got)
-	}
-}

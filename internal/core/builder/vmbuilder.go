@@ -168,7 +168,6 @@ func BuildInVM(
 			// builder supervisor is spawned with no CredsFile, so no
 			// credential is ever seeded into the builder guest.
 			Envelope: domain.Envelope{OpenEgress: true},
-			NetMode:  spec.NetMode,
 		}
 		if createErr := st.Create(ctx, transient); createErr != nil {
 			return "", fmt.Errorf("builder vm: persist transient record: %w", createErr)
@@ -196,9 +195,6 @@ func BuildInVM(
 	}()
 
 	// ── 1. Boot the builder VM ────────────────────────────────────────────────
-	if nms, ok := drv.(driver.NetModeSetter); ok {
-		nms.SetNetMode(spec.NetMode)
-	}
 	instanceID, startErr := drv.Start(ctx, driver.StartRequest{SandboxID: id})
 	if startErr != nil {
 		// The cache disks were never attached to the VM, so no guest writes

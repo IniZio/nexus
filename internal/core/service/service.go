@@ -265,9 +265,6 @@ type CreateOptions struct {
 	// Mirrors the AgentName field on domain.Sandbox; the value comes from
 	// resolveAgentPosture (flag OR user-global / project config default).
 	AgentName string
-
-	// NetMode is stamped on the record. Empty means tap (legacy records).
-	NetMode domain.NetMode
 }
 
 // netModeEnvTombstone is the CheckNetModeEnv error text.
@@ -314,7 +311,6 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 		Envelope:     domain.Envelope{}, // frozen at creation; future slices populate fields
 		RemoveOnExit: opts.RemoveOnExit,
 		AgentName:    opts.AgentName,
-		NetMode:      opts.NetMode,
 	}
 	if err := s.store.Create(ctx, sb); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create: %w", err)
