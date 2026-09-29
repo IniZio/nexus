@@ -68,19 +68,19 @@ type EgressLevel string
 const (
 	EgressNone     EgressLevel = "none"     // no enforcement
 	EgressAdvisory EgressLevel = "advisory" // best-effort / process-level
-	EgressEnforced EgressLevel = "enforced" // default-deny at the network boundary
+	EgressEnforced EgressLevel = "enforced"
 )
 
 // CapabilitySet is the declared capability surface of a driver.
 type CapabilitySet struct {
-	Pause          bool // [PauseResumer]
-	GuestDial      bool // [GuestDialer]
-	Snapshot       bool // [Snapshotter]
-	Fork           bool // [Forker]
-	SnapshotRemove bool // [SnapshotRemover]
-	NetworkHook    bool // [NetworkHook]
-	NetnsState     bool // [NetnsStateProvider]
-	SessionAttach  bool // [SessionAttacher]
+	Pause          bool
+	GuestDial      bool
+	Snapshot       bool
+	Fork           bool
+	SnapshotRemove bool
+	NetworkHook    bool
+	NetnsState     bool
+	SessionAttach  bool
 	GuestOS        GuestOS
 	Egress         EgressLevel
 }
