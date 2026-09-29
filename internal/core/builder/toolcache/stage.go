@@ -3,10 +3,11 @@ package toolcache
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/IniZio/nexus/internal/core/fsutil"
 )
 
 func validateGuestPath(p string) error {
@@ -147,7 +148,10 @@ func StageTree(root string, tools []Fetched, skipIfPresent bool) error {
 			}
 		}
 
-		if err := copyFile(t.BinPath, destBin, 0755); err != nil {
+		if err := fsutil.CopyFile(t.BinPath, destBin); err != nil {
+			return err
+		}
+		if err := os.Chmod(destBin, 0755); err != nil {
 			return err
 		}
 
@@ -169,76 +173,6 @@ func StageTree(root string, tools []Fetched, skipIfPresent bool) error {
 		}
 		if err := os.Symlink(rel, destLink); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
-}
-
-func CopyTree(src, dst string) error {
-	fi, err := os.Lstat(src)
-	if err != nil {
-		return err
-	}
-	if !fi.IsDir() {
-		return fmt.Errorf("toolcache: CopyTree src %q is not a directory", src)
-	}
-
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return err
-	}
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-
-	for _, e := range entries {
-		srcPath := filepath.Join(src, e.Name())
-		dstPath := filepath.Join(dst, e.Name())
-
-		info, err := e.Info()
-		if err != nil {
-			return err
-		}
-
-		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			target, err := os.Readlink(srcPath)
-			if err != nil {
-				return err
-			}
-			if err := os.Symlink(target, dstPath); err != nil {
-				return err
-			}
-		case info.IsDir():
-			if err := CopyTree(srcPath, dstPath); err != nil {
-				return err
-			}
-		case info.Mode().IsRegular():
-			if err := copyFile(srcPath, dstPath, info.Mode()); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("toolcache: CopyTree: unsupported file type at %q", srcPath)
 		}
 	}
 	return nil

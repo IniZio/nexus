@@ -281,3 +281,17 @@ func TestStageSandboxTools_PopulatedSrc(t *testing.T) {
 		t.Fatalf("symlink target: want %q, got %q", relTarget, gotTarget)
 	}
 }
+
+func TestStageSandboxTools_UnreadableSrcDirErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	srcDir := filepath.Join(t.TempDir(), "tools")
+	if err := os.Mkdir(srcDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(srcDir, 0o755) })
+	if _, err := stageSandboxTools(t.TempDir(), srcDir, []byte("FROM scratch\n")); err == nil {
+		t.Fatal("expected error for unreadable srcDir")
+	}
+}

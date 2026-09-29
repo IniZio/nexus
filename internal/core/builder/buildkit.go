@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/bootspec"
 	"github.com/IniZio/nexus/internal/core/builder/toolcache"
+	nxfsutil "github.com/IniZio/nexus/internal/core/fsutil"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 )
 
@@ -236,14 +238,16 @@ func stageSandboxTools(agentDir, srcDir string, containerfile []byte) (string, e
 	// Check that srcDir exists and is non-empty.
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
-		// Missing directory is not an error; treat as no tools.
-		return "", nil //nolint:nilerr
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read sandbox tools dir %s: %w", srcDir, err)
 	}
 	if len(entries) == 0 {
 		return "", nil
 	}
 	dst := filepath.Join(agentDir, sandboxToolsContextDir)
-	if err := toolcache.CopyTree(srcDir, dst); err != nil {
+	if err := nxfsutil.CopyTree(srcDir, dst); err != nil {
 		return "", err
 	}
 	return sandboxToolsContextDir, nil
@@ -858,7 +862,7 @@ func copyDirIntoContext(src, dst string) error {
 			path = targetReal
 		}
 
-		return copyFile(path, dstPath)
+		return nxfsutil.CopyFile(path, dstPath)
 	})
 }
 
@@ -871,32 +875,4 @@ func isDescendant(parent, child string) bool {
 	return len(child) > len(parent) &&
 		child[len(parent)] == filepath.Separator &&
 		child[:len(parent)] == parent
-}
-
-// copyFile copies the regular file at src to dst, creating dst's parent
-// directory if necessary.
-func copyFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	info, err := in.Stat()
-	if err != nil {
-		return err
-	}
-
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	return err
 }
