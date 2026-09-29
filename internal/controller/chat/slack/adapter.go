@@ -57,14 +57,6 @@ func New(appToken, botToken string) (*Adapter, error) {
 	}, nil
 }
 
-func NewAdapterFromParts(api *goslack.Client, sm *socketmode.Client, botID, userID, teamID string) *Adapter {
-	return &Adapter{api: api, src: &realSource{sm: sm}, botID: botID, userID: userID, teamID: teamID}
-}
-
-func newWithSource(api *goslack.Client, src eventSource, botID, userID, teamID string) *Adapter {
-	return &Adapter{api: api, src: src, botID: botID, userID: userID, teamID: teamID}
-}
-
 type chanSource struct{ ch <-chan socketmode.Event }
 
 func (c *chanSource) events() <-chan socketmode.Event { return c.ch }
