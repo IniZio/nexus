@@ -109,7 +109,6 @@ jobs:
     needs: [release-create]
     if: needs.release-create.outputs.released == 'true'
     runs-on: ${{ matrix.runner }}
-    # arm64 best-effort: no arm64 virtiofsd/e2fsprogs pins yet
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       # darwin/arm64 is intentionally absent. internal/core/builder/builderimage
