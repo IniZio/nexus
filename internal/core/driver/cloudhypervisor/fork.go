@@ -22,6 +22,24 @@ type vmRestoreRequest struct {
 	Prefault  bool   `json:"prefault"`
 }
 
+// restorePrefault is false only for shared (memfd) memory, where prefaulting
+// commits the whole guest RAM; see doc/design/zero-host-deps-vhostnet.md.
+func restorePrefault(sourceURL string) bool {
+	b, err := os.ReadFile(filepath.Join(strings.TrimPrefix(sourceURL, "file://"), "config.json"))
+	if err != nil {
+		return true
+	}
+	var cfg struct {
+		Memory struct {
+			Shared bool `json:"shared"`
+		} `json:"memory"`
+	}
+	if json.Unmarshal(b, &cfg) != nil {
+		return true
+	}
+	return !cfg.Memory.Shared
+}
+
 // VMRestore sends PUT /api/v1/vm.restore, restoring VM state from sourceURL.
 // sourceURL must be a "file://" URL pointing to a directory previously
 // written by VMSnapshot. The call creates the VM and brings it to Running
@@ -34,7 +52,7 @@ type vmRestoreRequest struct {
 func (c *client) VMRestore(ctx context.Context, sourceURL string) error {
 	resp, err := c.do(ctx, http.MethodPut, "/vm.restore", vmRestoreRequest{
 		SourceURL: sourceURL,
-		Prefault:  true, // eager restore; UFFD lazy-restore is deferred
+		Prefault:  restorePrefault(sourceURL),
 	})
 	if err != nil {
 		return fmt.Errorf("cloudhypervisor: vm.restore: %w", err)
@@ -157,9 +175,6 @@ func ChildExtraDiskPath(childID domain.SandboxID, parentPath string) string {
 //
 // Implements driver.Forker.
 func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childIDs []domain.SandboxID) ([]string, error) {
-	if d.cfg.NetMode == domain.NetModeVhostUser {
-		return nil, fmt.Errorf("cloudhypervisor: fork: not supported in vhost-user net mode yet (S9b-6)")
-	}
 	// Confirm the commit marker is present and the payload length is intact.
 	if _, err := d.snapshotStore.Read(snap.ID); err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: fork: snapshot record: %w", err)
@@ -187,7 +202,7 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 	//   - For VMs booted via initramfs (no disk), disk isolation is skipped and
 	//     parentDiskPath is left empty.
 	//   - For vsock-only snapshots (no net device), net isolation is skipped and
-	//     parentGuestTap is left empty.
+	//     parentNet is left empty.
 	// Both are safe after eager restore (prefault=true): RAM state is isolated
 	// per child regardless.
 	configJSONBytes, err := os.ReadFile(filepath.Join(manifest.Dir, "config.json"))
@@ -203,14 +218,12 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 		parentDiskPath = ""
 	}
 
-	parentGuestTap, err := findNetTap(configJSONBytes)
+	// NIC backing comes from the snapshot, never from config or environment.
+	parentNet, err := snapshotNetBackend(configJSONBytes)
 	if err != nil && !errors.Is(err, errNoNet) {
-		return nil, fmt.Errorf("cloudhypervisor: fork: find net tap: %w", err)
+		return nil, fmt.Errorf("cloudhypervisor: fork: find net backend: %w", err)
 	}
 	// errNoNet is benign: vsock-only snapshot, no net to isolate.
-	if errors.Is(err, errNoNet) {
-		parentGuestTap = ""
-	}
 
 	parentVsockPath, err := findVsockPath(configJSONBytes)
 	if err != nil && !errors.Is(err, errNoVsock) {
@@ -255,7 +268,7 @@ func (d *CHDriver) ForkFrom(ctx context.Context, snap artifact.Snapshot, childID
 				child:  ChildExtraDiskPath(childID, p),
 			})
 		}
-		iid, err := d.spawnChildFromSnapshot(ctx, childID, manifest.Dir, parentDiskPath, childDiskPath, extraDiskPairs, parentGuestTap, parentVsockPath)
+		iid, err := d.spawnChildFromSnapshot(ctx, childID, manifest.Dir, parentDiskPath, childDiskPath, extraDiskPairs, parentNet, parentVsockPath)
 		if err != nil {
 			// Return already-populated IDs and the first error; caller can
 			// retry or clean up the unseen children.
@@ -292,7 +305,7 @@ func (d *CHDriver) reapTransientSnapshot(snap artifact.Snapshot) {
 //   - Disk: when parentDiskPath and childDiskPath are non-empty, the parent
 //     disk is reflink-copied to a child-unique path so siblings share no block
 //     device.
-//   - Net: when parentGuestTap is non-empty (snapshot from a networked VM), the
+//   - Net: when parentNet is set (snapshot from a networked VM), the
 //     child runs in an isolated user+network namespace (via StartNetnsRuntime)
 //     with a fresh TAP bridge created using tapIfNames(childID). config.json in
 //     the per-child restore dir has net[].tap rewritten to the child's guest TAP
@@ -308,7 +321,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	childID domain.SandboxID,
 	snapDir, parentDiskPath, childDiskPath string,
 	extraDiskPairs []diskPair,
-	parentGuestTap string,
+	parentNet netBackend,
 	parentVsockPath string,
 ) (string, error) {
 	socketPath := d.socketPath(childID)
@@ -318,11 +331,18 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	sourceURL := "file://" + snapDir
 	var restoreDir string
 
-	// Compute the child's guest TAP name (deterministic from childID).
-	// Only non-empty when parentGuestTap is non-empty.
-	childGuestTap := ""
-	if parentGuestTap != "" {
-		childGuestTap, _, _ = tapIfNames(childID)
+	// The child runs in the snapshot's mode, whatever d.cfg.NetMode says.
+	childCfg := d.cfg
+	netRW := netRewrite{parent: parentNet.ref}
+	if parentNet.mode == domain.NetModeVhostUser {
+		childCfg.NetMode = domain.NetModeVhostUser
+		netRW.vhost = true
+		netRW.child = VhostSocketPath(netnsControlDir(d.cfg.SocketDir), childID.String())
+	} else {
+		childCfg.NetMode = ""
+		if parentNet.ref != "" {
+			netRW.child, _, _ = tapIfNames(childID)
+		}
 	}
 
 	// Compute the child's vsock socket path (per-sandbox, derived from childID).
@@ -345,7 +365,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	// Prepare a per-child restore directory when disk, net, or vsock isolation
 	// is needed. The directory hardlinks the large snapshot blobs and carries a
 	// rewritten config.json with child-specific paths.
-	needsChildDir := len(allDiskPairs) > 0 || parentGuestTap != "" || parentVsockPath != ""
+	needsChildDir := len(allDiskPairs) > 0 || parentNet.ref != "" || parentVsockPath != ""
 	if needsChildDir {
 		// Reflink-copy every disk so siblings have independent block
 		// devices. On failure, roll back all copies made so far.
@@ -373,7 +393,7 @@ func (d *CHDriver) spawnChildFromSnapshot(
 		restoreDir, prepErr = prepareChildRestoreDir(
 			snapDir, childID,
 			diskRewrites,
-			parentGuestTap, childGuestTap,
+			netRW,
 			parentVsockPath, childVsockPath,
 		)
 		if prepErr != nil {
@@ -407,8 +427,8 @@ func (d *CHDriver) spawnChildFromSnapshot(
 	// child's own TAP bridge. The re-exec'd child (RunNetnsChild) detects the
 	// NEXUS_NETNS_RESTORE_URL env var and calls vm.restore before tapPump,
 	// so the VM reaches Running inside the netns without any parent API call.
-	if parentGuestTap != "" {
-		rt, err := StartNetnsRuntime(ctx, d.cfg, childID, socketPath, sourceURL)
+	if parentNet.ref != "" {
+		rt, err := StartNetnsRuntime(ctx, childCfg, childID, socketPath, sourceURL)
 		if err != nil {
 			cleanupDisk()
 			return "", fmt.Errorf("spawn netns child: %w", err)

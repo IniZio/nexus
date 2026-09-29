@@ -191,9 +191,47 @@ Run it with:
 
     TMPDIR=/var/tmp make test-integration GOTEST_PKGS=./internal/core/driver/cloudhypervisor/ GOTEST_ARGS='-run TestVhostNet'
 
+## Snapshot, restore and fork (S9b-6)
+
+- **Mode comes from the snapshot.** `snapshotNetBackend` reads `config.json`
+  `net[0]`: `vhost_user: true` is vhost-user, anything else is tap. `ForkFrom`
+  hands `StartNetnsRuntime` a config copy with that mode, so a tap snapshot
+  restores as tap whatever `NEXUS_NET_MODE` (or `d.cfg.NetMode`) says.
+  `Service.Fork` and `RestoreFromSnapshot` cross-check the snapshot mode
+  against the origin record (`SnapshotNetModer`), refuse on mismatch, and stamp
+  the same `NetMode` on the child record. Tap children keep `net_mode` absent.
+- **Socket rewrite.** The child restores from a per-child `config.json` whose
+  `net[0].vhost_socket` is the child's own `vhost-<childID>.sock` in the netns
+  control dir; the guest MAC is unchanged (it lives in guest memory), so
+  sibling clones share MAC and IP and are separated by netns, not by address.
+  `RestoreFromSnapshot` now persists the netns identity (`VhostSocket`
+  included) like `Fork` does; before, restore children had none.
+- **Listener before restore.** The netns child starts the vhost slot before it
+  spawns CH and only then issues `vm.restore`, so CH always finds the socket.
+- **Base index.** CH restores each ring's base from the guest's avail index.
+  For RX that skips every buffer the guest posted but the slave had not
+  consumed (here 253 of 256), and the restored guest got no replies. The slave
+  completes every buffer it consumes at once, so `used.idx` is the true
+  position; `startLocked` now resumes there and ignores the master's base.
+- **Prefault.** `vm.restore` used `prefault=true`, which commits the whole
+  guest RAM for a memfd-backed guest: 4 GiB RSS for a child whose parent held
+  470 MiB after ballooning, and a 10 s restore timeout under host swap
+  pressure. Shared-memory snapshots now restore with `prefault=false`
+  (`restorePrefault`); non-shared snapshots are unchanged. There is no uffd
+  or ondemand restore path in the driver, so nothing else needs disabling.
+  Restored child RSS: 210 MiB, restore 1.6 s.
+- **One data point** (alpine, 512 MiB boot / 1024 MiB max, 200 MiB written,
+  same host): snapshot of a tap sandbox 1.63 s, 1025 MiB on disk; of a
+  vhost-user sandbox (shared memfd) 1.19 s, 212 MiB on disk (1025 MiB
+  apparent, sparse). At the default 4 GiB ceiling: tap 8.1 GiB on disk,
+  vhost-user 205 MiB.
+- **Live** (vhost-user, `--egress closed --repo octocat/hello-world
+  --allow-host example.com`): restore and fork x2 children each had a working
+  DNS, `example.com` 200 and `google.com` blocked; one child sent ~1490 frames
+  to random addresses while its sibling's `eth0` rx counter stayed unchanged.
+  A sandbox with a live `--mount` is refused by the existing fork and snapshot
+  mount guard (D-PD-53), as for tap.
+
 ## Not covered yet
 
-- Adopt, reacquire, supervisor-upgrade, backfill: still refuse an empty
-  `GuestTapName` (S9b-5).
-- Snapshot, restore, fork, and ondemand (uffd) with shared memory (S9b-6).
 - Throughput against tap and the soak run (S9b-7).

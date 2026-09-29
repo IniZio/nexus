@@ -283,7 +283,7 @@ func rewriteConfigDiskPath(configJSON []byte, oldDiskPath, newDiskPath string) (
 //  2. Writes a new config.json with the requested rewrites applied:
 //     - diskRewrites maps every parent disk path to its child copy path; ALL
 //     matched entries are rewritten (root disk + extra disks in index order).
-//     - When parentGuestTap is non-empty, rewrites the first net[].tap to childGuestTap.
+//     - When netRW.parent is non-empty, rewrites the first net[] tap (or vhost_socket) to netRW.child.
 //     - When parentVsockPath is non-empty, rewrites the vsock.socket path to childVsockPath.
 //     At least one rewrite is expected; any combination may be applied together.
 //
@@ -293,7 +293,7 @@ func prepareChildRestoreDir(
 	snapDir string,
 	childID domain.SandboxID,
 	diskRewrites map[string]string,
-	parentGuestTap, childGuestTap string,
+	netRW netRewrite,
 	parentVsockPath, childVsockPath string,
 ) (restoreDir string, err error) {
 	restoreDir = snapDir + "-restore-" + childID.String()
@@ -313,10 +313,10 @@ func prepareChildRestoreDir(
 			return restoreDir, fmt.Errorf("rewrite config.json disk paths: %w", err)
 		}
 	}
-	if parentGuestTap != "" {
-		rewrittenJSON, err = rewriteConfigNetTap(rewrittenJSON, parentGuestTap, childGuestTap)
+	if netRW.parent != "" {
+		rewrittenJSON, err = netRW.apply(rewrittenJSON)
 		if err != nil {
-			return restoreDir, fmt.Errorf("rewrite config.json net tap: %w", err)
+			return restoreDir, fmt.Errorf("rewrite config.json net: %w", err)
 		}
 	}
 	if parentVsockPath != "" {

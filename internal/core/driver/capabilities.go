@@ -70,6 +70,11 @@ type NetModeSetter interface {
 	SetNetMode(mode domain.NetMode)
 }
 
+// SnapshotNetModer reports the NIC mode a snapshot was taken with.
+type SnapshotNetModer interface {
+	SnapshotNetMode(snap artifact.Snapshot) (domain.NetMode, error)
+}
+
 type NetnsStateProvider interface { // optional: netns adoption identity
 	NetnsState(id domain.SandboxID) (st NetnsIdentity, ok bool) // from most recent Start; safe to call from store.Update callback
 }

@@ -96,8 +96,10 @@ func (q *queue) startLocked(mem *memTable) error {
 		return fmt.Errorf("%w: misaligned ring", errRing)
 	}
 	q.desc, q.avail, q.used, q.mem = desc, avail, used, mem
-	q.lastAvail = q.base
 	q.usedIdx = load16(used, 2)
+	// used.idx is the true position (buffers complete at once); a restored
+	// CH sends the guest's avail idx as base, skipping unconsumed RX buffers.
+	q.lastAvail = q.usedIdx
 	q.running = true
 	q.stop = make(chan struct{})
 	q.done = make(chan struct{})

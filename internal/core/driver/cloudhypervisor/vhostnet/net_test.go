@@ -436,3 +436,41 @@ func TestProtocolViolationClosesConnection(t *testing.T) {
 		}
 	}
 }
+
+// A restored CH sends the guest's avail idx as the vring base, skipping RX
+// buffers that were posted but never consumed. The queue must resume at the
+// used ring instead, or RX stalls forever after restore.
+func TestRestoreBaseAheadOfUsedRingStillFillsPostedBuffers(t *testing.T) {
+	m := newMaster(t, 256)
+	m.handshake()
+	rx := m.qs[rxQueue]
+	for i := range 4 {
+		rx.post([]gdesc{{ramGPA + uint64(bufBase+i*0x1000), 2048, true}}, i == 3)
+	}
+	if _, err := m.dev.Write(pattern(100, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := rx.waitUsed(1); id != 0 {
+		t.Fatalf("first fill used head %d, want 0", id)
+	}
+
+	state := binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(nil, uint32(rxQueue)), 4)
+	m.send(reqSetVringBase, true, state)
+	m.ackOK(reqSetVringBase)
+	m.send(reqSetVringEnable, true, binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(nil, uint32(rxQueue)), 1))
+	m.ackOK(reqSetVringEnable)
+
+	wrote := make(chan error, 1)
+	go func() { _, err := m.dev.Write(pattern(100, 2)); wrote <- err }()
+	select {
+	case err := <-wrote:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RX write stalled: posted buffers were skipped")
+	}
+	if id, _ := rx.waitUsed(1); id != 1 {
+		t.Fatalf("second fill used head %d, want 1 (base 4 must not skip posted buffers)", id)
+	}
+}

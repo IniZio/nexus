@@ -225,7 +225,7 @@ func TestPrepareChildRestoreDir(t *testing.T) {
 
 	restoreDir, err := prepareChildRestoreDir(snapDir, childID,
 		map[string]string{parentDisk: childDisk},
-		"", "", "", "")
+		netRewrite{}, "", "")
 	if err != nil {
 		t.Fatalf("prepareChildRestoreDir: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestFork_ExtraDisksAllIsolated(t *testing.T) {
 		parentShadow:    childShadow,
 		parentWorkspace: childWorkspace,
 	}
-	restoreDir, err := prepareChildRestoreDir(snapDir, childID, diskRewrites, "", "", "", "")
+	restoreDir, err := prepareChildRestoreDir(snapDir, childID, diskRewrites, netRewrite{}, "", "")
 	if err != nil {
 		t.Fatalf("prepareChildRestoreDir: %v", err)
 	}
