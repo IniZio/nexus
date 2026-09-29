@@ -186,7 +186,7 @@ func checkVirtiofsd(binaryPath string) error {
 //
 // The caller must remove socketPath when the process is no longer needed
 // (clearState calls virtiofsdSockPath + os.Remove for each tracked process).
-func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool) (*managedProcess, error) {
+func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool, pgid int) (*managedProcess, error) {
 	// Remove any stale socket from a previous run so virtiofsd can bind.
 	_ = os.Remove(socketPath)
 
@@ -196,8 +196,7 @@ func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir strin
 	cmd := exec.Command(binaryPath, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = stderrBuf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	setPdeathsig(cmd.SysProcAttr)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: pgid}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("cloudhypervisor: virtiofsd start %s: %w", socketPath, err)
@@ -205,7 +204,7 @@ func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir strin
 	pid := cmd.Process.Pid
 
 	cleanup := func() {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		killVirtiofsd(pid, pgid)
 		_ = cmd.Wait()
 		_ = os.Remove(socketPath)
 	}
@@ -253,13 +252,30 @@ func spawnVirtiofsd(ctx context.Context, binaryPath, socketPath, sharedDir strin
 			// Socket file created and the process is still alive.
 			// Start the reapWatcher goroutine now — after readiness is confirmed
 			// — so it cannot race the failure-path cleanup()'s cmd.Wait() call.
-			return newManagedProcess(cmd, pid, stderrBuf), nil
+			return newVirtiofsdProcess(cmd, pid, pgid, stderrBuf), nil
 		}
 		select {
 		case <-ctx.Done():
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// killVirtiofsd SIGKILLs a just-spawned virtiofsd. A virtiofsd that joined a
+// shared group (pgid != 0) is not its own group leader, so only the pid is
+// signalled; the group belongs to the netns child and rt.Stop reaps it.
+func killVirtiofsd(pid, pgid int) {
+	if pgid != 0 {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+}
+
+func newVirtiofsdProcess(cmd *exec.Cmd, pid, pgid int, buf *vmmStderrBuf) *managedProcess {
+	p := newManagedProcess(cmd, pid, buf)
+	p.sharedGroup = pgid != 0
+	return p
 }
 
 func shellQuote(s string) string {
@@ -274,7 +290,7 @@ func virtiofsdStageDirPath(socketDir string, id domain.SandboxID, idx int) strin
 // It re-execs the nexus binary into a new user+mount namespace (no unshare,
 // no sh dependency). The child bind-mounts hostFile into stageDir then
 // exec's virtiofsd in place.
-func spawnVirtiofsdForFile(ctx context.Context, binaryPath, socketPath, stageDir, hostFile string, readOnly bool) (*managedProcess, error) {
+func spawnVirtiofsdForFile(ctx context.Context, binaryPath, socketPath, stageDir, hostFile string, readOnly bool, pgid int) (*managedProcess, error) {
 	_ = os.Remove(socketPath)
 
 	bindTarget := filepath.Join(stageDir, filepath.Base(hostFile))
@@ -310,7 +326,7 @@ func spawnVirtiofsdForFile(ctx context.Context, binaryPath, socketPath, stageDir
 	cmd.Env = env
 	cmd.Stdout = nil
 	cmd.Stderr = stderrBuf
-	cmd.SysProcAttr = virtiofsdChildAttr()
+	cmd.SysProcAttr = virtiofsdChildAttr(pgid)
 
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(bindTarget)
@@ -319,7 +335,7 @@ func spawnVirtiofsdForFile(ctx context.Context, binaryPath, socketPath, stageDir
 	pid := cmd.Process.Pid
 
 	cleanup := func() {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		killVirtiofsd(pid, pgid)
 		_ = cmd.Wait()
 		_ = os.Remove(socketPath)
 	}
@@ -348,7 +364,7 @@ func spawnVirtiofsdForFile(ctx context.Context, binaryPath, socketPath, stageDir
 				hostFile, state)
 		}
 		if _, statErr := os.Stat(socketPath); statErr == nil {
-			return newManagedProcess(cmd, pid, stderrBuf), nil
+			return newVirtiofsdProcess(cmd, pid, pgid, stderrBuf), nil
 		}
 		select {
 		case <-ctx.Done():
@@ -368,7 +384,7 @@ func spawnVirtiofsdForFile(ctx context.Context, binaryPath, socketPath, stageDir
 //
 // Called from Start, after the CH API is responsive and before vm.create —
 // virtiofsd sockets must be ready before CH tries to connect to them.
-func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.SandboxID) ([]vmFsConfig, error) {
+func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.SandboxID, pgid int) ([]vmFsConfig, error) {
 	mounts := d.cfg.LiveMounts
 	if len(mounts) == 0 {
 		return nil, nil
@@ -390,7 +406,7 @@ func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.Sandbo
 			if mkErr := os.MkdirAll(stageDir, 0o700); mkErr != nil {
 				return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] stage dir %s: %w", i, stageDir, mkErr)
 			}
-			vp, err = spawnVirtiofsdForFile(ctx, d.cfg.VirtiofsdPath, sockPath, stageDir, lm.HostPath, lm.ReadOnly)
+			vp, err = spawnVirtiofsdForFile(ctx, d.cfg.VirtiofsdPath, sockPath, stageDir, lm.HostPath, lm.ReadOnly, pgid)
 			if err != nil {
 				_ = os.RemoveAll(stageDir)
 				return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] file-mount for %s: %w", i, lm.HostPath, err)
@@ -404,7 +420,7 @@ func (d *CHDriver) spawnVirtiofsdForMounts(ctx context.Context, id domain.Sandbo
 			if spawnFn == nil {
 				spawnFn = spawnVirtiofsd
 			}
-			vp, err = spawnFn(ctx, d.cfg.VirtiofsdPath, sockPath, lm.HostPath, lm.ReadOnly)
+			vp, err = spawnFn(ctx, d.cfg.VirtiofsdPath, sockPath, lm.HostPath, lm.ReadOnly, pgid)
 			if err != nil {
 				return nil, fmt.Errorf("cloudhypervisor: virtiofsd[%d] for %s: %w", i, lm.HostPath, err)
 			}

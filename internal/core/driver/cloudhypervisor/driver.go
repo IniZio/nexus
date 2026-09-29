@@ -355,7 +355,7 @@ type CHDriver struct {
 
 	// spawnVirtiofsdFn is the per-mount spawn call used by spawnVirtiofsdForMounts.
 	// Defaults to the real spawnVirtiofsd; overridable in tests for deterministic failure injection.
-	spawnVirtiofsdFn func(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool) (*managedProcess, error)
+	spawnVirtiofsdFn func(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool, pgid int) (*managedProcess, error)
 
 	memMu    sync.Mutex
 	memState map[domain.SandboxID]*vmMemState
@@ -928,7 +928,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 
 	nets := buildNets(d.cfg, rt.GuestTap, rt.VhostSocket, id)
 
-	fsCfgs, err := d.spawnVirtiofsdForMounts(apiCtx, id)
+	fsCfgs, err := d.spawnVirtiofsdForMounts(apiCtx, id, rt.ChildPGID)
 	if err != nil {
 		cleanup()
 		return "", fmt.Errorf("cloudhypervisor: start %s: %w", id, err)

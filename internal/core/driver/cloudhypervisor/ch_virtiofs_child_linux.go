@@ -24,9 +24,10 @@ const (
 
 // virtiofsdChildAttr returns SysProcAttr that places the child in a new
 // user + mount namespace with uid/gid 0 mapped to the caller's uid/gid.
-// Setpgid:true makes the child the process-group leader so kill(-pgid,SIGKILL)
-// reaches virtiofsd after the child execs into it.
-func virtiofsdChildAttr() *syscall.SysProcAttr {
+// Setpgid:true with a non-zero pgid joins that existing group (the netns
+// child's, so virtiofsd shares the VM's lifetime); pgid 0 makes the child its
+// own group leader.
+func virtiofsdChildAttr(pgid int) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
 		UidMappings: []syscall.SysProcIDMap{
@@ -37,6 +38,7 @@ func virtiofsdChildAttr() *syscall.SysProcAttr {
 		},
 		GidMappingsEnableSetgroups: false,
 		Setpgid:                    true,
+		Pgid:                       pgid,
 	}
 }
 

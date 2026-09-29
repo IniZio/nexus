@@ -133,7 +133,7 @@ func TestSpawnVirtiofsdForMounts_TagsAndCount(t *testing.T) {
 	d := testDriver(t, bin, mounts)
 	var id domain.SandboxID
 
-	fsCfgs, err := d.spawnVirtiofsdForMounts(t.Context(), id)
+	fsCfgs, err := d.spawnVirtiofsdForMounts(t.Context(), id, 0)
 	if err != nil {
 		t.Fatalf("spawnVirtiofsdForMounts: %v", err)
 	}
@@ -185,11 +185,11 @@ func TestSpawnVirtiofsdForMounts_FailureKillsOrphans(t *testing.T) {
 	// Call 1 (mount[1]): return a deterministic error synchronously, with no
 	//   timing dependency, so the test never flakes under load.
 	var callCount int
-	seam := func(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool) (*managedProcess, error) {
+	seam := func(ctx context.Context, binaryPath, socketPath, sharedDir string, readOnly bool, pgid int) (*managedProcess, error) {
 		n := callCount
 		callCount++
 		if n == 0 {
-			vp, err := spawnVirtiofsd(ctx, goodBin, socketPath, sharedDir, readOnly)
+			vp, err := spawnVirtiofsd(ctx, goodBin, socketPath, sharedDir, readOnly, pgid)
 			if err != nil {
 				return nil, err
 			}
@@ -215,7 +215,7 @@ func TestSpawnVirtiofsdForMounts_FailureKillsOrphans(t *testing.T) {
 		spawnVirtiofsdFn:   seam,
 	}
 
-	_, spawnErr := d.spawnVirtiofsdForMounts(t.Context(), id)
+	_, spawnErr := d.spawnVirtiofsdForMounts(t.Context(), id, 0)
 	if spawnErr == nil {
 		t.Fatal("expected spawnVirtiofsdForMounts to fail, got nil")
 	}
@@ -263,7 +263,7 @@ func procAlive(pid int) (bool, string) {
 func TestSpawnVirtiofsdForMounts_NoMounts(t *testing.T) {
 	d := testDriver(t, "", nil)
 	var id domain.SandboxID
-	fsCfgs, err := d.spawnVirtiofsdForMounts(t.Context(), id)
+	fsCfgs, err := d.spawnVirtiofsdForMounts(t.Context(), id, 0)
 	if err != nil || fsCfgs != nil {
 		t.Errorf("want (nil,nil), got (%v,%v)", fsCfgs, err)
 	}
@@ -275,7 +275,7 @@ func TestSpawnVirtiofsdForMounts_MissingBinary(t *testing.T) {
 	shared := t.TempDir()
 	d := testDriver(t, "", []domain.LiveMount{{HostPath: shared, GuestPath: "/w"}})
 	var id domain.SandboxID
-	_, err := d.spawnVirtiofsdForMounts(t.Context(), id)
+	_, err := d.spawnVirtiofsdForMounts(t.Context(), id, 0)
 	if err == nil {
 		t.Fatal("expected error for empty VirtiofsdPath")
 	}
@@ -298,7 +298,7 @@ func TestSpawnVirtiofsdForMounts_RealBinary(t *testing.T) {
 	}
 	d := testDriver(t, bin, mounts)
 	var id domain.SandboxID
-	fsCfgs, err := d.spawnVirtiofsdForMounts(t.Context(), id)
+	fsCfgs, err := d.spawnVirtiofsdForMounts(t.Context(), id, 0)
 	if err != nil {
 		t.Fatalf("spawnVirtiofsdForMounts: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestFakeOwnerEnabled_EnvForce1(t *testing.T) {
 }
 
 func TestVirtiofsdChildAttr_Cloneflags(t *testing.T) {
-	attr := virtiofsdChildAttr()
+	attr := virtiofsdChildAttr(0)
 	if attr.Cloneflags&syscall.CLONE_NEWUSER == 0 {
 		t.Error("expected CLONE_NEWUSER")
 	}

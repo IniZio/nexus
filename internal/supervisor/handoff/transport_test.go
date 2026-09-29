@@ -85,9 +85,6 @@ func TestRoundTrip_AcceptedHandoff(t *testing.T) {
 	sent := Payload{
 		Version:   CurrentVersion,
 		Perimeter: PerimeterHandle{Present: true},
-		Virtiofs: []VirtiofsHandle{
-			{PID: 4242, SocketPath: "/run/nexus/sb1/virtiofs-0.sock", SharedDir: "/workspace", ReadOnly: false},
-		},
 		CA: CAMaterial{
 			CertPEM: []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
 			KeyPEM:  []byte("-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n"),
@@ -130,9 +127,6 @@ func TestRoundTrip_AcceptedHandoff(t *testing.T) {
 	// The payload round-tripped intact.
 	if got.Version != sent.Version {
 		t.Errorf("Version = %d, want %d", got.Version, sent.Version)
-	}
-	if len(got.Virtiofs) != 1 || got.Virtiofs[0] != sent.Virtiofs[0] {
-		t.Errorf("Virtiofs = %+v, want %+v", got.Virtiofs, sent.Virtiofs)
 	}
 	if !bytes.Equal(got.CA.CertPEM, sent.CA.CertPEM) || !bytes.Equal(got.CA.KeyPEM, sent.CA.KeyPEM) {
 		t.Errorf("CA material did not round-trip")

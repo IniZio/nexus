@@ -30,10 +30,8 @@ const handoffAckTimeout = 30 * time.Second
 // transfer (Payload.Perimeter.Present is then false).
 //
 // Payload.Version, Payload.Perimeter, Payload.Governor and Payload.CA are
-// populated by [buildHandoffPayload]. Payload.Credentials and
-// Payload.Virtiofs still require accessors this motive's owning packages
-// (cred.Broker placeholder-map dump, virtiofsd pid tracking) do not yet
-// expose — see the ticket's "open items" section.
+// populated by [buildHandoffPayload]. Payload.Credentials still requires an
+// accessor cred.Broker does not yet expose — see the ticket's "open items".
 type payloadBuilder func() (handoff.Payload, *os.File, error)
 
 // buildHandoffPayload is the ONE payload-construction implementation both
@@ -77,9 +75,7 @@ func buildHandoffPayload(sup *perimeter.PerimeterSupervisor, sandboxRef string, 
 			MemoryMB:  uint64(memoryMiB),
 		},
 		CA: ca,
-		// Credentials and Virtiofs are intentionally NOT populated in this
-		// slice — see this function's doc comment for the missing
-		// accessors this depends on (open item, ticket 04).
+		// Credentials is intentionally NOT populated (open item, ticket 04).
 	}, fdFile, nil
 }
 

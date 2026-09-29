@@ -180,6 +180,9 @@ type managedProcess struct {
 	// managedProcess values constructed directly in tests that bypass
 	// newManagedProcess.
 	deathCh chan struct{}
+	// sharedGroup marks a process that joined another process's group (the
+	// netns child's): kill signals the pid, never -pid.
+	sharedGroup bool
 	// PID alone is unsafe as a process identity across reuse. If the VMM
 	// crashes and the OS recycles its PID before nexus restarts, a different
 	// process could appear as the old VMM. The established pattern in this
@@ -275,7 +278,11 @@ func (p *managedProcess) kill() {
 		default:
 		}
 	}
-	_ = killFn(-p.pid, syscall.SIGKILL)
+	if p.sharedGroup {
+		_ = killFn(p.pid, syscall.SIGKILL)
+	} else {
+		_ = killFn(-p.pid, syscall.SIGKILL)
+	}
 	if p.deathCh != nil {
 		<-p.deathCh // wait for reapWatcher to finish (returns only after zombie gone)
 	} else {

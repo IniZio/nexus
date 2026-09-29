@@ -37,6 +37,14 @@ func TestMain(m *testing.M) {
 		RunNetnsChild()
 		os.Exit(0)
 	}
+	if os.Getenv(VirtiofsRunEnv) == "1" {
+		RunVirtiofsdChild()
+		os.Exit(1)
+	}
+	if os.Getenv(spawnParentEnv) == "1" {
+		runSpawnParentHelper()
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
 }
 

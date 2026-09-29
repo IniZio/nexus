@@ -50,7 +50,7 @@ func TestSpawnVirtiofsd_BindThenDieIsNotReady(t *testing.T) {
 	})
 
 	var id domain.SandboxID
-	_, err := d.spawnVirtiofsdForMounts(t.Context(), id)
+	_, err := d.spawnVirtiofsdForMounts(t.Context(), id, 0)
 	if err == nil {
 		t.Fatal("spawnVirtiofsdForMounts returned nil error for a virtiofsd that " +
 			"bound its socket and then exited; a dead backend must not be reported ready")

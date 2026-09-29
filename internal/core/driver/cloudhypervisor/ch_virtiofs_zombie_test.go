@@ -85,7 +85,7 @@ func TestSpawnVirtiofsd_NChildExternalKillZombieCount(t *testing.T) {
 	d := testDriver(t, bin, mounts)
 
 	var id domain.SandboxID
-	if _, err := d.spawnVirtiofsdForMounts(t.Context(), id); err != nil {
+	if _, err := d.spawnVirtiofsdForMounts(t.Context(), id, 0); err != nil {
 		t.Fatalf("spawnVirtiofsdForMounts: %v", err)
 	}
 
