@@ -114,8 +114,11 @@ echo "== port forward"
 gexec 30 s9b8/main '(setsid sh -c "while true; do printf \"HTTP/1.0 200 OK\r\n\r\nhello-fwd\n\" | nc -l -p 8080; done" >/dev/null 2>&1 &); sleep 1' >/dev/null
 nx nexus forward s9b8/main 18988:8080 >"$STATE/fwd.log" 2>&1 &
 FWDPID=$!
-sleep 3
-out=$(curl -sS -m10 http://127.0.0.1:18988/ 2>&1 | tr -d '\r')
+for _ in 1 2 3 4 5 6; do
+  sleep 2
+  out=$(curl -sS -m5 http://127.0.0.1:18988/ 2>&1 | tr -d '\r')
+  case "$out" in *hello-fwd*) break ;; esac
+done
 kill "$FWDPID" 2>/dev/null; FWDPID=""
 case "$out" in *hello-fwd*) record PASS "port forward" "hello-fwd" ;; *) record FAIL "port forward" "[${out:0:100}]" ;; esac
 
@@ -167,7 +170,7 @@ else
 fi
 
 echo "== tap-mode create (expected to FAIL when restricted)"
-if timeout 300 env -i "${BASEENV[@]}" nexus sandbox create s9b8/tap --image "$IMAGE" \
+if timeout 300 env -i "${BASEENV[@]}" NEXUS_NET_MODE=tap nexus sandbox create s9b8/tap --image "$IMAGE" \
   --egress closed --repo octocat/hello-world --allow-host example.com >"$STATE/create-tap.log" 2>&1; then
   record NOTRESTR "tap create" "succeeded: host is not restricted"
 elif grep -q 'NEXUS_NET_MODE=vhost-user' "$STATE/create-tap.log"; then
