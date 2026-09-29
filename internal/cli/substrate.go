@@ -58,7 +58,6 @@ type probes struct {
 	executable        func() (string, error)
 	resolveHostBin    func(ctx context.Context, name string) (hostbin.Resolved, error)
 	userns            func() error
-	usernsNet         func() error
 	resolveAgent      func() error
 }
 
@@ -70,7 +69,6 @@ func defaultProbes() probes {
 		executable:     os.Executable,
 		resolveHostBin: (&hostbin.Resolver{}).Resolve,
 		userns:         usernsAvailable,
-		usernsNet:      usernsNetAvailable,
 		resolveAgent: func() error {
 			_, err := (&hostbin.Resolver{}).ResolveAgent(nil)
 			return err
@@ -327,19 +325,20 @@ func appendHostChecks(checks []CheckResult, p probes, platOK bool) []CheckResult
 		checks = append(checks, chk)
 	}
 
-	if p.usernsNet != nil && platOK {
-		nerr := p.usernsNet()
-		chk := CheckResult{
-			Name:        "userns_net",
-			Description: "tap networking in unprivileged userns",
+	if err := service.CheckNetModeEnv(); err != nil {
+		checks = append(checks, CheckResult{
+			Name:        "net_mode_env",
+			Description: "NEXUS_NET_MODE unset (tap removed; vhost-user only)",
+			Detail:      err.Error(),
+			Remediation: err.Error(),
+		})
+	} else {
+		checks = append(checks, CheckResult{
+			Name:        "net_mode_env",
+			Description: "NEXUS_NET_MODE unset (tap removed; vhost-user only)",
 			OK:          true,
-			Detail:      "not restricted",
-		}
-		if nerr != nil {
-			chk.Detail = "tap blocked; vhost-user will be used"
-		}
-		checks = append(checks, chk)
-		checks = append(checks, netModeCheck(p, nerr))
+			Detail:      "unset",
+		})
 	}
 
 	if p.resolveAgent != nil {
@@ -404,36 +403,6 @@ func usernsAvailable() error {
 	}
 	if b, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil && strings.TrimSpace(string(b)) == "0" {
 		return errors.New("kernel.unprivileged_userns_clone is 0")
-	}
-	return nil
-}
-
-// netModeCheck reports the net mode a new sandbox would get and why.
-func netModeCheck(p probes, netErr error) CheckResult {
-	chk := CheckResult{Name: "net_mode", Description: "network mode for new sandboxes", Optional: true, OK: true}
-	env := ""
-	if p.getenv != nil {
-		env = p.getenv("NEXUS_NET_MODE")
-	}
-	switch {
-	case env != "":
-		chk.Detail = env + " (from NEXUS_NET_MODE)"
-		if env == string(domain.NetModeTap) && netErr != nil {
-			chk.OK = false
-			chk.Detail += "; tap blocked by AppArmor userns restriction"
-			chk.Remediation = "unset NEXUS_NET_MODE or set NEXUS_NET_MODE=vhost-user"
-		}
-	case netErr != nil:
-		chk.Detail = "vhost-user (default; tap blocked by AppArmor userns restriction)"
-	default:
-		chk.Detail = "vhost-user (default; set NEXUS_NET_MODE=tap for tap)"
-	}
-	return chk
-}
-
-func usernsNetAvailable() error {
-	if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil && strings.TrimSpace(string(b)) == "1" {
-		return errors.New("kernel.apparmor_restrict_unprivileged_userns=1: tap/bridge creation in a user namespace is denied (EPERM)")
 	}
 	return nil
 }

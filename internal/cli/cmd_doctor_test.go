@@ -125,39 +125,27 @@ func TestDoctor_RequiredFailureExitsNonZero(t *testing.T) {
 	}
 }
 
-func TestDoctor_UsernsNet(t *testing.T) {
-	p := doctorTestProbes()
-	p.usernsNet = func() error { return errors.New("restricted") }
-	checks, _ := runAllChecks(p)
-	c, ok := checkByName(checks, "userns_net")
-	if !ok || !c.OK || c.Optional || !strings.Contains(c.Detail, "vhost-user will be used") {
-		t.Fatalf("want passing userns_net naming vhost-user, got %+v ok=%v", c, ok)
+func TestDoctor_NetModeEnv(t *testing.T) {
+	for _, v := range []string{"tap", "vhost-user"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("NEXUS_NET_MODE", v)
+			checks, _ := runAllChecks(doctorTestProbes())
+			c, ok := checkByName(checks, "net_mode_env")
+			if !ok || c.OK || c.Optional || c.Remediation == "" || !strings.Contains(c.Detail, "unset NEXUS_NET_MODE") {
+				t.Fatalf("want failing required net_mode_env, got %+v ok=%v", c, ok)
+			}
+			if !requiredFailed(checks) {
+				t.Error("net_mode_env failure must count as required failure")
+			}
+		})
 	}
-	nm, ok := checkByName(checks, "net_mode")
-	if !ok || !nm.OK || !nm.Optional || !strings.Contains(nm.Detail, "vhost-user (default; tap blocked by AppArmor userns restriction)") {
-		t.Errorf("net_mode = %+v ok=%v", nm, ok)
-	}
-
-	p.usernsNet = func() error { return nil }
-	checks, _ = runAllChecks(p)
-	if c, _ := checkByName(checks, "userns_net"); !c.OK || c.Detail != "not restricted" {
-		t.Errorf("unrestricted must be OK, got %+v", c)
-	}
-	if nm, _ := checkByName(checks, "net_mode"); !strings.HasPrefix(nm.Detail, "vhost-user (default") {
-		t.Errorf("net_mode = %+v", nm)
-	}
-
-	p.usernsNet = func() error { return errors.New("restricted") }
-	p.getenv = func(k string) string {
-		if k == "NEXUS_NET_MODE" {
-			return "tap"
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv("NEXUS_NET_MODE", "")
+		checks, _ := runAllChecks(doctorTestProbes())
+		if c, ok := checkByName(checks, "net_mode_env"); !ok || !c.OK {
+			t.Fatalf("unset must pass, got %+v ok=%v", c, ok)
 		}
-		return ""
-	}
-	checks, _ = runAllChecks(p)
-	if nm, _ := checkByName(checks, "net_mode"); nm.OK || nm.Remediation == "" {
-		t.Errorf("explicit tap on restricted host must fail net_mode, got %+v", nm)
-	}
+	})
 }
 
 func TestFormatDoctorHuman_Groups(t *testing.T) {
