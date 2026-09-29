@@ -15,6 +15,7 @@ HANDLE=s9br/fixture
 SNAPH=s9br/snapfix
 CUTA=s9br/cutA
 CUTB=s9br/cutB
+SWAPH=s9br/swapfix
 VOL=s9brvol
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -62,6 +63,7 @@ cleanup() {
   nx rm "$SNAPH" >/dev/null 2>&1
   nx rm "$CUTA" >/dev/null 2>&1
   nx rm "$CUTB" >/dev/null 2>&1
+  nx rm "$SWAPH" >/dev/null 2>&1
   nx volume rm "$VOL" >/dev/null 2>&1
   if [ "$KEEP" = 0 ] && [ -n "$ID" ]; then
     for p in $(pgrep -f "$ID" 2>/dev/null); do
@@ -233,21 +235,8 @@ snap_record 01-running
 check_record "(a) running" "$STATE/rec/00-created.json"
 check_vhost "(a) running" "$ID"
 
-oldpid=$(jq -r .supervisor_pid "$(recfile)")
-if out=$(timeout 180 env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus supervisor-upgrade "$HANDLE" 2>&1); then
-  newpid=$(jq -r .supervisor_pid "$(recfile)")
-  if [ "$newpid" != "$oldpid" ]; then
-    record PASS "(b) supervisor-upgrade" "pid $oldpid -> $newpid; $(tail -1 <<<"$out" | cut -c1-90)"
-  else
-    record FAIL "(b) supervisor-upgrade" "pid unchanged $oldpid: $out"
-  fi
-else
-  record FAIL "(b) supervisor-upgrade" "$(tail -3 <<<"$out")"
-fi
-probe "(b) adopt" 2
-snap_record 02-adopt
-check_record "(b) adopt" "$STATE/rec/01-running.json"
-check_vhost "(b) adopt" "$ID"
+# (b) supervisor-upgrade needs an OLD-binary sandbox: see the swap section after cutover.
+cp "$STATE/rec/01-running.json" "$STATE/rec/02-adopt.json"
 
 timeout 120 env -i "${BASEENV[@]}" "${EXTRA[@]}" nexus sandbox stop "$HANDLE" >/dev/null 2>&1
 snap_record 03-stopped
@@ -395,16 +384,17 @@ else
     # A: running legacy tap VM -> supervisor-upgrade refused
     rfa=$(rec_of "$CIDA")
     apid=$(jq -r .supervisor_pid "$rfa")
-    if out=$(timeout 180 env -i "${BASEENV[@]}" nexus supervisor-upgrade "$CUTA" 2>&1); then
+    if out=$(timeout 180 env -i "${BASEENV[@]}" nexus --json supervisor-upgrade "$CUTA" 2>&1); then
       record FAIL "cutover A upgrade refused" "supervisor-upgrade unexpectedly succeeded: $(tail -2 <<<"$out")"
-    elif grep -q supervisor_upgrade_legacy_nic <<<"$out"; then
+    elif [ "$(jq -r '.error.code // ""' <<<"$out" 2>/dev/null)" = supervisor_upgrade_legacy_nic ] &&
+      jq -e --arg c "nexus stop $CUTA && nexus start $CUTA" '.error.message | contains($c)' <<<"$out" >/dev/null 2>&1; then
       if [ "$(jq -r .supervisor_pid "$rfa")" = "$apid" ] && TARGET=$CUTA gexec 20 true >/dev/null 2>&1; then
-        record PASS "cutover A upgrade refused" "supervisor_upgrade_legacy_nic; supervisor $apid untouched, guest still answers"
+        record PASS "cutover A upgrade refused" "supervisor_upgrade_legacy_nic + stop/start hint; supervisor $apid untouched, guest still answers"
       else
         record FAIL "cutover A upgrade refused" "code returned but A disturbed: pid $apid -> $(jq -r .supervisor_pid "$rfa")"
       fi
     else
-      record FAIL "cutover A upgrade refused" "no supervisor_upgrade_legacy_nic: $(tail -3 <<<"$out")"
+      record FAIL "cutover A upgrade refused" "no .error.code=supervisor_upgrade_legacy_nic with stop/start hint: $(tail -3 <<<"$out")"
     fi
 
     # A: stop + start migrates
@@ -419,6 +409,61 @@ else
       probe_net "cutover A" "$CUTA"
     else
       record FAIL "cutover A stop+start" "$(tail -3 "$STATE/start-cuta.log" 2>/dev/null)"
+    fi
+  fi
+  EXTRA=()
+fi
+echo "== (b) supervisor-upgrade: real swap OLD -> NEW"
+# Sandbox is created by the OLD binary (default vhost-user, no NEXUS_NET_MODE) so
+# NEW is a different binary. Its mount's virtiofsd is armed with the old
+# Pdeathsig, so per doc/design/virtiofsd-lifetime.md (Legacy sandboxes) the
+# upgrade must refuse with supervisor_upgrade_live_mounts_would_break; that
+# refusal is an expected PASS, then --force-drop-mounts is passed deliberately.
+if [ -z "$OLD" ]; then
+  record SKIP "(b) supervisor-upgrade" "no --old-bin given; same-binary upgrade is a no-op"
+else
+  EXTRA=()
+  cp "$OLD" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
+  if ! timeout 300 env -i "${BASEENV[@]}" nexus sandbox create "$SWAPH" --image "$IMAGE" \
+    --mount "$STATE/mnt:/mnt/host" --egress closed --repo octocat/hello-world --allow-host example.com >"$STATE/create-swap.log" 2>&1; then
+    record FAIL "(b) fixture" "$(tail -3 "$STATE/create-swap.log")"
+  else
+    SWAPID=$(nx sandbox list | awk -v h="$SWAPH" '$1==h{print $NF}')
+    cp "$NEW" "$STATE/bin/nexus.new" && mv -f "$STATE/bin/nexus.new" "$STATE/bin/nexus"
+    rfs=$(rec_of "$SWAPID")
+    swpid=$(jq -r .supervisor_pid "$rfs")
+    if [ -n "$(jq -r '.vhost_socket // ""' "$rfs")" ] && TARGET=$SWAPH gexec 30 true >/dev/null 2>&1; then
+      record PASS "(b) fixture" "OLD-created $SWAPID: vhost_socket set, supervisor pid $swpid, guest answers"
+    else
+      record FAIL "(b) fixture" "$(jq -c '{vhost_socket,supervisor_pid}' "$rfs")"
+    fi
+    fdm=()
+    if ! out=$(timeout 180 env -i "${BASEENV[@]}" nexus --json supervisor-upgrade "$SWAPH" 2>&1); then
+      if [ "$(jq -r '.error.code // ""' <<<"$out" 2>/dev/null)" = supervisor_upgrade_live_mounts_would_break ]; then
+        if [ "$(jq -r .supervisor_pid "$rfs")" = "$swpid" ] && TARGET=$SWAPH gexec 20 true >/dev/null 2>&1; then
+          record PASS "(b) upgrade refused" "live mount refusal supervisor_upgrade_live_mounts_would_break; supervisor $swpid untouched"
+        else
+          record FAIL "(b) upgrade refused" "refused but sandbox disturbed"
+        fi
+        fdm=(--force-drop-mounts)
+        out=$(timeout 180 env -i "${BASEENV[@]}" nexus supervisor-upgrade "${fdm[@]}" "$SWAPH" 2>&1)
+        rc=$?
+      else
+        rc=1
+      fi
+    else
+      rc=0
+    fi
+    if [ "$rc" = 0 ]; then
+      newpid=$(jq -r .supervisor_pid "$rfs")
+      if [ "$newpid" != "$swpid" ] && [ -n "$(jq -r '.vhost_socket // ""' "$rfs")" ] && TARGET=$SWAPH gexec 30 true >/dev/null 2>&1; then
+        record PASS "(b) supervisor-upgrade" "pid $swpid -> $newpid ${fdm[*]}; vhost_socket set; guest answers"
+      else
+        record FAIL "(b) supervisor-upgrade" "pid $swpid -> $newpid or vhost/guest lost: $(tail -2 <<<"$out")"
+      fi
+      check_vhost "(b) adopt" "$SWAPID"
+    else
+      record FAIL "(b) supervisor-upgrade" "$(tail -3 <<<"$out")"
     fi
   fi
   EXTRA=()
