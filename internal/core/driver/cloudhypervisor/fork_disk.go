@@ -1,15 +1,14 @@
 package cloudhypervisor
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/fsutil"
 )
 
 // errNoDisks is returned by findRootDiskPath when config.json has no "disks"
@@ -17,17 +16,14 @@ import (
 // callers should skip disk isolation in that case.
 var errNoDisks = errors.New("no disks configured in config.json")
 
-// reflinkCopy copies src to dst using cp --reflink=auto.
+// reflinkCopy copies src to dst in-process (FICLONE, sparse-copy fallback).
 //
 // On btrfs and XFS the copy is a free reflink clone (no I/O proportional to
-// file size). On other filesystems cp falls back to a regular copy silently.
+// file size). Other filesystems fall back to a sparse copy.
 // dst must not exist before the call.
 func reflinkCopy(src, dst string) error {
-	var stderr bytes.Buffer
-	cmd := exec.Command("cp", "--reflink=auto", src, dst)
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("cp --reflink=auto %s → %s: %w: %s", src, dst, err, stderr.String())
+	if err := fsutil.CopyFileReflink(src, dst); err != nil {
+		return fmt.Errorf("reflink copy %s → %s: %w", src, dst, err)
 	}
 	return nil
 }

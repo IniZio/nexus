@@ -1,12 +1,12 @@
 package builder
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+
+	"github.com/IniZio/nexus/internal/core/fsutil"
 )
 
 // PrivateRootfsName is the file name given to the per-build clone of the
@@ -38,7 +38,7 @@ const PrivateRootfsName = "builder-rootfs.ext4"
 // builder VM a private, writable rootfs, which is the same discipline the
 // sandbox create path already applies to sandbox rootfs images.
 //
-// The clone uses `cp --reflink=auto --sparse=always`: a free extent clone on
+// The clone uses an in-process reflink/sparse copy: a free extent clone on
 // btrfs/XFS, a sparse full copy elsewhere. workDir is the caller's ephemeral
 // per-build directory, so the clone is removed with it.
 func PrivateRootfs(ctx context.Context, sharedImage, workDir string) (string, error) {
@@ -59,13 +59,11 @@ func PrivateRootfs(ctx context.Context, sharedImage, workDir string) (string, er
 		return "", fmt.Errorf("builder rootfs clone: remove stale %s: %w", dst, err)
 	}
 
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "cp", "--reflink=auto", "--sparse=always", sharedImage, dst)
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		_ = os.Remove(dst) // do not leave a partial image behind
-		return "", fmt.Errorf("builder rootfs clone: cp --reflink=auto --sparse=always %s → %s: %w: %s",
-			sharedImage, dst, err, stderr.String())
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := fsutil.CopyFileReflink(sharedImage, dst); err != nil {
+		return "", fmt.Errorf("builder rootfs clone: copy %s → %s: %w", sharedImage, dst, err)
 	}
 	return dst, nil
 }

@@ -34,11 +34,8 @@ var bundledTools = map[string]bool{
 // to the module root) permitted to exec it, each with a reason.
 var hostExecAllowlist = map[string]map[string]string{
 	"cp": {
-		"internal/core/builder":                "reflink/file copy",
-		"internal/core/driver/cloudhypervisor": "reflink/file copy",
-		"internal/core/service":                "reflink/file copy",
-		"internal/test/repro":                  "reflink/file copy",
-		"internal/testutil/livenexus":          "reflink/file copy",
+		"internal/test/repro":         "reflink/file copy",
+		"internal/testutil/livenexus": "reflink/file copy",
 	},
 	"debugfs": {
 		"internal/test/repro": "test tooling",

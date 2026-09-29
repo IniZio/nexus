@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/builder/toolcache"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/fsutil"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
@@ -1255,11 +1255,8 @@ func cowExt4(src, diskDir string, id domain.SandboxID) (string, error) {
 		return "", fmt.Errorf("cow ext4: mkdir %s: %w", diskDir, err)
 	}
 	dst := filepath.Join(diskDir, id.String()+".raw")
-	var stderr bytes.Buffer
-	cmd := exec.Command("cp", "--reflink=auto", "--sparse=always", src, dst)
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("cow ext4: cp --reflink=auto --sparse=always %s → %s: %w: %s", src, dst, err, stderr.String())
+	if err := fsutil.CopyFileReflink(src, dst); err != nil {
+		return "", fmt.Errorf("cow ext4: copy %s → %s: %w", src, dst, err)
 	}
 	return dst, nil
 }
