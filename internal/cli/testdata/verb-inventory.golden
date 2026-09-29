@@ -29,7 +29,6 @@ shell
 ssh
 start
 stop
-supervisor-backfill-netns-identity
 supervisor-upgrade
 vault
 version

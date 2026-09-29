@@ -9,7 +9,7 @@ Purpose: authoritative inventory of nexus's own CLI surface. The test `internal/
 
 This file documents the full public CLI surface of nexus on this branch.
 
-> **Historical note.** An earlier motive charter drafted this file as a parity target for a microsandbox-pivot repo and marked `fork`, `snapshot`, `restore`, `--nested`, and `supervisor-backfill-netns-identity` out-of-scope for that pivot. Those verbs were subsequently declined and are not registered in the current CLI.
+> **Historical note.** An earlier motive charter drafted this file as a parity target for a microsandbox-pivot repo and marked `fork`, `snapshot`, `restore`, and `--nested` out-of-scope for that pivot. Those verbs were subsequently declined and are not registered in the current CLI.
 
 Rootless/zero-networking-privilege egress mode (old P1 design) and hosted-service/server mode are not exposed as top-level verbs; they influence `egress` internals only.
 
@@ -340,16 +340,6 @@ Delegates to `sandbox start`. Args: `<sandbox-ref>`
 Summary: Stop a running sandbox (flat spelling of `sandbox stop`)
 
 Delegates to `sandbox stop`. Args: `<sandbox-ref>`
-
----
-
-### ## supervisor-backfill-netns-identity
-
-Summary: Backfill the netns identity for a running sandbox supervisor
-
-**OUT-OF-SCOPE for new repo** — CH-specific netns identity backfill not applicable to microsandbox.
-
-No flags. Args: `<sandbox-ref>`
 
 ---
 
