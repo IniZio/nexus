@@ -55,6 +55,14 @@ Confirm in the guest (both Intel `vmx` and AMD `svm`):
 nexus exec <handle> -- bash -lc 'ls -l /dev/kvm; grep -m1 ^flags /proc/cpuinfo | tr " " "\n" | grep -E "^(vmx|svm)$"'
 ```
 
+### Network mode
+
+New sandboxes default to `vhost-user` networking. `NEXUS_NET_MODE=tap` at
+create still selects tap (and fails on hosts where an AppArmor userns
+restriction blocks it). Sandboxes created before the flip keep tap. Live tests
+that build a sandbox with the default now exercise vhost-user; set
+`NEXUS_NET_MODE=tap` only when the test is about tap.
+
 ## Monitoring the pane
 
 **Primary signal: herdr agent state.**
