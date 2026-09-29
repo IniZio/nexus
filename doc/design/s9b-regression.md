@@ -1,5 +1,7 @@
 # S9b-R: tap upgrade-survival regression
 
+> **Historical.** Tap was retired in S9d; the tap fixtures, `NEXUS_NET_MODE` and `net_mode` below describe the S9b-era regression only.
+
 `scripts/s9b-regression.sh --old <25f6fc7 binary> --new <HEAD binary> [--state DIR]`
 creates a tap sandbox with the OLD binary (named volume, rw dir mount, default-deny
 egress allowing only example.com), swaps `bin/nexus` by atomic rename, exports

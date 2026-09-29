@@ -57,11 +57,13 @@ nexus exec <handle> -- bash -lc 'ls -l /dev/kvm; grep -m1 ^flags /proc/cpuinfo |
 
 ### Network mode
 
-New sandboxes default to `vhost-user` networking. `NEXUS_NET_MODE=tap` at
-create still selects tap (and fails on hosts where an AppArmor userns
-restriction blocks it). Sandboxes created before the flip keep tap. Live tests
-that build a sandbox with the default now exercise vhost-user; set
-`NEXUS_NET_MODE=tap` only when the test is about tap.
+`vhost-user` is the only networking mode; tap was removed in S9d. `NEXUS_NET_MODE`
+must be unset: any value, including `vhost-user`, fails create with
+"NEXUS_NET_MODE is no longer supported", and `nexus doctor` (`net_mode_env`)
+flags it. Sandboxes still running from before S9d keep their tap NIC and are
+refused by `supervisor-upgrade`/adopt (`supervisor_upgrade_legacy_nic`); run
+`nexus stop X && nexus start X` to migrate them. Stopped tap sandboxes migrate on
+their next start. Guest memory is always shared.
 
 ## Monitoring the pane
 

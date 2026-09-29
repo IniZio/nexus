@@ -1,5 +1,8 @@
 # vhost-user-net backend (S9b-2)
 
+> **Tap retired (S9d).** vhost-user is now the only NIC; tap, `NEXUS_NET_MODE`
+> selection and `net_mode` are gone. Tap and mode text below is history.
+
 Package `internal/core/driver/cloudhypervisor/vhostnet` is a pure-Go vhost-user
 net **slave** for the cloud-hypervisor (CH) v53 master. It replaces the tap fd in
 the netns child's frame pump so CH can run in an empty user+net namespace with
@@ -237,6 +240,8 @@ Run it with:
 - Throughput against tap and the soak run (S9b-7).
 
 ## Known gap under `kernel.apparmor_restrict_unprivileged_userns=1` (S9b-8, S9c)
+
+> After S9d the restriction no longer blocks networking (no tap path remains); userns is still required, and the single-file mount gap below stands.
 
 Single-file `--mount` re-execs with `CLONE_NEWUSER|CLONE_NEWNS`, which needs
 `CAP_SYS_ADMIN` in the new user namespace. With the restriction set to 1 the

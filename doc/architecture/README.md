@@ -46,7 +46,7 @@ C4Container
   Container(imgstore, "Image Store", "Go — internal/core/image", "Resolves and caches base disk images")
   Container(driver, "CH Driver", "Go — internal/core/driver/cloudhypervisor", "Wraps cloud-hypervisor REST API; manages VM config, disks, virtiofs tags, vsock")
   Container(supervisor, "Detached Supervisor", "Go — internal/supervisor (re-exec of nexus binary)", "One process per sandbox; owns cloud-hypervisor child, perimeter, watchdog pipe")
-  Container(perimeter, "Egress Perimeter", "Go — internal/core/perimeter (+mitm, netfilter, sni)", "Frame pump on TAP fd; netfilter AllowList (L3/L4) + MITM HTTPS proxy (L7)")
+  Container(perimeter, "Egress Perimeter", "Go — internal/core/perimeter (+mitm, netfilter, sni)", "Frame pump on vhost-user NIC; netfilter AllowList (L3/L4) + MITM HTTPS proxy (L7)")
   Container(agent, "Guest Agent", "Go — cmd/nexus-agent (static binary in guest)", "PID-1-ish in VM; gRPC/vsock server; exec/copy/resize/hotswap")
 
   System_Ext(kvm, "cloud-hypervisor binary", "KVM VMM process")
@@ -96,8 +96,8 @@ C4Container
    re-execs the nexus binary in a new session; the child writes a pidfile and signals readiness
    over a Unix socket.
 4. **Detached Supervisor** calls the **CH Driver** (`internal/core/driver/cloudhypervisor`)
-   to configure and launch the `cloud-hypervisor` process (disk, virtiofs mounts, vsock, TAP device).
-5. **Supervisor** obtains the TAP fd from the driver's `NetworkHook` and passes it to
+   to configure and launch the `cloud-hypervisor` process (disk, virtiofs mounts, vsock, vhost-user NIC).
+5. **Supervisor** obtains the guest frame fd from the driver's `NetworkHook` and passes it to
    `perimeter.Start` (`internal/core/perimeter/supervisor.go`), which launches the netfilter
    AllowList refresh goroutine and the MITM HTTPS proxy listener.
 6. **Guest Agent** (`cmd/nexus-agent`) starts inside the VM, registers on vsock port 1024,

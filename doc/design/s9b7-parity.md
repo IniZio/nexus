@@ -1,5 +1,7 @@
 # S9b-7: vhost-user vs tap parity, throughput, soak
 
+> **Historical.** Tap was retired in S9d; the tap column, `NEXUS_NET_MODE` and `net_mode`/`guest_tap_name` below record the S9b-era comparison.
+
 Host: develop @ edb56e4, 2026-09-29, isolated state (`HOME=/var/tmp/s9b7/home`).
 Two sandboxes from `ghcr.io/inizio/nexus-base:latest` (Debian 12), identical flags
 (`--egress closed`, named volume at `/data`, rw dir mount at `/mnt/host`,

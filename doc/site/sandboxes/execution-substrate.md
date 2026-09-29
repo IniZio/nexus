@@ -54,7 +54,7 @@ Each sandbox VM is created with:
 - A root disk: a CoW sparse ext4 image forked from the base image.
 - **Source mounts**: one virtiofs device per declared `--mount <host-path>:<guest-path>`, providing a live bidirectional view of the host directory.
 - **Shadow disks** <Badge type="tip" text="built" />: virtio-blk ext4 images that shadow write-heavy directories (`node_modules`, `.next`, `target`, `dist`) in a captured `--workspace`, keeping write amplification off the workspace disk. The set is fixed; there is no flag to extend it. They do **not** apply to `--mount` (live virtiofs) sandboxes.
-- A TAP-based network interface in its own network namespace.
+- A vhost-user network interface, served from an empty network namespace.
 - A vsock device (CID allocated per sandbox) for host↔guest communication.
 - Optional `/dev/kvm` passthrough for nested virtualisation (opt-in via `--nested`, off by default).
 
@@ -105,7 +105,7 @@ Outbound traffic is intercepted by a per-sandbox **egress perimeter** running on
 
 ### Network hook primitive
 
-The driver exposes a **network hook** that intercepts guest egress at the TAP level. The supervisor uses this hook to implement the egress perimeter without requiring root privileges inside the guest.
+The driver exposes a **network hook** that intercepts guest egress at the vhost-user frame pump. The supervisor uses this hook to implement the egress perimeter without requiring root privileges inside the guest.
 
 ## Resource limits
 
