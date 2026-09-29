@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/IniZio/nexus/internal/core/domain"
 )
 
 // ── AdoptNetnsRuntime construction ──────────────────────────────────────────
@@ -65,7 +67,8 @@ func TestAdoptNetnsRuntime_VhostSocket(t *testing.T) {
 		t.Cleanup(func() { pumpFile.Close(); perimFile.Close() })
 		pid, st := spawn(t)
 		_, err = AdoptNetnsRuntime(context.Background(), pid, pid, st, "", "/tmp/nx-test.sock", perimFile)
-		if err == nil || !strings.Contains(err.Error(), "vhostSocket is empty") {
+		if err == nil || !strings.Contains(err.Error(), "vhostSocket is empty") ||
+			!strings.Contains(err.Error(), domain.LegacyNICMessage("<name>")) {
 			t.Fatalf("err = %v", err)
 		}
 	})

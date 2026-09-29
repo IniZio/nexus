@@ -623,7 +623,7 @@ func AdoptNetnsRuntime(ctx context.Context, childPID, childPGID int, childStartT
 		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: apiSocket is empty")
 	}
 	if vhostSocket == "" {
-		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: vhostSocket is empty")
+		return nil, fmt.Errorf("cloudhypervisor: AdoptNetnsRuntime: vhostSocket is empty: %s", domain.LegacyNICMessage("<name>"))
 	}
 
 	// PID-reuse guard: verify the process at childPID is still the same process

@@ -373,7 +373,6 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 		name string
 		set  func(rec *domain.Sandbox)
 	}{
-		{"only PID", func(rec *domain.Sandbox) { rec.NetnsChildPID = 4242 }},
 		{"only PGID", func(rec *domain.Sandbox) { rec.NetnsChildPGID = 4242 }},
 		{"only StartTime", func(rec *domain.Sandbox) { rec.NetnsChildStartTime = 123456 }},
 		{"only VhostSocket", func(rec *domain.Sandbox) { rec.VhostSocket = "/tmp/fake-vhost.sock" }},
@@ -394,12 +393,6 @@ func TestSupervisorUpgrade_PartialNetnsIdentity_EachFieldAloneRefuses(t *testing
 			rec.NetnsChildPID = 4242
 			rec.NetnsChildPGID = 4242
 			rec.VhostSocket = "/tmp/fake-vhost.sock"
-			rec.CHAPISocket = "/tmp/fake.sock"
-		}},
-		{"missing only VhostSocket", func(rec *domain.Sandbox) {
-			rec.NetnsChildPID = 4242
-			rec.NetnsChildPGID = 4242
-			rec.NetnsChildStartTime = 123456
 			rec.CHAPISocket = "/tmp/fake.sock"
 		}},
 		{"missing only CHAPISocket", func(rec *domain.Sandbox) {
@@ -571,5 +564,34 @@ func TestSupervisorUpgrade_GovBoundsPassedToSpawn(t *testing.T) {
 	}
 	if capturedCfg.Config.BootVCPUs != wantVCPUs {
 		t.Errorf("BootVCPUs: got %d, want %d", capturedCfg.Config.BootVCPUs, wantVCPUs)
+	}
+}
+
+// TestSupervisorUpgrade_LegacyNIC_Refuses: a netns child with no vhost socket
+// is a pre-S9d tap VM and must refuse with the shared remedy.
+func TestSupervisorUpgrade_LegacyNIC_Refuses(t *testing.T) {
+	svc, sb, stateDir := newSupervisorUpgradeTestSandbox(t)
+	sockPath := listenFakeSupervisorSock(t, stateDir)
+	markRunningWithLiveSupervisor(t, sb, sockPath)
+	storeRoot, _ := store.DefaultRoot()
+	st, _ := store.NewFileStore(storeRoot)
+	if err := st.Update(context.Background(), sb.ID, func(rec *domain.Sandbox) error {
+		rec.NetnsChildPID = 4242
+		rec.NetnsChildPGID = 4242
+		rec.NetnsChildStartTime = 123456
+		rec.CHAPISocket = "/tmp/fake.sock"
+		return nil
+	}); err != nil {
+		t.Fatalf("st.Update: %v", err)
+	}
+	out, _, _ := capture(false)
+	ref := sb.Handle()
+	err := runSupervisorUpgradeWith(context.Background(), ref, false, false, out, svc)
+	ce, ok := err.(*CodedError)
+	if !ok || ce.Code != supervisorUpgradeLegacyNICCode {
+		t.Fatalf("expected %q, got %v", supervisorUpgradeLegacyNICCode, err)
+	}
+	if want := domain.LegacyNICMessage(ref); ce.Msg != want {
+		t.Errorf("msg = %q, want %q", ce.Msg, want)
 	}
 }

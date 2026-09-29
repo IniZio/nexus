@@ -48,7 +48,7 @@ func TestReacquirePreflight_RefusesIncompleteIdentity(t *testing.T) {
 		{"negative child pid", func(s *domain.Sandbox) { s.NetnsChildPID = -1 }, "no netns child pid"},
 		{"zero child pgid", func(s *domain.Sandbox) { s.NetnsChildPGID = 0 }, "no netns child pgid"},
 		{"zero starttime", func(s *domain.Sandbox) { s.NetnsChildStartTime = 0 }, "pid-reuse guard"},
-		{"empty vhost socket", func(s *domain.Sandbox) { s.VhostSocket = "" }, "no vhost socket"},
+		{"empty vhost socket", func(s *domain.Sandbox) { s.VhostSocket = "" }, "has no vhost-user NIC identity"},
 		{"empty api socket", func(s *domain.Sandbox) { s.CHAPISocket = "" }, "no CH API socket"},
 		{"empty control socket", func(s *domain.Sandbox) { s.NetnsControlSocket = "" }, "no netns control socket"},
 		{"empty control token", func(s *domain.Sandbox) { s.NetnsControlToken = "" }, "no netns control token"},

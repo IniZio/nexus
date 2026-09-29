@@ -42,6 +42,13 @@ func (s Sandbox) HasNICIdentity() bool {
 	return s.VhostSocket != ""
 }
 
+// LegacyNICMessage is the single refusal text for a record that has a netns
+// child but no vhost-user NIC identity (tap-mode VM from before S9d). x is the
+// sandbox name or id.
+func LegacyNICMessage(x string) string {
+	return fmt.Sprintf("sandbox %s has no vhost-user NIC identity (tap-mode VM from before S9d, or identity lost); run `nexus stop %s && nexus start %s` to migrate", x, x, x)
+}
+
 // ParseNetMode validates a user-supplied mode. Empty parses to the zero value.
 func ParseNetMode(s string) (NetMode, error) {
 	switch NetMode(s) {

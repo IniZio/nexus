@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
@@ -43,6 +44,9 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 		return fmt.Errorf("supervisor: adopt: resolve sandbox %s: %w", cfg.SandboxRef, err)
 	}
 
+	if sb.NetnsChildPID > 0 && !sb.HasNICIdentity() {
+		return fmt.Errorf("supervisor: adopt: %s", domain.LegacyNICMessage(sb.ID.String()))
+	}
 	if sb.NetnsChildPID <= 0 || sb.NetnsChildPGID <= 0 || sb.NetnsChildStartTime == 0 ||
 		!sb.HasNICIdentity() || sb.CHAPISocket == "" {
 		return fmt.Errorf("supervisor: adopt: sandbox %s has an incomplete netns identity; refusing to adopt", sb.ID)

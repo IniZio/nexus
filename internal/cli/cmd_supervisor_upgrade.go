@@ -36,6 +36,7 @@ const (
 	supervisorUpgradeNotRunningCode      = "supervisor_upgrade_not_running"
 	supervisorUpgradeNoSupervisorCode    = "supervisor_upgrade_no_supervisor"
 	supervisorUpgradeIncompleteNetnsCode = "supervisor_upgrade_incomplete_netns_identity"
+	supervisorUpgradeLegacyNICCode       = "supervisor_upgrade_legacy_nic"
 	supervisorUpgradeNoopCode            = "supervisor_upgrade_noop_same_binary"
 	supervisorUpgradeNoSpawnSpecCode     = "supervisor_upgrade_no_spawn_spec"
 	supervisorUpgradeSpawnFailedCode     = "supervisor_upgrade_spawn_failed"
@@ -161,6 +162,9 @@ func runSupervisorUpgradeWith(ctx context.Context, ref string, force, forceDropM
 	// rail): a zero, absent, or otherwise incomplete value REFUSES. There is
 	// no compatibility branch that treats an absent field as "skip the
 	// check" — that has shipped three fail-open defects in this motive.
+	if sb.NetnsChildPID > 0 && !sb.HasNICIdentity() {
+		return &CodedError{Code: supervisorUpgradeLegacyNICCode, Msg: domain.LegacyNICMessage(ref)}
+	}
 	if sb.NetnsChildPID <= 0 || sb.NetnsChildPGID <= 0 || sb.NetnsChildStartTime == 0 ||
 		!sb.HasNICIdentity() || sb.CHAPISocket == "" {
 		return &CodedError{
