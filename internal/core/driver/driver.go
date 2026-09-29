@@ -22,10 +22,16 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 )
+
+// ErrTapSnapshot is returned when a snapshot was taken from a tap-networked VM.
+// Its device state is virtio-net tap and guest memory is not shared, so it
+// cannot be restored or converted to vhost-user.
+var ErrTapSnapshot = errors.New("tap snapshot cannot be restored: tap networking was removed in S9d; take a new snapshot from a vhost-user sandbox (this snapshot is unusable)")
 
 // RunState is the actual execution state of a VM as reported by the
 // substrate. It is a four-valued type.

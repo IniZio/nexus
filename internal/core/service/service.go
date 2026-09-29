@@ -1365,6 +1365,9 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 				strings.Join(liveMountDescs, ", "),
 			)
 		}
+		if err := refuseLegacyNIC(*rec, ref); err != nil {
+			return err
+		}
 		localSnap, err := snapper.TakeSnapshot(ctx, rec.ID, artifact.KindRetained)
 		if err != nil {
 			return fmt.Errorf("driver: %w", err)
@@ -1521,6 +1524,10 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 		)
 	}
 
+	if err := refuseLegacyNIC(parent, ref); err != nil {
+		return nil, fmt.Errorf("service: fork %s: %w", parent.ID, err)
+	}
+
 	// Take a transient snapshot of the parent. Fork does not hold the parent
 	// lease because the parent state is unchanged (TriggerFork has no table
 	// entry; child creation uses edge 5: ∅→running).
@@ -1607,6 +1614,9 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 
 	instanceIDs, err := forker.ForkFrom(ctx, snap, childIDs)
 	if err != nil {
+		if remover, ok := s.driver.(driver.SnapshotRemover); ok {
+			_ = remover.RemoveSnapshot(snap.ID)
+		}
 		return nil, fmt.Errorf("service: fork %s: driver: %w", parent.ID, err)
 	}
 
@@ -1670,6 +1680,15 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 	}
 
 	return children, nil
+}
+
+// refuseLegacyNIC rejects a Running sandbox whose netns child predates the
+// vhost-user NIC identity: its snapshot would be a tap snapshot.
+func refuseLegacyNIC(sb domain.Sandbox, ref string) error {
+	if sb.State == domain.Running && sb.NetnsChildPID > 0 && !sb.HasNICIdentity() {
+		return errors.New(domain.LegacyNICMessage(ref))
+	}
+	return nil
 }
 
 // recordNetnsIdentity copies the driver's live netns identity onto a child.

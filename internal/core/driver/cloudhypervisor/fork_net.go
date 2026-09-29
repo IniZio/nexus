@@ -44,7 +44,7 @@ func snapshotNetBackend(configJSON []byte) (netBackend, error) {
 		}
 		return netBackend{mode: domain.NetModeVhostUser, ref: n.Socket}, nil
 	}
-	return netBackend{}, fmt.Errorf("net[0] is not vhost_user: tap networking was removed in S9d; run nexus stop X && nexus start X to migrate")
+	return netBackend{}, fmt.Errorf("net[0] is not vhost_user: %w", driver.ErrTapSnapshot)
 }
 
 type netRewrite struct {

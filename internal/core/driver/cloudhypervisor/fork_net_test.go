@@ -1,12 +1,18 @@
 package cloudhypervisor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/IniZio/nexus/internal/core/artifact"
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver"
 )
 
 const vhostNetConfig = `{"cpus":{"boot_vcpus":1},"net":[{"vhost_user":true,"vhost_socket":"/run/n/vhost-A.sock","mac":"52:54:00:aa:bb:cc","num_queues":2}],"memory":{"size":1,"shared":true}}`
@@ -28,8 +34,8 @@ func TestSnapshotNetBackend(t *testing.T) {
 			t.Errorf("%s: got %+v, %v; want %+v, %v", c.name, got, err, c.want, c.wantErr)
 		}
 	}
-	if _, err := snapshotNetBackend([]byte(tap)); err == nil || !strings.Contains(err.Error(), "tap networking was removed") {
-		t.Errorf("tap snapshot must be refused with the migration message, got %v", err)
+	if _, err := snapshotNetBackend([]byte(tap)); !errors.Is(err, driver.ErrTapSnapshot) || !strings.Contains(err.Error(), "tap networking was removed") {
+		t.Errorf("tap snapshot must be refused with ErrTapSnapshot, got %v", err)
 	}
 	if _, err := snapshotNetBackend([]byte(`{"net":[{"vhost_user":true}]}`)); err == nil {
 		t.Error("vhost_user without socket must error")
@@ -54,5 +60,37 @@ func TestRewriteConfigNetVhostSocket(t *testing.T) {
 	}
 	if _, err := rewriteConfigNetVhostSocket([]byte(vhostNetConfig), "/other.sock", "/x"); err == nil {
 		t.Error("mismatched old socket must error")
+	}
+}
+
+func TestForkFromTapSnapshotRefused(t *testing.T) {
+	d := newStoreDriver(t)
+	id := artifact.SnapshotID("tap-snap-000000000000")
+	dir := d.snapshotDirPath(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"net":[{"tap":"nxg-abc","mac":"52:54:00:aa:bb:cc"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mfst, err := buildManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(mfst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := artifact.Snapshot{ID: id, SandboxID: domain.NewSandboxID(), Kind: artifact.KindRetained,
+		Size: int64(len(payload)), CommitMarker: "committed", CreatedAt: time.Now()}
+	if err := d.snapshotStore.Write(snap, payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ForkFrom(context.Background(), snap, []domain.SandboxID{domain.NewSandboxID()}); !errors.Is(err, driver.ErrTapSnapshot) {
+		t.Fatalf("ForkFrom err = %v, want ErrTapSnapshot", err)
+	}
+	got, err := d.SnapshotNetMode(snap)
+	if !errors.Is(err, driver.ErrTapSnapshot) {
+		t.Fatalf("SnapshotNetMode = %q, %v; want ErrTapSnapshot", got, err)
 	}
 }
