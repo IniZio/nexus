@@ -109,6 +109,7 @@ jobs:
     needs: [release-create]
     if: needs.release-create.outputs.released == 'true'
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       # darwin/arm64 is intentionally absent. internal/core/builder/builderimage
       # is linux-only (linux build constraints; no darwin stubs). Adding darwin
@@ -119,6 +120,11 @@ jobs:
           - runner: ubuntu-latest
             goos: linux
             goarch: amd64
+            experimental: false
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            experimental: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -128,6 +134,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # UNCAPPED: systemd-run memory scope is unavailable on hosted runners
+      - name: Embed host artifacts (make artifacts)
+        env:
+          NEXUS_ALLOW_UNCAPPED: "1"
+        run: |
+          set -euo pipefail
+          make artifacts HOSTBIN_GOARCH=${{ matrix.goarch }}
+          ls -l internal/core/hostbin/embedded/${{ matrix.goarch }}
 
       - name: Build nexus binary
         env:
@@ -147,15 +162,20 @@ jobs:
             -X github.com/IniZio/nexus/internal/cli.herdrDefaultImageTag=${VERSION}"
           go build -trimpath -ldflags "$LDFLAGS" -o "$OUTFILE" ./cmd/nexus
           echo "Built $OUTFILE ($(du -sh "$OUTFILE" | cut -f1))"
+          sha256sum "$OUTFILE" > "$OUTFILE.sha256"
+          cat "$OUTFILE.sha256"
 
-      - name: Upload binary to release
+      - name: Upload binary, checksum and licence files to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-create.outputs.tag }}
         run: |
           set -euo pipefail
           OUTFILE="nexus-${{ matrix.goos }}-${{ matrix.goarch }}"
-          gh release upload "$TAG" "$OUTFILE" --clobber
+          cp third_party/e2fsprogs/COPYING e2fsprogs-COPYING
+          cp third_party/e2fsprogs/NOTICE e2fsprogs-SOURCE-OFFER.txt
+          gh release upload "$TAG" "$OUTFILE" "$OUTFILE.sha256" \
+            e2fsprogs-COPYING e2fsprogs-SOURCE-OFFER.txt --clobber
 
       - name: Upload kernel image to release
         env:
@@ -296,7 +316,7 @@ jobs:
           mkdir -p release-assets
           gh release download "$TAG" --dir release-assets
           cd release-assets
-          sha256sum nexus-* > SHA256SUMS
+          find . -maxdepth 1 -name 'nexus-*' ! -name '*.sha256' -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS
           echo "=== SHA256SUMS ==="
           cat SHA256SUMS
 
