@@ -209,3 +209,60 @@ func TestSpawn_NotCalledForHealthySandbox(t *testing.T) {
 		t.Errorf("a sandbox with a live supervisor was classified adoptable: %+v", o)
 	}
 }
+
+// TestSpawn_LegacyTapVMIsIndeterminate: a Running or Paused record with a dead
+// supervisor and no vhost-user NIC identity is a pre-S9d tap VM. Recovery must
+// report it with the remedy, spawn nothing and stop nothing.
+func TestSpawn_LegacyTapVMIsIndeterminate(t *testing.T) {
+	for _, state := range []domain.State{domain.Running, domain.Paused} {
+		t.Run(state.String(), func(t *testing.T) {
+			ctx := context.Background()
+			st, drv, sb := newDeadSupervisorSandbox(t, true)
+			if err := st.Update(ctx, sb.ID, func(r *domain.Sandbox) error {
+				r.VhostSocket = ""
+				r.State = state
+				return nil
+			}); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			if state == domain.Paused {
+				drv.SetPaused(sb.ID)
+			}
+
+			spawns := 0
+			rep, err := New(st, drv).
+				WithSupervisorCheck(deadSupervisor).
+				WithAdoptSpawner(func(domain.Sandbox) (CAOutcome, error) { spawns++; return CALost, nil }).
+				Recover(ctx)
+			if err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			if spawns != 0 {
+				t.Fatalf("spawner called %d times for a legacy tap VM", spawns)
+			}
+			o := outcomeFor(t, rep, sb.ID)
+			if o.Kind != OutcomeIndeterminate {
+				t.Fatalf("kind = %s, want %s", o.Kind, OutcomeIndeterminate)
+			}
+			if want := domain.LegacyNICMessage(sb.Name); o.Reason != want {
+				t.Errorf("reason = %q, want %q", o.Reason, want)
+			}
+			for _, c := range drv.Calls() {
+				if c.Kind == fake.CallStop || c.Kind == fake.CallStart {
+					t.Errorf("driver %s called for a legacy tap VM", c.Kind)
+				}
+			}
+			obs, err := drv.Observe(ctx, sb.ID)
+			if err != nil {
+				t.Fatalf("Observe: %v", err)
+			}
+			wantState := driver.Running
+			if state == domain.Paused {
+				wantState = driver.Paused
+			}
+			if obs.State != wantState {
+				t.Errorf("VM state = %s, want %s: recovery must not stop it", obs.State, wantState)
+			}
+		})
+	}
+}

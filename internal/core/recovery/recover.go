@@ -554,6 +554,19 @@ func (r *Recoverer) applySupervisorLiveness(rec *domain.Sandbox, out *SandboxOut
 		return false
 	}
 
+	// A pre-S9d tap VM cannot be adopted by a replacement supervisor, and
+	// recovery must not stop it: report it with the remedy and leave the
+	// record untouched. NetnsChildPID==0 (fake/netless) keeps old behaviour.
+	if rec.NetnsChildPID > 0 && !rec.HasNICIdentity() {
+		ref := rec.Name
+		if ref == "" {
+			ref = rec.ID.String()
+		}
+		out.Kind = OutcomeIndeterminate
+		out.Reason = domain.LegacyNICMessage(ref)
+		return false
+	}
+
 	// VM alive (we are inside the OutcomeAdopted branch, so the substrate
 	// reported Running or Paused), supervisor dead: adoptable rather than
 	// plainly running. Clear the stale supervisor identity per
