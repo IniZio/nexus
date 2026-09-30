@@ -18,7 +18,7 @@ import (
 const (
 	backendName   = "sprites"
 	nameSuffixLen = 12
-	cloneDir      = "work"
+	cloneDir      = "/home/sprite/work" // absolute: exec Dir is not resolved against $HOME
 	stderrTail    = 2048
 )
 

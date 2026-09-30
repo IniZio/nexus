@@ -22,7 +22,7 @@ func newSDKAPI(token, org string) (API, error) {
 	if token == "" {
 		return nil, errors.New("sprites: API token is empty")
 	}
-	return &sdkAPI{c: sdk.New(token), org: org}, nil
+	return &sdkAPI{c: sdk.New(token, sdk.WithDisableControl()), org: org}, nil
 }
 
 func (a *sdkAPI) CreateSprite(ctx context.Context, name string) error {

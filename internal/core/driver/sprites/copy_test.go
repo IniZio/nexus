@@ -133,3 +133,15 @@ func TestCopyViaExecNonZeroExit(t *testing.T) {
 		t.Fatalf("stderr not capped: %d", len(err.Error()))
 	}
 }
+
+func TestCopyViaExecRejectsDotDot(t *testing.T) {
+	api := &localExecAPI{}
+	n := int64(1)
+	err := copyViaExec(context.Background(), api, "nx-x", driver.CopyOptions{
+		Direction: agentpb.CopyDirection_COPY_DIRECTION_PUSH, GuestPath: "/tmp/a/../b",
+		Src: strings.NewReader("x"), ExpectedBytes: &n,
+	})
+	if err == nil || len(api.reqs) != 0 {
+		t.Fatalf("want rejection before exec, err=%v reqs=%d", err, len(api.reqs))
+	}
+}

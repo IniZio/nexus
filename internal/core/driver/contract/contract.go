@@ -34,6 +34,11 @@ type Harness struct {
 	// HostShared means guest and host share a filesystem/home, so escape
 	// attempts can be verified from the host.
 	HostShared bool
+	// GuestIsBoundary means the whole guest is the disposable isolation
+	// boundary (remote VM), so writes to guest $HOME are expected. The
+	// write-outside-worktree check is skipped; instead the write must not
+	// appear on the host.
+	GuestIsBoundary bool
 	// DestroyKeepsRoot asserts root still exists after destroy; otherwise
 	// root must be gone.
 	DestroyKeepsRoot bool
@@ -204,7 +209,17 @@ func Run(t *testing.T, h Harness) {
 		r := sh(t, d, id, guest, "touch "+mark)
 		if r.err == nil && r.code == 0 {
 			sh(t, d, id, guest, "rm -f "+mark)
-			t.Errorf("write outside worktree succeeded")
+			if h.GuestIsBoundary {
+				if home, err := os.UserHomeDir(); err == nil {
+					p := filepath.Join(home, "nexus-contract-outside")
+					if _, err := os.Stat(p); err == nil {
+						_ = os.Remove(p)
+						t.Errorf("guest write leaked to host")
+					}
+				}
+			} else {
+				t.Errorf("write outside worktree succeeded")
+			}
 		}
 		if h.HostShared {
 			if home, err := os.UserHomeDir(); err == nil {
