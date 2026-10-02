@@ -26,7 +26,30 @@ func applyGuestSysctls(procSysRoot string) error {
 			firstErr = err
 		}
 	}
+	if err := applyExactSysctl(procSysRoot+"/"+guestOvercommitRel, guestOvercommitValue); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	return firstErr
+}
+
+const (
+	guestOvercommitRel   = "vm/overcommit_memory"
+	guestOvercommitValue = 1
+)
+
+func applyExactSysctl(path string, want int64) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cur, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err == nil && cur == want {
+		return nil
+	}
+	return os.WriteFile(path, []byte(strconv.FormatInt(want, 10)+"\n"), 0o644)
 }
 
 func applyInotifySysctl(path string, floor int64) error {

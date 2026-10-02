@@ -70,6 +70,17 @@ func TestApplyGuestSysctls_LeavesHigherValue(t *testing.T) {
 	}
 }
 
+func TestApplyGuestSysctls_SetsOvercommit(t *testing.T) {
+	root := t.TempDir()
+	writeSysctlFile(t, root, guestOvercommitRel, 0)
+	if err := applyGuestSysctls(root); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := readSysctlFile(t, root, guestOvercommitRel); got != 1 {
+		t.Errorf("overcommit_memory: got %d, want 1", got)
+	}
+}
+
 func TestApplyGuestSysctls_ToleratesMissingFile(t *testing.T) {
 	root := t.TempDir()
 	if err := applyGuestSysctls(root); err != nil {
