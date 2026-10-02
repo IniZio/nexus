@@ -25,11 +25,11 @@ type Config struct {
 	BootVCPUs uint32
 
 	// MemMaxMiB is the explicit RAM ceiling in MiB.
-	// 0 applies the default: max(4 × BootMemMiB, 4096 MiB).
+	// 0 applies the default: max(4 × BootMemMiB, clamp(hostRAM/4, 4096, 8192) MiB).
 	MemMaxMiB uint32
 
 	// VCPUsMax is the explicit vCPU ceiling.
-	// 0 applies the default: max(4 × BootVCPUs, 4).
+	// 0 applies the default: max(4 × BootVCPUs, 4, host CPU count).
 	VCPUsMax uint32
 
 	// DiskMaxGiB is the explicit disk-grow ceiling in GiB.
@@ -83,7 +83,9 @@ type Result struct {
 //     consumed >4 GiB; 4096 MiB is the measured lower bound.  4× reaches
 //     4096 MiB only when boot memory ≥ 1024 MiB; the floor prevents a
 //     512 MiB default sandbox from getting only 2048 MiB.
-//   - VCPUsMax:   4× BootVCPUs, minimum 4.
+//   - VCPUsMax:   4× BootVCPUs, minimum 4, raised to the host CPU count.
+//     Host capacity comes from HostCapacityFunc; unknown (0) falls back to the
+//     fixed 4096 MiB / 4 vCPU floors.
 //   - DiskMaxGiB: 100 GiB.
 //
 // Driver defaults (substituted when BootMemMiB or BootVCPUs is 0):
@@ -106,7 +108,19 @@ func Resolve(c Config) Result {
 	if memMax == 0 {
 		memMax = bootMem * 4
 		floor := uint32(4096)
-		if c.Nested {
+		hc := HostCapacityFunc()
+		if hc.RAMMiB > 0 {
+			// Host-derived ceiling: a quarter of host RAM, clamped to [4096, 8192].
+			q := hc.RAMMiB / 4
+			switch {
+			case q > 8192:
+				q = 8192
+			case q < 4096:
+				q = 4096
+			}
+			floor = uint32(q) //nolint:gosec // G115: clamped to <= 8192
+		}
+		if c.Nested && floor < NestedMemMaxFloorMiB {
 			floor = NestedMemMaxFloorMiB
 		}
 		if memMax < floor {
@@ -118,6 +132,11 @@ func Resolve(c Config) Result {
 		vcpuMax = bootCPUs * 4
 		if vcpuMax < 4 {
 			vcpuMax = 4
+		}
+		// CPU is compressible: the governor hot-plugs on guest PSI up to the
+		// host CPU count.
+		if n := HostCapacityFunc().NCPU; n > vcpuMax {
+			vcpuMax = n
 		}
 	}
 	diskMax := c.DiskMaxGiB
