@@ -27,6 +27,8 @@ report so the platform can be fixed.
 Egress is policy-gated. A 403 from the proxy names the policy that denied you:
 report it, do not route around it.
 Containers built or run by docker inside this VM already trust the sandbox TLS perimeter (CA at /etc/nexus/ca, SSL_CERT_FILE and friends pre-set); a 403 from a TLS-intercepted host is egress policy, not a certificate problem — report it, do not work around it.
+The repo's .git common dir is the host's shared git dir: never run `git config` writes or unsets, hook installers, or `make setup`-style commands that mutate .git/config or hooks.
+When your task is complete and your work is committed (pushed only if the branch has an upstream; with no remote, commit locally), write a one-line summary to /run/nexus/delegate-done as your final act (e.g. `echo "all tests green, PR opened" > /run/nexus/delegate-done`); the host polls for that file to detect completion.
 ```
 
 Why it exists: in-guest agents dispatched without it tended to skip bringing up

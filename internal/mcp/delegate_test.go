@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/herdragent"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -1128,6 +1129,7 @@ func TestDelegateAgentPoll_HerdrDoneWithoutMarker_NotComplete(t *testing.T) {
 			installHostCLIRecorder(t, map[string]string{
 				"herdr list": herdrListLine("wWS", "proj/branch", "sb-1", "w9Z:p1M"),
 				"agent get":  tc.agentJSON,
+				"agent read": "",
 			})
 			svc := &seqExecService{stubService: &stubService{}, responses: gitFallbackResponses()}
 			cs, closeFn := connectPairSvc(t, svc)
@@ -1342,5 +1344,60 @@ func TestDelegateTeardown_FallbackRmRealError_ReturnsError(t *testing.T) {
 	}
 	if text := resultText(t, res); !strings.Contains(text, "vm stuck") {
 		t.Errorf("error text does not surface rm output: %s", text)
+	}
+}
+
+// The tool must claim the branch before `herdr worktree create` so the
+// on-worktree-created hook skips, and release the claim on every exit path.
+func TestDelegateWorktreeCreate_ClaimsBranchAroundCreate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		bindErr bool
+	}{{"success", false}, {"bind_error", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			root, err := store.DefaultRoot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(root, "controller-wt-claims", "feat-x")
+
+			repo := t.TempDir()
+			t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+			installHostCLIRecorder(t, happyCanned(repo, "feat/x"))
+			innerHerdr, innerHost := runHerdrCLI, runHostCLI
+			sawClaim := false
+			runHerdrCLI = func(ctx context.Context, bin string, argv ...string) (string, error) {
+				if len(argv) >= 2 && argv[0] == "worktree" && argv[1] == "create" {
+					if _, err := os.Stat(marker); err != nil {
+						t.Errorf("claim marker absent at worktree create: %v", err)
+					}
+					sawClaim = true
+				}
+				return innerHerdr(ctx, bin, argv...)
+			}
+			runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
+				if tc.bindErr && len(argv) >= 2 && argv[1] == "worktree-sandbox" {
+					if _, err := os.Stat(marker); err != nil {
+						t.Errorf("claim marker absent during worktree-sandbox: %v", err)
+					}
+					return "boom", fmt.Errorf("bind failed")
+				}
+				return innerHost(ctx, argv...)
+			}
+
+			cs, closeFn := connectPair(t, &stubService{})
+			defer closeFn()
+			res := callTool(t, cs, "delegate_worktree_create", map[string]any{"repo_path": repo, "branch": "feat/x"})
+			if res.IsError != tc.bindErr {
+				t.Fatalf("IsError = %v, want %v: %s", res.IsError, tc.bindErr, resultText(t, res))
+			}
+			if !sawClaim {
+				t.Fatal("worktree create never invoked")
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Errorf("claim marker not removed after return: stat err = %v", err)
+			}
+		})
 	}
 }

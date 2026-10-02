@@ -5146,7 +5146,7 @@ func herdrWorktreeSandbox(
 				if rSb, rErr := getFn(ctx, bound.SandboxHandle); rErr == nil && rSb.Principal != "" && effPrincipal != rSb.Principal {
 					return fmt.Errorf("worktree-sandbox: handle %s: principal mismatch: sandbox has %q, requested %q — refusing reuse", handle, rSb.Principal, effPrincipal)
 				}
-				fmt.Fprintf(w, "worktree-sandbox: handle %s already bound (concurrent create race), reusing existing sandbox\n", handle)
+				fmt.Fprintf(w, "worktree-sandbox: handle %s already provisioned for workspace %s by another caller (e.g. the on-worktree-created hook), reusing existing sandbox\n", handle, workspaceID)
 				return nil
 			}
 			fmt.Fprintf(w, "worktree-sandbox: handle %s bound to workspace %s, which no longer exists in herdr — rebinding to %s\n", handle, bound.HerdrWorkspaceID, workspaceID)

@@ -199,7 +199,7 @@ than reaching across.
 ### Sandbox auto-provision race
 
 Creating a workspace fires an auto-provision hook that binds a sandbox.
-A concurrent explicit call reports `already bound (concurrent create race),
+A concurrent explicit call reports `already provisioned ... by another caller,
 reusing existing sandbox`. "Create workspace → remove sandbox → recreate
 with different flags" is impossible: `nexus sandbox rm` closes the herdr
 workspace as a side effect, destroying it. Change what the auto-provision

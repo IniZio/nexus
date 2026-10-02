@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/herdrout"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -36,7 +37,8 @@ report so the platform can be fixed.
 Egress is policy-gated. A 403 from the proxy names the policy that denied you:
 report it, do not route around it.
 Containers built or run by docker inside this VM already trust the sandbox TLS perimeter (CA at /etc/nexus/ca, SSL_CERT_FILE and friends pre-set); a 403 from a TLS-intercepted host is egress policy, not a certificate problem — report it, do not work around it.
-When your task is complete and all commits are pushed, write a one-line summary to ` + delegateDoneMarker + ` as your final act (e.g. ` + "`" + `echo "all tests green, PR opened" > ` + delegateDoneMarker + "`" + `); the host polls for that file to detect completion.
+The repo's .git common dir is the host's shared git dir: never run ` + "`git config`" + ` writes or unsets, hook installers, or ` + "`make setup`" + `-style commands that mutate .git/config or hooks.
+When your task is complete and your work is committed (pushed only if the branch has an upstream; with no remote, commit locally), write a one-line summary to ` + delegateDoneMarker + ` as your final act (e.g. ` + "`" + `echo "all tests green, PR opened" > ` + delegateDoneMarker + "`" + `); the host polls for that file to detect completion.
 
 `
 
@@ -353,6 +355,11 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if err != nil {
 			return errorResult(fmt.Errorf("delegate_worktree_create: %w", err)), nil, nil
 		}
+
+		// Claim the branch so herdr's on-worktree-created hook skips
+		// auto-provisioning and cannot race the explicit bind below.
+		storeRoot, _ := store.DefaultRoot()
+		defer herdrout.ClaimWorktree(storeRoot, args.Branch)()
 
 		createArgv := []string{"worktree", "create", "--workspace", parent, "--branch", args.Branch}
 		if args.Base != "" {

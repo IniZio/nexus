@@ -378,21 +378,7 @@ func (b *Backend) Provision(ctx context.Context, project string, ref controller.
 	branch := branchName(project, ref, time.Now().UnixMicro())
 	safeBranch := strings.ReplaceAll(branch, "/", "-")
 
-	var markerPath string
-	if storeRoot := b.nexusStoreRoot(); storeRoot != "" {
-		claimsDir := filepath.Join(storeRoot, "controller-wt-claims")
-		if mkErr := os.MkdirAll(claimsDir, 0o755); mkErr == nil {
-			markerPath = filepath.Join(claimsDir, safeBranch)
-			_ = os.WriteFile(markerPath, []byte{}, 0o644)
-			defer func() {
-				if markerPath != "" {
-					if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-						slog.Warn("herdr: remove worktree claim marker", "path", markerPath, "err", err)
-					}
-				}
-			}()
-		}
-	}
+	defer herdrout.ClaimWorktree(b.nexusStoreRoot(), branch)()
 
 	wtArgs := []string{"worktree", "create", "--workspace", parentWS, "--branch", branch, "--no-focus"}
 	if b.cfg.WorktreeDir != "" {
