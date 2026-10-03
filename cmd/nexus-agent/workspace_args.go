@@ -103,3 +103,19 @@ func selectWorkspaceMount(mounts []agent.GuestMount) (agent.GuestMount, bool, er
 		return agent.GuestMount{}, false, fmt.Errorf("selectWorkspaceMount: %d mounts have IsWorkspace=true; exactly one is required", count)
 	}
 }
+
+// validateWorkspaceMountArg rejects --workspace-mount args this agent cannot
+// interpret faithfully: more than 8 fields, or an 8th field other than
+// "gitcommon". Silently mis-parsing a newer host's arg (host/guest skew) hangs
+// boot with no diagnostic, so the agent must fail loudly instead.
+func validateWorkspaceMountArg(arg string) error {
+	pair := strings.TrimPrefix(arg, "--workspace-mount=")
+	parts := strings.Split(pair, ":")
+	if len(parts) > 8 {
+		return fmt.Errorf("--workspace-mount has %d fields, this agent understands at most 8 (host/guest version skew? rebuild the embedded agent with `make artifacts`): %q", len(parts), arg)
+	}
+	if len(parts) == 8 && parts[7] != "gitcommon" {
+		return fmt.Errorf("--workspace-mount has unknown 8th field %q, this agent only knows \"gitcommon\" (host/guest version skew? rebuild the embedded agent with `make artifacts`): %q", parts[7], arg)
+	}
+	return nil
+}

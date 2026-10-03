@@ -280,6 +280,10 @@ docs-build:
 #     (e.g. boot.json capture) never run even when the CLI is rebuilt.
 #     Fix: make install-agent
 #
+#   Part 3 — embedded agent (internal/core/hostbin/embedded/<arch>/nexus-agent.zst):
+#     What `go build ./cmd/nexus` actually ships inside the CLI. Gitignored;
+#     produced only by `make artifacts`. Fix: make artifacts
+#
 # Rule: if ANY .go file under cmd/nexus-agent/ or internal/core/agent/ is
 # newer than the checked binary, the binary is stale.
 check-agent-fresh:
@@ -295,6 +299,18 @@ check-agent-fresh:
 		exit 1; \
 	fi; \
 	echo "OK: images/kernel/nexus-agent is fresher than all agent sources"; \
+	emb=internal/core/hostbin/embedded/$(HOSTBIN_GOARCH)/nexus-agent.zst; \
+	if [ ! -f $$emb ]; then \
+		echo "FAIL: embedded agent $$emb missing — run make artifacts"; exit 1; \
+	fi; \
+	stale3=$$(find cmd/nexus-agent internal/core/agent -name '*.go' -newer $$emb 2>/dev/null | head -1); \
+	if [ -n "$$stale3" ]; then \
+		echo "FAIL: agent source newer than embedded $$emb (first offender: $$stale3)"; \
+		echo "      a CLI built now ships a stale guest agent; boot can hang with"; \
+		echo "      'guest agent did not answer after VM boot'. fix: make artifacts"; \
+		exit 1; \
+	fi; \
+	echo "OK: $$emb is fresher than all agent sources"; \
 	path_bin=$$(command -v nexus-agent 2>/dev/null); \
 	if [ -z "$$path_bin" ]; then \
 		echo "WARN: nexus-agent not found in PATH — 'nexus create --file' will fail at runtime"; \

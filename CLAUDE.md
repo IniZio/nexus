@@ -44,7 +44,14 @@ code.
 
 To produce a runnable CLI:
 
+    make artifacts
     go build -o nexus ./cmd/nexus
+
+Run `make artifacts` first: the CLI embeds the guest agent from
+`internal/core/hostbin/embedded/<arch>/nexus-agent.zst` (gitignored, produced
+only by `make artifacts`). Skipping it ships a stale agent that mis-parses
+newer host args, and boot hangs with only "guest agent did not answer after VM
+boot". `make check-agent-fresh` detects a stale embedded agent.
 
 Install it with an atomic rename. A plain `cp` over the live path fails with
 `Text file busy`, because running supervisors are executing that binary; the

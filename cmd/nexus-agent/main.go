@@ -113,6 +113,9 @@ func main() {
 			case strings.HasPrefix(arg, "--sandbox-handle="):
 				sandboxHandle = strings.TrimPrefix(arg, "--sandbox-handle=")
 			case strings.HasPrefix(arg, "--workspace-mount="):
+				if err := validateWorkspaceMountArg(arg); err != nil {
+					consoleFatal(con, isPid1, "nexus-agent: FATAL: %v (agent build=%s)\n", err, agentBuildTag)
+				}
 				m, ok := parseWorkspaceMountArg(arg)
 				if ok {
 					wsMounts = append(wsMounts, m)
