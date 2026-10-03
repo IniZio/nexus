@@ -28,6 +28,8 @@ func main() {
 	out := flag.String("out", "", "output directory for .zst files (required)")
 	agentTag := flag.String("agent-tag", "dev", "build tag embedded in nexus-agent via -X main.agentBuildTag")
 	agentPkg := flag.String("agent-pkg", "./cmd/nexus-agent", "Go package path for nexus-agent")
+	hubPkg := flag.String("hub-pkg", "./cmd/nexus-hub", "Go package path for nexus-hub")
+	skipHub := flag.Bool("skip-hub", false, "skip building nexus-hub (leave existing files untouched)")
 	skipAgent := flag.Bool("skip-agent", false, "skip building nexus-agent (leave existing files untouched)")
 	localDir := flag.String("local-dir", "", "directory of locally-built binaries; <dir>/<goarch>/<name> or <dir>/<name> used instead of network fetch")
 	virtiofsdDir := flag.String("virtiofsd-dir", os.Getenv("VIRTIOFSD_DIR"), "local dir with pre-built virtiofsd (verified against pin sha256)")
@@ -161,6 +163,13 @@ func main() {
 		}
 	}
 
+	if !*skipHub {
+		if err := buildEmbedded(*out, *goarch, "nexus-hub", *hubPkg, "-s -w"); err != nil {
+			fmt.Fprintf(os.Stderr, "genartifacts: build nexus-hub: %v\n", err)
+			exitCode = 1
+		}
+	}
+
 	entries, err := os.ReadDir(*out)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "genartifacts: readdir %s: %v\n", *out, err)
@@ -171,7 +180,7 @@ func main() {
 			continue
 		}
 		base := strings.TrimSuffix(e.Name(), ".zst")
-		if downloadable[base] || base == "nexus-agent" {
+		if downloadable[base] || base == "nexus-agent" || base == "nexus-hub" {
 			continue
 		}
 		stale := filepath.Join(*out, e.Name())
@@ -200,17 +209,21 @@ func readLocalBinary(dir, goarch, name string) ([]byte, error) {
 }
 
 func buildAgent(out, goarch, tag, pkg string) error {
-	tmp, err := os.MkdirTemp("", "genartifacts-agent-")
+	return buildEmbedded(out, goarch, "nexus-agent", pkg, "-s -w -X main.agentBuildTag="+tag)
+}
+
+func buildEmbedded(out, goarch, name, pkg, ldflags string) error {
+	tmp, err := os.MkdirTemp("", "genartifacts-"+name+"-")
 	if err != nil {
 		return fmt.Errorf("mkdirtemp: %w", err)
 	}
 	defer os.RemoveAll(tmp)
 
-	bin := filepath.Join(tmp, "nexus-agent")
+	bin := filepath.Join(tmp, name)
 	cmd := exec.Command("go", "build",
 		"-trimpath",
 		"-buildvcs=false",
-		"-ldflags", "-s -w -X main.agentBuildTag="+tag,
+		"-ldflags", ldflags,
 		"-o", bin,
 		pkg,
 	)
@@ -241,17 +254,17 @@ func buildAgent(out, goarch, tag, pkg string) error {
 		return fmt.Errorf("re-verify failed")
 	}
 
-	zstPath := filepath.Join(out, "nexus-agent.zst")
+	zstPath := filepath.Join(out, name+".zst")
 	if err := atomicWrite(out, zstPath, compressed); err != nil {
 		return fmt.Errorf("write zst: %w", err)
 	}
 
-	shaPath := filepath.Join(out, "nexus-agent.sha256")
+	shaPath := filepath.Join(out, name+".sha256")
 	if err := atomicWrite(out, shaPath, []byte(rawSHA+"\n")); err != nil {
 		return fmt.Errorf("write sha256: %w", err)
 	}
 
-	fmt.Printf("wrote nexus-agent tag=%s raw=%d zst=%d sha=%s\n", tag, len(data), len(compressed), rawSHA[:12])
+	fmt.Printf("wrote %s raw=%d zst=%d sha=%s\n", name, len(data), len(compressed), rawSHA[:12])
 	return nil
 }
 

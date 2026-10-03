@@ -33,6 +33,9 @@ var bundledTools = map[string]bool{
 // hostExecAllowlist maps a host program name to the package dirs (relative
 // to the module root) permitted to exec it, each with a reason.
 var hostExecAllowlist = map[string]map[string]string{
+	"claude": {
+		"internal/cli": "claude CLI version probe (claude-mod check)",
+	},
 	"cp": {
 		"internal/test/repro":         "reflink/file copy",
 		"internal/testutil/livenexus": "reflink/file copy",

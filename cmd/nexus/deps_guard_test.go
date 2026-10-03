@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -58,7 +59,7 @@ func TestHostArtifactsLinkedOnlyIntoHost(t *testing.T) {
 }
 
 // TestCoreBinaryExcludesControllerDeps guards decision D7: Slack, SQLite, tsnet,
-// and internal/controller must never be linked into the core nexus binary.
+// internal/controller, and internal/hub must never be linked into the core nexus binary.
 func TestCoreBinaryExcludesControllerDeps(t *testing.T) {
 	goBin := filepath.Join(runtime.GOROOT(), "bin", "go")
 	if _, err := exec.LookPath(goBin); err != nil {
@@ -81,6 +82,7 @@ func TestCoreBinaryExcludesControllerDeps(t *testing.T) {
 	banned := []string{
 		"github.com/slack-go/",
 		"modernc.org/sqlite",
+		"github.com/IniZio/nexus/internal/hub",
 		"tailscale.com",
 		"github.com/IniZio/nexus/internal/controller",
 	}
@@ -94,6 +96,26 @@ func TestCoreBinaryExcludesControllerDeps(t *testing.T) {
 			if pkg == prefix || strings.HasPrefix(pkg, p) {
 				t.Errorf("banned package linked into core binary: %s (matched rule %q)", pkg, prefix)
 			}
+		}
+	}
+}
+
+// TestHubBinaryExcludesEmbeddedArtifacts guards that cmd/nexus-hub does not link
+// the embedded artifact blobs (it is itself embedded in them; linking would
+// recurse). cmd/nexus-hub is created by H0-HUBBIN; until it exists this test
+// skips, and it becomes enforcing as soon as the package appears.
+func TestHubBinaryExcludesEmbeddedArtifacts(t *testing.T) {
+	if _, err := os.Stat("../nexus-hub"); err != nil {
+		t.Skip("cmd/nexus-hub not present yet (created by H0-HUBBIN)")
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go binary found")
+	}
+	const embeddedPkg = "github.com/IniZio/nexus/internal/core/hostbin/embedded"
+	for _, p := range goListDeps(t, goBin, "../nexus-hub") {
+		if p == embeddedPkg {
+			t.Errorf("cmd/nexus-hub must not link %s", embeddedPkg)
 		}
 	}
 }

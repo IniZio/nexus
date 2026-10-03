@@ -79,6 +79,41 @@ func detectCHViolations(src, filename string) ([]violation, error) {
 	return vs, nil
 }
 
+func isNexusHubArg(expr ast.Expr) bool {
+	switch v := expr.(type) {
+	case *ast.BasicLit:
+		return v.Kind == token.STRING && v.Value == `"nexus-hub"`
+	case *ast.SelectorExpr:
+		return v.Sel.Name == "NexusHub"
+	}
+	return false
+}
+
+func detectNexusHubViolations(src, filename string) ([]violation, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filename, src, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parse %q: %w", filename, err)
+	}
+	var vs []violation
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name == "LookPath" && len(call.Args) >= 1 && isNexusHubArg(call.Args[0]) {
+			pos := fset.Position(call.Pos())
+			vs = append(vs, violation{pos.Filename, pos.Line, "LookPath(nexus-hub)"})
+		}
+		return true
+	})
+	return vs, nil
+}
+
 func detectNexusAgentViolations(src, filename string) ([]violation, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, filename, src, 0)
@@ -345,6 +380,65 @@ func f() { p := filepath.Join(dir, "nexus-agent"); _ = p }
 		}
 		for _, v := range vs {
 			t.Errorf("%s:%d: direct nexus-agent LookPath (%s); use hostbin.ResolveAgent instead",
+				v.file, v.line, v.msg)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+}
+
+func TestNoDirectNexusHubLookPath(t *testing.T) {
+	t.Run("self_check_literal_detected", func(t *testing.T) {
+		src := `package foo
+import "os/exec"
+func f() { p, _ := exec.LookPath("nexus-hub"); _ = p }
+`
+		vs, err := detectNexusHubViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) == 0 {
+			t.Fatal("self-check: expected violation for exec.LookPath(\"nexus-hub\"), got none")
+		}
+	})
+
+	t.Run("self_check_selector_detected", func(t *testing.T) {
+		src := `package foo
+func f() { p, _ := exec.LookPath(hostbin.NexusHub); _ = p }
+`
+		vs, err := detectNexusHubViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) == 0 {
+			t.Fatal("self-check: expected violation for exec.LookPath(hostbin.NexusHub), got none")
+		}
+	})
+
+	t.Run("self_check_filepath_join_not_detected", func(t *testing.T) {
+		src := `package foo
+import "path/filepath"
+func f() { p := filepath.Join(dir, "nexus-hub"); _ = p }
+`
+		vs, err := detectNexusHubViolations(src, "fake.go")
+		if err != nil {
+			t.Fatalf("detect: %v", err)
+		}
+		if len(vs) != 0 {
+			t.Fatalf("self-check: filepath.Join must not trip; got %v", vs)
+		}
+	})
+
+	modRoot, hostbinRel := testModRoot(t)
+	err := walkSourceFiles(modRoot, hostbinRel, func(path string, data []byte) error {
+		vs, err := detectNexusHubViolations(string(data), path)
+		if err != nil {
+			return err
+		}
+		for _, v := range vs {
+			t.Errorf("%s:%d: direct nexus-hub LookPath (%s); use hostbin.ResolveEmbeddedTool instead",
 				v.file, v.line, v.msg)
 		}
 		return nil
