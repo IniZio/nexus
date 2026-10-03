@@ -75,6 +75,9 @@ func startResizeServices(ctx context.Context, con *os.File, disks []resizableDis
 	// /tmp resizer — remounts /tmp tmpfs as live MemTotal grows.
 	startTmpfsResizer(ctx, con)
 
+	// Periodic FITRIM so guest deletions reach the host's sparse disk files.
+	startFSTrimmer(ctx)
+
 	// memCeilingBytes is available for AR-DRV/governor; /tmp sizing ignores it.
 	_ = memCeilingBytes
 }
