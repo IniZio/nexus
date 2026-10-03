@@ -1,6 +1,7 @@
 package volumestore_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -81,6 +82,20 @@ func TestDetach_ReclaimsHostBlocksButPreservesDeclaredCapacity(t *testing.T) {
 	}
 	if fi.Size() != origSize {
 		t.Fatalf("partially-detached volume changed size (still attached to sandbox-b): %d != %d", fi.Size(), origSize)
+	}
+	// Empty volumes are now formatted with assume_storage_prezeroed and cost
+	// almost nothing, so dirty the image (write then delete) to give the
+	// reclaim real freed-but-allocated host blocks to return.
+	if debugfsAvailable(t) {
+		bloat := filepath.Join(t.TempDir(), "bloat")
+		if err := os.WriteFile(bloat, bytes.Repeat([]byte{0xa5}, 32<<20), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		writeExt4File(t, s.DiskPath("shrink-vol"), bloat, "/bloat")
+		if out, err := exec.Command("debugfs", "-w", "-R", "rm /bloat", s.DiskPath("shrink-vol")).CombinedOutput(); err != nil {
+			t.Fatalf("debugfs rm: %v\n%s", err, out)
+		}
+		fi, _ = os.Stat(s.DiskPath("shrink-vol"))
 	}
 	blocksBefore := hostBlocks(t, fi)
 
