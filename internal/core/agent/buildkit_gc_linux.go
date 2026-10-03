@@ -18,11 +18,12 @@ const (
 	snapshotterNative    = "native"
 	snapshotterOverlayfs = "overlayfs"
 
-	// buildkitGCKeepStorage is buildkitd's "Reserved[,Free[,Maximum]]" (MB):
+	// buildkitGCKeepStorage is buildkitd's "Reserved,MinFree,MaxUsed" (MB; all
+	// fields must be numeric, 0 MinFree = no free-space threshold):
 	// keep up to 10 GB of cache untouched, prune anything above a 20 GB max.
 	// The builder cache disk is capped at 40 GiB (builder.BuildkitCacheDiskMaxGiB),
 	// leaving ~20 GB of headroom for one in-flight cold build.
-	buildkitGCKeepStorage = "10000,,20000"
+	buildkitGCKeepStorage = "10000,0,20000"
 	// Same policy, in bytes, for the explicit post-build prune.
 	buildkitPruneReserved = int64(10000) * 1e6
 	buildkitPruneMax      = int64(20000) * 1e6

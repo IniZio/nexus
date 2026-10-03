@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -70,6 +71,28 @@ func TestBuildkitdArgs_GCFlags(t *testing.T) {
 		if !strings.Contains(args, want) {
 			t.Errorf("argv missing %q: %s", want, args)
 		}
+	}
+}
+
+// buildkitd ParseInts every comma field; an empty one crashes it at startup.
+func TestBuildkitGCKeepStorage_AllFieldsNumeric(t *testing.T) {
+	parts := strings.SplitN(buildkitGCKeepStorage, ",", 3)
+	if len(parts) != 3 {
+		t.Fatalf("want 3 fields, got %d: %q", len(parts), buildkitGCKeepStorage)
+	}
+	var v [3]int64
+	for i, p := range parts {
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err != nil {
+			t.Fatalf("field %d %q: %v", i, p, err)
+		}
+		v[i] = n
+	}
+	if want := buildkitPruneReserved / 1e6; v[0] != want {
+		t.Errorf("reserved = %d, want %d", v[0], want)
+	}
+	if want := buildkitPruneMax / 1e6; v[2] != want {
+		t.Errorf("max = %d, want %d", v[2], want)
 	}
 }
 
