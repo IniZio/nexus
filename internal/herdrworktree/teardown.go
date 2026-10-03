@@ -3,6 +3,7 @@ package herdrworktree
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,7 +24,7 @@ type TeardownResult struct {
 
 // Teardown reverses CreateSandbox for ref: it removes the herdr worktree bound to the
 // sandbox (the worktree.removed hook reaps the sandbox), verifies the sandbox is gone,
-// and falls back to `nexus sandbox rm` when needed. Errors are prefixed "delegate_teardown:".
+// and falls back to `nexus sandbox rm` when needed. Dirty worktrees yield *DirtyWorktreeError.
 func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownResult, error) {
 	pollInterval, pollTimeout := r.PollInterval, r.PollTimeout
 	if pollInterval == 0 {
@@ -34,19 +35,19 @@ func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownR
 	}
 	listOut, err := r.Host(ctx, "herdr", "list")
 	if err != nil {
-		return TeardownResult{}, fmt.Errorf("delegate_teardown: nexus herdr list: %w\n%s", err, listOut)
+		return TeardownResult{}, fmt.Errorf("nexus herdr list: %w\n%s", err, listOut)
 	}
 	ws, handle, sandboxID, _, bound := ParseListBindingByRef(listOut, ref)
 	if !bound {
 		out, runErr := r.Host(ctx, "sandbox", "rm", ref)
 		if runErr != nil {
-			return TeardownResult{}, fmt.Errorf("delegate_teardown: sandbox rm: %w\n%s", runErr, out)
+			return TeardownResult{}, fmt.Errorf("sandbox rm: %w\n%s", runErr, out)
 		}
 		return TeardownResult{Output: out}, nil
 	}
 	herdrBin, err := ResolveHerdrBin()
 	if err != nil {
-		return TeardownResult{}, fmt.Errorf("delegate_teardown: %w; workspace %s is bound to %s and must be removed through herdr", err, ws, ref)
+		return TeardownResult{}, fmt.Errorf("%w; workspace %s is bound to %s and must be removed through herdr", err, ws, ref)
 	}
 	rmArgv := []string{"worktree", "remove", "--workspace", ws}
 	if force {
@@ -78,27 +79,24 @@ func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownR
 					}
 					n := len(lines)
 					const porcelainCap = 50
-					suffix := ""
+					more := 0
 					if n > porcelainCap {
-						suffix = fmt.Sprintf("\n... and %d more", n-porcelainCap)
+						more = n - porcelainCap
 						lines = lines[:porcelainCap]
 					}
-					return TeardownResult{}, fmt.Errorf(
-						"delegate_teardown: worktree %s has uncommitted changes (%d files):\n%s%s\nHarvest or commit them first, or call delegate_teardown again with force:true to discard them.",
-						wtPath, n, strings.Join(lines, "\n"), suffix,
-					)
+					return TeardownResult{}, &DirtyWorktreeError{Path: wtPath, Count: n, Files: lines, More: more}
 				}
 				return TeardownResult{}, fmt.Errorf(
-					"delegate_teardown: herdr worktree remove --workspace %s: dirty worktree (code=%s: %s); "+
-						"harvest or commit changes first, or call delegate_teardown again with force:true to discard them.",
+					"herdr worktree remove --workspace %s: dirty worktree (code=%s: %s); "+
+						"harvest or commit changes first, or retry with force to discard them.",
 					ws, errCode, errMsg,
 				)
 			}
 			if parsed {
-				return TeardownResult{}, fmt.Errorf("delegate_teardown: herdr worktree remove --workspace %s: code=%s: %s\n%s", ws, errCode, errMsg, rmOut)
+				return TeardownResult{}, fmt.Errorf("herdr worktree remove --workspace %s: code=%s: %s\n%s", ws, errCode, errMsg, rmOut)
 			}
 		}
-		return TeardownResult{}, fmt.Errorf("delegate_teardown: herdr worktree remove --workspace %s: %w\n%s", ws, err, rmOut)
+		return TeardownResult{}, fmt.Errorf("herdr worktree remove --workspace %s: %w\n%s", ws, err, rmOut)
 	}
 
 	out := rmOut
@@ -108,7 +106,7 @@ func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownR
 	for {
 		psOut, listErr := r.Host(ctx, "sandbox", "list")
 		if listErr != nil {
-			return TeardownResult{}, fmt.Errorf("delegate_teardown: nexus sandbox list: %w\n%s", listErr, psOut)
+			return TeardownResult{}, fmt.Errorf("nexus sandbox list: %w\n%s", listErr, psOut)
 		}
 		if !SandboxListed(psOut, handle, sandboxID) {
 			break
@@ -119,7 +117,7 @@ func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownR
 		}
 		select {
 		case <-ctx.Done():
-			return TeardownResult{}, fmt.Errorf("delegate_teardown: context cancelled waiting for sandbox %s to disappear", handle)
+			return TeardownResult{}, fmt.Errorf("context cancelled waiting for sandbox %s to disappear", handle)
 		case <-time.After(pollInterval):
 		}
 	}
@@ -130,7 +128,7 @@ func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownR
 				how = "already-gone"
 				out += fallbackOut
 			} else {
-				return TeardownResult{}, fmt.Errorf("delegate_teardown: sandbox %s still listed after herdr worktree remove; sandbox rm: %w\n%s", handle, runErr, fallbackOut)
+				return TeardownResult{}, fmt.Errorf("sandbox %s still listed after herdr worktree remove; sandbox rm: %w\n%s", handle, runErr, fallbackOut)
 			}
 		} else {
 			how = "removed-by-fallback"
@@ -138,4 +136,55 @@ func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownR
 		}
 	}
 	return TeardownResult{Bound: true, How: how, WorkspaceID: ws, Handle: handle, SandboxID: sandboxID, Output: out}, nil
+}
+
+// DirtyWorktreeError reports that herdr refused to remove a worktree with
+// uncommitted or untracked changes. Files is capped; More counts the rest.
+type DirtyWorktreeError struct {
+	Path  string
+	Count int
+	Files []string
+	More  int
+}
+
+func (e *DirtyWorktreeError) Error() string {
+	suffix := ""
+	if e.More > 0 {
+		suffix = fmt.Sprintf("\n... and %d more", e.More)
+	}
+	return fmt.Sprintf("worktree %s has uncommitted changes (%d files):\n%s%s\nHarvest or commit them first, or retry with force to discard them.",
+		e.Path, e.Count, strings.Join(e.Files, "\n"), suffix)
+}
+
+// ResolveRefByWorktreePath maps a worktree checkout path to the handle of the
+// sandbox bound to it. When no bound workspace owns the path, path is returned
+// unchanged so Teardown reports the failure.
+func ResolveRefByWorktreePath(ctx context.Context, path string, r Runners) string {
+	listOut, err := r.Host(ctx, "herdr", "list")
+	if err != nil {
+		return path
+	}
+	herdrBin, err := ResolveHerdrBin()
+	if err != nil {
+		return path
+	}
+	want := filepath.Clean(path)
+	for _, line := range strings.Split(listOut, "\n") {
+		for _, f := range strings.Split(strings.TrimSpace(line), "\t") {
+			ws, ok := strings.CutPrefix(f, "workspace_id=")
+			if !ok || ws == "" {
+				continue
+			}
+			wtOut, wtErr := r.Herdr(ctx, herdrBin, "worktree", "list", "--workspace", ws, "--json")
+			if wtErr != nil {
+				continue
+			}
+			if got := herdrout.WorktreePathByWorkspaceID(wtOut, ws); got != "" && filepath.Clean(got) == want {
+				if h, _, ok := ParseListBinding(listOut, ws); ok {
+					return h
+				}
+			}
+		}
+	}
+	return path
 }
