@@ -1,6 +1,7 @@
 import { update, type EngineInterface, type Register } from 'claude-code'
 import type { NexusBinding } from '../types'
 import { WORKER_TYPE, guestCommand, route, sliceLines, applyEdit, guestPath, sandboxRefFor, worktreeInPrompt, parseCreated, lastLine, orchestrateDeny, parseOrchestrateArg, type Created } from './policy'
+import { SANDBOX_TOOLS, SANDBOX_TOOL_PREFIX, buildSandboxCall, formatSandboxResult } from './sandbox'
 
 const BINDINGS = { plugin: 'nexus-subagent', key: 'bindings' } as const
 const ORCHESTRATE = { plugin: 'nexus-subagent', key: 'orchestrate' } as const
@@ -144,6 +145,7 @@ export const register: Register = on => {
         'The worker cannot be resumed afterwards.',
       inputSchema: TEARDOWN_SCHEMA,
     })
+    for (const t of SANDBOX_TOOLS) await $.tool.register({ name: t.name, description: t.description, inputSchema: t.inputSchema })
     await $.command.register({
       name: 'orchestrate',
       description: 'Orchestrate mode: this session only delegates tickets via mcp__nexus-subagent__spawn. Usage: /orchestrate on|off|status',
@@ -249,6 +251,25 @@ export const register: Register = on => {
         'It runs in the background; you will be notified when it finishes.',
     }
   })
+
+  for (const t of SANDBOX_TOOLS) {
+    on('tool.call', { tool: SANDBOX_TOOL_PREFIX + t.name }, async ($, e) => {
+      const call = buildSandboxCall(t.name, e as unknown as Record<string, unknown>)
+      if ('error' in call) return { deny: call.error }
+      const slow = t.name === 'sandbox_create' || t.name === 'sandbox_run'
+      if (slow) $.ui.status(`nexus: ${t.name}…`)
+      let r
+      try {
+        r = await $.process.run(call.argv, { timeoutMs: call.timeoutMs, ...(call.stdin === undefined ? {} : { stdin: call.stdin }) })
+      } catch (err) {
+        return { deny: `${call.argv.slice(0, 3).join(' ')} failed: ${String(err)}` }
+      } finally {
+        if (slow) $.ui.status(undefined)
+      }
+      const out = formatSandboxResult(t.name, call, r)
+      return 'result' in out ? { result: out.result } : { deny: out.deny }
+    })
+  }
 
   on('agent.spawn', async ($, e, next) => {
     const parent = e.parentAgentId

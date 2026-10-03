@@ -19,7 +19,7 @@ import (
 // cannot live in the manifest.
 const (
 	claudeModPluginName       = "nexus-subagent"
-	claudeModVersion          = "0.5.0"
+	claudeModVersion          = "0.6.0"
 	claudeModMinClaudeVersion = "2.1.288"
 )
 

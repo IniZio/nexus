@@ -112,4 +112,15 @@ describe('policy', () => {
     expect(parseOrchestrateArg(undefined)).toBe('status')
     expect(parseOrchestrateArg('maybe')).toBe(undefined)
   })
+
+  test('sandbox_* tools are not denied in orchestrate mode (mirror spawn/teardown)', () => {
+    // They mirror spawn: sanctioned route, run in a VM via the nexus CLI, not on the host.
+    for (const t of ['spawn', 'teardown', 'sandbox_create', 'sandbox_exec', 'sandbox_remove', 'sandbox_run', 'sandbox_list', 'sandbox_start', 'sandbox_stop']) {
+      expect(orchestrateDeny('mcp__nexus-subagent__' + t)).toBe(undefined)
+    }
+  })
+
+  test('nexus workers cannot call sandbox_exec', () => {
+    expect(route('mcp__nexus-subagent__sandbox_exec').kind).toBe('deny')
+  })
 })

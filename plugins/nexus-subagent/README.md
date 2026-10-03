@@ -13,3 +13,13 @@ reads. Keep `claudeModVersion` equal to `.claude-plugin/plugin.json` version
 (a unit test enforces it).
 
 A runtime version guard in `hooks/session.start` may be added later.
+
+## sandbox_* tools
+
+`sandbox_create`, `sandbox_start`, `sandbox_stop`, `sandbox_exec`, `sandbox_remove`, `sandbox_run` and
+`sandbox_list` mirror the names and arguments of `nexus mcp`. Each call execs
+the `nexus` binary on PATH, so a newly installed binary applies on the next
+call with no reconnect. The tools are registered at `session.start`; restart
+the session to see them. Not provided: pause/resume (no CLI verb).
+`sandbox_run` needs a ref or digest and does not support `rootfs_path` or
+`nested_virt`. Expect about 1 s of exec latency per call.
