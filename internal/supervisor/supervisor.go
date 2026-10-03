@@ -531,7 +531,7 @@ func RunDetached(cfg Config) error {
 	}
 
 	// ── 3. Build service with credential broker ───────────────────────────────
-	svc := service.New(st, drv, lifecycle.New())
+	svc := service.New(st, drv, lifecycle.New()).WithHubSystemActor()
 	broker := cred.NewBroker()
 	svc = svc.WithBroker(broker)
 
@@ -905,7 +905,7 @@ func RunDetached(cfg Config) error {
 			// IsHumanGitVM: true for human git-VM sandboxes (no agent). Enables
 			// the SSH→HTTPS remote rewrite in probeAndSeedGuest so "git push"
 			// routes through the MITM proxy on this boot and every restart.
-			IsHumanGitVM:     sb.AgentName == "",
+			IsHumanGitVM: sb.AgentName == "",
 		}
 		if checkErr := probeAndSeedGuest(ctx, agentClient, seedInputs); checkErr != nil {
 			slog.Error("supervisor.guest_agent_unreachable",
@@ -1030,6 +1030,11 @@ func RunDetached(cfg Config) error {
 		"pid", pid,
 		"sock", sockPath,
 	)
+	var hubEv *lifecycleEvents
+	if !cfg.Ephemeral {
+		hubEv = newLifecycleEvents(newProdHubEmitter(), sb.ID.String(), sb.Handle())
+		hubEv.adopted()
+	}
 
 	// ── 7. Block until shutdown ───────────────────────────────────────────────
 	// Wire the VM-death channel: closed by watchParentOwnedDeath /
@@ -1076,6 +1081,7 @@ func RunDetached(cfg Config) error {
 	// still run on the way out.
 	if cause == shutdownByVMDeath {
 		slog.Warn("supervisor.vm_died", "sandboxRef", cfg.SandboxRef)
+		hubEv.died(exitSignal(drv, sb.ID.String()))
 		reconCtx, reconCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer reconCancel()
 		if err := reconcileVMDeath(reconCtx, st, sb.ID); err != nil {
@@ -1461,10 +1467,10 @@ type guestSeedInputs struct {
 	// ""). When set, probeAndSeedGuest rewrites the "origin" remote of the
 	// workspace from SSH form to HTTPS form so that "git push" routes through
 	// the MITM proxy, which intercepts HTTPS traffic only.
-	IsHumanGitVM bool
-	HostUID      int
-	HostGID          int
-	HostUIDSeeder    service.GuestSeeder
+	IsHumanGitVM  bool
+	HostUID       int
+	HostGID       int
+	HostUIDSeeder service.GuestSeeder
 }
 
 // probeAndSeedGuest runs the liveness probe (D-J14), login-shell credential

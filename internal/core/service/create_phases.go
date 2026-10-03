@@ -19,6 +19,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/hubclient"
 )
 
 // createRun carries the state shared by the CreateAndBoot phases.
@@ -400,6 +401,7 @@ func (r *createRun) persist(ctx context.Context) error {
 		return r.errf("create record: %w", err)
 	}
 	r.unlockVolumeLeases()
+	r.svc.emitSandboxEvent(ctx, hubclient.TypeSandboxCreated, r.sb.ID.String(), r.sb.Handle())
 	return nil
 }
 

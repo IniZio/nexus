@@ -15,6 +15,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/core/govern"
+	"github.com/IniZio/nexus/internal/core/oomattr"
 	"github.com/IniZio/nexus/internal/core/perimeter"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/service"
@@ -181,6 +182,11 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	}()
 
 	slog.Info(in.logPrefix+".ready", "sandboxRef", cfg.SandboxRef, "pid", pid, "sock", sockPath)
+	var hubEv *lifecycleEvents
+	if !cfg.Ephemeral {
+		hubEv = newLifecycleEvents(newProdHubEmitter(), sb.ID.String(), sb.Handle())
+		hubEv.adopted()
+	}
 
 	vmDeadCh := drv.RuntimeDeathCh(sb.ID)
 	cause := awaitShutdown(ctx, stopCh, detachCh, vmDeadCh)
@@ -191,6 +197,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 
 	if cause == shutdownByVMDeath {
 		slog.Warn(in.logPrefix+".vm_died", "sandboxRef", cfg.SandboxRef)
+		hubEv.died(oomattr.UnknownExit)
 		reconCtx, reconCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer reconCancel()
 		if err := reconcileVMDeath(reconCtx, st, sb.ID); err != nil {

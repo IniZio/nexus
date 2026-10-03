@@ -54,6 +54,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/volumestore"
+	"github.com/IniZio/nexus/internal/hubclient"
 )
 
 // ErrNoSubstrate is returned when an operation requires a hypervisor driver
@@ -135,6 +136,11 @@ type Service struct {
 	// auditRoot returns the state root used for audit log writes. Defaults to
 	// store.DefaultRoot; tests point it at t.TempDir().
 	auditRoot func() (string, error)
+
+	// hub receives sandbox.created/removed events; nil means defaultHubEmitter.
+	hub HubEmitter
+	// hubSystem attributes hub events to system:supervisor (detached supervisor process).
+	hubSystem bool
 }
 
 // New returns a Service backed by the given store, driver, and machine.
@@ -315,6 +321,7 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 	if err := s.store.Create(ctx, sb); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create: %w", err)
 	}
+	s.emitSandboxEvent(ctx, hubclient.TypeSandboxCreated, sb.ID.String(), sb.Handle())
 	return sb, nil
 }
 
@@ -650,6 +657,7 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		}
 	}
 
+	s.emitStarted(ctx, updated.ID.String(), updated.Handle())
 	return updated, nil
 }
 
@@ -706,6 +714,9 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 	// Close the perimeter supervisor outside the lock (same reason as Start).
 	s.closeSupervisor(updated.ID)
 
+	if suppressed, _ := ctx.Value(hubSuppressStopKey{}).(bool); !suppressed {
+		s.emitSandboxEvent(ctx, hubclient.TypeSandboxStopped, updated.ID.String(), updated.Handle())
+	}
 	return updated, nil
 }
 
@@ -874,6 +885,7 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	if err := s.store.Delete(ctx, sb.ID); err != nil {
 		return fmt.Errorf("service: remove %s: delete record: %w", sb.ID, err)
 	}
+	s.emitSandboxEvent(ctx, hubclient.TypeSandboxRemoved, sb.ID.String(), sb.Handle())
 
 	// Reap per-sandbox disk resources. Both helpers are idempotent
 	// (missing files are not errors) so crashes mid-remove are safe to retry.
@@ -1644,6 +1656,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: fork %s: persist child %s: %w", parent.ID, id, err)
 		}
+		s.emitSandboxEvent(ctx, hubclient.TypeSandboxCreated, child.ID.String(), child.Handle())
 		// The record is committed, so the reaper now classifies this child's
 		// disks as Owned — .raw by ULID, shadow copies via
 		// forkChildShadowOwner. Only now is it safe to drop the leases
@@ -1878,6 +1891,7 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: restore %s: persist child %s: %w", snapID, id, err)
 		}
+		s.emitSandboxEvent(ctx, hubclient.TypeSandboxCreated, child.ID.String(), child.Handle())
 		// Record committed: the reaper resolves these disks to a live child
 		// now, so and only now is it safe to drop the leases.
 		releaseChildLeases(childLeases, childShadowLeases, id)

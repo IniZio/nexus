@@ -54,6 +54,10 @@ func RunRelay(ctx context.Context, cfg RelayConfig) error {
 		sshExec = "ssh"
 	}
 
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	_ = os.Remove(cfg.VsockUDSPath) // remove stale socket
 
 	ln, err := net.Listen("unix", cfg.VsockUDSPath)

@@ -54,5 +54,5 @@ func TestZ6_GitSSHRelayStartNoExec(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	startGitSSHRelay(ctx, socketDir, domain.Sandbox{}, nil)
+	startGitSSHRelay(ctx, socketDir, domain.Sandbox{}, nil)()
 }

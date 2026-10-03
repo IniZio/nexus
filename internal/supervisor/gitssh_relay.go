@@ -18,7 +18,7 @@ func startGitSSHRelay(
 	socketDir string,
 	sb domain.Sandbox,
 	onEgress func(host, verdict, reason string, ts time.Time),
-) {
+) (wait func()) {
 	// PathPolicies[""] holds generic path policies stored by buildWorktreeEgressArgs.
 	var policies []gitssh.HostPolicy
 	if generic, ok := sb.Envelope.PathPolicies[""]; ok {
@@ -47,7 +47,9 @@ func startGitSSHRelay(
 		SSHAuthSock:     os.Getenv("SSH_AUTH_SOCK"),
 	}
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if err := gitssh.RunRelay(ctx, cfg); err != nil && ctx.Err() == nil {
 			slog.Error("supervisor.gitssh_relay.error", "sandboxID", sb.ID, "err", err)
 		}
@@ -58,4 +60,5 @@ func startGitSSHRelay(
 		"udsPath", vsockPath,
 		"allowlistSize", len(allowlist),
 	)
+	return func() { <-done }
 }

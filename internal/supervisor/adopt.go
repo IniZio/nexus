@@ -67,7 +67,7 @@ func RunAdopt(cfg Config, handoffSockPath string) error {
 		return fmt.Errorf("supervisor: adopt: init driver: %w", err)
 	}
 
-	svc := service.New(st, drv, lifecycle.New())
+	svc := service.New(st, drv, lifecycle.New()).WithHubSystemActor()
 	broker := cred.NewBroker()
 	svc = svc.WithBroker(broker)
 

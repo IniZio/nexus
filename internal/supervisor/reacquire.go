@@ -168,7 +168,7 @@ func RunReacquire(cfg Config) error {
 		return fmt.Errorf("supervisor: reacquire: init driver: %w", err)
 	}
 
-	svc := service.New(st, drv, lifecycle.New())
+	svc := service.New(st, drv, lifecycle.New()).WithHubSystemActor()
 	broker := cred.NewBroker()
 	svc = svc.WithBroker(broker)
 
