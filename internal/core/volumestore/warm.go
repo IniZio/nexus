@@ -318,10 +318,6 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 	if allocBytes > maxBytes {
 		return fmt.Errorf("%w: candidate %d allocated bytes > limit %d", ErrWarmTooLarge, allocBytes, maxBytes)
 	}
-	// Replace iff the seed is stale, or oversized for this kind's cap (a
-	// legacy snowballed seed), or the candidate is in [seed*ratio, seed].
-	// Larger candidates are the seed plus churn (snowball); much smaller ones
-	// are near-empty sandboxes that must not wipe a useful seed.
 	if existAlloc, existAt, ok := s.readWarmMetaForGuard(projectKey, kind); ok && existAlloc > 0 {
 		stale := time.Since(existAt) >= WarmStaleAfter
 		if !stale && existAlloc <= maxBytes {
