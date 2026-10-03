@@ -756,3 +756,34 @@ func TestConfirmDelivery_NoEnterAfterWorking(t *testing.T) {
 		t.Errorf("expected exactly 1 Enter (initial submit only), got %d; herdr working must block retry Enter", enterCount)
 	}
 }
+
+// TestSpaceAgent_PromptTimeout_ReturnsCodedError: a failed readyMatch wait must
+// surface as an error so root.go exits non-zero (friction #24).
+func TestSpaceAgent_PromptTimeout_ReturnsCodedError(t *testing.T) {
+	client := unknownClient()
+	oldExec := herdrExecCommandContext
+	herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) >= 2 && args[0] == "pane" && args[1] == "wait-output" {
+			return exec.CommandContext(ctx, "false")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+	t.Cleanup(func() { herdrExecCommandContext = oldExec })
+
+	var w bytes.Buffer
+	err := herdrWaitAgentReady(context.Background(), "herdr", "w1:p1",
+		"claude --auto", "auto mode on", client, 50, &w)
+	if err == nil {
+		t.Fatal("expected error when agent never reaches its prompt")
+	}
+	if !strings.Contains(err.Error(), "did not reach its prompt") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	var ee *ExitCodeError
+	if errors.As(err, &ee) {
+		t.Errorf("error must map to generic exit 1, got %T", err)
+	}
+	if codeOf(err) != ErrCodeInternalError {
+		t.Errorf("code = %q", codeOf(err))
+	}
+}

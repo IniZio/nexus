@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/service"
@@ -105,12 +106,18 @@ type execResult struct {
 
 // NewServer creates an MCP server with all sandbox lifecycle and delegate tools registered.
 func NewServer(svc SandboxService) *gosdk.Server {
+	exe, _ := os.Executable()
+	return newServer(svc, newStaleWatcher(exe))
+}
+
+func newServer(svc SandboxService, sw *staleWatcher) *gosdk.Server {
 	srv := gosdk.NewServer(&gosdk.Implementation{
 		Name:    "nexus",
 		Version: "v0.1.0",
 	}, nil)
 	registerTools(srv, svc)
 	registerDelegateTools(srv, svc)
+	srv.AddReceivingMiddleware(sw.middleware)
 	return srv
 }
 
