@@ -1,4 +1,4 @@
-.PHONY: proto build artifacts vet test test-integration vet-integration check-agent-fresh install-agent install-kernel build-agent docs docs-build install-plugin secret setup audit lint format format-fix ci
+.PHONY: proto build artifacts vet test test-integration vet-integration check-agent-fresh check-hub-fresh install install-locked install-agent install-kernel build-agent docs docs-build install-plugin secret setup audit lint format format-fix ci
 
 # proto regenerates the Go stubs from proto/nexus/agent/v1/agent.proto.
 # Running this target twice must leave the tree byte-identical (deterministic).
@@ -334,6 +334,34 @@ check-agent-fresh:
 		fi; \
 		echo "OK: $$path_bin is fresher than all agent sources"; \
 	fi
+
+check-hub-fresh:
+	@emb=internal/core/hostbin/embedded/$(HOSTBIN_GOARCH)/nexus-hub.zst; \
+	if [ ! -f $$emb ]; then \
+		echo "FAIL: embedded hub $$emb missing — run make artifacts"; exit 1; \
+	fi; \
+	stale=$$(find cmd/nexus-hub internal/hub -name '*.go' -newer $$emb 2>/dev/null | head -1); \
+	if [ -n "$$stale" ]; then \
+		echo "FAIL: hub source newer than embedded $$emb (first offender: $$stale)"; \
+		echo "      a CLI built now ships a stale nexus-hub. fix: make artifacts"; \
+		exit 1; \
+	fi; \
+	echo "OK: $$emb is fresher than all hub sources"
+
+NEXUS_INSTALL_PATH ?= $(HOME)/.local/bin/nexus
+HUB_LOCK_DIR = $${XDG_STATE_HOME:-$$HOME/.local/state}/nexus/hub
+
+install:
+	mkdir -p "$(HUB_LOCK_DIR)" "$(dir $(NEXUS_INSTALL_PATH))" && flock "$(HUB_LOCK_DIR)/install.lock" $(MAKE) install-locked
+
+install-locked: artifacts check-hub-fresh
+	go build -o nexus ./cmd/nexus
+	cp nexus $(NEXUS_INSTALL_PATH).new && mv -f $(NEXUS_INSTALL_PATH).new $(NEXUS_INSTALL_PATH)
+	@ver=$$($(NEXUS_INSTALL_PATH) version 2>/dev/null | head -1); \
+	hash=$$(cut -d' ' -f1 internal/core/hostbin/embedded/$(HOSTBIN_GOARCH)/nexus-agent.sha256 2>/dev/null); \
+	$(NEXUS_INSTALL_PATH) hub emit binary-installed --path $(NEXUS_INSTALL_PATH) --version "$$ver" --agent-hash "$$hash" \
+		|| echo "WARN: hub emit binary-installed failed (best-effort)"
+	@echo "OK: nexus installed → $(NEXUS_INSTALL_PATH)"
 
 GOLANGCI_LINT_VERSION ?= v2.13.2
 GOVULNCHECK_VERSION   ?= v1.8.0
