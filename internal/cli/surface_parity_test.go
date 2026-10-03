@@ -26,6 +26,7 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "cp", CanonicalMethods: []string{"service.Copy"}, MCPTools: nil},
 	{CLIVerb: "disk", CanonicalMethods: []string{"service.DiskUsage"}, MCPTools: nil},
 	{CLIVerb: "doctor", CLIOnly: true},
+	{CLIVerb: "hub", CLIOnly: true},
 	{CLIVerb: "egress", CanonicalMethods: []string{"service.ResolveRef"}, MCPTools: nil},
 	{CLIVerb: "exec", CanonicalMethods: []string{"service.Exec"}, MCPTools: []string{"sandbox_exec", "delegate_agent_poll", "delegate_agent_wait"}},
 	{CLIVerb: "forward", CanonicalMethods: []string{"service.Forward"}, MCPTools: nil},

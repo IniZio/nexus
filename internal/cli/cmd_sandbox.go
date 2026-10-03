@@ -30,6 +30,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
+	"github.com/IniZio/nexus/internal/core/recovery"
 	"github.com/IniZio/nexus/internal/core/resize"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
@@ -1778,7 +1779,7 @@ func handoffHumanSupervisor(
 	if err := supervisor.WriteSpawnSpec(stateDir, cfg); err != nil {
 		return err
 	}
-	if _, err := svc.Stop(ctx, sb.ID.String()); err != nil {
+	if _, err := svc.Stop(service.WithHubStopSuppressed(ctx), sb.ID.String()); err != nil {
 		return fmt.Errorf("stop before supervisor handoff: %w", err)
 	}
 	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
@@ -1899,6 +1900,31 @@ func spawnPersistedSupervisorReacquire(ctx context.Context, svc *service.Service
 	return nil
 }
 
+// reconcileDeadSupervisorFn is a test seam over reconcileDeadSupervisor.
+var reconcileDeadSupervisorFn = reconcileDeadSupervisor
+
+// reconcileDeadSupervisor runs the `nexus recover` reconcile for one sandbox.
+// It refuses to run without a real substrate: a noop driver would observe
+// every VM as absent.
+func reconcileDeadSupervisor(ctx context.Context, id domain.SandboxID) error {
+	drv, serr := SelectSubstrate()
+	if serr != nil {
+		return serr
+	}
+	root, err := store.DefaultRoot()
+	if err != nil {
+		return err
+	}
+	st, err := store.NewFileStore(root)
+	if err != nil {
+		return err
+	}
+	_, err = recovery.New(st, drv).
+		WithSupervisorCheck(supervisor.CheckAndReconcile).
+		RecoverOne(ctx, id)
+	return err
+}
+
 func ensureDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain.Sandbox) error {
 	if sb.SupervisorPID > 0 {
 		alive, _ := supervisor.CheckAndReconcile(sb.SupervisorPID, sb.SupervisorSock)
@@ -1906,6 +1932,22 @@ func ensureDetachedSupervisor(ctx context.Context, svc *service.Service, sb doma
 			return nil
 		}
 		_ = svc.ClearSupervisor(ctx, sb.ID)
+	}
+	if sb.State == domain.Running || sb.State == domain.Paused {
+		// No live supervisor owns this VM: a start from Running is illegal, so
+		// reconcile the record against the substrate first (what `nexus recover`
+		// does).
+		if err := reconcileDeadSupervisorFn(ctx, sb.ID); err != nil {
+			return fmt.Errorf("reconcile %s with dead supervisor: %w", sb.ID, err)
+		}
+		fresh, err := svc.GetSandboxByID(ctx, sb.ID)
+		if err != nil {
+			return err
+		}
+		if fresh.State == domain.Running || fresh.State == domain.Paused {
+			return fmt.Errorf("sandbox %s is still %s after reconcile; run `nexus recover`", sb.ID, fresh.State)
+		}
+		sb = fresh
 	}
 	storeRoot, err := store.DefaultRoot()
 	if err != nil {

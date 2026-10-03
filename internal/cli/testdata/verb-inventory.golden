@@ -12,6 +12,7 @@ egress
 exec
 forward
 herdr
+hub
 image
 kernel install
 log

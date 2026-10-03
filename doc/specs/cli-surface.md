@@ -159,6 +159,17 @@ No flags. Args: `<sandbox-ref> <hostPort>:<guestPort>`
 
 ---
 
+### ## hub
+
+Summary: Session hub event log (watch, ps, emit)
+
+Subverbs:
+- `watch [--topic T] [--cursor N] [--seat S] [--ack]` — stream hub events.
+- `ps` — list sandboxes known to the hub.
+- `emit binary-installed --path P --version V --agent-hash H` — record an installed binary.
+
+---
+
 ### ## image
 
 Summary: Image management
