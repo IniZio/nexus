@@ -15,6 +15,58 @@ type fakeSyncer struct {
 	statusErr error
 	exportErr error
 	exported  []string
+	mode      string
+	unpushed  string
+}
+
+func (f *fakeSyncer) SyncMode(domain.SandboxID) (string, error) { return f.mode, nil }
+func (f *fakeSyncer) GuestUnpushed(context.Context, domain.SandboxID, string) (string, error) {
+	return f.unpushed, nil
+}
+
+func TestTeardownPushMode(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/bin/true")
+	for name, tc := range map[string]struct {
+		s     *fakeSyncer
+		force bool
+		want  bool
+	}{
+		"pushed":      {&fakeSyncer{mode: "push"}, false, true},
+		"unpushed":    {&fakeSyncer{mode: "push", unpushed: "2 commit(s) not pushed"}, false, false},
+		"uncommitted": {&fakeSyncer{mode: "push", status: " M a\n"}, false, false},
+		"force":       {&fakeSyncer{mode: "push", unpushed: "x", status: "y"}, true, true},
+		"bundle":      {&fakeSyncer{mode: "bundle", unpushed: "ignored"}, false, true},
+	} {
+		var calls []string
+		r := spriteRunners(tc.s, true, &calls)
+		r.PollTimeout = 1
+		_, err := Teardown(context.Background(), "p/a", tc.force, r)
+		if tc.want != (err == nil) || tc.want != destroyed(calls) {
+			t.Fatalf("%s: err=%v calls=%v", name, err, calls)
+		}
+		if len(tc.s.exported) != 0 && tc.s.mode == "push" {
+			t.Fatalf("%s: push mode exported to host", name)
+		}
+		if !tc.want {
+			var ue *SpriteUnsyncedError
+			if !errors.As(err, &ue) {
+				t.Fatalf("%s: err=%v", name, err)
+			}
+		}
+	}
+}
+
+func TestTeardownUnboundPushMode(t *testing.T) {
+	var calls []string
+	s := &fakeSyncer{mode: "push", notAtSeed: true}
+	if _, err := Teardown(context.Background(), "p/a", false, unboundRunners(s, true, &calls)); err != nil {
+		t.Fatalf("pushed push-mode sprite refused: %v", err)
+	}
+	s = &fakeSyncer{mode: "push", unpushed: "1 commit(s) not pushed"}
+	var ue *SpriteUnsyncedError
+	if _, err := Teardown(context.Background(), "p/a", false, unboundRunners(s, true, &calls)); !errors.As(err, &ue) {
+		t.Fatalf("err = %v", err)
+	}
 }
 
 func (f *fakeSyncer) ExportWorktree(_ context.Context, _ domain.SandboxID, guest, host, branch string) (string, error) {

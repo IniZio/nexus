@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/IniZio/nexus/internal/core/driver/registry"
+	"github.com/IniZio/nexus/internal/core/driver/sprites"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/herdrout"
 )
@@ -22,6 +24,7 @@ type CreateArgs struct {
 	VCPUs           uint32   `json:"vcpus,omitempty"            jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
 	AllowedBranches []string `json:"allowed_branches,omitempty" jsonschema:"MUST NOT be set — branch policy is derived from the worktree; any value here returns an error"`
 	Backend         string   `json:"backend,omitempty"          jsonschema:"optional sandbox backend (e.g. sprites); precedence: this arg > repo .nexus/config.yaml backend > NEXUS_BACKEND > default"`
+	Sync            string   `json:"sync,omitempty"             jsonschema:"optional worktree sync mode for the sprites backend: bundle (default; git bundle over exec, no credentials) or push (clone origin in the sprite and push a task branch with a GH_TOKEN projected from the host; allows github.com egress)"`
 	Posture         string   `json:"-"`
 	BriefPath       string   `json:"brief_path,omitempty"       jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md and excluded from commits (optional)"`
 }
@@ -36,7 +39,18 @@ func validateCreateBackend(args CreateArgs) (string, error) {
 	if err := validateCreateBase(args); err != nil {
 		return "", err
 	}
-	return ResolveBackend(args.Backend, args.RepoPath)
+	backend, err := ResolveBackend(args.Backend, args.RepoPath)
+	if err != nil {
+		return "", err
+	}
+	mode, err := sprites.NormalizeSyncMode(args.Sync)
+	if err != nil {
+		return "", err
+	}
+	if mode == sprites.SyncPush && backend != registry.Sprites {
+		return "", fmt.Errorf("sync %q requires the sprites backend", mode)
+	}
+	return backend, nil
 }
 
 func validateCreateBase(args CreateArgs) error {
@@ -345,6 +359,9 @@ func CreateSandbox(ctx context.Context, args CreateArgs, r Runners) (SandboxResu
 	}
 	if backend != "" {
 		bindArgv = append(bindArgv, "--backend", backend)
+	}
+	if args.Sync == sprites.SyncPush {
+		bindArgv = append(bindArgv, "--sync", args.Sync)
 	}
 	bindOut, err := r.Host(ctx, append(bindArgv, ws)...)
 	if err != nil {

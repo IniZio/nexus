@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -164,7 +165,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 func delegateMarkerWritten(ctx context.Context, svc SandboxService, ref string) bool {
-	code, _, _, err := svc.Exec(ctx, ref, []string{"cat", delegateDoneMarker}, nil, "/", "")
+	code, _, _, err := svc.Exec(ctx, ref, []string{"cat", delegateTargetFor(svc).marker}, nil, "/", "")
 	return err == nil && code == 0
 }
 
@@ -178,14 +179,18 @@ func buildPollResult(ctx context.Context, svc SandboxService, ref string, agentS
 		Question:         agentSt.Question,
 		AgentStateReason: agentSt.Reason,
 	}
-	markerCode, markerOut, _, markerExecErr := svc.Exec(ctx, ref, []string{"cat", delegateDoneMarker}, nil, "/", "")
+	tgt := delegateTargetFor(svc)
+	markerCode, markerOut, _, markerExecErr := svc.Exec(ctx, ref, []string{"cat", tgt.marker}, nil, "/", "")
 	if markerExecErr == nil && markerCode == 0 {
 		res.DoneVia = "marker"
 		res.MarkerContent = strings.TrimSpace(markerOut)
+		if tgt.sprites {
+			emitDelegateDoneOnce(ctx, delegateSandboxID(ctx, svc, ref), res.MarkerContent)
+		}
 		return res, nil
 	}
 	runGit := func(gitArgv []string) (string, error) {
-		code, stdout, stderr, execErr := svc.Exec(ctx, ref, gitArgv, nil, "/workspace", "")
+		code, stdout, stderr, execErr := svc.Exec(ctx, ref, gitArgv, nil, tgt.workDir, "")
 		if execErr != nil {
 			return "", fmt.Errorf("exec %v: %w", gitArgv, execErr)
 		}
@@ -195,13 +200,13 @@ func buildPollResult(ctx context.Context, svc SandboxService, ref string, agentS
 		return stdout, nil
 	}
 	var err error
-	if res.GitLog, err = runGit([]string{"git", "-C", "/workspace", "log", "--oneline", "-10"}); err != nil {
+	if res.GitLog, err = runGit([]string{"git", "-C", tgt.workDir, "log", "--oneline", "-10"}); err != nil {
 		return res, err
 	}
-	if res.GitStatus, err = runGit([]string{"git", "-C", "/workspace", "status", "--short"}); err != nil {
+	if res.GitStatus, err = runGit([]string{"git", "-C", tgt.workDir, "status", "--short"}); err != nil {
 		return res, err
 	}
-	if res.BranchName, err = runGit([]string{"git", "-C", "/workspace", "branch", "--show-current"}); err != nil {
+	if res.BranchName, err = runGit([]string{"git", "-C", tgt.workDir, "branch", "--show-current"}); err != nil {
 		return res, err
 	}
 	res.DoneVia = "git"
@@ -312,6 +317,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			"image_ref, memory_mib and vcpus are rejected (the worktree-sandbox path has no flags for them); " +
 			"allowed_branches MUST NOT be set — branch policy is derived from the worktree. " +
 			"Optional backend selects the sandbox backend; precedence: this argument, then the repo's .nexus/config.yaml backend, then NEXUS_BACKEND, then the default; an unknown backend is rejected before any herdr call. " +
+			"Optional sync (sprites backend) is bundle (default: git bundle over exec, no credentials, commits imported on teardown) or push (clone origin in the sprite, push a task branch with a GH_TOKEN projected from the host; github.com egress allowed; teardown requires the branch pushed). " +
 			"Returns {workspace_id, worktree_path, branch, handle, sandbox_id, output} on success.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args WorktreeCreateArgs) (*gosdk.CallToolResult, any, error) {
 		result, err := CreateWorktreeSandbox(ctx, args, worktreeRunners())
@@ -339,19 +345,32 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if err := validateBriefPath(args.BriefPath); err != nil {
 			return errorResult(fmt.Errorf("delegate_agent_dispatch: %w", err)), nil, nil
 		}
+		tgt := delegateTargetFor(svc)
 		if args.BriefPath != "" {
-			wt, err := worktreePathForRef(ctx, args.Ref)
-			if err != nil {
-				return errorResult(fmt.Errorf("delegate_agent_dispatch: brief_path: %w", err)), nil, nil
-			}
-			if err := installBrief(ctx, args.BriefPath, wt); err != nil {
-				return errorResult(fmt.Errorf("delegate_agent_dispatch: brief_path: %w", err)), nil, nil
+			if tgt.sprites {
+				body, err := os.ReadFile(args.BriefPath)
+				if err != nil {
+					return errorResult(fmt.Errorf("delegate_agent_dispatch: brief_path: %w", err)), nil, nil
+				}
+				if code, _, stderr, err := svc.Exec(ctx, args.Ref, []string{"sh", "-c", "cat > " + briefFileName}, nil, tgt.workDir, string(body)); err != nil || code != 0 {
+					return errorResult(fmt.Errorf("delegate_agent_dispatch: brief_path: write brief into sprite: code=%d err=%v %s", code, err, stderr)), nil, nil
+				}
+			} else {
+				wt, err := worktreePathForRef(ctx, args.Ref)
+				if err != nil {
+					return errorResult(fmt.Errorf("delegate_agent_dispatch: brief_path: %w", err)), nil, nil
+				}
+				if err := installBrief(ctx, args.BriefPath, wt); err != nil {
+					return errorResult(fmt.Errorf("delegate_agent_dispatch: brief_path: %w", err)), nil, nil
+				}
 			}
 		}
-		_, _, _, _ = svc.Exec(ctx, args.Ref, []string{"rm", "-f", delegateDoneMarker}, nil, "/", "")
-		brief := standingOrders + "Sandbox id: " + delegateSandboxID(ctx, svc, args.Ref) + "\n\n"
+		sandboxID := delegateSandboxID(ctx, svc, args.Ref)
+		_, _, _, _ = svc.Exec(ctx, args.Ref, []string{"rm", "-f", tgt.marker}, nil, "/", "")
+		clearDelegateDoneFlag(sandboxID)
+		brief := tgt.orders + "Sandbox id: " + sandboxID + "\n\n"
 		if args.BriefPath != "" {
-			brief += "Your task brief is in /workspace/" + briefFileName + " — read it first and follow it.\n\n"
+			brief += "Your task brief is in " + tgt.workDir + "/" + briefFileName + " — read it first and follow it.\n\n"
 		}
 		brief += args.Brief
 		out, runErr := runHostCLI(ctx, "herdr", "agent", "--autonomous", "--no-focus", args.Ref, brief)
@@ -368,7 +387,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Description: "Poll the in-guest agent's progress. Reports herdr native agent state " +
 			"(agent_status: idle|working|blocked|done|unknown; state_change_seq; settled; " +
 			"question when blocked; agent_state_reason when unknown). " +
-			"Checks " + delegateDoneMarker + " first (done_via:marker); falls back to git log/status heuristic (done_via:git). " +
+			"Checks " + delegateDoneMarker + " (sprites backend: " + spritesDoneMarker + "; host emits delegate.done once) first (done_via:marker); falls back to git log/status heuristic (done_via:git). " +
 			"Marker and git are the completion proof; herdr agent state is informational only. " +
 			"herdr unavailable or sandbox unbound → agent_status:unknown, marker/git unchanged. " +
 			"Optional wait_ms>0 passes a bounded herdr agent wait before sampling. " +

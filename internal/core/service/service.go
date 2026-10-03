@@ -340,6 +340,9 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 	return sb, nil
 }
 
+// DriverName returns the name of the backend driver this service runs on.
+func (s *Service) DriverName() string { return s.driver.Name() }
+
 // List returns all user-visible sandboxes from the store. The returned slice
 // is always non-nil (an empty store returns []domain.Sandbox{}, never nil),
 // so callers and JSON marshallers see [] rather than null.

@@ -20,6 +20,36 @@ type SpriteSyncer interface {
 	ExportWorktree(ctx context.Context, id domain.SandboxID, guestDir, hostRepoDir, branch string) (string, error)
 	GuestStatus(ctx context.Context, id domain.SandboxID, guestDir string) (string, error)
 	GuestAtSeed(ctx context.Context, id domain.SandboxID, guestDir string) (bool, error)
+	SyncMode(id domain.SandboxID) (string, error)
+	GuestUnpushed(ctx context.Context, id domain.SandboxID, guestDir string) (string, error)
+}
+
+// guardPush is the push-mode teardown guard: the sprite must be clean and its
+// branch pushed; nothing is imported to the host.
+func guardPush(ctx context.Context, s SpriteSyncer, id domain.SandboxID, handle string, force bool) error {
+	if force {
+		return nil
+	}
+	status, err := s.GuestStatus(ctx, id, sprites.CloneDir)
+	if err != nil {
+		return &SpriteUnsyncedError{Handle: handle, Detail: "cannot read sprite git status: " + err.Error()}
+	}
+	if strings.TrimSpace(status) != "" {
+		return &SpriteUnsyncedError{Handle: handle, Detail: "uncommitted changes in sprite:\n" + strings.TrimSpace(status)}
+	}
+	un, err := s.GuestUnpushed(ctx, id, sprites.CloneDir)
+	if err != nil {
+		return &SpriteUnsyncedError{Handle: handle, Detail: "cannot check pushed state: " + err.Error()}
+	}
+	if un != "" {
+		return &SpriteUnsyncedError{Handle: handle, Detail: "push mode: " + un + "; push the branch"}
+	}
+	return nil
+}
+
+func isPushMode(s SpriteSyncer, id domain.SandboxID) bool {
+	m, err := s.SyncMode(id)
+	return err == nil && m == sprites.SyncPush
 }
 
 // SpriteSyncFor resolves the syncer for a sandbox; ok is false when the
@@ -63,7 +93,7 @@ type SpriteUnsyncedError struct {
 }
 
 func (e *SpriteUnsyncedError) Error() string {
-	return fmt.Sprintf("sprite sandbox %s has work that is not on the host: %s\nResolve it, or retry with force to discard it.", e.Handle, e.Detail)
+	return fmt.Sprintf("sprite sandbox %s has work that is not synced: %s\nResolve it, or retry with force to discard it.", e.Handle, e.Detail)
 }
 
 // guardSprite exports a sprite's commits to the host branch (ff-only) and
@@ -82,6 +112,9 @@ func guardSprite(ctx context.Context, r Runners, herdrBin, ws, handle, sandboxID
 	}
 	if !ok {
 		return nil
+	}
+	if isPushMode(syncer, id) {
+		return guardPush(ctx, syncer, id, handle, force)
 	}
 	wtOut, err := r.Herdr(ctx, herdrBin, "worktree", "list", "--workspace", ws, "--json")
 	wtPath := ""
@@ -167,6 +200,9 @@ func guardUnboundSprite(ctx context.Context, r Runners, ref string, force bool) 
 	}
 	if !ok {
 		return nil
+	}
+	if isPushMode(syncer, id) {
+		return guardPush(ctx, syncer, id, ref, false)
 	}
 	hint := "no herdr workspace is bound so commits cannot be exported; re-bind it or retry with force to discard"
 	status, err := syncer.GuestStatus(ctx, id, sprites.CloneDir)

@@ -43,6 +43,7 @@ type Spec struct {
 	IncludeDefaults bool     `json:"include_defaults,omitempty"`
 	SecretNames     []string `json:"secret_names,omitempty"`
 	Presets         []string `json:"presets,omitempty"`
+	Sync            string   `json:"sync,omitempty"`
 	GitToken        string   `json:"-"`
 }
 
@@ -127,6 +128,13 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 	names, err := NormalizeSecretNames(s.SecretNames)
 	if err != nil {
 		return err
+	}
+	if s.Sync, err = NormalizeSyncMode(s.Sync); err != nil {
+		return err
+	}
+	if s.Sync == SyncPush {
+		names, _ = NormalizeSecretNames(append(names, SecretGitHub))
+		s.AllowedHosts = append(slices.Clone(s.AllowedHosts), PushHosts...)
 	}
 	s.SecretNames = names
 	if s.Presets, err = NormalizePresets(s.Presets); err != nil {

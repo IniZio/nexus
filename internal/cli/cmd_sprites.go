@@ -81,7 +81,7 @@ func spritesRepo(f sandboxCreateFlags) (string, error) {
 func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, svc *service.Service) error {
 	const verb = "sandbox create"
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> --repo <git-url|owner/name> [--allow-host <host>] [--preset docker] [--egress open|closed] [--label KEY=VALUE] [--rm]"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> --repo <git-url|owner/name> [--allow-host <host>] [--preset docker] [--sync bundle|push] [--egress open|closed] [--label KEY=VALUE] [--rm]"}
 	}
 	project, name, err := domain.ParseHandle(f.positionals[0])
 	if err != nil {
@@ -106,6 +106,11 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("%s: --preset: %v", verb, err)}
 	}
 
+	syncMode, err := sprites.NormalizeSyncMode(f.syncMode)
+	if err != nil {
+		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("%s: --sync: %v", verb, err)}
+	}
+
 	var cfg config.Config
 	if cwd, werr := os.Getwd(); werr == nil {
 		if cfg, _, err = config.Load(cwd); err != nil {
@@ -124,6 +129,15 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 	tok := os.Getenv("GH_TOKEN")
 	if tok == "" {
 		tok = os.Getenv("GITHUB_TOKEN")
+	}
+
+	if syncMode == sprites.SyncPush {
+		if secretNames, err = sprites.NormalizeSecretNames(append(secretNames, sprites.SecretGitHub)); err != nil {
+			return errSandbox(verb, err)
+		}
+		if tok, err = hostGitHubToken(ctx); err != nil {
+			return errSandbox(verb, err)
+		}
 	}
 
 	drv, err := newSpritesDriver()
@@ -145,7 +159,7 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		_ = svc.Remove(context.WithoutCancel(ctx), sb.ID.String())
 		return errSandbox(verb, cause)
 	}
-	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, SecretNames: secretNames, Presets: presets, GitToken: tok}
+	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, SecretNames: secretNames, Presets: presets, Sync: syncMode, GitToken: tok}
 	if err := prov.Provision(ctx, sb.ID, spec); err != nil {
 		return rollback(err)
 	}

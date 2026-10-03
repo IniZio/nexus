@@ -303,6 +303,7 @@ type sandboxCreateFlags struct {
 	extraAgentNames  []string
 	allowHosts       []string                  // --allow-host <hostname> (repeatable): add to AllowedHosts when --egress closed
 	repoURL          string                    // --repo <git-url> (sprites clone source)
+	syncMode         string                    // --sync bundle|push (sprites worktree sync mode)
 	allowedRepo      string                    // --repo owner/name: scope MITM path allowlist to one GitHub repo (D-PD-36)
 	pathPolicies     domain.EgressPathPolicies // --egress-policy-json: JSON-encoded generic path policies (worktree subprocess channel)
 	mcpPolicies      domain.EgressMCPPolicies
@@ -627,6 +628,12 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 			}
 			i++
 			f.presets = append(f.presets, args[i])
+		case "--sync":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --sync requires bundle|push"}
+			}
+			i++
+			f.syncMode = args[i]
 		case "--allow-host":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --allow-host requires a hostname"}
@@ -1014,6 +1021,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	if len(f.presets) > 0 {
 		return &UsageError{Msg: "sandbox create: --preset is only supported on the sprites backend"}
 	}
+	if f.syncMode != "" {
+		return &UsageError{Msg: "sandbox create: --sync is only supported on the sprites backend"}
+	}
 	if f.repoURL != "" {
 		return &UsageError{Msg: "sandbox create: --repo must be owner/name on this backend"}
 	}
@@ -1027,7 +1037,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--preset <name>] [--repo <owner>/<name>] [--no-share-settings] [--no-user-mounts] [--no-sandbox-tools] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--preset <name>] [--sync bundle|push] [--repo <owner>/<name>] [--no-share-settings] [--no-user-mounts] [--no-sandbox-tools] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])

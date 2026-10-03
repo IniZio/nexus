@@ -2953,3 +2953,33 @@ func TestHerdrWorktreeSandbox_spritesBackend_seedsThenOpensPane(t *testing.T) {
 		t.Fatalf("calls:\n%s\nwant:\n%s\noutput:\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"), w.String())
 	}
 }
+
+func TestHerdrWorktreeSandboxParseSync(t *testing.T) {
+	rest, m, err := herdrWorktreeSandboxParseSync([]string{"--sync", "push", "--auto", "w1"})
+	if err != nil || m != "push" || strings.Join(rest, " ") != "--auto w1" {
+		t.Fatalf("got %v %q %v", rest, m, err)
+	}
+	rest, m, err = herdrWorktreeSandboxParseSync([]string{"--auto", "w1"})
+	if err != nil || m != "" || len(rest) != 2 {
+		t.Fatalf("absent: %v %q %v", rest, m, err)
+	}
+	if _, _, err = herdrWorktreeSandboxParseSync([]string{"--sync"}); err == nil {
+		t.Error("missing value accepted")
+	}
+	if _, _, err = herdrWorktreeSandboxParseSync([]string{"--sync", "rsync", "w1"}); err == nil {
+		t.Error("unknown mode accepted")
+	}
+	if herdrSyncFrom(herdrWithSync(context.Background(), "push")) != "push" || herdrSyncFrom(context.Background()) != "" {
+		t.Error("sync ctx plumbing")
+	}
+}
+
+func TestParseSandboxCreateArgsSync(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{"p/a", "--repo", "https://github.com/o/r.git", "--sync", "push"})
+	if err != nil || f.syncMode != "push" {
+		t.Fatalf("%+v %v", f, err)
+	}
+	if _, err := parseSandboxCreateArgs([]string{"p/a", "--sync"}); err == nil {
+		t.Error("missing --sync value accepted")
+	}
+}

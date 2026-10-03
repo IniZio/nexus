@@ -463,6 +463,11 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: " + berr.Error()}
 		}
 		ctx = herdrWithBackend(ctx, backendFlag)
+		rest, syncFlag, serr := herdrWorktreeSandboxParseSync(rest)
+		if serr != nil {
+			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: " + serr.Error()}
+		}
+		ctx = herdrWithSync(ctx, syncFlag)
 		rest, conditional, auto, nestedFlag := herdrWorktreeSandboxParseArgs(rest)
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
@@ -4269,6 +4274,36 @@ func herdrWorktreeSandboxParseBackend(args []string) (rest []string, backend str
 	return args[2:], args[1], nil
 }
 
+type herdrSyncKey struct{}
+
+func herdrWithSync(ctx context.Context, mode string) context.Context {
+	if mode == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, herdrSyncKey{}, mode)
+}
+
+// herdrSyncFrom returns the sprites sync mode of the create; "" means bundle.
+func herdrSyncFrom(ctx context.Context) string {
+	m, _ := ctx.Value(herdrSyncKey{}).(string)
+	return m
+}
+
+// herdrWorktreeSandboxParseSync strips a leading `--sync <bundle|push>` pair
+// (after --backend, before the other mode flags).
+func herdrWorktreeSandboxParseSync(args []string) (rest []string, mode string, err error) {
+	if len(args) == 0 || args[0] != "--sync" {
+		return args, "", nil
+	}
+	if len(args) < 2 {
+		return nil, "", fmt.Errorf("--sync requires a value (bundle|push)")
+	}
+	if mode, err = sprites.NormalizeSyncMode(args[1]); err != nil {
+		return nil, "", err
+	}
+	return args[2:], mode, nil
+}
+
 // Sprites-path steps, swapped by tests so nothing touches the network.
 var (
 	herdrSpritesCreateFn   = herdrSpritesCreate
@@ -4286,7 +4321,11 @@ func herdrSpritesCreate(ctx context.Context, w io.Writer, handle, worktree strin
 	if err != nil || strings.TrimSpace(string(repo)) == "" {
 		return fmt.Errorf("sprites create: worktree %s has no origin remote (sprites clones it before the seed)", worktree)
 	}
-	cmd := herdrExecCommandContext(ctx, exe, "sandbox", "create", handle, "--repo", strings.TrimSpace(string(repo)))
+	createArgv := []string{"sandbox", "create", handle, "--repo", strings.TrimSpace(string(repo))}
+	if herdrSyncFrom(ctx) == sprites.SyncPush {
+		createArgv = append(createArgv, "--sync", sprites.SyncPush)
+	}
+	cmd := herdrExecCommandContext(ctx, exe, createArgv...)
 	cmd.Dir = worktree
 	cmd.Env = append(os.Environ(), "NEXUS_BACKEND="+registry.Sprites)
 	var stderrBuf bytes.Buffer
@@ -4318,6 +4357,19 @@ func herdrSpritesSeed(ctx context.Context, id domain.SandboxID, worktree string)
 	syncer, ok := drv.(driver.WorktreeSyncer)
 	if !ok {
 		return fmt.Errorf("sprites driver does not support worktree seeding")
+	}
+	if herdrSyncFrom(ctx) == sprites.SyncPush {
+		pusher, ok := drv.(interface {
+			PreparePushBranch(context.Context, domain.SandboxID, string, string) error
+		})
+		if !ok {
+			return fmt.Errorf("sprites driver does not support push sync")
+		}
+		branch, err := herdrExecCommandContext(ctx, "git", "-C", worktree, "symbolic-ref", "--short", "-q", "HEAD").Output()
+		if err != nil || strings.TrimSpace(string(branch)) == "" {
+			return fmt.Errorf("sprites push sync: worktree %s is on a detached HEAD, no branch to push", worktree)
+		}
+		return pusher.PreparePushBranch(ctx, id, sprites.CloneDir, strings.TrimSpace(string(branch)))
 	}
 	return syncer.SeedWorktree(ctx, id, worktree, "HEAD", sprites.CloneDir)
 }
@@ -5394,6 +5446,14 @@ func herdrWorktreeSandbox(
 	}
 	if backend != "" && backend != registry.Sprites {
 		err := fmt.Errorf("worktree-sandbox: backend %q is not supported (want %s or default)", backend, registry.Sprites)
+		fmt.Fprintln(w, err)
+		if !failSafe {
+			return err
+		}
+		return nil
+	}
+	if herdrSyncFrom(ctx) == sprites.SyncPush && backend != registry.Sprites {
+		err := fmt.Errorf("worktree-sandbox: --sync push requires the sprites backend")
 		fmt.Fprintln(w, err)
 		if !failSafe {
 			return err
