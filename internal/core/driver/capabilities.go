@@ -38,6 +38,12 @@ type SnapshotRemover interface { // optional: remove driver-managed files beyond
 	RemoveSnapshot(id artifact.SnapshotID) error // removes record and driver files; idempotent
 }
 
+// Deprovisioner is optional: a driver whose substrate outlives Stop (a remote
+// sandbox) releases it when the sandbox record is removed. Idempotent.
+type Deprovisioner interface {
+	Deprovision(ctx context.Context, id domain.SandboxID) error
+}
+
 func Capabilities(drv Driver) []string { // names of optional capability interfaces satisfied by drv
 	var caps []string
 	if _, ok := drv.(PauseResumer); ok {

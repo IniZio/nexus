@@ -37,10 +37,9 @@ type delegateTarget struct {
 	orders  string
 }
 
-type driverNamer interface{ DriverName() string }
-
-func delegateTargetFor(svc SandboxService) delegateTarget {
-	if n, ok := svc.(driverNamer); ok && n.DriverName() == spritesBackend {
+// delegateTargetFor picks the target from the sandbox record's backend.
+func delegateTargetFor(ctx context.Context, svc SandboxService, ref string) delegateTarget {
+	if sb, ok := delegateSandbox(ctx, svc, ref); ok && sb.Backend == spritesBackend {
 		return delegateTarget{sprites: true, marker: spritesDoneMarker, workDir: spritesWorkDir, orders: spritesStandingOrders}
 	}
 	return delegateTarget{marker: delegateDoneMarker, workDir: "/workspace", orders: standingOrders}

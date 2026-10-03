@@ -340,6 +340,7 @@ func (r *createRun) buildRecord(newDriver DriverFactory) error {
 		Labels:    opts.Labels,
 		State:     domain.Created,
 		Principal: principal,
+		Backend:   r.svc.backendFor(""),
 		Envelope: domain.Envelope{
 			ImageDigest:        r.resolvedDigest,
 			AllowedHosts:       opts.AllowedHosts, // frozen at creation (P1-S6)

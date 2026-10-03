@@ -110,7 +110,7 @@ func newSandboxService() (*service.Service, error) {
 		drv = realDrv
 	}
 
-	svc := service.New(st, drv, lifecycle.New())
+	svc := service.New(st, drv, lifecycle.New()).WithBackendDriverFactory(backendDriverFactory)
 	svc.WithVolumes(volumestore.New(filepath.Join(root, "volumes")))
 	if v, vErr := openHostVaultFn(); vErr == nil {
 		svc.WithVault(v)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/herdrworktree"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -43,16 +44,23 @@ After writing the marker, also log a best-effort completion event (never let it 
 
 // delegateSandboxID resolves ref to a sandbox ID, falling back to ref itself.
 func delegateSandboxID(ctx context.Context, svc SandboxService, ref string) string {
+	if sb, ok := delegateSandbox(ctx, svc, ref); ok {
+		return sb.ID.String()
+	}
+	return ref
+}
+
+func delegateSandbox(ctx context.Context, svc SandboxService, ref string) (domain.Sandbox, bool) {
 	sbs, err := svc.List(ctx)
 	if err != nil {
-		return ref
+		return domain.Sandbox{}, false
 	}
 	for _, sb := range sbs {
 		if id := sb.ID.String(); id == ref || sb.Handle() == ref || (len(ref) >= 4 && strings.HasPrefix(id, ref)) {
-			return id
+			return sb, true
 		}
 	}
-	return ref
+	return domain.Sandbox{}, false
 }
 
 // delegateDoneMarker is the path the in-guest agent writes as its final act to
@@ -165,7 +173,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 func delegateMarkerWritten(ctx context.Context, svc SandboxService, ref string) bool {
-	code, _, _, err := svc.Exec(ctx, ref, []string{"cat", delegateTargetFor(svc).marker}, nil, "/", "")
+	code, _, _, err := svc.Exec(ctx, ref, []string{"cat", delegateTargetFor(ctx, svc, ref).marker}, nil, "/", "")
 	return err == nil && code == 0
 }
 
@@ -179,7 +187,7 @@ func buildPollResult(ctx context.Context, svc SandboxService, ref string, agentS
 		Question:         agentSt.Question,
 		AgentStateReason: agentSt.Reason,
 	}
-	tgt := delegateTargetFor(svc)
+	tgt := delegateTargetFor(ctx, svc, ref)
 	markerCode, markerOut, _, markerExecErr := svc.Exec(ctx, ref, []string{"cat", tgt.marker}, nil, "/", "")
 	if markerExecErr == nil && markerCode == 0 {
 		res.DoneVia = "marker"
@@ -345,7 +353,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if err := validateBriefPath(args.BriefPath); err != nil {
 			return errorResult(fmt.Errorf("delegate_agent_dispatch: %w", err)), nil, nil
 		}
-		tgt := delegateTargetFor(svc)
+		tgt := delegateTargetFor(ctx, svc, args.Ref)
 		if args.BriefPath != "" {
 			if tgt.sprites {
 				body, err := os.ReadFile(args.BriefPath)

@@ -24,11 +24,15 @@ func (s *Service) DialGuest(ctx context.Context, ref string, port uint32) (net.C
 	if err != nil {
 		return nil, err
 	}
-	gd, ok := s.driver.(driver.GuestDialer)
+	drv, err := s.drvFor(sb)
+	if err != nil {
+		return nil, err
+	}
+	gd, ok := drv.(driver.GuestDialer)
 	if !ok {
 		return nil, fmt.Errorf(
 			"service: dial guest %s port %d: driver %q does not support guest dialing: %w",
-			ref, port, s.driver.Name(), ErrNoSubstrate,
+			ref, port, drv.Name(), ErrNoSubstrate,
 		)
 	}
 	return gd.DialGuest(ctx, sb.ID, port)

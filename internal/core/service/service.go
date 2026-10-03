@@ -44,6 +44,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/audit"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/registry"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/perimeter"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
@@ -95,6 +96,10 @@ type Service struct {
 	caSeeder  GuestSeeder  // delivers the MITM CA cert into the guest trust store
 	sshSeeder GuestSeeder  // injects SSH authorized_keys into the guest (ORCA-S1)
 	vault     vault.Vault
+
+	backendFactory BackendDriverFactory
+	driversMu      sync.Mutex
+	drivers        map[string]driver.Driver
 
 	supervisorsMu sync.Mutex
 	supervisors   map[domain.SandboxID]*perimeter.PerimeterSupervisor
@@ -271,6 +276,10 @@ type CreateOptions struct {
 	// Mirrors the AgentName field on domain.Sandbox; the value comes from
 	// resolveAgentPosture (flag OR user-global / project config default).
 	AgentName string
+
+	// Backend overrides the driver backend recorded on the sandbox. Empty
+	// records the service's own driver.
+	Backend string
 }
 
 // withOwnerSeatLabel stamps the hub owner-seat label from $NEXUS_HUB_SEAT
@@ -332,6 +341,7 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 		Envelope:     domain.Envelope{}, // frozen at creation; future slices populate fields
 		RemoveOnExit: opts.RemoveOnExit,
 		AgentName:    opts.AgentName,
+		Backend:      s.backendFor(opts.Backend),
 	}
 	if err := s.store.Create(ctx, sb); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: create: %w", err)
@@ -340,8 +350,52 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 	return sb, nil
 }
 
-// DriverName returns the name of the backend driver this service runs on.
-func (s *Service) DriverName() string { return s.driver.Name() }
+// BackendDriverFactory builds the driver for a backend other than the service's own.
+type BackendDriverFactory func(backend string) (driver.Driver, error)
+
+// WithBackendDriverFactory lets the service route sandboxes recorded under another
+// backend to their own driver, constructed lazily and cached per backend.
+func (s *Service) WithBackendDriverFactory(f BackendDriverFactory) *Service {
+	s.backendFactory = f
+	return s
+}
+
+// backendFor returns the backend name to record: want when set, else the
+// service driver's name when it is a registered backend, else "".
+func (s *Service) backendFor(want string) string {
+	if want != "" {
+		return want
+	}
+	if n := s.driver.Name(); registry.Registered(n) {
+		return n
+	}
+	return ""
+}
+
+// drvFor returns the driver that owns sb. An empty or matching backend uses
+// the service's own driver.
+func (s *Service) drvFor(sb domain.Sandbox) (driver.Driver, error) {
+	if sb.Backend == "" || sb.Backend == s.driver.Name() {
+		return s.driver, nil
+	}
+	s.driversMu.Lock()
+	defer s.driversMu.Unlock()
+	if d, ok := s.drivers[sb.Backend]; ok {
+		return d, nil
+	}
+	if s.backendFactory == nil {
+		return nil, fmt.Errorf("service: sandbox %s: backend %q: %w", sb.ID, sb.Backend, ErrNoSubstrate)
+	}
+	d, err := s.backendFactory(sb.Backend)
+	if err != nil {
+		return nil, fmt.Errorf("service: sandbox %s: backend %q: %w", sb.ID, sb.Backend, err)
+	}
+	if s.drivers == nil {
+		s.drivers = map[string]driver.Driver{}
+	}
+	s.drivers[sb.Backend] = d
+	return d, nil
+}
 
 // List returns all user-visible sandboxes from the store. The returned slice
 // is always non-nil (an empty store returns []domain.Sandbox{}, never nil),
@@ -602,7 +656,11 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 				return fmt.Errorf("%w: sandbox %s was created without an image (store-only record); recreate with --image, --rootfs, or --file to boot it", ErrNotBootable, rec.ID)
 			}
 		}
-		instanceID, err := s.driver.Start(ctx, driver.StartRequest{
+		drv, derr := s.drvFor(*rec)
+		if derr != nil {
+			return derr
+		}
+		instanceID, err := drv.Start(ctx, driver.StartRequest{
 			SandboxID:   rec.ID,
 			ImageDigest: rec.Envelope.ImageDigest,
 		})
@@ -616,7 +674,7 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		// can call AdoptNetnsRuntime without consulting ps/nsenter. The optional
 		// NetnsStateProvider interface is implemented only by drivers that use
 		// StartNetnsRuntime; other drivers leave these fields zero/empty.
-		if nsp, ok := s.driver.(driver.NetnsStateProvider); ok {
+		if nsp, ok := drv.(driver.NetnsStateProvider); ok {
 			ns, hasNetns := nsp.NetnsState(rec.ID)
 			if hasNetns {
 				rec.NetnsChildPID = ns.ChildPID
@@ -660,7 +718,11 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 	// Conditions: the driver must implement driver.NetworkHook and a credential
 	// broker must be attached. An absent broker means the operator has not
 	// enabled egress enforcement; the supervisor is skipped silently.
-	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
+	startDrv, derr := s.drvFor(updated)
+	if derr != nil {
+		return domain.Sandbox{}, derr
+	}
+	if hook, ok := startDrv.(driver.NetworkHook); ok && s.broker != nil {
 		if err := s.startSupervisor(ctx, hook, updated, nil); err != nil {
 			return domain.Sandbox{}, fmt.Errorf("service: start %s: perimeter: %w", updated.ID, err)
 		}
@@ -713,15 +775,19 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 		if err != nil {
 			return fmt.Errorf("re-validate: %w", err)
 		}
+		drv, derr := s.drvFor(*rec)
+		if derr != nil {
+			return derr
+		}
 		if rec.State == domain.Paused {
-			if pr, ok := s.driver.(driver.PauseResumer); ok {
+			if pr, ok := drv.(driver.PauseResumer); ok {
 				if resumeErr := pr.Resume(ctx, rec.ID); resumeErr != nil {
 					slog.Warn("service: stop: resume-before-stop failed; forcing stop",
 						"sandbox", rec.ID, "err", resumeErr)
 				}
 			}
 		}
-		if err := s.driver.Stop(ctx, rec.ID); err != nil {
+		if err := drv.Stop(ctx, rec.ID); err != nil {
 			return fmt.Errorf("driver: %w", err)
 		}
 		rec.State = tr.NextState
@@ -767,11 +833,15 @@ func (s *Service) Pause(ctx context.Context, ref string) (domain.Sandbox, error)
 
 	// Capability check is outside the lock: it is a type assertion with no I/O
 	// and it fails fast without contending on the per-sandbox flock.
-	pr, ok := s.driver.(driver.PauseResumer)
+	drv, derr := s.drvFor(sb)
+	if derr != nil {
+		return domain.Sandbox{}, derr
+	}
+	pr, ok := drv.(driver.PauseResumer)
 	if !ok {
 		return domain.Sandbox{}, fmt.Errorf(
 			"service: pause %s: driver %q does not support pause/resume: %w",
-			sb.ID, s.driver.Name(), ErrNoSubstrate,
+			sb.ID, drv.Name(), ErrNoSubstrate,
 		)
 	}
 
@@ -807,11 +877,15 @@ func (s *Service) Resume(ctx context.Context, ref string) (domain.Sandbox, error
 
 	// Capability check is outside the lock: it is a type assertion with no I/O
 	// and it fails fast without contending on the per-sandbox flock.
-	pr, ok := s.driver.(driver.PauseResumer)
+	drv, derr := s.drvFor(sb)
+	if derr != nil {
+		return domain.Sandbox{}, derr
+	}
+	pr, ok := drv.(driver.PauseResumer)
 	if !ok {
 		return domain.Sandbox{}, fmt.Errorf(
 			"service: resume %s: driver %q does not support pause/resume: %w",
-			sb.ID, s.driver.Name(), ErrNoSubstrate,
+			sb.ID, drv.Name(), ErrNoSubstrate,
 		)
 	}
 
@@ -883,8 +957,17 @@ func (s *Service) Remove(ctx context.Context, ref string) error {
 	// on this lock will read the marker and be rejected at re-validation.
 	// Stop is idempotent; an absent VM is not an error.
 	if err := s.store.Update(ctx, sb.ID, func(rec *domain.Sandbox) error {
-		if err := s.driver.Stop(ctx, rec.ID); err != nil {
+		drv, derr := s.drvFor(*rec)
+		if derr != nil {
+			return derr
+		}
+		if err := drv.Stop(ctx, rec.ID); err != nil {
 			return fmt.Errorf("driver: %w", err)
+		}
+		if dp, ok := drv.(driver.Deprovisioner); ok {
+			if err := dp.Deprovision(ctx, rec.ID); err != nil {
+				return fmt.Errorf("driver: deprovision: %w", err)
+			}
 		}
 		return nil
 	}); err != nil {

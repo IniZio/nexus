@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
@@ -144,14 +145,18 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 	if docker {
 		s.AllowedHosts = append(slices.Clone(s.AllowedHosts), DockerRegistryHosts...)
 	}
+	// Armed before CreateSprite: a create that errors client-side (timeout, reset)
+	// may still have created the sprite server-side.
+	defer func() {
+		if err != nil {
+			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+			defer cancel()
+			_ = withRetry(dctx, func() error { return d.api.DeleteSprite(dctx, name) })
+		}
+	}()
 	if err := d.api.CreateSprite(ctx, name); err != nil {
 		return fmt.Errorf("sprites: create %s: %w", name, err)
 	}
-	defer func() {
-		if err != nil {
-			_ = d.api.DeleteSprite(context.WithoutCancel(ctx), name)
-		}
-	}()
 	if !s.OpenEgress {
 		if p := BuildPolicy(append(slices.Clone(s.AllowedHosts), GoToolchainHosts...), s.IncludeDefaults, false); p != nil {
 			if err := d.api.SetNetworkPolicy(ctx, name, p); err != nil {

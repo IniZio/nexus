@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/herdragent"
 	"github.com/IniZio/nexus/internal/hubclient"
 )
@@ -17,7 +18,11 @@ type spritesMarkerSvc struct {
 	cwds  []string
 }
 
-func (s *spritesMarkerSvc) DriverName() string { return "sprites" }
+var spritesSB = domain.Sandbox{ID: domain.NewSandboxID(), Project: "proj", Name: "b", Backend: spritesBackend}
+
+func newSpritesMarkerSvc(marker string) *spritesMarkerSvc {
+	return &spritesMarkerSvc{markerExecService: &markerExecService{stubService: &stubService{listResult: []domain.Sandbox{spritesSB}}, marker: marker}}
+}
 
 func (s *spritesMarkerSvc) Exec(ctx context.Context, ref string, argv []string, env map[string]string, cwd, stdin string) (int32, string, string, error) {
 	s.mu.Lock()
@@ -38,11 +43,11 @@ func captureDelegateEmits(t *testing.T) *[]hubclient.Event {
 }
 
 func TestDelegateTargetFor_ByBackend(t *testing.T) {
-	ch := delegateTargetFor(&stubService{})
+	ch := delegateTargetFor(context.Background(), &stubService{listResult: []domain.Sandbox{{Project: "proj", Name: "b", Backend: "cloud-hypervisor"}}}, "proj/b")
 	if ch.sprites || ch.marker != delegateDoneMarker || ch.workDir != "/workspace" || !strings.Contains(ch.orders, "logger") {
 		t.Fatalf("CH target changed: %+v", ch)
 	}
-	sp := delegateTargetFor(&spritesMarkerSvc{markerExecService: &markerExecService{stubService: &stubService{}}})
+	sp := delegateTargetFor(context.Background(), newSpritesMarkerSvc(""), "proj/b")
 	if !sp.sprites || sp.marker != spritesDoneMarker || sp.workDir != spritesWorkDir {
 		t.Fatalf("sprites target: %+v", sp)
 	}
@@ -53,7 +58,7 @@ func TestDelegateTargetFor_ByBackend(t *testing.T) {
 
 func TestPoll_SpritesMarker_EmitsDelegateDoneOnce(t *testing.T) {
 	evs := captureDelegateEmits(t)
-	svc := &spritesMarkerSvc{markerExecService: &markerExecService{stubService: &stubService{}, marker: "all green\n"}}
+	svc := newSpritesMarkerSvc("all green\n")
 	for i := 0; i < 3; i++ {
 		res, err := buildPollResult(context.Background(), svc, "proj/b", herdragent.State{})
 		if err != nil || res.DoneVia != "marker" || res.MarkerContent != "all green" {
@@ -64,7 +69,7 @@ func TestPoll_SpritesMarker_EmitsDelegateDoneOnce(t *testing.T) {
 		t.Fatalf("emits = %d, want 1", len(*evs))
 	}
 	ev := (*evs)[0]
-	if ev.Type != hubclient.TypeDelegateDone || ev.Topic != hubclient.SandboxTopic("proj/b") {
+	if ev.Type != hubclient.TypeDelegateDone || ev.Topic != hubclient.SandboxTopic(spritesSB.ID.String()) {
 		t.Fatalf("event: %+v", ev)
 	}
 	if got := svc.argvs[0]; len(got) != 2 || got[1] != spritesDoneMarker {
@@ -74,7 +79,7 @@ func TestPoll_SpritesMarker_EmitsDelegateDoneOnce(t *testing.T) {
 
 func TestPoll_SpritesNoMarker_NoEmitAndUsesCloneDir(t *testing.T) {
 	evs := captureDelegateEmits(t)
-	svc := &spritesMarkerSvc{markerExecService: &markerExecService{stubService: &stubService{}}}
+	svc := newSpritesMarkerSvc("")
 	res, err := buildPollResult(context.Background(), svc, "proj/b", herdragent.State{})
 	if err != nil || res.DoneVia != "git" || len(*evs) != 0 {
 		t.Fatalf("res=%+v err=%v emits=%d", res, err, len(*evs))
@@ -113,7 +118,7 @@ func TestDispatch_SpritesBrief(t *testing.T) {
 		brief = argv[len(argv)-1]
 		return "ok", nil
 	}
-	svc := &spritesMarkerSvc{markerExecService: &markerExecService{stubService: &stubService{}}}
+	svc := newSpritesMarkerSvc("")
 	cs, closeFn := connectPairSvc(t, svc)
 	defer closeFn()
 	res := callTool(t, cs, "delegate_agent_dispatch", map[string]any{"ref": "proj/b", "brief": "do work"})

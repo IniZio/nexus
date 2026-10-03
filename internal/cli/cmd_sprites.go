@@ -41,6 +41,15 @@ func newSpritesDriver() (driver.Driver, error) {
 	return registry.New(registry.Sprites, sprites.Config{StateDir: root, EnvResolver: spritesEnvResolver})
 }
 
+// backendDriverFactory builds drivers for sandboxes recorded under a backend
+// other than the process default.
+func backendDriverFactory(backend string) (driver.Driver, error) {
+	if backend == registry.Sprites {
+		return newSpritesDriver()
+	}
+	return nil, fmt.Errorf("backend %q: %w", backend, registry.ErrNoBackend)
+}
+
 func spritesEgress(cfg config.Config, f sandboxCreateFlags) (hosts []string, open bool) {
 	seen := map[string]bool{}
 	add := func(hs ...string) {
@@ -151,7 +160,7 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		return errSandbox(verb, registry.Unsupported(registry.Sprites, "provision"))
 	}
 
-	sb, err := svc.Create(ctx, project, name, service.CreateOptions{Labels: f.labels, RemoveOnExit: f.rm})
+	sb, err := svc.Create(ctx, project, name, service.CreateOptions{Labels: f.labels, RemoveOnExit: f.rm, Backend: registry.Sprites})
 	if err != nil {
 		return errSandbox(verb, err)
 	}

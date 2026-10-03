@@ -31,8 +31,6 @@ type liveSpritesSvc struct {
 	id  domain.SandboxID
 }
 
-func (s *liveSpritesSvc) DriverName() string { return "sprites" }
-
 func (s *liveSpritesSvc) Exec(ctx context.Context, _ string, argv []string, env map[string]string, cwd, stdin string) (int32, string, string, error) {
 	var out, errb bytes.Buffer
 	opts := driver.ExecOptions{Argv: argv, Env: env, Cwd: cwd, Stdout: &out, Stderr: &errb}
@@ -78,7 +76,7 @@ func TestDelegateDoneLive_Sprites(t *testing.T) {
 			t.Errorf("Deprovision: %v", err)
 		}
 	}()
-	svc := &liveSpritesSvc{stubService: &stubService{}, drv: drv, id: id}
+	svc := &liveSpritesSvc{stubService: &stubService{listResult: []domain.Sandbox{{ID: id, Backend: spritesBackend}}}, drv: drv, id: id}
 	ref := id.String()
 	scrub := func(s string) string { return strings.ReplaceAll(s, tok, "***") }
 

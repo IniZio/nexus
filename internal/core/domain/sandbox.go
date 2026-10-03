@@ -241,6 +241,10 @@ type Sandbox struct {
 	// from the NEXUS_PRINCIPAL environment variable or vault.LocalPrincipal().
 	// Empty on records written before this field was introduced.
 	Principal string `json:"principal,omitempty"`
+
+	// Backend is the driver backend name that owns this sandbox (e.g.
+	// "sprites"). Empty means the process default driver.
+	Backend string `json:"backend,omitempty"`
 }
 
 // LiveMount describes a single live host-directory virtiofs share attached to

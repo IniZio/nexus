@@ -30,6 +30,7 @@ type fakeAPI struct {
 	execErr   error
 	stderr    string
 	policyErr func(n int) error
+	createErr error
 }
 
 func (f *fakeAPI) rec(s string) { f.calls = append(f.calls, s) }
@@ -39,7 +40,7 @@ func (f *fakeAPI) CreateSprite(_ context.Context, name string) error {
 	defer f.mu.Unlock()
 	f.rec("create")
 	f.created = append(f.created, name)
-	return nil
+	return f.createErr
 }
 
 func (f *fakeAPI) SpriteExists(context.Context, string) (bool, error) {
@@ -201,6 +202,17 @@ func TestProvisionCloneFailureRollsBack(t *testing.T) {
 				t.Fatalf("rollback: created=%v deleted=%v", f.created, f.deleted)
 			}
 		})
+	}
+}
+
+func TestProvisionCreateErrorStillDeletes(t *testing.T) {
+	f := &fakeAPI{createErr: errors.New("connection reset")}
+	d, _ := newTestDriver(t, f)
+	if err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{}); err == nil {
+		t.Fatal("want error")
+	}
+	if len(f.deleted) != 1 || f.deleted[0] != f.created[0] {
+		t.Fatalf("created=%v deleted=%v", f.created, f.deleted)
 	}
 }
 
