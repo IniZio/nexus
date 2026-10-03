@@ -1,8 +1,9 @@
 import { update, type EngineInterface, type Register } from 'claude-code'
 import type { NexusBinding } from '../types'
-import { WORKER_TYPE, guestCommand, route, sliceLines, applyEdit, guestPath, sandboxRefFor, worktreeInPrompt, parseCreated, lastLine, type Created } from './policy'
+import { WORKER_TYPE, guestCommand, route, sliceLines, applyEdit, guestPath, sandboxRefFor, worktreeInPrompt, parseCreated, lastLine, orchestrateDeny, parseOrchestrateArg, type Created } from './policy'
 
 const BINDINGS = { plugin: 'nexus-subagent', key: 'bindings' } as const
+const ORCHESTRATE = { plugin: 'nexus-subagent', key: 'orchestrate' } as const
 
 const SPAWN_SCHEMA = {
   type: 'object',
@@ -21,14 +22,21 @@ const SPAWN_SCHEMA = {
   required: ['task'],
 }
 
-const WORKER_PROMPT = `You are a nexus worker: a subagent whose shell runs inside an isolated
-nexus microVM bound to one git worktree.
+const WORKER_PROMPT = `You are a nexus ticket agent: you own one ticket, and your shell runs inside an
+isolated nexus microVM bound to one git worktree on its own branch.
+
+- You are a ticket orchestrator: classify the ticket, delegate to subagents
+  (explore, implementer, qa, advisor, general-purpose), review their work, and
+  integrate it. You may use the Agent tool.
+- Every subagent you start shares THIS sandbox and worktree (/workspace); their
+  Bash, Read, Write and Edit run in the same guest, so give them disjoint files
+  or run them one after another. Nested subagents share it too.
 
 - Your worktree is mounted writable in the VM at /workspace; Bash starts there.
   Host worktree paths in commands and file tools are translated to /workspace.
 - Read, Write and Edit also run inside the VM; search with Bash (rg, grep, find).
-- No other tools are available. Do not try to reach the host.
-- Commit your work on the worktree's branch when the task asks for it.
+- Glob and Grep are not available; use Bash (rg, find). Do not try to reach the host.
+- Commit your work (and your subagents' work) on the worktree's branch.
 - Finish with a short report: what changed, how you verified it, what is left.`
 
 async function createWorktreeSandbox($: EngineInterface, repo: string, branch: string, base?: string): Promise<Created> {
@@ -94,6 +102,24 @@ async function isUnboundWorker($: EngineInterface, agentId: string, foreign: Set
   return false
 }
 
+async function orchestrateOn($: EngineInterface): Promise<boolean> {
+  return (await $.state.get(ORCHESTRATE)).value === true
+}
+
+const ORCHESTRATE_SECTION =
+  'Orchestrate mode is ON. You are the host main session: do not edit files or run mutating commands. ' +
+  'For each ticket call mcp__nexus-subagent__spawn (one sandbox per ticket); that ticket agent orchestrates its own subagents inside the sandbox. ' +
+  'Read, Glob, Grep, read-only Bash and SendMessage remain available. Toggle with /orchestrate on|off|status.'
+
+// Parent id of a spawn event or agent info; field names vary by engine version.
+function parentOf(x: unknown): string | undefined {
+  const o = x as Record<string, unknown>
+  for (const k of ['parentAgentId', 'parent_agent_id', 'parentId', 'callerAgentId']) {
+    if (typeof o?.[k] === 'string' && o[k]) return o[k] as string
+  }
+  return undefined
+}
+
 export const register: Register = on => {
   const foreign = new Set<string>()
   const createdRefs = new Map<string, string>()
@@ -108,7 +134,7 @@ export const register: Register = on => {
       description:
         'Coding agent sandboxed in a nexus microVM. Start the prompt with a line "worktree: <abs path>" naming a herdr worktree (~/.herdr/worktrees/<project>/<name>) whose sandbox is running.',
       prompt: WORKER_PROMPT,
-      tools: ['Bash', 'Read', 'Write', 'Edit'],
+      tools: ['Bash', 'Read', 'Write', 'Edit', 'Agent', 'SendMessage', 'TodoWrite'],
     })
     await $.tool.register({
       name: 'spawn',
@@ -127,7 +153,32 @@ export const register: Register = on => {
         'The worker cannot be resumed afterwards.',
       inputSchema: TEARDOWN_SCHEMA,
     })
+    await $.command.register({
+      name: 'orchestrate',
+      description: 'Orchestrate mode: this session only delegates tickets via mcp__nexus-subagent__spawn. Usage: /orchestrate on|off|status',
+    })
+    if (await orchestrateOn($)) $.ui.status('orchestrate on')
     return started
+  })
+
+  on('command.run', async ($, e, next) => {
+    const c = e as unknown as { command?: string; name?: string; args?: string; arg?: string }
+    if ((c.command ?? c.name)?.replace(/^\//, '') !== 'orchestrate') return next(e)
+    const mode = parseOrchestrateArg(c.args ?? c.arg)
+    if (!mode) return { result: 'usage: /orchestrate on|off|status' }
+    if (mode !== 'status') {
+      await update($, ORCHESTRATE, () => mode === 'on')
+      $.ui.status(mode === 'on' ? 'orchestrate on' : undefined)
+    }
+    const now = mode === 'status' ? await orchestrateOn($) : mode === 'on'
+    return { result: `orchestrate ${now ? 'on' : 'off'}` }
+  })
+
+  on('prompt.compose', async ($, e, next) => {
+    const out = await next(e)
+    if (!(await orchestrateOn($))) return out
+    const o = out as unknown as { sections?: unknown[] }
+    return { ...out, sections: [...(o.sections ?? []), { id: 'nexus-subagent.orchestrate', text: ORCHESTRATE_SECTION }] } as typeof out
   })
 
   on('tool.call', { tool: 'mcp__nexus-subagent__teardown' }, async ($, e) => {
@@ -212,6 +263,13 @@ export const register: Register = on => {
   })
 
   on('agent.spawn', async ($, e, next) => {
+    const parent = parentOf(e)
+    const inherited = parent ? await bindingOf($, parent) : undefined
+    if (inherited) {
+      const child = await next({ ...e, cwd: inherited.root })
+      if (child.agentId) await bind($, child.agentId, inherited)
+      return child
+    }
     if (e.subagentType !== WORKER_TYPE) return next(e)
     const resumed = (e as unknown as { agentId?: string }).agentId
     if (resumed && (await bindingOf($, resumed))) return next(e)
@@ -239,7 +297,16 @@ export const register: Register = on => {
     if (!e.agentId) return next(e)
     const r = route(e.tool)
     if (r.kind === 'engine') return next(e)
-    const b = await bindingOf($, e.agentId)
+    let b = await bindingOf($, e.agentId)
+    if (!b) {
+      const info = (await $.agent.list()).find(a => a.id === e.agentId)
+      const parent = parentOf(info)
+      const pb = parent ? await bindingOf($, parent) : undefined
+      if (pb) {
+        await bind($, e.agentId, pb)
+        b = pb
+      }
+    }
     if (!b) {
       return (await isUnboundWorker($, e.agentId, foreign))
         ? {
@@ -309,6 +376,21 @@ export const register: Register = on => {
       return { deny: `nexus-subagent hook failed (${String(next.error)}); refusing rather than running on the host` }
     }
     return next(e)
+  })
+
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId) return next(e)
+    if (!(await orchestrateOn($))) return next(e)
+    const deny = orchestrateDeny(e.tool, (e as unknown as { command?: unknown }).command)
+    return deny === undefined ? next(e) : { deny }
+  }).catch(async ($, e, next) => {
+    if (e.agentId) return next(e)
+    let enabled = true
+    try {
+      enabled = await orchestrateOn($)
+    } catch {}
+    const deny = enabled ? orchestrateDeny(e.tool, (e as unknown as { command?: unknown }).command) : undefined
+    return deny === undefined ? next(e) : { deny: `${deny} (orchestrate hook failed: ${String(next.error)})` }
   })
 
   on('tool.check', { tool: 'Bash' }, ($, e, next) => {

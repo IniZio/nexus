@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { guestCommand, guestPath, lastLine, parseCreated, route, sliceLines, applyEdit, sandboxRefFor } from './policy'
+import { isReadOnlyBash, orchestrateDeny, parseOrchestrateArg, guestCommand, guestPath, lastLine, parseCreated, route, sliceLines, applyEdit, sandboxRefFor } from './policy'
 
 describe('policy', () => {
   test('maps a herdr worktree path to its sandbox handle', () => {
@@ -50,5 +50,66 @@ describe('policy', () => {
   test('takes the JSON result from the last stdout line', () => {
     expect(lastLine('progress\n{"handle":"p/b"}\n\n')).toBe('{"handle":"p/b"}')
     expect(lastLine('')).toBe('')
+  })
+
+  test('lets a ticket orchestrator use Agent and messaging but not host tools', () => {
+    expect(route('Agent')).toEqual({ kind: 'engine' })
+    expect(route('SendMessage')).toEqual({ kind: 'engine' })
+    expect(route('WebFetch').kind).toBe('deny')
+  })
+
+  test('classifies read-only Bash for orchestrate mode', () => {
+    for (const c of [
+      'git status',
+      'git log --oneline -5 | head -3',
+      'git diff HEAD~1 && ls -la',
+      'git branch -a',
+      'git branch --list "feat/*"',
+      'cat a.go | wc -l',
+      "rg 'a;b' src",
+      'find . -name "*.go" 2>/dev/null',
+      'ls missing 2>&1',
+    ]) expect(isReadOnlyBash(c)).toBe(true)
+    for (const c of [
+      'rm -rf x',
+      'git commit -m x',
+      'git branch newbranch',
+      'git branch -D old',
+      'git diff --output=out.patch',
+      'git -C /tmp status',
+      'cat a > b',
+      'echo hi',
+      'ls; rm x',
+      'ls && touch x',
+      'ls $(rm x)',
+      'ls `rm x`',
+      'ls "$(rm x)"',
+      'find . -delete',
+      'find . -exec rm {} +',
+      'rg --pre ./x foo',
+      'sleep 1 &',
+      'FOO=1 ls',
+      'cat <(rm x)',
+      "ls 'unterminated",
+    ]) expect(isReadOnlyBash(c)).toBe(false)
+  })
+
+  test('denies main-thread mutations in orchestrate mode with a spawn hint', () => {
+    for (const t of ['Edit', 'Write', 'NotebookEdit', 'Agent']) {
+      expect(orchestrateDeny(t)).toContain('mcp__nexus-subagent__spawn')
+    }
+    expect(orchestrateDeny('Bash', 'rm -rf /')).toContain('mcp__nexus-subagent__spawn')
+    expect(orchestrateDeny('Bash', 'git status')).toBe(undefined)
+    expect(orchestrateDeny('Bash')).toContain('read-only')
+    for (const t of ['Read', 'Glob', 'Grep', 'mcp__nexus-subagent__spawn', 'SendMessage', 'AskUserQuestion']) {
+      expect(orchestrateDeny(t)).toBe(undefined)
+    }
+  })
+
+  test('parses the orchestrate argument', () => {
+    expect(parseOrchestrateArg('ON')).toBe('on')
+    expect(parseOrchestrateArg(' off ')).toBe('off')
+    expect(parseOrchestrateArg(undefined)).toBe('status')
+    expect(parseOrchestrateArg('maybe')).toBe(undefined)
   })
 })
