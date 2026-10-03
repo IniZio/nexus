@@ -48,9 +48,16 @@ grep -A3 '"nexus"' ~/.claude.json
 ```
 
 If that binary is not `~/.local/bin/nexus`, the server may be running a stale
-build that lacks the delegation tools (`delegate_worktree_create`,
-`delegate_agent_dispatch`, `delegate_agent_poll`, `delegate_agent_wait`,
-`delegate_agent_followup`, `delegate_teardown`).
+build.
+
+### 4b. nexus-subagent mod
+
+`nexus doctor` includes a `claude_mod` check (WARN-only). It reports whether the
+nexus-subagent mod is installed for Claude Code (from
+`~/.claude/plugins/installed_plugins.json`), its version against the repo's
+`plugins/nexus-subagent` version, and `claude --version` against the minimum
+supported Claude Code version. A WARN means nexus:worker subagents may be
+unavailable; follow the printed remediation.
 
 ### 5. Running sandboxes and RAM cost
 

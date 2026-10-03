@@ -55,6 +55,7 @@ type probes struct {
 	registryReachable func(string) error
 	listHerdrProcs    func(context.Context) ([]HerdrProc, error)
 	listStaleMCP      func() []int
+	claudeMod         func() claudeModState
 	getenv            func(string) string
 	executable        func() (string, error)
 	resolveHostBin    func(ctx context.Context, name string) (hostbin.Resolved, error)
@@ -104,6 +105,7 @@ func defaultProbes() probes {
 		},
 		listHerdrProcs: ListHerdrProcesses,
 		listStaleMCP:   listStaleMCPProcs,
+		claudeMod:      probeClaudeMod,
 	}
 }
 
@@ -350,6 +352,10 @@ func appendHostChecks(checks []CheckResult, p probes, platOK bool) []CheckResult
 
 	if p.listStaleMCP != nil {
 		checks = append(checks, checkStaleMCPProcs(p.listStaleMCP))
+	}
+
+	if p.claudeMod != nil {
+		checks = append(checks, checkClaudeMod(p.claudeMod))
 	}
 
 	return checks
