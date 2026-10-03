@@ -768,7 +768,9 @@ func workspaceMountCmdline(mounts []agent.GuestMount) string {
 		if m.Resizable {
 			rs = "true"
 		}
-		if m.IsFile {
+		if m.GitCommon {
+			b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s:%s:%s:gitcommon", m.Device, m.Target, m.FSType, ro, ws, rs, m.FileName)
+		} else if m.IsFile {
 			b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws, rs, m.FileName)
 		} else {
 			b += fmt.Sprintf(" --workspace-mount=%s:%s:%s:%s:%s:%s", m.Device, m.Target, m.FSType, ro, ws, rs)
@@ -2369,10 +2371,10 @@ func parseMountNamed(spec string) (service.NamedVolumeMount, error) {
 }
 
 func parseMountLive(spec string) (domain.LiveMount, error) {
-	parts := strings.SplitN(spec, ":", 3)
+	parts := strings.SplitN(spec, ":", 4)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return domain.LiveMount{}, &UsageError{
-			Msg: fmt.Sprintf("sandbox create: --mount %q: want <host-path>:<guest-path>[:ro]", spec),
+			Msg: fmt.Sprintf("sandbox create: --mount %q: want <host-path>:<guest-path>[:ro][:gitcommon]", spec),
 		}
 	}
 	hostPath := parts[0]
@@ -2400,13 +2402,15 @@ func parseMountLive(spec string) (domain.LiveMount, error) {
 		HostPath:  abs,
 		GuestPath: guestPath,
 	}
-	if len(parts) == 3 {
-		switch parts[2] {
+	for _, opt := range parts[2:] {
+		switch opt {
 		case "ro":
 			lm.ReadOnly = true
+		case "gitcommon":
+			lm.GitCommon = true
 		default:
 			return domain.LiveMount{}, &UsageError{
-				Msg: fmt.Sprintf("sandbox create: --mount %q: unknown option %q; want <host-path>:<guest-path>[:ro]", spec, parts[2]),
+				Msg: fmt.Sprintf("sandbox create: --mount %q: unknown option %q; want <host-path>:<guest-path>[:ro][:gitcommon]", spec, opt),
 			}
 		}
 	}
@@ -2424,6 +2428,7 @@ func liveMountsToGuestMounts(mounts []domain.LiveMount) []agent.GuestMount {
 			IsWorkspace: false,
 			IsFile:      m.IsFile,
 			FileName:    filepath.Base(m.HostPath),
+			GitCommon:   m.GitCommon,
 		}
 		if !m.IsFile {
 			out[i].FileName = ""

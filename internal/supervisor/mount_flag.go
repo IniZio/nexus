@@ -26,11 +26,14 @@ func EncodeLiveMount(lm domain.LiveMount) string {
 	} else if !lm.ReadOnly && lm.IsFile {
 		spec += ":rw:file"
 	}
+	if lm.GitCommon {
+		spec += ":gitcommon"
+	}
 	return spec
 }
 
 func ParseLiveMountSpec(spec string) (domain.LiveMount, error) {
-	parts := strings.SplitN(spec, ":", 4)
+	parts := strings.SplitN(spec, ":", 5)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return domain.LiveMount{}, fmt.Errorf("supervisor: --mount %q: want <host-path>:<guest-path>[:ro|:rw][:file]", spec)
 	}
@@ -43,6 +46,8 @@ func ParseLiveMountSpec(spec string) (domain.LiveMount, error) {
 			// default, no-op
 		case "file":
 			lm.IsFile = true
+		case "gitcommon":
+			lm.GitCommon = true
 		default:
 			return domain.LiveMount{}, fmt.Errorf("supervisor: --mount %q: unknown option %q", spec, opt)
 		}

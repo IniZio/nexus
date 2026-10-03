@@ -2096,7 +2096,7 @@ func TestHerdrWorktreeSandbox_linkedWorktree_gitDirMountPassedToCreate(t *testin
 	}
 	found := false
 	for _, m := range gotExtraMounts {
-		if m == wantGitMount {
+		if m == wantGitMount+":gitcommon" {
 			found = true
 			break
 		}

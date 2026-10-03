@@ -47,4 +47,8 @@ type GuestMount struct {
 
 	IsFile   bool
 	FileName string
+
+	// GitCommon marks a git common dir mount; MountWorkspace guards its
+	// config and hooks/ read-only (see commondir_guard_linux.go).
+	GitCommon bool
 }

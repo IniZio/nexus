@@ -45,9 +45,9 @@ func parseWorkspaceMountArg(arg string) (agent.GuestMount, bool) {
 		return agent.GuestMount{}, false
 	}
 	pair := strings.TrimPrefix(arg, prefix)
-	// SplitN with n=7: device, target, fstype, readonly, workspace, resizable, filename.
+	// SplitN with n=8: device, target, fstype, readonly, workspace, resizable, filename, gitcommon.
 	// Fields 5–7 are optional; old (4- or 5- or 6-field) formats are accepted.
-	parts := strings.SplitN(pair, ":", 7)
+	parts := strings.SplitN(pair, ":", 8)
 	if len(parts) < 4 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return agent.GuestMount{}, false
 	}
@@ -60,9 +60,10 @@ func parseWorkspaceMountArg(arg string) (agent.GuestMount, bool) {
 		isResizable = parts[5] == "true"
 	}
 	fileName := ""
-	if len(parts) == 7 {
+	if len(parts) >= 7 {
 		fileName = parts[6]
 	}
+	gitCommon := len(parts) == 8 && parts[7] == "gitcommon"
 	return agent.GuestMount{
 		Device:      parts[0],
 		Target:      parts[1],
@@ -72,6 +73,7 @@ func parseWorkspaceMountArg(arg string) (agent.GuestMount, bool) {
 		Resizable:   isResizable,
 		IsFile:      fileName != "",
 		FileName:    fileName,
+		GitCommon:   gitCommon,
 	}, true
 }
 

@@ -259,6 +259,10 @@ type LiveMount struct {
 	ReadOnly bool `json:"read_only"`
 
 	IsFile bool `json:"is_file,omitempty"`
+
+	// GitCommon marks a git common dir; the guest agent makes its config and
+	// hooks/ read-only after mounting. See doc/design/worktree-commondir-guard.md.
+	GitCommon bool `json:"git_common,omitempty"`
 }
 
 // VolumeAttachment describes a single named volume attached to a sandbox.

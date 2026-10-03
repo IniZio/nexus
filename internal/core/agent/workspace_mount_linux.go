@@ -136,6 +136,9 @@ func MountWorkspace(mounts []GuestMount) error {
 			return fmt.Errorf("workspace mount: mount %s → %s (%s): %w",
 				m.Device, m.Target, m.FSType, err)
 		}
+		if m.GitCommon && !m.ReadOnly {
+			startCommonDirGuard(m.Target)
+		}
 	}
 	return nil
 }

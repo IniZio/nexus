@@ -4608,6 +4608,44 @@ func herdrWorktreeGitDirMount(worktreePath string) string {
 }
 
 /**
+ * herdrCommonDirHostPathWarning returns a one-line warning naming common-dir
+ * config keys whose host-absolute values will not resolve in the guest, or "".
+ */
+func herdrCommonDirHostPathWarning(commonDir, checkout string) string {
+	out, err := exec.Command("git", "config", "--file", filepath.Join(commonDir, "config"), "--list").Output()
+	if err != nil {
+		return ""
+	}
+	var bad []string
+	for _, line := range strings.Split(string(out), "\n") {
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k := strings.ToLower(key)
+		pathKey := k == "core.hookspath" || k == "core.excludesfile" || k == "core.attributesfile" ||
+			k == "include.path" ||
+			(strings.HasPrefix(k, "includeif.") && strings.HasSuffix(k, ".path"))
+		if !pathKey || !(filepath.IsAbs(val) || strings.HasPrefix(val, "~")) {
+			continue
+		}
+		if filepath.IsAbs(val) && (herdrPathWithin(val, commonDir) || herdrPathWithin(val, checkout)) {
+			continue
+		}
+		bad = append(bad, key+"="+val)
+	}
+	if len(bad) == 0 {
+		return ""
+	}
+	return "common-dir config has host paths that will not resolve in the guest: " + strings.Join(bad, ", ")
+}
+
+func herdrPathWithin(p, dir string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+/**
  * buildWorktreeEgressArgs derives the --secret and --repo CLI args from the
  * egress.policy and egress.secrets sections of the checkout's .nexus/config.yaml.
  *
@@ -5044,7 +5082,11 @@ func herdrWorktreeSandbox(
 	 */
 	var extraMounts []string
 	if gitMount := herdrWorktreeGitDirMount(info.Path); gitMount != "" {
-		extraMounts = append(extraMounts, gitMount)
+		extraMounts = append(extraMounts, gitMount+":gitcommon")
+		commonDir, _, _ := strings.Cut(gitMount, ":")
+		if msg := herdrCommonDirHostPathWarning(commonDir, info.Path); msg != "" {
+			fmt.Fprintf(w, "worktree-sandbox: warning: %s\n", msg)
+		}
 		extraMounts = append(extraMounts, info.Path+":"+info.Path+":ro")
 	}
 	/**
