@@ -266,7 +266,7 @@ docs:
 docs-build:
 	cd doc/site && pnpm install --frozen-lockfile && pnpm run build
 
-# check-agent-fresh detects stale agent binaries in TWO places:
+# check-agent-fresh detects stale agent binaries in images/kernel, PATH and the embedded .zst (see CLAUDE.md):
 #
 #   Part 1 — base-image agent (images/kernel/nexus-agent):
 #     Embedded into the nexus-agent-base rootfs image; used by every plain
@@ -281,10 +281,6 @@ docs-build:
 #     stale on-PATH agent silently re-bakes old code — new agent features
 #     (e.g. boot.json capture) never run even when the CLI is rebuilt.
 #     Fix: make install-agent
-#
-#   Part 3 — embedded agent (internal/core/hostbin/embedded/<arch>/nexus-agent.zst):
-#     What `go build ./cmd/nexus` actually ships inside the CLI. Gitignored;
-#     produced only by `make artifacts`. Fix: make artifacts
 #
 # Rule: if ANY .go file under cmd/nexus-agent/ or internal/core/agent/ is
 # newer than the checked binary, the binary is stale.
