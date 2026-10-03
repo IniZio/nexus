@@ -3,7 +3,6 @@ package vmcfg
 import (
 	"bufio"
 	"os"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -28,12 +27,7 @@ func detectHostCapacity() HostCapacity {
 	case "linux":
 		hc.RAMMiB = linuxMemTotalMiB("/proc/meminfo")
 	case "darwin":
-		out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
-		if err == nil {
-			if b, perr := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64); perr == nil {
-				hc.RAMMiB = b / (1024 * 1024)
-			}
-		}
+		hc.RAMMiB = darwinMemMiB()
 	}
 	return hc
 }
