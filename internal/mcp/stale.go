@@ -2,15 +2,14 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-const staleWarning = "WARNING: this nexus MCP server is stale: the nexus binary on disk was replaced after " +
-	"this server started, so tool behaviour may be out of date. Restart the session or reconnect the nexus MCP server."
 
 type binaryID struct {
 	ino   uint64
@@ -29,38 +28,54 @@ func statBinaryID(path string) (binaryID, bool) {
 	return binaryID{ino: uint64(st.Ino), mtime: fi.ModTime().UnixNano()}, true
 }
 
-// staleWatcher detects that the executable at path was replaced since startup.
-// It never re-execs; it only reports.
+// staleWatcher detects that the executable at path was replaced or deleted since startup.
+// Once stale, the middleware refuses every tools/call.
 type staleWatcher struct {
-	path  string
-	start binaryID
-	known bool
+	path    string
+	start   binaryID
+	known   bool
+	started time.Time
+	pid     int
+	exeLink func() string
+}
+
+func procExeLink() string {
+	l, _ := os.Readlink("/proc/self/exe")
+	return l
 }
 
 func newStaleWatcher(path string) *staleWatcher {
 	path = strings.TrimSuffix(path, " (deleted)")
 	id, ok := statBinaryID(path)
-	return &staleWatcher{path: path, start: id, known: ok}
+	return &staleWatcher{path: path, start: id, known: ok, started: time.Now(), pid: os.Getpid(), exeLink: procExeLink}
 }
 
 func (w *staleWatcher) stale() bool {
 	if w == nil || !w.known {
 		return false
 	}
+	if w.exeLink != nil && strings.HasSuffix(w.exeLink(), " (deleted)") {
+		return true
+	}
 	cur, ok := statBinaryID(w.path)
 	return ok && cur != w.start
 }
 
-// middleware appends staleWarning to every tools/call result once stale.
+func (w *staleWatcher) staleMessage() string {
+	return fmt.Sprintf("the nexus binary was replaced since this MCP server started (pid %d, started %s); "+
+		"it is running stale code and refuses tool calls. Reconnect the nexus MCP server (/mcp, then reconnect) "+
+		"or restart the Claude session.", w.pid, w.started.Format(time.RFC3339))
+}
+
+// middleware rejects every tools/call with a tool error once stale.
 func (w *staleWatcher) middleware(next gosdk.MethodHandler) gosdk.MethodHandler {
 	return func(ctx context.Context, method string, req gosdk.Request) (gosdk.Result, error) {
-		res, err := next(ctx, method, req)
-		if err != nil || method != "tools/call" || !w.stale() {
-			return res, err
+		if method == "tools/call" && w.stale() {
+			return &gosdk.CallToolResult{
+				IsError: true,
+				Content: []gosdk.Content{&gosdk.TextContent{Text: w.staleMessage()}},
+			}, nil
 		}
-		if ctr, ok := res.(*gosdk.CallToolResult); ok && ctr != nil {
-			ctr.Content = append(ctr.Content, &gosdk.TextContent{Text: staleWarning})
-		}
-		return res, err
+		return next(ctx, method, req)
 	}
 }
