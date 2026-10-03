@@ -21,11 +21,25 @@ type CreateArgs struct {
 	MemoryMiB       uint32   `json:"memory_mib,omitempty"       jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
 	VCPUs           uint32   `json:"vcpus,omitempty"            jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
 	AllowedBranches []string `json:"allowed_branches,omitempty" jsonschema:"MUST NOT be set — branch policy is derived from the worktree; any value here returns an error"`
+	Backend         string   `json:"backend,omitempty"          jsonschema:"optional sandbox backend (e.g. sprites); precedence: this arg > repo .nexus/config.yaml backend > NEXUS_BACKEND > default"`
 	Posture         string   `json:"-"`
 	BriefPath       string   `json:"brief_path,omitempty"       jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md and excluded from commits (optional)"`
 }
 
 func validateCreate(args CreateArgs) error {
+	_, err := validateCreateBackend(args)
+	return err
+}
+
+// validateCreateBackend runs the create validation and returns the effective backend.
+func validateCreateBackend(args CreateArgs) (string, error) {
+	if err := validateCreateBase(args); err != nil {
+		return "", err
+	}
+	return ResolveBackend(args.Backend, args.RepoPath)
+}
+
+func validateCreateBase(args CreateArgs) error {
 	if args.RepoPath == "" {
 		return fmt.Errorf("repo_path is required")
 	}
@@ -277,7 +291,8 @@ type SandboxResult struct {
 
 // CreateSandbox creates a herdr worktree for args.Branch and binds a nexus sandbox to it.
 func CreateSandbox(ctx context.Context, args CreateArgs, r Runners) (SandboxResult, error) {
-	if err := validateCreate(args); err != nil {
+	backend, err := validateCreateBackend(args)
+	if err != nil {
 		return SandboxResult{}, err
 	}
 	herdrBin, err := ResolveHerdrBin()
@@ -327,6 +342,9 @@ func CreateSandbox(ctx context.Context, args CreateArgs, r Runners) (SandboxResu
 	bindArgv := []string{"herdr", "worktree-sandbox"}
 	if args.Posture != "" {
 		bindArgv = append(bindArgv, "--posture", args.Posture)
+	}
+	if backend != "" {
+		bindArgv = append(bindArgv, "--backend", backend)
 	}
 	bindOut, err := r.Host(ctx, append(bindArgv, ws)...)
 	if err != nil {

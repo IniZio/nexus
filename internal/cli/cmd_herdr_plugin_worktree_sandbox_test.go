@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2775,5 +2776,180 @@ func TestHerdrWorktreeSandbox_autoListTimeout_nil(t *testing.T) {
 	err := callHerdrWorktreeSandbox(t, "w-auto", root, false, true, nil, nil)
 	if err != nil {
 		t.Fatalf("--auto call with list timeout: want nil error, got %v", err)
+	}
+}
+
+func TestHerdrWorktreeSandboxParseBackend(t *testing.T) {
+	rest, b, err := herdrWorktreeSandboxParseBackend([]string{"--backend", "sprites", "--auto", "w1"})
+	if err != nil || b != "sprites" || len(rest) != 2 || rest[0] != "--auto" {
+		t.Fatalf("got rest=%v b=%q err=%v", rest, b, err)
+	}
+	rest, b, err = herdrWorktreeSandboxParseBackend([]string{"--auto", "w1"})
+	if err != nil || b != "" || len(rest) != 2 {
+		t.Fatalf("no flag: rest=%v b=%q err=%v", rest, b, err)
+	}
+	if _, _, err = herdrWorktreeSandboxParseBackend([]string{"--backend"}); err == nil {
+		t.Fatal("missing value must error")
+	}
+	if _, _, err = herdrWorktreeSandboxParseBackend([]string{"--backend", "--auto", "w1"}); err == nil {
+		t.Fatal("flag as value must error")
+	}
+}
+
+func TestHerdrWorktreeSandbox_defaultBackend_noSpritesSteps(t *testing.T) {
+	t.Setenv("NEXUS_BACKEND", "")
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-ch", "w-src", "worktree/ch-1", t.TempDir()),
+	}.fn())
+	swapRenameFn(t, func(context.Context, string, string, string) error { return nil })
+	called := false
+	oldC, oldS := herdrSpritesCreateFn, herdrSpritesSeedFn
+	herdrSpritesCreateFn = func(context.Context, io.Writer, string, string) error { called = true; return nil }
+	herdrSpritesSeedFn = func(context.Context, domain.SandboxID, string) error { called = true; return nil }
+	t.Cleanup(func() { herdrSpritesCreateFn, herdrSpritesSeedFn = oldC, oldS })
+	createCalled := false
+	create := func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, domain.EgressMCPPolicies, bool) error {
+		createCalled = true
+		return nil
+	}
+	if err := callHerdrWorktreeSandbox(t, "w-ch", root, false, false, create, nil); err != nil {
+		t.Fatal(err)
+	}
+	if called || !createCalled {
+		t.Fatalf("sprites steps called=%v, CH createFn called=%v", called, createCalled)
+	}
+}
+
+func TestHerdrWorktreeSandbox_unknownBackend_errors(t *testing.T) {
+	root := t.TempDir()
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-x", "w-src", "worktree/x-1", t.TempDir()),
+	}.fn())
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+	ctx := herdrWithBackend(context.Background(), "bogus")
+	var w strings.Builder
+	err := herdrWorktreeSandbox(ctx, "w-x", &w, root, false, false, false, false, noopCreate, stubSandboxGet(domain.Sandbox{}, nil))
+	if err == nil || !strings.Contains(err.Error(), "unknown backend") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHerdrWorktreeSandbox_spritesBackend_seedsThenOpensPane(t *testing.T) {
+	root := t.TempDir()
+	wt := filepath.Join(t.TempDir(), "worktree-sp-1")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// auto mode only proceeds when the checkout carries .nexus/config.yaml
+	if err := os.MkdirAll(filepath.Join(wt, ".nexus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".nexus", "config.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	swapListFn(t, stubWorktreeList{
+		info: linkedWorktreeInfo("w-sp", "w-src", "worktree/sp-1", wt),
+	}.fn())
+	swapRenameFn(t, func(context.Context, string, string, string) error { return nil })
+	swapRootPaneFn(t, func(context.Context, string, string) string { return "" })
+	t.Setenv("HERDR_BIN_PATH", "/nonexistent-herdr-for-testing")
+
+	var calls []string
+	var seedErr, createErr error
+	var removed []string
+	oldC, oldS, oldP, oldR := herdrSpritesCreateFn, herdrSpritesSeedFn, herdrOpenSpritesPaneFn, herdrSpritesRemoveFn
+	herdrSpritesRemoveFn = func(_ context.Context, _ io.Writer, handle string) error {
+		removed = append(removed, handle)
+		return nil
+	}
+	herdrSpritesCreateFn = func(_ context.Context, _ io.Writer, handle, worktree string) error {
+		calls = append(calls, "create:"+handle+":"+worktree)
+		return createErr
+	}
+	herdrSpritesSeedFn = func(_ context.Context, _ domain.SandboxID, worktree string) error {
+		calls = append(calls, "seed:"+worktree)
+		if _, err := herdrSpaceResolve(context.Background(), root, "w-sp"); err == nil {
+			t.Error("binding present at seed time")
+		}
+		return seedErr
+	}
+	herdrOpenSpritesPaneFn = func(_ context.Context, _, handle, ws, _ string) (string, error) {
+		// binding must already exist before the pane opens
+		if _, err := herdrSpaceResolve(context.Background(), root, ws); err != nil {
+			t.Errorf("binding missing at pane open: %v", err)
+		}
+		calls = append(calls, "pane:"+strings.Join(SpritesGuestArgv(), " "))
+		return "p1", nil
+	}
+	t.Cleanup(func() {
+		herdrSpritesCreateFn, herdrSpritesSeedFn, herdrOpenSpritesPaneFn, herdrSpritesRemoveFn = oldC, oldS, oldP, oldR
+	})
+
+	failCreate := func(context.Context, string, string, string, string, []string, []string, string, domain.EgressPathPolicies, domain.EgressMCPPolicies, bool) error {
+		t.Error("CH createFn must not run on the sprites path")
+		return nil
+	}
+	ctx := herdrWithBackend(context.Background(), "sprites")
+	var w strings.Builder
+	seedErr = errors.New("seed boom")
+	for _, explicit := range []bool{true, false} {
+		calls, removed = nil, nil
+		err := herdrWorktreeSandbox(ctx, "w-sp", &w, root, true, false, !explicit, false, failCreate, stubSandboxGet(domain.Sandbox{ID: domain.NewSandboxID()}, nil))
+		if explicit && err == nil {
+			t.Error("explicit mode: seed failure must return an error")
+		}
+		if !explicit && err != nil {
+			t.Errorf("auto mode: seed failure must be swallowed, got %v", err)
+		}
+		if _, rerr := herdrSpaceResolve(context.Background(), root, "w-sp"); rerr == nil {
+			t.Errorf("explicit=%v: binding present after seed failure", explicit)
+		}
+		for _, c := range calls {
+			if strings.HasPrefix(c, "pane:") {
+				t.Errorf("pane opened after seed failure: %v", calls)
+			}
+		}
+		if len(removed) != 1 || removed[0] != "repo/worktree-sp-1" {
+			t.Errorf("explicit=%v: removed=%v, want exactly [repo/worktree-sp-1]", explicit, removed)
+		}
+	}
+
+	// Sprite not created by this call (create failed, reconcile adopted it): never remove.
+	calls, removed = nil, nil
+	createErr = errors.New("create boom")
+	adopted := domain.Sandbox{
+		ID:         domain.NewSandboxID(),
+		State:      domain.Running,
+		LiveMounts: []domain.LiveMount{{HostPath: wt, GuestPath: "/workspace"}},
+	}
+	err := herdrWorktreeSandbox(ctx, "w-sp", &w, root, true, false, false, false, failCreate, stubSandboxGet(adopted, nil))
+	if err == nil {
+		t.Error("adopted sprite seed failure must return an error in explicit mode")
+	}
+	if !strings.Contains(strings.Join(calls, "\n"), "seed:") {
+		t.Fatalf("reconcile path did not reach seed: calls=%v\n%s", calls, w.String())
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed a sprite not created here: %v", removed)
+	}
+	createErr = nil
+	seedErr = nil
+	calls, removed = nil, nil
+	err = herdrWorktreeSandbox(ctx, "w-sp", &w, root, true, false, false, false, failCreate, stubSandboxGet(domain.Sandbox{ID: domain.NewSandboxID()}, nil))
+	if len(removed) != 0 {
+		t.Errorf("removed on success: %v", removed)
+	}
+	if err != nil {
+		t.Fatalf("%v\n%s", err, w.String())
+	}
+	handle := "repo/worktree-sp-1"
+	want := []string{
+		"create:" + handle + ":" + wt,
+		"seed:" + wt,
+		"pane:" + strings.Join(SpritesGuestArgv(), " "),
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls:\n%s\nwant:\n%s\noutput:\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"), w.String())
 	}
 }

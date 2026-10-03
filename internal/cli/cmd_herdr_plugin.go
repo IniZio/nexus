@@ -25,6 +25,8 @@ import (
 	"github.com/IniZio/nexus/internal/core/diskfloor"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/registry"
+	"github.com/IniZio/nexus/internal/core/driver/sprites"
 	"github.com/IniZio/nexus/internal/core/hostbin"
 	"github.com/IniZio/nexus/internal/core/image"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
@@ -35,6 +37,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/vault"
 	"github.com/IniZio/nexus/internal/core/volumestore"
 	"github.com/IniZio/nexus/internal/herdragent"
+	"github.com/IniZio/nexus/internal/herdrworktree"
 	"github.com/IniZio/nexus/internal/supervisor"
 	ociname "github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -455,6 +458,11 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: " + perr.Error()}
 		}
 		ctx = herdrWithPosture(ctx, posture)
+		rest, backendFlag, berr := herdrWorktreeSandboxParseBackend(rest)
+		if berr != nil {
+			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: " + berr.Error()}
+		}
+		ctx = herdrWithBackend(ctx, backendFlag)
 		rest, conditional, auto, nestedFlag := herdrWorktreeSandboxParseArgs(rest)
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
@@ -1761,6 +1769,10 @@ func herdrWorkspaceCreate(ctx context.Context, herdrBin, label, cwd string) (wor
  * per-caller decision and why).
  */
 func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, rootPaneID string, focus bool) (string, error) {
+	return herdrOpenShellPane(ctx, herdrBin, ref, workspaceID, rootPaneID, focus)
+}
+
+func herdrOpenShellPane(ctx context.Context, herdrBin, ref, workspaceID, rootPaneID string, focus bool, extraEnv ...string) (string, error) {
 	args := []string{"plugin", "pane", "open",
 		"--plugin", "nexus",
 		"--entrypoint", "shell",
@@ -1778,6 +1790,9 @@ func herdrOpenGuestShellPane(ctx context.Context, herdrBin, ref, workspaceID, ro
 		args = append(args, "--workspace", workspaceID)
 	}
 	args = append(args, "--env", "NEXUS_WORKSPACE="+ref)
+	for _, e := range extraEnv {
+		args = append(args, "--env", e)
+	}
 	if focus {
 		args = append(args, "--focus")
 	} else {
@@ -4228,6 +4243,97 @@ func herdrWorktreeSandboxParsePosture(args []string) (rest []string, posture str
 	return args[2:], args[1], nil
 }
 
+type herdrBackendKey struct{}
+
+func herdrWithBackend(ctx context.Context, backend string) context.Context {
+	if backend == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, herdrBackendKey{}, backend)
+}
+
+func herdrBackendFrom(ctx context.Context) string {
+	b, _ := ctx.Value(herdrBackendKey{}).(string)
+	return b
+}
+
+// herdrWorktreeSandboxParseBackend strips a leading `--backend <name>` pair
+// (after --posture, before the other mode flags).
+func herdrWorktreeSandboxParseBackend(args []string) (rest []string, backend string, err error) {
+	if len(args) == 0 || args[0] != "--backend" {
+		return args, "", nil
+	}
+	if len(args) < 2 || args[1] == "" || strings.HasPrefix(args[1], "-") {
+		return nil, "", fmt.Errorf("--backend requires a value (e.g. sprites)")
+	}
+	return args[2:], args[1], nil
+}
+
+// Sprites-path steps, swapped by tests so nothing touches the network.
+var (
+	herdrSpritesCreateFn   = herdrSpritesCreate
+	herdrSpritesSeedFn     = herdrSpritesSeed
+	herdrSpritesRemoveFn   = herdrSpritesRemove
+	herdrOpenSpritesPaneFn = herdrOpenSpritesPane
+)
+
+func herdrSpritesCreate(ctx context.Context, w io.Writer, handle, worktree string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("sprites create: resolve executable: %w", err)
+	}
+	repo, err := herdrExecCommandContext(ctx, "git", "-C", worktree, "remote", "get-url", "origin").Output()
+	if err != nil || strings.TrimSpace(string(repo)) == "" {
+		return fmt.Errorf("sprites create: worktree %s has no origin remote (sprites clones it before the seed)", worktree)
+	}
+	cmd := herdrExecCommandContext(ctx, exe, "sandbox", "create", handle, "--repo", strings.TrimSpace(string(repo)))
+	cmd.Dir = worktree
+	cmd.Env = append(os.Environ(), "NEXUS_BACKEND="+registry.Sprites)
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = w
+	cmd.Stderr = io.MultiWriter(w, &stderrBuf)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w\n%s", err, sandboxCreateLastErrors(stderrBuf.String()))
+	}
+	return nil
+}
+
+func herdrSpritesRemove(ctx context.Context, w io.Writer, handle string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("sprites remove: resolve executable: %w", err)
+	}
+	cmd := herdrExecCommandContext(ctx, exe, "sandbox", "rm", handle)
+	cmd.Env = append(os.Environ(), "NEXUS_BACKEND="+registry.Sprites)
+	cmd.Stdout = w
+	cmd.Stderr = w
+	return cmd.Run()
+}
+
+func herdrSpritesSeed(ctx context.Context, id domain.SandboxID, worktree string) error {
+	drv, err := newSpritesDriver()
+	if err != nil {
+		return err
+	}
+	syncer, ok := drv.(driver.WorktreeSyncer)
+	if !ok {
+		return fmt.Errorf("sprites driver does not support worktree seeding")
+	}
+	return syncer.SeedWorktree(ctx, id, worktree, "HEAD", sprites.CloneDir)
+}
+
+func herdrOpenSpritesPane(ctx context.Context, herdrBin, handle, workspaceID, rootPaneID string) (string, error) {
+	return herdrOpenShellPane(ctx, herdrBin, handle, workspaceID, rootPaneID, false, "NEXUS_SHELL_ARGV="+herdrShellJoin(SpritesGuestArgv()))
+}
+
+func herdrShellJoin(argv []string) string {
+	q := make([]string, len(argv))
+	for i, a := range argv {
+		q[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(q, " ")
+}
+
 func herdrWorktreeSandboxCreateArgsPosture(posture, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, nested bool) []string {
 	worker := posture == herdrPostureWorker
 	args := []string{imageFlag, imageVal, "--mount", mountSpec}
@@ -5275,6 +5381,25 @@ func herdrWorktreeSandbox(
 		}
 		return nil
 	}
+	backend, backendErr := herdrworktree.ResolveBackend(herdrBackendFrom(ctx), info.Path)
+	if backendErr != nil {
+		fmt.Fprintf(w, "worktree-sandbox: %v\n", backendErr)
+		if !failSafe {
+			return fmt.Errorf("worktree-sandbox: %w", backendErr)
+		}
+		return nil
+	}
+	if backend == registry.CloudHypervisor {
+		backend = ""
+	}
+	if backend != "" && backend != registry.Sprites {
+		err := fmt.Errorf("worktree-sandbox: backend %q is not supported (want %s or default)", backend, registry.Sprites)
+		fmt.Fprintln(w, err)
+		if !failSafe {
+			return err
+		}
+		return nil
+	}
 	imageFlag, imageVal := herdrResolveWorktreeImageFromConfig(info.Path, cfgPath)
 	fmt.Fprintf(w, "worktree-sandbox: build source: %s %s\n", imageFlag, imageVal)
 
@@ -5358,7 +5483,7 @@ func herdrWorktreeSandbox(
 	 * handle. Feeding a sentinel error into the reconcile branch reuses its
 	 * adopt checks (/workspace mount, state, removal marker) unchanged.
 	 */
-	if !rebindStale && herdrVolumeSeedEnabled(checkoutCfg) {
+	if !rebindStale && backend == "" && herdrVolumeSeedEnabled(checkoutCfg) {
 		if projectKey, pkErr := herdrProjectKey(ctx, info.Path); pkErr != nil {
 			slog.Warn("worktree-sandbox: seed: resolve project key", "err", pkErr)
 		} else {
@@ -5390,12 +5515,18 @@ func herdrWorktreeSandbox(
 	}
 
 	var createErr error
+	createdHere := false
 	if rebindStale {
 		createErr = errHerdrWorktreeRebindStale
 	} else {
 		createCtx, createCancel := context.WithTimeout(ctx, herdrCreateHardCap)
 		defer createCancel()
-		createErr = createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, egressMCPPolicies, nestedFlag || nestedCfg)
+		if backend == registry.Sprites {
+			createErr = herdrSpritesCreateFn(createCtx, w, handle, info.Path)
+			createdHere = createErr == nil
+		} else {
+			createErr = createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, egressMCPPolicies, nestedFlag || nestedCfg)
+		}
 	}
 	if createErr != nil {
 		/**
@@ -5529,6 +5660,24 @@ func herdrWorktreeSandbox(
 		WorktreePath:     info.Path,
 		Principal:        herdrEffectivePrincipal(),
 	}
+	// Seed before the binding commits: a bound-but-unseeded sprite would be
+	// reused unseeded by the "already provisioned" early return on retry.
+	if backend == registry.Sprites {
+		if err := herdrSpritesSeedFn(ctx, sb.ID, info.Path); err != nil {
+			fmt.Fprintf(w, "worktree-sandbox: seed sprite %s: %v\n", handle, err)
+			if createdHere {
+				if rmErr := herdrSpritesRemoveFn(ctx, w, handle); rmErr != nil {
+					fmt.Fprintf(w, "worktree-sandbox: remove unseeded sprite %s: %v\n", handle, rmErr)
+				} else {
+					fmt.Fprintf(w, "worktree-sandbox: removed unseeded sprite %s\n", handle)
+				}
+			}
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: seed sprite %s: %w", handle, err)
+			}
+			return nil
+		}
+	}
 	if err := HerdrSpacePut(ctx, storeRoot, binding); err != nil {
 		fmt.Fprintf(w, "worktree-sandbox: write binding: %v\n", err)
 		if !failSafe {
@@ -5564,7 +5713,13 @@ func herdrWorktreeSandbox(
 		 * to the separate-tab behaviour.
 		 */
 		rootPaneID := herdrWorktreeRootPaneFn(ctx, herdrBin, workspaceID)
-		paneID, paneErr := herdrOpenGuestShellPane(ctx, herdrBin, handle, workspaceID, rootPaneID, false)
+		var paneID string
+		var paneErr error
+		if backend == registry.Sprites {
+			paneID, paneErr = herdrOpenSpritesPaneFn(ctx, herdrBin, handle, workspaceID, rootPaneID)
+		} else {
+			paneID, paneErr = herdrOpenGuestShellPane(ctx, herdrBin, handle, workspaceID, rootPaneID, false)
+		}
 		if paneID != "" {
 			binding.GuestPaneID = paneID
 			_ = HerdrSpacePut(ctx, storeRoot, binding) // best-effort patch

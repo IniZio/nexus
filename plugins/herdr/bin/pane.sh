@@ -16,6 +16,12 @@ case "$1" in
             echo "pane.sh shell: NEXUS_WORKSPACE not set" >&2
             exit 1
         fi
+        # Non-default backends (sprites) hand the pane the guest argv, already shell-quoted.
+        if [ -n "${NEXUS_SHELL_ARGV:-}" ]; then
+            eval "set -- $NEXUS_SHELL_ARGV"
+            export HERDR_AGENT="${HERDR_AGENT:-claude}"
+            NEXUS_BACKEND=sprites exec "$SHIM" shell "$REF" -- "$@"
+        fi
         # Resolve workspace guest directory (prints /root when no workspace is mounted).
         # Distinguish command failure (stale binary) from a legitimate /root answer:
         # a zero-exit /root means no mount; a non-zero exit means the binary is broken.

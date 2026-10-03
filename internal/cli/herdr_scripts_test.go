@@ -379,3 +379,24 @@ func TestOpenPaneScript_NewTab(t *testing.T) {
 		t.Errorf("new-tab must not call herdr directly; herdr was called with %q", h)
 	}
 }
+
+func TestPaneScript_ShellArgvRoundTripsThroughShimWithBackendEnv(t *testing.T) {
+	e := newScriptEnv(t)
+	shim := "#!/bin/sh\n" +
+		"{ printf 'BACKEND=%s AGENT=%s\\n' \"$NEXUS_BACKEND\" \"$HERDR_AGENT\"; for a in \"$@\"; do printf '<%s>\\n' \"$a\"; done; } > " + e.shimLog + "\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(e.dir), "nexus-shim.sh"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guest := []string{"/bin/sh", "-c", `if command -v bash >/dev/null; then exec bash -l; fi; echo "it's $HOME" 'a b'`, "$(touch /nope)", "x y"}
+	e.run(t, "pane.sh", []string{"shell"}, map[string]string{
+		"NEXUS_WORKSPACE":  "repo/wt",
+		"NEXUS_SHELL_ARGV": herdrShellJoin(guest),
+	})
+	want := "BACKEND=sprites AGENT=claude\n<shell>\n<repo/wt>\n<-->\n"
+	for _, a := range guest {
+		want += "<" + a + ">\n"
+	}
+	if got := e.shimArgv(t); got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

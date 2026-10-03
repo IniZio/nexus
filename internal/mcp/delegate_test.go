@@ -228,7 +228,7 @@ func TestDelegateWorktreeCreate_NoOpenEgress_EvenWithPolicyConfig(t *testing.T) 
 	if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	policy := "egress:\n  policy:\n    - host: api.github.com\n      paths: [\"GET /repos/**\"]\n"
+	policy := "version: 1\negress:\n  policy:\n    - host: api.github.com\n      paths: [\"GET /repos/**\"]\n"
 	if err := os.WriteFile(filepath.Join(repo, ".nexus", "config.yaml"), []byte(policy), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1415,6 +1415,89 @@ func TestDelegateWorktreeCreate_ClaimsBranchAroundCreate(t *testing.T) {
 			}
 			if _, err := os.Stat(marker); !os.IsNotExist(err) {
 				t.Errorf("claim marker not removed after return: stat err = %v", err)
+			}
+		})
+	}
+}
+
+func TestDelegateWorktreeCreate_SchemaListsBackend(t *testing.T) {
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	for tool, err := range cs.Tools(context.Background(), nil) {
+		if err != nil {
+			t.Fatalf("Tools: %v", err)
+		}
+		if tool.Name != "delegate_worktree_create" {
+			continue
+		}
+		raw, _ := json.Marshal(tool.InputSchema)
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("schema: %v", err)
+		}
+		if _, ok := schema.Properties["backend"]; !ok {
+			t.Errorf("input schema lacks backend property: %s", raw)
+		}
+		return
+	}
+	t.Fatal("delegate_worktree_create not registered")
+}
+
+func TestDelegateWorktreeCreate_UnknownBackendRejected(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("HERDR_BIN_PATH", "/fake/herdr")
+	rec := installHostCLIRecorder(t, happyCanned(repo, "feat/x"))
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	res := callTool(t, cs, "delegate_worktree_create", map[string]any{
+		"repo_path": repo, "branch": "feat/x", "backend": "nope",
+	})
+	text := resultText(t, res)
+	if !res.IsError || !strings.Contains(text, "unknown backend") {
+		t.Fatalf("want unknown backend error, got IsError=%v text=%q", res.IsError, text)
+	}
+	if len(rec.calls) != 0 {
+		t.Errorf("herdr/host calls made despite unknown backend: %+v", rec.calls)
+	}
+}
+
+func TestDelegateWorktreeCreate_BackendReachesWorktreeSandboxArgv(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, repo string, args map[string]any)
+		want  []string
+	}{
+		{"arg", func(t *testing.T, _ string, a map[string]any) { a["backend"] = "sprites" },
+			[]string{"herdr", "worktree-sandbox", "--backend", "sprites", "wNEW"}},
+		{"env", func(t *testing.T, _ string, _ map[string]any) { t.Setenv("NEXUS_BACKEND", "sprites") },
+			[]string{"herdr", "worktree-sandbox", "--backend", "sprites", "wNEW"}},
+		{"config", func(t *testing.T, repo string, _ map[string]any) {
+			if err := os.MkdirAll(filepath.Join(repo, ".nexus"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, ".nexus", "config.yaml"), []byte("version: 1\nbackend: sprites\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, []string{"herdr", "worktree-sandbox", "--backend", "sprites", "wNEW"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NEXUS_BACKEND", "")
+			repo := t.TempDir()
+			args := map[string]any{"repo_path": repo, "branch": "feat/x"}
+			tc.setup(t, repo, args)
+			rec, _, text, isErr := runDelegateCreate(t, args)
+			if isErr {
+				t.Fatalf("tool returned error: %s", text)
+			}
+			call, found := rec.find("herdr worktree-sandbox")
+			if !found {
+				t.Fatalf("no worktree-sandbox call; calls=%+v", rec.calls)
+			}
+			if !argsEqual(call.args, tc.want) {
+				t.Errorf("argv = %q, want %q", call.args, tc.want)
 			}
 		})
 	}

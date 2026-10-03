@@ -481,6 +481,8 @@ func (v VolumesConfig) SeedEnabled() bool {
 // Config is the in-memory representation of a project config file.
 // A zero Config is valid and means "no project-level overrides".
 type Config struct {
+	// Backend names the sandbox driver; trimmed and lowercased, "" = default.
+	Backend string        `yaml:"backend"`
 	Egress  EgressConfig  `yaml:"egress"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	Image   ImageGCConfig `yaml:"image"`
@@ -494,6 +496,7 @@ type fileConfig struct {
 	// Version is a *int so that nil (field absent from file) is distinguishable
 	// from 0 (field present but set to zero). A missing version is a hard error.
 	Version *int          `yaml:"version"`
+	Backend string        `yaml:"backend"`
 	Egress  EgressConfig  `yaml:"egress"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	Image   ImageGCConfig `yaml:"image"`
@@ -602,6 +605,7 @@ func parse(data []byte) (Config, error) {
 		return Config{}, err
 	}
 	return Config{
+		Backend: strings.ToLower(strings.TrimSpace(fc.Backend)),
 		Egress:  fc.Egress,
 		Sandbox: fc.Sandbox,
 		Image:   fc.Image,

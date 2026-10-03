@@ -9,6 +9,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/config"
 	"github.com/IniZio/nexus/internal/core/driver/registry"
+	"github.com/IniZio/nexus/internal/core/driver/sprites"
 )
 
 func TestSpritesParseRepoFlag(t *testing.T) {
@@ -121,5 +122,12 @@ func TestSpritesBackendGatesVMOnlyFeatures(t *testing.T) {
 		if err := requireBackend(feat); !errors.Is(err, registry.ErrUnsupported) {
 			t.Errorf("requireBackend(%q)=%v, want ErrUnsupported", feat, err)
 		}
+	}
+}
+
+func TestSpritesGuestArgv(t *testing.T) {
+	got := SpritesGuestArgv()
+	if !reflect.DeepEqual(got, sprites.ShellArgv) || got[0] != "/bin/sh" {
+		t.Errorf("got %v", got)
 	}
 }

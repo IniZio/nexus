@@ -1265,3 +1265,20 @@ func TestVolumes_UnknownKey_Error(t *testing.T) {
 		t.Fatal("want error for unknown key volumes.foo, got nil")
 	}
 }
+
+func TestParse_Backend(t *testing.T) {
+	cases := map[string]string{
+		"version: 1\n":                         "",
+		"version: 1\nbackend: sprites\n":       "sprites",
+		"version: 1\nbackend: \" Sprites \"\n": "sprites",
+	}
+	for in, want := range cases {
+		cfg, err := config.Parse([]byte(in))
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if cfg.Backend != want {
+			t.Errorf("%q: Backend = %q, want %q", in, cfg.Backend, want)
+		}
+	}
+}

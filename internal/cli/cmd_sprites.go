@@ -25,6 +25,12 @@ func isolationNotice(i driver.Isolation) string {
 
 const spritesTokenNotice = "note: GH_TOKEN is passed to the sprite for clone only; weaker than Sprites Connectors."
 
+// SpritesGuestArgv is the guest argv a herdr pane runs through `nexus shell`
+// to get an interactive TTY shell in the sprite's clone dir.
+func SpritesGuestArgv() []string {
+	return append([]string(nil), sprites.ShellArgv...)
+}
+
 func newSpritesDriver() (driver.Driver, error) {
 	root, err := store.DefaultRoot()
 	if err != nil {

@@ -19,7 +19,7 @@ import (
 const (
 	backendName   = "sprites"
 	nameSuffixLen = 12
-	cloneDir      = "/home/sprite/work" // absolute: exec Dir is not resolved against $HOME
+	CloneDir      = "/home/sprite/work" // absolute: exec Dir is not resolved against $HOME
 	stderrTail    = 2048
 )
 
@@ -139,7 +139,7 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 		if err := d.clone(ctx, name, s); err != nil {
 			return err
 		}
-		s.CloneDir = cloneDir
+		s.CloneDir = CloneDir
 	}
 	return d.writeSpec(id, s)
 }
@@ -152,7 +152,7 @@ func (d *Driver) clone(ctx context.Context, name string, s Spec) error {
 		env["GH_TOKEN"] = s.GitToken
 		argv = append(argv, "-c", `credential.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f`)
 	}
-	argv = append(argv, "clone", "--", s.Repo, cloneDir)
+	argv = append(argv, "clone", "--", s.Repo, CloneDir)
 	var stderr bytes.Buffer
 	code, err := d.api.Exec(ctx, name, ExecRequest{Argv: argv, Env: env, Stderr: &stderr})
 	if err != nil {

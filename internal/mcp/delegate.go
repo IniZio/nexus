@@ -311,6 +311,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			"Requires herdr running and repo_path open as a herdr workspace. " +
 			"image_ref, memory_mib and vcpus are rejected (the worktree-sandbox path has no flags for them); " +
 			"allowed_branches MUST NOT be set — branch policy is derived from the worktree. " +
+			"Optional backend selects the sandbox backend; precedence: this argument, then the repo's .nexus/config.yaml backend, then NEXUS_BACKEND, then the default; an unknown backend is rejected before any herdr call. " +
 			"Returns {workspace_id, worktree_path, branch, handle, sandbox_id, output} on success.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args WorktreeCreateArgs) (*gosdk.CallToolResult, any, error) {
 		result, err := CreateWorktreeSandbox(ctx, args, worktreeRunners())
