@@ -32,7 +32,7 @@ nexus microVM bound to one git worktree.
 - Finish with a short report: what changed, how you verified it, what is left.`
 
 async function createWorktreeSandbox($: EngineInterface, repo: string, branch: string, base?: string): Promise<Created> {
-  const argv = ['nexus', 'herdr', 'worktree-create', '--repo', repo, '--branch', branch, ...(base ? ['--base', base] : [])]
+  const argv = ['nexus', 'herdr', 'worktree-create', '--repo', repo, '--branch', branch, '--posture', 'worker', ...(base ? ['--base', base] : [])]
   const r = await $.process.run(argv, { timeoutMs: 600_000 })
   if (r.exitCode !== 0) throw new Error(`${argv.join(' ')} exited ${r.exitCode}: ${r.stderr.trim().slice(-1500)}`)
   return parseCreated(lastLine(r.stdout))

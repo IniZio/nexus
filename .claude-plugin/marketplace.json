@@ -24,7 +24,7 @@
       "name": "nexus-subagent",
       "source": "./plugins/nexus-subagent",
       "description": "nexus:worker subagents whose Bash runs inside a worktree sandbox VM",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "author": {
         "name": "IniZio"
       },

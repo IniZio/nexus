@@ -488,3 +488,62 @@ func TestHerdrWorktreeSandboxCreateArgs_EgressOpenComposesWithPolicy(t *testing.
 		t.Errorf("wildcard policy for github.com missing after resolution: %#v", f.pathPolicies)
 	}
 }
+
+func TestHerdrWorktreeSandboxCreateArgs_Posture(t *testing.T) {
+	has := func(args []string, s string) bool {
+		for _, a := range args {
+			if a == s {
+				return true
+			}
+		}
+		return false
+	}
+	anyContains := func(args []string, sub string) bool {
+		for _, a := range args {
+			if strings.Contains(a, sub) {
+				return true
+			}
+		}
+		return false
+	}
+	t.Run("worker omits agent and agentcfg", func(t *testing.T) {
+		args := herdrWorktreeSandboxCreateArgsPosture(herdrPostureWorker, "owner/branch", "src:dst", "--image", "img", nil, nil, "", nil, nil, false)
+		if has(args, "--agent") {
+			t.Errorf("worker posture must not pass --agent: %v", args)
+		}
+		if anyContains(args, "agentcfg") {
+			t.Errorf("worker posture must not mount agentcfg: %v", args)
+		}
+		for _, want := range []string{"--no-user-mounts", "--no-share-settings", "--egress", "open"} {
+			if !has(args, want) {
+				t.Errorf("worker posture missing %s: %v", want, args)
+			}
+		}
+		if args[len(args)-1] != "owner/branch" {
+			t.Errorf("handle must be last: %v", args)
+		}
+	})
+	t.Run("default unchanged", func(t *testing.T) {
+		def := herdrWorktreeSandboxCreateArgs("owner/branch", "src:dst", "--image", "img", nil, nil, "", nil, nil, false)
+		via := herdrWorktreeSandboxCreateArgsPosture(herdrPostureDefault, "owner/branch", "src:dst", "--image", "img", nil, nil, "", nil, nil, false)
+		if strings.Join(def, "\x00") != strings.Join(via, "\x00") {
+			t.Errorf("default posture differs: %v vs %v", def, via)
+		}
+		if !has(def, "--agent") || !anyContains(def, "agentcfg") || has(def, "--no-user-mounts") {
+			t.Errorf("default posture lost agent/agentcfg or gained worker flags: %v", def)
+		}
+	})
+	t.Run("parse posture", func(t *testing.T) {
+		rest, p, err := herdrWorktreeSandboxParsePosture([]string{"--posture", "worker", "--auto", "w1"})
+		if err != nil || p != "worker" || len(rest) != 2 || rest[0] != "--auto" {
+			t.Errorf("got %v %q %v", rest, p, err)
+		}
+		rest, p, err = herdrWorktreeSandboxParsePosture([]string{"w1"})
+		if err != nil || p != "" || len(rest) != 1 {
+			t.Errorf("got %v %q %v", rest, p, err)
+		}
+		if _, _, err = herdrWorktreeSandboxParsePosture([]string{"--posture", "bogus", "w1"}); err == nil {
+			t.Error("bogus posture accepted")
+		}
+	})
+}

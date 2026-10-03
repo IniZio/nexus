@@ -21,6 +21,7 @@ type CreateArgs struct {
 	MemoryMiB       uint32   `json:"memory_mib,omitempty"       jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
 	VCPUs           uint32   `json:"vcpus,omitempty"            jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
 	AllowedBranches []string `json:"allowed_branches,omitempty" jsonschema:"MUST NOT be set — branch policy is derived from the worktree; any value here returns an error"`
+	Posture         string   `json:"-"`
 	BriefPath       string   `json:"brief_path,omitempty"       jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md and excluded from commits (optional)"`
 }
 
@@ -323,7 +324,11 @@ func CreateSandbox(ctx context.Context, args CreateArgs, r Runners) (SandboxResu
 		}
 	}
 
-	bindOut, err := r.Host(ctx, "herdr", "worktree-sandbox", ws)
+	bindArgv := []string{"herdr", "worktree-sandbox"}
+	if args.Posture != "" {
+		bindArgv = append(bindArgv, "--posture", args.Posture)
+	}
+	bindOut, err := r.Host(ctx, append(bindArgv, ws)...)
 	if err != nil {
 		return SandboxResult{}, fmt.Errorf("delegate_worktree_create: nexus herdr worktree-sandbox: %w\n%s", err, bindOut)
 	}

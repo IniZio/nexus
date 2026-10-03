@@ -451,6 +451,11 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
 		}
 		/** --nested operator opt-in for nested virtualisation (D-N3N-02). */
+		rest, posture, perr := herdrWorktreeSandboxParsePosture(rest)
+		if perr != nil {
+			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: " + perr.Error()}
+		}
+		ctx = herdrWithPosture(ctx, posture)
 		rest, conditional, auto, nestedFlag := herdrWorktreeSandboxParseArgs(rest)
 		if len(rest) == 0 {
 			return &UsageError{Msg: "__herdr-plugin worktree-sandbox: herdr workspace ID required"}
@@ -469,7 +474,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 			return &CodedError{Code: ErrCodeInternalError, Msg: "__herdr-plugin worktree-sandbox: resolve executable: " + exeErr.Error(), Err: exeErr}
 		}
 		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, nested bool) error {
-			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, mcpPolicies, nested)
+			args := herdrWorktreeSandboxCreateArgsPosture(herdrPostureFrom(ctx), handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, mcpPolicies, nested)
 			var stderrBuf bytes.Buffer
 			if err := herdrRunCreateWatched(ctx, herdrCreateIdleLimit, herdrCreateProbeEvery, herdrCreateActivityProbe(storeRoot),
 				func(wctx context.Context, wrap func(io.Writer) io.Writer) *exec.Cmd {
@@ -4168,6 +4173,51 @@ func herdrWorkspaceRename(ctx context.Context, herdrBin, workspaceID, label stri
  * reachable at its host absolute path inside the VM).
  */
 func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, nested bool) []string {
+	return herdrWorktreeSandboxCreateArgsPosture(herdrPostureDefault, handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, mcpPolicies, nested)
+}
+
+/**
+ * Sandbox postures. The default posture is the full in-guest agent dev
+ * environment. The worker posture is for sandboxes whose agent runs on the
+ * HOST and only shells `nexus exec` in (nexus-subagent mod workers): no
+ * in-guest agent, no agentcfg overlay disk, and no host config projection
+ * (hooks, MCP servers, plugins, settings).
+ */
+const (
+	herdrPostureDefault = ""
+	herdrPostureWorker  = "worker"
+)
+
+type herdrPostureKey struct{}
+
+func herdrWithPosture(ctx context.Context, posture string) context.Context {
+	return context.WithValue(ctx, herdrPostureKey{}, posture)
+}
+
+func herdrPostureFrom(ctx context.Context) string {
+	p, _ := ctx.Value(herdrPostureKey{}).(string)
+	return p
+}
+
+/**
+ * herdrWorktreeSandboxParsePosture strips a leading `--posture <name>` pair
+ * (before the other mode flags) and validates the name.
+ */
+func herdrWorktreeSandboxParsePosture(args []string) (rest []string, posture string, err error) {
+	if len(args) == 0 || args[0] != "--posture" {
+		return args, herdrPostureDefault, nil
+	}
+	if len(args) < 2 {
+		return nil, "", fmt.Errorf("--posture requires a value (worker)")
+	}
+	if args[1] != herdrPostureWorker {
+		return nil, "", fmt.Errorf("unknown --posture %q (want worker)", args[1])
+	}
+	return args[2:], args[1], nil
+}
+
+func herdrWorktreeSandboxCreateArgsPosture(posture, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, nested bool) []string {
+	worker := posture == herdrPostureWorker
 	args := []string{imageFlag, imageVal, "--mount", mountSpec}
 	for _, m := range extraMounts {
 		args = append(args, "--mount", m)
@@ -4225,7 +4275,9 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 	 * error — it was the merged overlay view, not the writable upper). The
 	 * operator ratified 2 GiB to give headroom for growth (D-RAM-13).
 	 */
-	args = append(args, "--mount-named", herdrAgentCfgDiskVolumeName(handle)+":/var/lib/nexus/agentcfg:size=2g")
+	if !worker {
+		args = append(args, "--mount-named", herdrAgentCfgDiskVolumeName(handle)+":/var/lib/nexus/agentcfg:size=2g")
+	}
 	/**
 	 * What still cannot grow after this: everything else on root (installed
 	 * packages, /tmp, /var/lib outside agentcfg, anything outside $HOME/go,
@@ -4279,6 +4331,9 @@ func herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal strin
 		 * 30 GiB free (2026-09-19). 24g needs 39 GiB free on the host.
 		 */
 		args = append(args, "--mount-named", herdrNexusStateDiskVolumeName(handle)+":/root/.local/state/nexus:size=24g")
+	}
+	if worker {
+		return append(args, "--no-user-mounts", "--no-share-settings", "--egress", "open", handle)
 	}
 	args = append(args, "--agent", herdrPrimaryAgent(), "--egress", "open", handle)
 	return args
@@ -5096,7 +5151,11 @@ func herdrWorktreeSandbox(
 	 * in-guest agents can read motive charters, tickets, and open items.
 	 * Read-write so agents can record evidence into their own ticket files.
 	 */
-	ccSpecs, ccWarns := service.ResolveClaudeCodeBindMounts("", info.Path)
+	ccResolve := service.ResolveClaudeCodeBindMounts
+	if herdrPostureFrom(ctx) == herdrPostureWorker {
+		ccResolve = func(_, wt string) ([]string, []string) { return service.ResolveGroundworkBindMounts(wt), nil }
+	}
+	ccSpecs, ccWarns := ccResolve("", info.Path)
 	for _, msg := range ccWarns {
 		fmt.Fprintf(w, "worktree-sandbox: warning: %s\n", msg)
 	}

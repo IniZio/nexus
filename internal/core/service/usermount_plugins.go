@@ -144,6 +144,17 @@ func ResolveClaudeCodeBindMounts(hostHome, worktreePath string) (specs []string,
 	return specs, warnings
 }
 
+// ResolveGroundworkBindMounts returns only the .groundwork bind for a linked worktree (no plugin or host-config mounts).
+func ResolveGroundworkBindMounts(worktreePath string) []string {
+	if worktreePath == "" {
+		return nil
+	}
+	if m := resolveGroundworkMount(worktreePath); m != "" {
+		return []string{m}
+	}
+	return nil
+}
+
 // resolveGroundworkMount returns "<mainRepo>/.groundwork:<mainRepo>/.groundwork" for a linked worktree, or "".
 func resolveGroundworkMount(worktreePath string) string {
 	data, err := os.ReadFile(filepath.Join(worktreePath, ".git"))

@@ -19,6 +19,7 @@ func runHerdrWorktreeCreate(ctx context.Context, args []string, out *Output) err
 	repo := fs.String("repo", "", "git checkout open as a herdr workspace (default: git toplevel of cwd)")
 	branch := fs.String("branch", "", "branch name for the new linked git worktree (required)")
 	base := fs.String("base", "", "base ref for the new branch (default: herdr default)")
+	posture := fs.String("posture", "", "sandbox posture: empty (default, in-guest agent) or \"worker\" (host-run agent; no in-guest agent, agentcfg or host config projection)")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "herdr worktree-create: " + err.Error()}
 	}
@@ -32,7 +33,10 @@ func runHerdrWorktreeCreate(ctx context.Context, args []string, out *Output) err
 		}
 		*repo = strings.TrimSpace(string(top))
 	}
-	result, err := wt.CreateSandbox(ctx, wt.CreateArgs{RepoPath: *repo, Branch: *branch, Base: *base}, worktreeCreateRunners())
+	if *posture != "" && *posture != herdrPostureWorker {
+		return &UsageError{Msg: fmt.Sprintf("herdr worktree-create: unknown --posture %q (want worker)", *posture)}
+	}
+	result, err := wt.CreateSandbox(ctx, wt.CreateArgs{RepoPath: *repo, Branch: *branch, Base: *base, Posture: *posture}, worktreeCreateRunners())
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: err.Error(), Err: err}
 	}
