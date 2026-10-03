@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/registry"
 	"github.com/IniZio/nexus/internal/core/driver/sprites"
+	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
 )
@@ -36,7 +38,7 @@ func newSpritesDriver() (driver.Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return registry.New(registry.Sprites, sprites.Config{StateDir: root})
+	return registry.New(registry.Sprites, sprites.Config{StateDir: root, EnvResolver: spritesEnvResolver})
 }
 
 func spritesEgress(cfg config.Config, f sandboxCreateFlags) (hosts []string, open bool) {
@@ -79,7 +81,7 @@ func spritesRepo(f sandboxCreateFlags) (string, error) {
 func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, svc *service.Service) error {
 	const verb = "sandbox create"
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> --repo <git-url|owner/name> [--allow-host <host>] [--egress open|closed] [--label KEY=VALUE] [--rm]"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> --repo <git-url|owner/name> [--allow-host <host>] [--preset docker] [--egress open|closed] [--label KEY=VALUE] [--rm]"}
 	}
 	project, name, err := domain.ParseHandle(f.positionals[0])
 	if err != nil {
@@ -99,6 +101,10 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 	if err != nil {
 		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("%s: %v", verb, err)}
 	}
+	presets, err := sprites.NormalizePresets(f.presets)
+	if err != nil {
+		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("%s: --preset: %v", verb, err)}
+	}
 
 	var cfg config.Config
 	if cwd, werr := os.Getwd(); werr == nil {
@@ -107,6 +113,13 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		}
 	}
 	hosts, open := spritesEgress(cfg, f)
+	secretNames, err := spritesSecretNames(cfg, f)
+	if err != nil {
+		return errSandbox(verb, err)
+	}
+	if slices.Contains(secretNames, sprites.SecretClaudeOAuth) {
+		hosts = append(hosts, cred.MustProfileByName(cred.ClaudeCodeProfileName).EgressHosts...)
+	}
 
 	tok := os.Getenv("GH_TOKEN")
 	if tok == "" {
@@ -132,7 +145,7 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		_ = svc.Remove(context.WithoutCancel(ctx), sb.ID.String())
 		return errSandbox(verb, cause)
 	}
-	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, GitToken: tok}
+	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, SecretNames: secretNames, Presets: presets, GitToken: tok}
 	if err := prov.Provision(ctx, sb.ID, spec); err != nil {
 		return rollback(err)
 	}
@@ -142,6 +155,10 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 	out.EmitSuccess("sandbox.created", toSandboxInfoJSON(sb),
 		fmt.Sprintf("created sandbox %s (%s) on sprite (repo %s)", sb.Handle(), sb.ID, repo))
 	fmt.Fprintln(out.Stderr(), isolationNotice(drv.Capabilities().Isolation))
+	fmt.Fprintln(out.Stderr(), sprites.CredentialsNotice)
+	if slices.Contains(secretNames, sprites.SecretGitHub) {
+		fmt.Fprintln(out.Stderr(), spritesGitHubTTLNotice)
+	}
 	if tok != "" {
 		fmt.Fprintln(out.Stderr(), spritesTokenNotice)
 	}

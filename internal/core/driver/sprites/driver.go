@@ -30,6 +30,8 @@ type Config struct {
 	Org      string
 	StateDir string
 	API      API
+	// EnvResolver resolves Spec.SecretNames to values at exec time (never persisted).
+	EnvResolver EnvResolver
 }
 
 // Spec is the per-sandbox provisioning record. GitToken is never persisted.
@@ -39,6 +41,8 @@ type Spec struct {
 	AllowedHosts    []string `json:"allowed_hosts,omitempty"`
 	OpenEgress      bool     `json:"open_egress,omitempty"`
 	IncludeDefaults bool     `json:"include_defaults,omitempty"`
+	SecretNames     []string `json:"secret_names,omitempty"`
+	Presets         []string `json:"presets,omitempty"`
 	GitToken        string   `json:"-"`
 }
 
@@ -120,6 +124,18 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 	if err := checkName(name); err != nil {
 		return err
 	}
+	names, err := NormalizeSecretNames(s.SecretNames)
+	if err != nil {
+		return err
+	}
+	s.SecretNames = names
+	if s.Presets, err = NormalizePresets(s.Presets); err != nil {
+		return err
+	}
+	docker := slices.Contains(s.Presets, PresetDocker)
+	if docker {
+		s.AllowedHosts = append(slices.Clone(s.AllowedHosts), DockerRegistryHosts...)
+	}
 	if err := d.api.CreateSprite(ctx, name); err != nil {
 		return fmt.Errorf("sprites: create %s: %w", name, err)
 	}
@@ -133,6 +149,11 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 			if err := d.api.SetNetworkPolicy(ctx, name, p); err != nil {
 				return fmt.Errorf("sprites: set network policy: %w", err)
 			}
+		}
+	}
+	if docker {
+		if err := d.installDocker(ctx, id, s); err != nil {
+			return err
 		}
 	}
 	if s.Repo != "" {
@@ -286,9 +307,14 @@ func (d *Driver) Exec(ctx context.Context, id domain.SandboxID, opts driver.Exec
 	if len(opts.Argv) == 0 {
 		return 0, errors.New("sprites: exec: empty argv")
 	}
+	spec, specErr := d.Spec(id)
+	projected, err := d.projectedEnv(ctx, spec.SecretNames)
+	if err != nil {
+		return 0, err
+	}
 	req := ExecRequest{
 		Argv:   opts.Argv,
-		Env:    withGoToolchain(opts.Env),
+		Env:    withGoToolchain(mergeEnv(projected, opts.Env)),
 		Dir:    opts.Cwd,
 		Stdin:  opts.Stdin,
 		Stdout: opts.Stdout,
@@ -296,8 +322,8 @@ func (d *Driver) Exec(ctx context.Context, id domain.SandboxID, opts driver.Exec
 		Resize: opts.WinsizeCh,
 	}
 	if req.Dir == "" {
-		if s, err := d.Spec(id); err == nil {
-			req.Dir = s.CloneDir
+		if specErr == nil {
+			req.Dir = spec.CloneDir
 		}
 	}
 	if opts.Pty != nil {

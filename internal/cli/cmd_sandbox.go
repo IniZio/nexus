@@ -311,6 +311,7 @@ type sandboxCreateFlags struct {
 	noShareSettings  bool     // --no-share-settings: skip curated host agent config overlay (A-MOUNT)
 	noUserMounts     bool     // --no-user-mounts: skip operator tool-dir live mounts (usermount-table-host)
 	noSandboxTools   bool
+	presets          []string
 	positionals      []string
 }
 
@@ -620,6 +621,12 @@ func parseSandboxCreateArgs(args []string) (sandboxCreateFlags, error) {
 					args[i], strings.Join(cred.ProfileNames(), ", "))}
 			}
 			f.agentName = args[i]
+		case "--preset":
+			if i+1 >= len(args) {
+				return f, &UsageError{Msg: "sandbox create: --preset requires a name"}
+			}
+			i++
+			f.presets = append(f.presets, args[i])
 		case "--allow-host":
 			if i+1 >= len(args) {
 				return f, &UsageError{Msg: "sandbox create: --allow-host requires a hostname"}
@@ -1004,6 +1011,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	if backend, _ := activeBackend(); backend == registry.Sprites {
 		return runSpritesCreate(ctx, f, out, svc)
 	}
+	if len(f.presets) > 0 {
+		return &UsageError{Msg: "sandbox create: --preset is only supported on the sprites backend"}
+	}
 	if f.repoURL != "" {
 		return &UsageError{Msg: "sandbox create: --repo must be owner/name on this backend"}
 	}
@@ -1017,7 +1027,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 	}
 
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--repo <owner>/<name>] [--no-share-settings] [--no-user-mounts] [--no-sandbox-tools] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--rm] [--image <ref>|--rootfs <path>|--file <context-dir>] [--dockerfile <path>] [--memory <MiB>] [--vcpus <n>] [--label KEY=VALUE] [--nested] [--mount <host>:<guest>[:ro]] [--mount-named <volume>:<guest>[:ro]] [--workspace <host-path>] [--capture-max <size>] [--builder-memory <MiB>] [--memory-max <MiB>] [--vcpus-max <n>] [--disk-max <GiB>] [--secret ENV@host[,host…]] [--egress <mode>] [--allow-host <host>] [--preset <name>] [--repo <owner>/<name>] [--no-share-settings] [--no-user-mounts] [--no-sandbox-tools] [--agent <name>] [--force] (auto-resize is unconditional: hotplug hardware is configured at create time; the dynamic governor activates only in the supervisor process)"}
 	}
 
 	project, name, err := domain.ParseHandle(f.positionals[0])

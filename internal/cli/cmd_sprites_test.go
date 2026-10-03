@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/config"
@@ -129,5 +130,24 @@ func TestSpritesGuestArgv(t *testing.T) {
 	got := SpritesGuestArgv()
 	if !reflect.DeepEqual(got, sprites.ShellArgv) || got[0] != "/bin/sh" {
 		t.Errorf("got %v", got)
+	}
+}
+
+func TestSpritesPresetFlag(t *testing.T) {
+	f, err := parseSandboxCreateArgs([]string{"p/n", "--repo", "a/b", "--preset", "docker"})
+	if err != nil || len(f.presets) != 1 || f.presets[0] != "docker" {
+		t.Fatalf("presets=%v err=%v", f.presets, err)
+	}
+	if _, err := parseSandboxCreateArgs([]string{"p/n", "--preset"}); err == nil {
+		t.Fatal("missing value must fail")
+	}
+}
+
+func TestSpritesCreateUnknownPreset(t *testing.T) {
+	f := sandboxCreateFlags{positionals: []string{"p/n"}, repoURL: "https://github.com/a/b.git", presets: []string{"podman"}}
+	out := NewOutput(&bytes.Buffer{}, &bytes.Buffer{}, false)
+	err := runSpritesCreate(context.Background(), f, out, nil)
+	if !errors.Is(err, sprites.ErrUnknownPreset) && (err == nil || !strings.Contains(err.Error(), "podman")) {
+		t.Fatalf("err = %v", err)
 	}
 }
