@@ -133,6 +133,7 @@ var _ runtimeAdopter = (*cloudhypervisor.CHDriver)(nil)
 
 // RunReacquire runs the crash-path supervisor (D-HSH-18).
 func RunReacquire(cfg Config) error {
+	raiseOOMScoreAdj()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 

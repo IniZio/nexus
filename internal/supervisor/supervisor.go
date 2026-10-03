@@ -485,6 +485,7 @@ func buildSeedRouteInputs(
 }
 
 func RunDetached(cfg Config) error {
+	raiseOOMScoreAdj()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 

@@ -3,11 +3,74 @@
 package supervisor
 
 import (
+	"bufio"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
+
+const (
+	sandboxSliceName          = "nexus-sandboxes.slice"
+	sandboxSliceMemMaxPercent = 75
+	sandboxSliceMemHighPct    = 70
+)
+
+// ensureSandboxSlice sets the slice memory caps once per process. Replaced in tests.
+var ensureSandboxSlice = defaultEnsureSandboxSlice
+
+// readMemTotalBytes returns host MemTotal in bytes. Replaced in tests.
+var readMemTotalBytes = defaultReadMemTotalBytes
+
+var sandboxSliceOnce sync.Once
+
+func defaultReadMemTotalBytes() (int64, error) {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		rest, ok := strings.CutPrefix(sc.Text(), "MemTotal:")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			break
+		}
+		kb, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return kb * 1024, nil
+	}
+	return 0, fmt.Errorf("MemTotal not found in /proc/meminfo")
+}
+
+// sandboxSliceCaps returns MemoryMax and MemoryHigh as percentages of total.
+func sandboxSliceCaps(total int64) (max, high int64) {
+	return total / 100 * sandboxSliceMemMaxPercent, total / 100 * sandboxSliceMemHighPct
+}
+
+func defaultEnsureSandboxSlice() error {
+	total, err := readMemTotalBytes()
+	if err != nil {
+		return err
+	}
+	max, high := sandboxSliceCaps(total)
+	out, err := exec.Command("systemctl", "--user", "set-property", "--runtime", sandboxSliceName,
+		fmt.Sprintf("MemoryMax=%d", max), fmt.Sprintf("MemoryHigh=%d", high)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
 
 // systemdUserProbe reports whether the systemd user manager is reachable.
 // Replaced in tests to control the spawn path without forking.
@@ -65,6 +128,7 @@ func buildSystemdScopeArgs(unit, exe string, args []string) []string {
 		"--scope",
 		"--collect",
 		"--unit=" + unit,
+		"--slice=" + sandboxSliceName,
 		"--",
 		exe,
 	}
@@ -76,6 +140,11 @@ func buildSystemdScopeArgs(unit, exe string, args []string) []string {
 // cmd.Process.Pid is the supervisor's PID; the caller polls supervisor.pid.
 func spawnViaSystemdScope(exe string, args []string, logFile *os.File, sandboxRef string) (*exec.Cmd, error) {
 	unit := supervisorScopeUnit(sandboxRef)
+	sandboxSliceOnce.Do(func() {
+		if err := ensureSandboxSlice(); err != nil {
+			slog.Warn("supervisor.slice_cap_failed", "slice", sandboxSliceName, "err", err)
+		}
+	})
 	_ = exec.Command("systemctl", "--user", "reset-failed", unit+".scope").Run()
 	return execSystemdRun(buildSystemdScopeArgs(unit, exe, args), logFile)
 }

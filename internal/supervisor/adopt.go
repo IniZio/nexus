@@ -28,6 +28,7 @@ const adoptWaitOldExitTimeout = 15 * time.Second
 // /** Safety (D-HSH-08): fail-closed. Every error returns WITHOUT calling [handoff.Confirm],
 // leaving ownership with the outgoing side unchanged. */
 func RunAdopt(cfg Config, handoffSockPath string) error {
+	raiseOOMScoreAdj()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 

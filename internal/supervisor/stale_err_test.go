@@ -20,6 +20,7 @@ import (
 // subsequent failure message comes from the new run (or the generic
 // "process exited before writing pidfile" message) rather than the old cause.
 func TestSpawnDetached_StaleErrFileIgnored(t *testing.T) {
+	stubEnsureSlice(t)
 	stateDir := t.TempDir()
 
 	// Plant a stale supervisor.err from a fictitious previous run.

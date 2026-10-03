@@ -3,12 +3,14 @@
 package supervisor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -35,7 +37,7 @@ func TestSupervisorScopeUnit(t *testing.T) {
 func TestBuildSystemdScopeArgs(t *testing.T) {
 	args := buildSystemdScopeArgs("nexus-sb-abc", "/usr/bin/nexus", []string{"__supervisor", "--sandbox-ref", "abc"})
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--user", "--scope", "--collect", "--unit=nexus-sb-abc", "/usr/bin/nexus", "__supervisor"} {
+	for _, want := range []string{"--user", "--scope", "--collect", "--unit=nexus-sb-abc", "--slice=nexus-sandboxes.slice", "/usr/bin/nexus", "__supervisor"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("buildSystemdScopeArgs: missing %q in %q", want, joined)
 		}
@@ -54,6 +56,7 @@ func TestSpawnDetached_SystemdPathUsed(t *testing.T) {
 		systemdUserProbe = origProbe
 	})
 
+	stubEnsureSlice(t)
 	systemdUserProbe = func() bool { return true }
 	execSystemdRun = func(sdArgs []string, _ *os.File) (*exec.Cmd, error) {
 		capturedArgs = sdArgs
@@ -143,6 +146,7 @@ func TestSpawnDetached_EphemeralSkipsScope(t *testing.T) {
 		execSystemdRun = origExec
 	})
 
+	stubEnsureSlice(t)
 	systemdUserProbe = func() bool { return true }
 	execSystemdRun = func(_ []string, _ *os.File) (*exec.Cmd, error) {
 		panic("execSystemdRun must not be called for Ephemeral spawn")
@@ -250,5 +254,43 @@ func TestSpawnViaSystemdScope_RealScope(t *testing.T) {
 	if !strings.Contains(string(cgroupData), unit+".scope") {
 		t.Errorf("process %d not in expected scope cgroup %q; /proc/cgroup:\n%s",
 			cmd.Process.Pid, unit+".scope", cgroupData)
+	}
+}
+
+func TestSandboxSliceCaps(t *testing.T) {
+	max, high := sandboxSliceCaps(100 << 30)
+	if max != 75*(1<<30) || high != 70*(1<<30) {
+		t.Errorf("caps = %d, %d", max, high)
+	}
+}
+
+func TestSpawnViaSystemdScope_EnsuresSliceOnce(t *testing.T) {
+	origE, origX := ensureSandboxSlice, execSystemdRun
+	t.Cleanup(func() { ensureSandboxSlice, execSystemdRun = origE, origX; sandboxSliceOnce = sync.Once{} })
+	sandboxSliceOnce = sync.Once{}
+	calls := 0
+	ensureSandboxSlice = func() error { calls++; return errors.New("boom") }
+	execSystemdRun = func([]string, *os.File) (*exec.Cmd, error) { return nil, nil }
+	for i := 0; i < 2; i++ {
+		if _, err := spawnViaSystemdScope("/bin/true", nil, nil, "ref"); err != nil {
+			t.Fatalf("spawn must not fail on slice error: %v", err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("ensureSandboxSlice calls = %d, want 1", calls)
+	}
+}
+
+func stubEnsureSlice(t *testing.T) {
+	t.Helper()
+	orig := ensureSandboxSlice
+	t.Cleanup(func() { ensureSandboxSlice = orig })
+	ensureSandboxSlice = func() error { return nil }
+}
+
+func TestDefaultReadMemTotalBytes(t *testing.T) {
+	n, err := defaultReadMemTotalBytes()
+	if err != nil || n <= 0 {
+		t.Fatalf("MemTotal = %d, err %v", n, err)
 	}
 }
