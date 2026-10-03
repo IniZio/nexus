@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -297,7 +298,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			"allowed_branches MUST NOT be set — branch policy is derived from the worktree. " +
 			"Returns {workspace_id, worktree_path, branch, handle, sandbox_id, output} on success.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args WorktreeCreateArgs) (*gosdk.CallToolResult, any, error) {
-		result, err := CreateWorktreeSandbox(ctx, args, DefaultWorktreeRunners())
+		result, err := CreateWorktreeSandbox(ctx, args, worktreeRunners())
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -499,6 +500,15 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		res, err := herdrworktree.Teardown(ctx, args.Ref, args.Force, worktreeRunners())
 		if err != nil {
+			var dirty *herdrworktree.DirtyWorktreeError
+			if errors.As(err, &dirty) {
+				more := ""
+				if dirty.More > 0 {
+					more = fmt.Sprintf("\n... and %d more", dirty.More)
+				}
+				return errorResult(fmt.Errorf("worktree %s has uncommitted changes (%d files):\n%s%s\nHarvest or commit them first, or pass force:true to discard them.",
+					dirty.Path, dirty.Count, strings.Join(dirty.Files, "\n"), more)), nil, nil
+			}
 			return errorResult(err), nil, nil
 		}
 		if !res.Bound {
