@@ -85,6 +85,12 @@ concluding it is a network issue.
 }
 ```
 
+Optional `brief_path` (absolute host file; `brief` becomes optional) is copied
+into the worktree as `.brief.md` and the agent is told to read it. The same arg
+on `delegate_worktree_create` installs it at create time. `.brief.md` and
+`.slice-report.md` are appended to the repo's `info/exclude` (git has no
+per-worktree exclude; for linked worktrees this is the shared common-dir file).
+
 Returns `{ok, data:{delivered, output}}` once the brief is **confirmed
 delivered** to the agent's input — not when the work is done.
 `delivered: true` means herdr confirmed the state changed after the brief was
@@ -125,6 +131,17 @@ agent_state_reason}}`.
 | `settled` | bool | `false` if the status kept changing through the re-poll budget (up to 3 re-polls, ~1.5 s settle); treat an unsettled `done` or `idle` with caution |
 | `question` | string | pane tail when `agent_status` is `blocked`; this is the question to answer |
 | `agent_state_reason` | string | when `agent_status` is `unknown`: one of `herdr_unavailable`, `agent_not_found`, `undetected`, `parse_error`, `timeout`, `no_herdr_binding` |
+
+**MCP tool — `delegate_agent_wait`** replaces hand-rolled poll loops:
+`{ref, timeout_s?}` (default 120, max 540) blocks and returns
+`{outcome, ...poll fields}` with `outcome` = `done` | `blocked` (`question`
+holds the dialog text) | `idle_without_marker` (idle on two consecutive samples
+with no marker; the agent finished without signalling or stopped) | `timeout`
+(call again).
+
+**MCP tool — `delegate_agent_followup`** `{ref, text}` types into the agent's
+pane, submits with `Enter` (capital E), and confirms; `submitted:false` means
+the text is still in the input box after retries.
 
 Poll every 30 seconds. Give up at 45 minutes and surface the last poll
 response.

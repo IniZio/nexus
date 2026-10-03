@@ -96,11 +96,28 @@ type WorktreeCreateArgs struct {
 	MemoryMiB       uint32   `json:"memory_mib,omitempty"       jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
 	VCPUs           uint32   `json:"vcpus,omitempty"            jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
 	AllowedBranches []string `json:"allowed_branches,omitempty" jsonschema:"MUST NOT be set — branch policy is derived from the worktree; any value here returns an error"`
+	BriefPath       string   `json:"brief_path,omitempty"       jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md and excluded from commits (optional)"`
 }
 
 type delegateAgentDispatchArgs struct {
-	Ref   string `json:"ref"   jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
-	Brief string `json:"brief" jsonschema:"task brief to deliver to the in-guest claude agent (required)"`
+	Ref       string `json:"ref"                  jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	Brief     string `json:"brief,omitempty"      jsonschema:"task brief to deliver to the in-guest claude agent (required unless brief_path is set)"`
+	BriefPath string `json:"brief_path,omitempty" jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md (excluded from commits) and the agent is told to read it (optional)"`
+}
+
+type delegateAgentWaitArgs struct {
+	Ref      string `json:"ref"                 jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	TimeoutS int    `json:"timeout_s,omitempty" jsonschema:"seconds to block before returning outcome=timeout (default 120, max 540)"`
+}
+
+type delegateAgentWaitResult struct {
+	Outcome string `json:"outcome"`
+	delegateAgentPollResult
+}
+
+type delegateAgentFollowupArgs struct {
+	Ref  string `json:"ref"  jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	Text string `json:"text" jsonschema:"message to type into the in-guest agent's pane and submit with Enter (required)"`
 }
 
 type delegateAgentPollArgs struct {
@@ -141,6 +158,9 @@ func validateWorktreeCreate(args WorktreeCreateArgs) error {
 	if args.Branch == "" {
 		return fmt.Errorf("branch is required")
 	}
+	if err := validateBriefPath(args.BriefPath); err != nil {
+		return err
+	}
 	if len(args.AllowedBranches) > 0 {
 		return fmt.Errorf(
 			"delegate_worktree_create: allowed_branches cannot be set by the caller "+
@@ -164,6 +184,106 @@ func validateWorktreeCreate(args WorktreeCreateArgs) error {
 		)
 	}
 	return nil
+}
+
+const briefFileName = ".brief.md"
+
+// briefExcludes keep the brief and the report file briefs ask for out of commits.
+var briefExcludes = []string{briefFileName, ".slice-report.md"}
+
+func validateBriefPath(p string) error {
+	if p == "" {
+		return nil
+	}
+	if !filepath.IsAbs(p) {
+		return fmt.Errorf("brief_path must be an absolute path (got %q)", p)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		return fmt.Errorf("brief_path %q: %w", p, err)
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("brief_path %q is not a regular file", p)
+	}
+	return nil
+}
+
+// installBrief copies briefPath into worktree as .brief.md and appends
+// briefExcludes to info/exclude. Git reads info/exclude only from the common
+// dir, so for a linked worktree `rev-parse --git-path info/exclude` resolves
+// to the shared file; there is no per-worktree exclude to target.
+func installBrief(ctx context.Context, briefPath, worktree string) error {
+	data, err := os.ReadFile(briefPath)
+	if err != nil {
+		return fmt.Errorf("read brief_path: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, briefFileName), data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", briefFileName, err)
+	}
+	out, err := runGitCLI(ctx, "-C", worktree, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return fmt.Errorf("rev-parse --git-path info/exclude: %w\n%s", err, out)
+	}
+	excl := strings.TrimSpace(out)
+	if !filepath.IsAbs(excl) {
+		excl = filepath.Join(worktree, excl)
+	}
+	existing, err := os.ReadFile(excl)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", excl, err)
+	}
+	have := map[string]bool{}
+	for _, l := range strings.Split(string(existing), "\n") {
+		have[strings.TrimSpace(l)] = true
+	}
+	var add strings.Builder
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		add.WriteString("\n")
+	}
+	n := add.Len()
+	for _, e := range briefExcludes {
+		if !have[e] {
+			add.WriteString(e + "\n")
+		}
+	}
+	if add.Len() == n {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(excl), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(excl, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(add.String())
+	return err
+}
+
+// worktreePathForRef resolves the host worktree directory bound to ref.
+func worktreePathForRef(ctx context.Context, ref string) (string, error) {
+	herdrBin, err := resolveHerdrBin()
+	if err != nil {
+		return "", err
+	}
+	listOut, err := runHostCLI(ctx, "herdr", "list")
+	if err != nil {
+		return "", fmt.Errorf("nexus herdr list: %w\n%s", err, listOut)
+	}
+	ws, _, _, _, ok := parseHerdrListBindingByRef(listOut, ref)
+	if !ok {
+		return "", fmt.Errorf("no herdr binding for %q", ref)
+	}
+	wtOut, err := runHerdrCLI(ctx, herdrBin, "worktree", "list", "--json")
+	if err != nil {
+		return "", fmt.Errorf("herdr worktree list: %w\n%s", err, wtOut)
+	}
+	p := herdrout.WorktreePathByWorkspaceID(wtOut, ws)
+	if p == "" {
+		return "", fmt.Errorf("worktree path for workspace %s not found", ws)
+	}
+	return p, nil
 }
 
 // resolveHerdrBin mirrors the CLI's herdr binary lookup: HERDR_BIN_PATH, else PATH.
@@ -295,6 +415,103 @@ func sandboxListed(psOut, handle, sandboxID string) bool {
 
 const maxAgentWaitMs = 10 * 60 * 1000 // 10 minutes
 
+const (
+	defaultAgentWaitTimeout = 120 * time.Second
+	maxAgentWaitTimeout     = 540 * time.Second
+	followupEnterRetries    = 2
+)
+
+var (
+	agentWaitInterval    = 3 * time.Second
+	followupSettleDelay  = 400 * time.Millisecond
+	followupConfirmDelay = 1500 * time.Millisecond
+)
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+func delegateMarkerWritten(ctx context.Context, svc SandboxService, ref string) bool {
+	code, _, _, err := svc.Exec(ctx, ref, []string{"cat", delegateDoneMarker}, nil, "/", "")
+	return err == nil && code == 0
+}
+
+// buildPollResult combines an observed agent state with the done marker and,
+// when the marker is absent, the git heuristic.
+func buildPollResult(ctx context.Context, svc SandboxService, ref string, agentSt herdragent.State) (delegateAgentPollResult, error) {
+	res := delegateAgentPollResult{
+		AgentStatus:      string(agentSt.Status),
+		StateChangeSeq:   agentSt.Seq,
+		Settled:          agentSt.Settled,
+		Question:         agentSt.Question,
+		AgentStateReason: agentSt.Reason,
+	}
+	markerCode, markerOut, _, markerExecErr := svc.Exec(ctx, ref, []string{"cat", delegateDoneMarker}, nil, "/", "")
+	if markerExecErr == nil && markerCode == 0 {
+		res.DoneVia = "marker"
+		res.MarkerContent = strings.TrimSpace(markerOut)
+		return res, nil
+	}
+	runGit := func(gitArgv []string) (string, error) {
+		code, stdout, stderr, execErr := svc.Exec(ctx, ref, gitArgv, nil, "/workspace", "")
+		if execErr != nil {
+			return "", fmt.Errorf("exec %v: %w", gitArgv, execErr)
+		}
+		if code != 0 {
+			return fmt.Sprintf("[exit %d] %s", code, stderr), nil
+		}
+		return stdout, nil
+	}
+	var err error
+	if res.GitLog, err = runGit([]string{"git", "-C", "/workspace", "log", "--oneline", "-10"}); err != nil {
+		return res, err
+	}
+	if res.GitStatus, err = runGit([]string{"git", "-C", "/workspace", "status", "--short"}); err != nil {
+		return res, err
+	}
+	if res.BranchName, err = runGit([]string{"git", "-C", "/workspace", "branch", "--show-current"}); err != nil {
+		return res, err
+	}
+	res.DoneVia = "git"
+	return res, nil
+}
+
+// followupSnippet is the tail of text's last line, short enough to survive
+// input-box wrapping, used to spot the text still sitting unsubmitted.
+func followupSnippet(text string) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	last := []rune(strings.TrimSpace(lines[len(lines)-1]))
+	if len(last) > 20 {
+		last = last[len(last)-20:]
+	}
+	return string(last)
+}
+
+func tailLines(screen string, n int) string {
+	var kept []string
+	for _, l := range strings.Split(screen, "\n") {
+		if strings.TrimSpace(l) != "" {
+			kept = append(kept, l)
+		}
+	}
+	if len(kept) > n {
+		kept = kept[len(kept)-n:]
+	}
+	return strings.Join(kept, "\n")
+}
+
+// inputBoxHolds reports whether snippet is still within the last few lines of
+// the pane, where the input box and footer sit. Submitted text scrolls up into
+// history as the agent responds.
+func inputBoxHolds(screen, snippet string) bool {
+	return snippet != "" && strings.Contains(tailLines(screen, 6), snippet)
+}
+
 // observeAgentState returns the herdragent state for ref, or unknown with a reason on any failure.
 func observeAgentState(ctx context.Context, ref string, waitMs int) herdragent.State {
 	herdrBin, err := resolveHerdrBin()
@@ -388,6 +605,19 @@ func CreateWorktreeSandbox(ctx context.Context, args WorktreeCreateArgs, r Workt
 		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: herdr worktree create: no workspace_id ({\"ws\":...} or result.workspace.workspace_id) in output\n%s", createOut)
 	}
 
+	worktreePath := ""
+	if args.BriefPath != "" {
+		if wtOut, wtErr := r.Herdr(ctx, herdrBin, "worktree", "list", "--workspace", ws, "--json"); wtErr == nil {
+			worktreePath = herdrout.WorktreePath(wtOut, args.Branch)
+		}
+		if worktreePath == "" {
+			return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: brief_path set but worktree path for branch %q not found (workspace %s was created)", args.Branch, ws)
+		}
+		if err := installBrief(ctx, args.BriefPath, worktreePath); err != nil {
+			return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: brief_path: %w (workspace %s was created)", err, ws)
+		}
+	}
+
 	bindOut, err := r.Host(ctx, "herdr", "worktree-sandbox", ws)
 	if err != nil {
 		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: nexus herdr worktree-sandbox: %w\n%s", err, bindOut)
@@ -402,9 +632,10 @@ func CreateWorktreeSandbox(ctx context.Context, args WorktreeCreateArgs, r Workt
 		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: sandbox binding for workspace %s not found after worktree-sandbox\n%s", ws, listOut)
 	}
 
-	worktreePath := ""
-	if wtOut, wtErr := r.Herdr(ctx, herdrBin, "worktree", "list", "--workspace", ws, "--json"); wtErr == nil {
-		worktreePath = herdrout.WorktreePath(wtOut, args.Branch)
+	if worktreePath == "" {
+		if wtOut, wtErr := r.Herdr(ctx, herdrBin, "worktree", "list", "--workspace", ws, "--json"); wtErr == nil {
+			worktreePath = herdrout.WorktreePath(wtOut, args.Branch)
+		}
 	}
 
 	return WorktreeSandboxResult{
@@ -423,6 +654,8 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Description: "Create a linked git worktree via herdr (`herdr worktree create --workspace <parent> --branch <branch>`), " +
 			"then bind a nexus sandbox to it with the same `nexus herdr worktree-sandbox` path a herdr-created worktree gets: " +
 			"image and egress from the checkout's .nexus/config.yaml (or .nexus/Containerfile), .git and .groundwork mounts, named volumes. " +
+			"Optional brief_path (absolute host file) is copied into the worktree as .brief.md; .brief.md and .slice-report.md are appended to the repo's git info/exclude " +
+			"(git has no per-worktree exclude, so the shared common-dir file is used). " +
 			"Requires herdr running and repo_path open as a herdr workspace. " +
 			"image_ref, memory_mib and vcpus are rejected (the worktree-sandbox path has no flags for them); " +
 			"allowed_branches MUST NOT be set — branch policy is derived from the worktree. " +
@@ -440,17 +673,34 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Description: "Deliver a task brief to the claude agent running inside a worktree sandbox " +
 			"via `nexus herdr space-agent --autonomous --no-focus`. " +
 			"The in-guest claude runs with permissions skipped (--permission-mode bypassPermissions); the microVM is the isolation boundary. " +
+			"Optional brief_path (absolute host file) is installed as .brief.md in the worktree (excluded from commits) and the agent is told to read it; brief then becomes optional extra text. " +
 			"Returns {delivered, output}: delivered=true iff herdr agent exits 0 (brief accepted); " +
 			"delivered=false with output on non-zero exit (not IsError — caller decides how to react).",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentDispatchArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
 			return errorResult(fmt.Errorf("ref is required")), nil, nil
 		}
-		if args.Brief == "" {
-			return errorResult(fmt.Errorf("brief is required")), nil, nil
+		if args.Brief == "" && args.BriefPath == "" {
+			return errorResult(fmt.Errorf("brief or brief_path is required")), nil, nil
+		}
+		if err := validateBriefPath(args.BriefPath); err != nil {
+			return errorResult(fmt.Errorf("delegate_agent_dispatch: %w", err)), nil, nil
+		}
+		if args.BriefPath != "" {
+			wt, err := worktreePathForRef(ctx, args.Ref)
+			if err != nil {
+				return errorResult(fmt.Errorf("delegate_agent_dispatch: brief_path: %w", err)), nil, nil
+			}
+			if err := installBrief(ctx, args.BriefPath, wt); err != nil {
+				return errorResult(fmt.Errorf("delegate_agent_dispatch: brief_path: %w", err)), nil, nil
+			}
 		}
 		_, _, _, _ = svc.Exec(ctx, args.Ref, []string{"rm", "-f", delegateDoneMarker}, nil, "/", "")
-		brief := standingOrders + args.Brief
+		brief := standingOrders
+		if args.BriefPath != "" {
+			brief += "Your task brief is in /workspace/" + briefFileName + " — read it first and follow it.\n\n"
+		}
+		brief += args.Brief
 		out, runErr := runHostCLI(ctx, "herdr", "agent", "--autonomous", "--no-focus", args.Ref, brief)
 		delivered := runErr == nil
 		const maxOut = 4000
@@ -475,52 +725,128 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			return errorResult(fmt.Errorf("ref is required")), nil, nil
 		}
 		agentSt := observeAgentState(ctx, args.Ref, args.WaitMs)
+		res, err := buildPollResult(ctx, svc, args.Ref, agentSt)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		return successResult(res), nil, nil
+	})
 
-		markerCode, markerOut, _, markerExecErr := svc.Exec(ctx, args.Ref, []string{"cat", delegateDoneMarker}, nil, "/", "")
-		if markerExecErr == nil && markerCode == 0 {
-			return successResult(delegateAgentPollResult{
-				DoneVia:          "marker",
-				MarkerContent:    strings.TrimSpace(markerOut),
-				AgentStatus:      string(agentSt.Status),
-				StateChangeSeq:   agentSt.Seq,
-				Settled:          agentSt.Settled,
-				Question:         agentSt.Question,
-				AgentStateReason: agentSt.Reason,
-			}), nil, nil
+	gosdk.AddTool(srv, &gosdk.Tool{
+		Name: "delegate_agent_wait",
+		Description: "Block until the in-guest agent finishes or needs attention, replacing host poll loops. " +
+			"Returns {outcome, ...delegate_agent_poll fields} with outcome one of: " +
+			"done (" + delegateDoneMarker + " written; marker_content set), " +
+			"blocked (permission dialog or question pending; question holds its text), " +
+			"idle_without_marker (agent idle/done on two consecutive samples without the marker — finished without signalling, or stopped), " +
+			"timeout (timeout_s elapsed; default 120, max 540). " +
+			"Uses the same herdr state observation and marker check as delegate_agent_poll.",
+	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentWaitArgs) (*gosdk.CallToolResult, any, error) {
+		if args.Ref == "" {
+			return errorResult(fmt.Errorf("ref is required")), nil, nil
 		}
-		runGit := func(gitArgv []string) (string, error) {
-			code, stdout, stderr, execErr := svc.Exec(ctx, args.Ref, gitArgv, nil, "/workspace", "")
-			if execErr != nil {
-				return "", fmt.Errorf("exec %v: %w", gitArgv, execErr)
+		timeout := time.Duration(args.TimeoutS) * time.Second
+		if args.TimeoutS <= 0 {
+			timeout = defaultAgentWaitTimeout
+		}
+		if timeout > maxAgentWaitTimeout {
+			timeout = maxAgentWaitTimeout
+		}
+		deadline := time.Now().Add(timeout)
+		var prevIdleSeq uint64
+		idleSamples := 0
+		for {
+			agentSt := observeAgentState(ctx, args.Ref, 0)
+			outcome := ""
+			switch {
+			case delegateMarkerWritten(ctx, svc, args.Ref):
+				outcome = "done"
+			case agentSt.Status == herdragent.StatusBlocked && agentSt.Settled:
+				outcome = "blocked"
+			case (agentSt.Status == herdragent.StatusIdle || agentSt.Status == herdragent.StatusDone) && agentSt.Settled:
+				if idleSamples > 0 && agentSt.Seq == prevIdleSeq {
+					idleSamples++
+				} else {
+					idleSamples = 1
+				}
+				prevIdleSeq = agentSt.Seq
+				if idleSamples >= 2 {
+					outcome = "idle_without_marker"
+				}
+			default:
+				idleSamples = 0
 			}
-			if code != 0 {
-				return fmt.Sprintf("[exit %d] %s", code, stderr), nil
+			if outcome == "" && !time.Now().Before(deadline) {
+				outcome = "timeout"
 			}
-			return stdout, nil
+			if outcome != "" {
+				res, err := buildPollResult(ctx, svc, args.Ref, agentSt)
+				if err != nil {
+					return errorResult(err), nil, nil
+				}
+				return successResult(delegateAgentWaitResult{Outcome: outcome, delegateAgentPollResult: res}), nil, nil
+			}
+			select {
+			case <-ctx.Done():
+				return errorResult(fmt.Errorf("delegate_agent_wait: %w", ctx.Err())), nil, nil
+			case <-time.After(agentWaitInterval):
+			}
 		}
-		gitLog, err := runGit([]string{"git", "-C", "/workspace", "log", "--oneline", "-10"})
+	})
+
+	gosdk.AddTool(srv, &gosdk.Tool{
+		Name: "delegate_agent_followup",
+		Description: "Send a follow-up message to the in-guest agent: types text into the bound herdr pane, " +
+			"submits with Enter (capital E; lowercase `enter` does not submit), then confirms the pane shows the agent working " +
+			"or the text left the input area, re-pressing Enter up to " + fmt.Sprint(followupEnterRetries) + " times. " +
+			"Returns {submitted, agent_status, output}; submitted=false (not IsError) when submission could not be confirmed.",
+	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentFollowupArgs) (*gosdk.CallToolResult, any, error) {
+		if args.Ref == "" {
+			return errorResult(fmt.Errorf("ref is required")), nil, nil
+		}
+		if strings.TrimSpace(args.Text) == "" {
+			return errorResult(fmt.Errorf("text is required")), nil, nil
+		}
+		herdrBin, err := resolveHerdrBin()
 		if err != nil {
+			return errorResult(fmt.Errorf("delegate_agent_followup: %w", err)), nil, nil
+		}
+		listOut, err := runHostCLI(ctx, "herdr", "list")
+		if err != nil {
+			return errorResult(fmt.Errorf("delegate_agent_followup: nexus herdr list: %w\n%s", err, listOut)), nil, nil
+		}
+		_, _, _, paneID, bound := parseHerdrListBindingByRef(listOut, args.Ref)
+		if !bound || paneID == "" {
+			return errorResult(fmt.Errorf("delegate_agent_followup: no herdr pane bound to %q", args.Ref)), nil, nil
+		}
+		if out, err := runHerdrCLI(ctx, herdrBin, "pane", "send-text", paneID, args.Text); err != nil {
+			return errorResult(fmt.Errorf("delegate_agent_followup: herdr pane send-text: %w\n%s", err, out)), nil, nil
+		}
+		if err := sleepCtx(ctx, followupSettleDelay); err != nil {
 			return errorResult(err), nil, nil
 		}
-		gitStatus, err := runGit([]string{"git", "-C", "/workspace", "status", "--short"})
-		if err != nil {
-			return errorResult(err), nil, nil
+		snippet := followupSnippet(args.Text)
+		for attempt := 0; attempt <= followupEnterRetries; attempt++ {
+			if out, err := runHerdrCLI(ctx, herdrBin, "pane", "send-keys", paneID, "Enter"); err != nil {
+				return errorResult(fmt.Errorf("delegate_agent_followup: herdr pane send-keys Enter: %w\n%s", err, out)), nil, nil
+			}
+			if err := sleepCtx(ctx, followupConfirmDelay); err != nil {
+				return errorResult(err), nil, nil
+			}
+			st := observeAgentState(ctx, args.Ref, 0)
+			screen, _ := runHerdrCLI(ctx, herdrBin, "pane", "read", paneID, "--source", "recent-unwrapped", "--lines", "40")
+			if st.Status == herdragent.StatusWorking || !inputBoxHolds(screen, snippet) {
+				return successResult(map[string]any{"submitted": true, "agent_status": string(st.Status)}), nil, nil
+			}
+			if attempt == followupEnterRetries {
+				return successResult(map[string]any{
+					"submitted":    false,
+					"agent_status": string(st.Status),
+					"output":       "text still in the input box after Enter; pane tail:\n" + tailLines(screen, 8),
+				}), nil, nil
+			}
 		}
-		branchName, err := runGit([]string{"git", "-C", "/workspace", "branch", "--show-current"})
-		if err != nil {
-			return errorResult(err), nil, nil
-		}
-		return successResult(delegateAgentPollResult{
-			GitLog:           gitLog,
-			GitStatus:        gitStatus,
-			BranchName:       branchName,
-			DoneVia:          "git",
-			AgentStatus:      string(agentSt.Status),
-			StateChangeSeq:   agentSt.Seq,
-			Settled:          agentSt.Settled,
-			Question:         agentSt.Question,
-			AgentStateReason: agentSt.Reason,
-		}), nil, nil
+		return errorResult(fmt.Errorf("delegate_agent_followup: unreachable")), nil, nil
 	})
 
 	gosdk.AddTool(srv, &gosdk.Tool{

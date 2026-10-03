@@ -52,9 +52,11 @@ The server exposes 13 tools: nine covering sandbox lifecycle and execution, and 
 | `sandbox_remove` | Remove a sandbox record |
 | `sandbox_exec` | Run a command inside an existing sandbox; returns `{exit_code, stdout, stderr, stdout_bytes, stderr_bytes}` with truncation metadata for output exceeding 64 KiB |
 | `sandbox_run` | Ephemeral create+boot+exec+remove in one call; args `{image, argv, memory?, vcpus?, project?, name?}`; the sandbox is removed unconditionally on completion |
-| `delegate_worktree_create` | Create a worktree-bound sandbox for a host repo path; `allowed_branches` is rejected if set — branch policy is derived from the worktree's current branch |
-| `delegate_agent_dispatch` | Submit a brief to the in-guest agent; blocks until the brief is delivered, not until the work is done |
+| `delegate_worktree_create` | Create a worktree-bound sandbox for a host repo path; optional `brief_path` copies a host file to `.brief.md` and git-excludes it (shared common-dir `info/exclude`); `allowed_branches` is rejected if set — branch policy is derived from the worktree's current branch |
+| `delegate_agent_dispatch` | Submit a brief (or `brief_path`, installed as `.brief.md`) to the in-guest agent; blocks until the brief is delivered, not until the work is done |
 | `delegate_agent_poll` | Read herdr native agent state (`agent_status`, `state_change_seq`, `settled`, `question`) plus `git log`/`git status`/`branch_name`; optional `wait_ms` to block until idle/done/blocked; completion decided by marker or git, not `agent_status` alone |
+| `delegate_agent_wait` | Block until `outcome` is `done` (marker), `blocked` (returns `question`), `idle_without_marker`, or `timeout`; `timeout_s` default 120, max 540 |
+| `delegate_agent_followup` | Type `text` into the agent pane, submit with `Enter`, confirm submission; `submitted:false` when it could not be confirmed |
 | `delegate_teardown` | Remove the sandbox and its herdr space; pass `force:true` to discard uncommitted changes, otherwise a dirty worktree returns a structured error listing the changed files |
 
 ### MCP gaps <Badge type="danger" text="not built" />

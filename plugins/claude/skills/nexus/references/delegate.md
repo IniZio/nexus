@@ -15,6 +15,8 @@ tool exists. Every step below names which is which.
 | Create worktree-bound sandbox | **MCP tool** | `delegate_worktree_create` |
 | Dispatch brief to in-guest agent | **MCP tool** | `delegate_agent_dispatch` |
 | Poll for completion | **MCP tool** | `delegate_agent_poll` |
+| Block until done/blocked/idle | **MCP tool** | `delegate_agent_wait` (replaces poll loops; `timeout_s` default 120, max 540) |
+| Send a follow-up message | **MCP tool** | `delegate_agent_followup` (`ref`, `text`; submits with `Enter` and confirms) |
 | Teardown sandbox | **MCP tool** | `delegate_teardown` |
 | Remove host git worktree | **CLI only** | `herdr worktree remove --workspace <ws-id>` |
 | Read diff directly | **CLI only** | `git -C <worktree-path> log --oneline HEAD` |

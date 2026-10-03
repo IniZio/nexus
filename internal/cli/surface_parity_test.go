@@ -18,7 +18,7 @@ type surfaceEntry struct {
 // surfaceMap is the authoritative surface contract for N-AC4.
 var surfaceMap = []surfaceEntry{
 	{CLIVerb: "__herdr-plugin", CanonicalMethods: []string{"service.CreateAndBoot", "service.List", "service.Remove"}, MCPTools: nil},
-	{CLIVerb: "herdr", CanonicalMethods: []string{"service.CreateAndBoot", "service.List", "service.Remove"}, MCPTools: []string{"delegate_worktree_create", "delegate_agent_dispatch", "delegate_teardown"}},
+	{CLIVerb: "herdr", CanonicalMethods: []string{"service.CreateAndBoot", "service.List", "service.Remove"}, MCPTools: []string{"delegate_worktree_create", "delegate_agent_dispatch", "delegate_agent_followup", "delegate_teardown"}},
 	{CLIVerb: "attach", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
 	{CLIVerb: "auth", CLIOnly: true},
 	{CLIVerb: "config validate", CLIOnly: true},
@@ -27,7 +27,7 @@ var surfaceMap = []surfaceEntry{
 	{CLIVerb: "disk", CanonicalMethods: []string{"service.DiskUsage"}, MCPTools: nil},
 	{CLIVerb: "doctor", CLIOnly: true},
 	{CLIVerb: "egress", CanonicalMethods: []string{"service.ResolveRef"}, MCPTools: nil},
-	{CLIVerb: "exec", CanonicalMethods: []string{"service.Exec"}, MCPTools: []string{"sandbox_exec", "delegate_agent_poll"}},
+	{CLIVerb: "exec", CanonicalMethods: []string{"service.Exec"}, MCPTools: []string{"sandbox_exec", "delegate_agent_poll", "delegate_agent_wait"}},
 	{CLIVerb: "forward", CanonicalMethods: []string{"service.Forward"}, MCPTools: nil},
 	{CLIVerb: "image", CanonicalMethods: []string{"service.ImageOps"}, MCPTools: nil},
 	{CLIVerb: "kernel install", CLIOnly: true},

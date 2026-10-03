@@ -49,7 +49,8 @@ grep -A3 '"nexus"' ~/.claude.json
 
 If that binary is not `~/.local/bin/nexus`, the server may be running a stale
 build that lacks the delegation tools (`delegate_worktree_create`,
-`delegate_agent_dispatch`, `delegate_agent_poll`, `delegate_teardown`).
+`delegate_agent_dispatch`, `delegate_agent_poll`, `delegate_agent_wait`,
+`delegate_agent_followup`, `delegate_teardown`).
 
 ### 5. Running sandboxes and RAM cost
 
