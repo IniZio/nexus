@@ -102,7 +102,7 @@ func herdrGroupVerbToPluginSub(sub string) (pluginSub string, known bool) {
 
 func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 	if len(args) == 0 {
-		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox|backfill-repo-root|local-agent-startup|version-check|focus-changed|focus-watch)"}
+		return &UsageError{Msg: "herdr: subcommand required (abi|context-cwd|workspaces|attach|create|logs|doctor|open-pane|launch|shell-cwd|new-tab|space-create|space-open-pane|create-from-file|pause|resume|remove|list|prune|agent|agent-from-file|default-shell|install-default-shell|worktree-sandbox|worktree-create|backfill-repo-root|local-agent-startup|version-check|focus-changed|focus-watch)"}
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -120,6 +120,8 @@ func runHerdrGroup(ctx context.Context, args []string, out *Output) error {
 		return runHerdrFocusWatchCmd(ctx, rest, out)
 	case "report-forward-status":
 		return runHerdrReportForwardStatus(ctx, rest, out)
+	case "worktree-create":
+		return runHerdrWorktreeCreate(ctx, rest, out)
 	}
 
 	pluginSub, known := herdrGroupVerbToPluginSub(sub)

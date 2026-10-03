@@ -153,7 +153,7 @@ func TestDelegateWorktreeCreate_TakesHerdrWorktreeSandboxPath(t *testing.T) {
 		{bin: "/fake/herdr", args: []string{"worktree", "create", "--workspace", "wPARENT", "--branch", "feat/x", "--no-focus"}},
 		{bin: nexusBin, args: []string{"herdr", "worktree-sandbox", "wNEW"}},
 		{bin: nexusBin, args: []string{"herdr", "list"}},
-		{bin: "/fake/herdr", args: []string{"worktree", "list", "--json"}},
+		{bin: "/fake/herdr", args: []string{"worktree", "list", "--workspace", "wNEW", "--json"}},
 	}
 	if len(rec.calls) != len(want) {
 		t.Fatalf("call count = %d, want %d; calls=%+v", len(rec.calls), len(want), rec.calls)
@@ -769,6 +769,13 @@ func TestDelegateTeardown_DirtyWorktree_ReturnsActionableError(t *testing.T) {
 	res := callTool(t, cs, "delegate_teardown", map[string]any{"ref": "repo/branch"})
 	if !res.IsError {
 		t.Fatalf("expected error, got success: %s", resultText(t, res))
+	}
+	listCall, ok := rec.find("worktree list")
+	if !ok {
+		t.Fatalf("herdr worktree list never ran: %+v", rec.calls)
+	}
+	if got, want := strings.Join(listCall.args, " "), "worktree list --workspace wNEW --json"; got != want {
+		t.Errorf("worktree list argv = %q, want %q", got, want)
 	}
 	text := resultText(t, res)
 	if !strings.Contains(text, "force:true") {
