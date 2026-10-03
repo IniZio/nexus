@@ -407,6 +407,7 @@ func TestFakeCapabilitiesMatchInterfaces(t *testing.T) {
 	want := driver.OptionalInterfaces(f)
 	want.GuestOS = driver.GuestOSLinux
 	want.Egress = driver.EgressNone
+	want.Isolation = driver.IsolationWorktree
 	if got := f.Capabilities(); got != want {
 		t.Fatalf("Capabilities = %+v, want %+v", got, want)
 	}

@@ -658,5 +658,6 @@ func (f *FakeDriver) Capabilities() driver.CapabilitySet {
 	c := driver.OptionalInterfaces(f)
 	c.GuestOS = driver.GuestOSLinux
 	c.Egress = driver.EgressNone
+	c.Isolation = driver.IsolationWorktree
 	return c
 }

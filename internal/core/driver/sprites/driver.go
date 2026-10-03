@@ -313,5 +313,5 @@ func (d *Driver) Copy(ctx context.Context, id domain.SandboxID, opts driver.Copy
 }
 
 func (d *Driver) Capabilities() driver.CapabilitySet {
-	return driver.CapabilitySet{GuestOS: driver.GuestOSLinux, Egress: driver.EgressEnforced}
+	return driver.CapabilitySet{GuestOS: driver.GuestOSLinux, Egress: driver.EgressEnforced, Isolation: driver.IsolationGuest}
 }

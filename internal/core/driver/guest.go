@@ -71,6 +71,14 @@ const (
 	EgressEnforced EgressLevel = "enforced"
 )
 
+// Isolation names what bounds a sandbox from the host.
+type Isolation string
+
+const (
+	IsolationWorktree Isolation = "worktree" // host fs/worktree is the boundary
+	IsolationGuest    Isolation = "guest"    // the whole guest is the boundary
+)
+
 // CapabilitySet is the declared capability surface of a driver.
 type CapabilitySet struct {
 	Pause          bool
@@ -83,6 +91,7 @@ type CapabilitySet struct {
 	SessionAttach  bool
 	GuestOS        GuestOS
 	Egress         EgressLevel
+	Isolation      Isolation
 }
 
 // OptionalInterfaces derives the interface-backed flags of a CapabilitySet

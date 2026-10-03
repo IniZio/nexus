@@ -145,3 +145,37 @@ func TestCopyViaExecRejectsDotDot(t *testing.T) {
 		t.Fatalf("want rejection before exec, err=%v reqs=%d", err, len(api.reqs))
 	}
 }
+
+func TestCopyViaExecGuestPathValidation(t *testing.T) {
+	cases := []struct {
+		name, path string
+		ok         bool
+	}{
+		{"valid", "", true},
+		{"relative", "tmp/a", false},
+		{"dotdot", "/tmp/a/../b", false},
+		{"unclean double slash", "/tmp//a", false},
+		{"unclean dot", "/tmp/./a", false},
+		{"trailing slash", "/tmp/a/", false},
+		{"nul", "/tmp/a\x00b", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.ok {
+				c.path = t.TempDir() + "/f"
+			}
+			api := &localExecAPI{}
+			n := int64(0)
+			err := copyViaExec(context.Background(), api, "nx-x", driver.CopyOptions{
+				Direction: agentpb.CopyDirection_COPY_DIRECTION_PUSH, GuestPath: c.path,
+				Src: strings.NewReader(""), ExpectedBytes: &n,
+			})
+			if !c.ok && (err == nil || len(api.reqs) != 0) {
+				t.Fatalf("want rejection before exec, err=%v reqs=%d", err, len(api.reqs))
+			}
+			if c.ok && err != nil {
+				t.Fatalf("valid path rejected: %v", err)
+			}
+		})
+	}
+}

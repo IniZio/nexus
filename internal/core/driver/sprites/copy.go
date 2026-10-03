@@ -6,11 +6,30 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 
 	"github.com/IniZio/nexus/internal/core/agent/agentpb"
 	"github.com/IniZio/nexus/internal/core/driver"
 )
+
+func checkGuestPath(p string) error {
+	switch {
+	case strings.ContainsRune(p, 0):
+		return fmt.Errorf("sprites copy: guest path %q contains NUL", p)
+	case !strings.HasPrefix(p, "/"):
+		return fmt.Errorf("sprites copy: guest path %q is not absolute", p)
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return fmt.Errorf("sprites copy: guest path %q contains '..'", p)
+		}
+	}
+	if path.Clean(p) != p {
+		return fmt.Errorf("sprites copy: guest path %q is not canonical", p)
+	}
+	return nil
+}
 
 const copyStderrCap = 2 << 10
 
@@ -21,10 +40,8 @@ func copyViaExec(ctx context.Context, api API, name string, opts driver.CopyOpti
 	if opts.GuestPath == "" {
 		return errors.New("sprites copy: guest path required")
 	}
-	for _, seg := range strings.Split(opts.GuestPath, "/") {
-		if seg == ".." {
-			return fmt.Errorf("sprites copy: guest path %q contains '..'", opts.GuestPath)
-		}
+	if err := checkGuestPath(opts.GuestPath); err != nil {
+		return err
 	}
 	var req ExecRequest
 	var counted *countReader

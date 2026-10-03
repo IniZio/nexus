@@ -16,7 +16,12 @@ import (
 	"github.com/IniZio/nexus/internal/core/store"
 )
 
-const spritesTrustNotice = "note: sprites isolation = remote Fly sprite; egress = domain allowlist (empty = deny-all)."
+func isolationNotice(i driver.Isolation) string {
+	if i == driver.IsolationGuest {
+		return "isolation: guest (whole sprite is the boundary; credentials projected into it are agent-visible)"
+	}
+	return "isolation: " + string(i)
+}
 
 const spritesTokenNotice = "note: GH_TOKEN is passed to the sprite for clone only; weaker than Sprites Connectors."
 
@@ -130,7 +135,7 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 	}
 	out.EmitSuccess("sandbox.created", toSandboxInfoJSON(sb),
 		fmt.Sprintf("created sandbox %s (%s) on sprite (repo %s)", sb.Handle(), sb.ID, repo))
-	fmt.Fprintln(out.Stderr(), spritesTrustNotice)
+	fmt.Fprintln(out.Stderr(), isolationNotice(drv.Capabilities().Isolation))
 	if tok != "" {
 		fmt.Fprintln(out.Stderr(), spritesTokenNotice)
 	}

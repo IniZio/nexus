@@ -45,7 +45,6 @@ func TestContractLive_Sprites(t *testing.T) {
 		// destroy must leave it absent.
 		GuestRoot:        guestScratch,
 		HostShared:       false,
-		GuestIsBoundary:  true,
 		DestroyKeepsRoot: false,
 		Create: func(t *testing.T, allow []string) (domain.SandboxID, string, func()) {
 			id := domain.NewSandboxID()

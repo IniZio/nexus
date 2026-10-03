@@ -33,5 +33,6 @@ func (d *CHDriver) Capabilities() driver.CapabilitySet {
 	c := driver.OptionalInterfaces(d)
 	c.GuestOS = driver.GuestOSLinux
 	c.Egress = driver.EgressEnforced
+	c.Isolation = driver.IsolationWorktree
 	return c
 }
