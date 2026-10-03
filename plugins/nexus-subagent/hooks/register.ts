@@ -1,6 +1,8 @@
 import { update, type EngineInterface, type Register } from 'claude-code'
 import type { NexusBinding } from '../types'
 import { WORKER_TYPE, guestCommand, route, sliceLines, applyEdit, guestPath, sandboxRefFor, worktreeInPrompt, parseCreated, lastLine, orchestrateDeny, parseOrchestrateArg, type Created } from './policy'
+import { registerHub } from './hub'
+import { registerHubBridge } from './hub_bridge'
 import { SANDBOX_TOOLS, SANDBOX_TOOL_PREFIX, buildSandboxCall, formatSandboxResult } from './sandbox'
 
 const BINDINGS = { plugin: 'nexus-subagent', key: 'bindings' } as const
@@ -113,6 +115,8 @@ const ORCHESTRATE_SECTION =
   'Read, Glob, Grep, read-only Bash and SendMessage remain available. Toggle with /orchestrate on|off|status.'
 
 export const register: Register = on => {
+  registerHub(on)
+  registerHubBridge(on)
   const foreign = new Set<string>()
   const createdRefs = new Map<string, string>()
   const guestBashCalls = new Map<string, string>()
