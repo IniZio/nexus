@@ -466,22 +466,25 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		}
 		createFn := func(ctx context.Context, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, nested bool) error {
 			args := herdrWorktreeSandboxCreateArgs(handle, mountSpec, imageFlag, imageVal, extraMounts, secrets, allowedRepo, pathPolicies, mcpPolicies, nested)
-			cmd := herdrExecCommandContext(ctx, exe, append([]string{"sandbox", "create"}, args...)...)
-			/**
-			 * Run the create from the worktree checkout. `sandbox create` reads
-			 * project config by walking up from its cwd, and herdr runs plugin
-			 * panes with cwd inside the installed plugin checkout — the nexus
-			 * repo itself — whose .nexus/config.yaml (sandbox.nested: true)
-			 * then applied to EVERY worktree sandbox of every repo. The
-			 * checkout is the host side of the /workspace mount spec.
-			 */
-			if hostPath, _, ok := strings.Cut(mountSpec, ":"); ok && hostPath != "" {
-				cmd.Dir = hostPath
-			}
 			var stderrBuf bytes.Buffer
-			cmd.Stdout = out.w
-			cmd.Stderr = io.MultiWriter(out.w, &stderrBuf)
-			if err := cmd.Run(); err != nil {
+			if err := herdrRunCreateWatched(ctx, herdrCreateIdleLimit, herdrCreateProbeEvery, herdrCreateActivityProbe(storeRoot),
+				func(wctx context.Context, wrap func(io.Writer) io.Writer) *exec.Cmd {
+					cmd := herdrExecCommandContext(wctx, exe, append([]string{"sandbox", "create"}, args...)...)
+					/**
+					 * Run the create from the worktree checkout. `sandbox create` reads
+					 * project config by walking up from its cwd, and herdr runs plugin
+					 * panes with cwd inside the installed plugin checkout — the nexus
+					 * repo itself — whose .nexus/config.yaml (sandbox.nested: true)
+					 * then applied to EVERY worktree sandbox of every repo. The
+					 * checkout is the host side of the /workspace mount spec.
+					 */
+					if hostPath, _, ok := strings.Cut(mountSpec, ":"); ok && hostPath != "" {
+						cmd.Dir = hostPath
+					}
+					cmd.Stdout = wrap(out.w)
+					cmd.Stderr = wrap(io.MultiWriter(out.w, &stderrBuf))
+					return cmd
+				}); err != nil {
 				return fmt.Errorf("%w\n%s", err, sandboxCreateLastErrors(stderrBuf.String()))
 			}
 			return nil
@@ -3947,41 +3950,15 @@ const (
 )
 
 /**
- * herdrWorktreeCreateTimeout bounds the sandbox create call in step 7.
+ * herdrWorktreeCreateTimeout (hard cap) and the idle watchdog bound the
+ * sandbox create call in step 7; see herdr_create_watchdog.go for the policy.
  *
- * TBD-2 (nexus-nonnexus-repo-sandbox-blockers): this was 90s, documented as
- * "generous for typical fast hardware with a warm image cache". That premise
- * does not hold: a cold BUILDKIT LAYER CACHE (not merely a cold fingerprint —
- * layers are shared across fingerprints, so a fingerprint miss over a warm
- * layer cache is fast) measured 120s (a mid-size Next.js monorepo) and 152s (nexus) through
- * the unbounded `nexus create --file` path on 2026-08-31, both well over the
- * old 90s bound. 240s carries ~60% headroom over the worst measured cold
- * build and was chosen over two rejected alternatives:
- *
- *   - Adaptive/progress-based liveness (distinguish "slow but making
- *     progress" from "wedged") was ruled out for this slice: it needs a new
- *     channel streaming buildkit solve progress from guest to host over the
- *     vsock control plane, which does not exist today. That is real
- *     standalone machinery, not a constant tweak — left as follow-up work,
- *     not because it is a bad idea.
- *   - Removing the bound entirely was ruled out: it is the only thing that
- *     protects an operator's pane from a truly wedged daemon (as opposed to
- *     a slow one). Enforcement uses exec.CommandContext default behaviour
- *     (SIGKILL on expiry) — a clean teardown is not guaranteed on timeout.
- *
- * A fixed constant still cannot distinguish "legitimately slow" from
- * "wedged" — that limitation is inherent to any constant and is accepted for
- * this slice.
- */
-const herdrWorktreeCreateTimeout = 240 * time.Second
-
-/**
  * herdrWorktreeCreateLockTimeout bounds how long the second concurrent caller
- * waits for the per-handle create-intent lock. Must exceed the first caller's
- * worst-case total create time (herdrWorktreeCreateTimeout = 240s), so the
- * first caller always finishes (or is forcibly killed) before the waiter gives up.
+ * waits for the per-handle create-intent lock. Derived from the hard cap plus
+ * margin so the first caller always finishes (or is killed) before the waiter
+ * gives up.
  */
-const herdrWorktreeCreateLockTimeout = 330 * time.Second
+const herdrWorktreeCreateLockTimeout = herdrWorktreeCreateTimeout + 90*time.Second
 
 /**
  * errHerdrWorktreeRebindStale drives the reconcile branch of
@@ -3995,7 +3972,7 @@ var errHerdrWorktreeRebindStale = errors.New("worktree-sandbox: binding workspac
  * herdrWorktreeCreateLockPath returns the path to the per-handle create-intent
  * lock file.  The lock serialises concurrent auto-create attempts for the same
  * sandbox handle (e.g. two panes opening in the same worktree workspace within
- * the ~240 s create window — herdrWorktreeCreateTimeout above).
+ * the create window — herdrWorktreeCreateTimeout).
  *
  * Safe filename: "/" → "_".  After herdrWorktreeSandboxHandle's sanitisation,
  * handles contain only [A-Za-z0-9._-/] with at most one "/", so this mapping
@@ -5234,14 +5211,13 @@ func herdrWorktreeSandbox(
 	sbProject, _, _ := domain.ParseHandle(handle)
 	egressSecrets, egressPathPolicies = herdrApplyGitHubAutoBind(ctx, w, info.Path, sbProject, checkoutCfg, egressSecrets, egressPathPolicies)
 	/**
-	 * Step 7: create sandbox. A 240 s context covers image pull, ext4 setup,
-	 * and VM boot on typical hardware. Explicit mode failures are real errors;
+	 * Step 7: create sandbox. The hard-cap deadline starts here, after volume
+	 * seeding (which must not eat the create budget); the idle watchdog lives
+	 * in createFn. Explicit mode failures are real errors;
 	 * auto/conditional mode is fail-safe (workspace stays a host shell).
 	 * egressPathPolicies is conveyed to the subprocess via --egress-policy-json
 	 * so the generic policy reaches MITM enforcement (D-PDE-16 worktree gap fix).
 	 */
-	createCtx, createCancel := context.WithTimeout(ctx, herdrWorktreeCreateTimeout)
-	defer createCancel()
 	/**
 	 * sb is declared here so the reconcile path (step 7 error + getFn success)
 	 * and the normal path (step 7 success + step 8 getFn) both feed the shared
@@ -5288,6 +5264,8 @@ func herdrWorktreeSandbox(
 	if rebindStale {
 		createErr = errHerdrWorktreeRebindStale
 	} else {
+		createCtx, createCancel := context.WithTimeout(ctx, herdrCreateHardCap)
+		defer createCancel()
 		createErr = createFn(createCtx, handle, mountSpec, imageFlag, imageVal, extraMounts, egressSecrets, egressAllowedRepo, egressPathPolicies, egressMCPPolicies, nestedFlag || nestedCfg)
 	}
 	if createErr != nil {
