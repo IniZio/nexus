@@ -29,6 +29,7 @@ type fakeAPI struct {
 	exitCode  int32
 	execErr   error
 	stderr    string
+	policyErr func(n int) error
 }
 
 func (f *fakeAPI) rec(s string) { f.calls = append(f.calls, s) }
@@ -61,6 +62,9 @@ func (f *fakeAPI) SetNetworkPolicy(_ context.Context, _ string, p *sdk.NetworkPo
 	defer f.mu.Unlock()
 	f.rec("policy")
 	f.policies = append(f.policies, p)
+	if f.policyErr != nil {
+		return f.policyErr(len(f.policies))
+	}
 	return nil
 }
 

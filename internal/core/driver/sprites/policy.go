@@ -7,6 +7,16 @@ import (
 	sdk "github.com/superfly/sprites-go"
 )
 
+// GoToolchainHosts are the hosts GOTOOLCHAIN=auto needs at all times: toolchains
+// and modules come from GOPROXY and are verified against sum.golang.org.
+// https://go.dev/ref/mod#toolchains, https://go.dev/ref/mod#checksum-database
+var GoToolchainHosts = []string{"proxy.golang.org", "sum.golang.org"}
+
+// GoWarmHost serves toolchain zips: the proxy 302-redirects to
+// storage.googleapis.com. A domain rule cannot restrict by bucket, so it is
+// allowed only during the warm window (see warmGo).
+const GoWarmHost = "storage.googleapis.com"
+
 // BuildPolicy maps nexus egress hosts to a Sprites network policy. open => nil (no policy call).
 func BuildPolicy(hosts []string, includeDefaults, open bool) *sdk.NetworkPolicy {
 	if open {

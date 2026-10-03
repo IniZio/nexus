@@ -41,3 +41,22 @@ func TestPolicyOpenNil(t *testing.T) {
 		t.Fatalf("open must return nil, got %+v", p)
 	}
 }
+
+func TestPolicyGoHostsDefaultDeny(t *testing.T) {
+	p := BuildPolicy(append([]string{"github.com"}, GoToolchainHosts...), false, false)
+	b, _ := json.Marshal(p)
+	want := `{"rules":[{"domain":"github.com","action":"allow"},{"domain":"proxy.golang.org","action":"allow"},{"domain":"sum.golang.org","action":"allow"},{"domain":"*","action":"deny"}]}`
+	if string(b) != want {
+		t.Fatalf("got %s\nwant %s", b, want)
+	}
+}
+
+func TestWithGoToolchain(t *testing.T) {
+	if got := withGoToolchain(nil)["GOTOOLCHAIN"]; got != "auto" {
+		t.Fatalf("got %q", got)
+	}
+	got := withGoToolchain(map[string]string{"GOTOOLCHAIN": "local", "A": "b"})
+	if got["GOTOOLCHAIN"] != "local" || got["A"] != "b" {
+		t.Fatalf("override lost: %v", got)
+	}
+}

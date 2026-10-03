@@ -97,6 +97,9 @@ func (d *Driver) SeedWorktree(ctx context.Context, id domain.SandboxID, hostRepo
 	if werr != nil {
 		return fmt.Errorf("sprites seed: bundle: %w: %s", werr, bytes.TrimSpace(berr.buf))
 	}
+	if hasGoMod(ctx, hostRepoDir, sha) {
+		return d.warmGo(ctx, id, guestDir)
+	}
 	return nil
 }
 

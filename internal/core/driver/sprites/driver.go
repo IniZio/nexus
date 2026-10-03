@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/IniZio/nexus/internal/core/domain"
@@ -128,7 +129,7 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 		}
 	}()
 	if !s.OpenEgress {
-		if p := BuildPolicy(s.AllowedHosts, s.IncludeDefaults, false); p != nil {
+		if p := BuildPolicy(append(slices.Clone(s.AllowedHosts), GoToolchainHosts...), s.IncludeDefaults, false); p != nil {
 			if err := d.api.SetNetworkPolicy(ctx, name, p); err != nil {
 				return fmt.Errorf("sprites: set network policy: %w", err)
 			}
@@ -287,7 +288,7 @@ func (d *Driver) Exec(ctx context.Context, id domain.SandboxID, opts driver.Exec
 	}
 	req := ExecRequest{
 		Argv:   opts.Argv,
-		Env:    opts.Env,
+		Env:    withGoToolchain(opts.Env),
 		Dir:    opts.Cwd,
 		Stdin:  opts.Stdin,
 		Stdout: opts.Stdout,
@@ -306,6 +307,16 @@ func (d *Driver) Exec(ctx context.Context, id domain.SandboxID, opts driver.Exec
 		req.Rows, req.Cols = uint16(sz.GetRows()), uint16(sz.GetCols())
 	}
 	return d.api.Exec(ctx, SpriteName(id), req)
+}
+
+// withGoToolchain defaults GOTOOLCHAIN=auto so go fetches the toolchain a go.mod requires.
+func withGoToolchain(env map[string]string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	out["GOTOOLCHAIN"] = "auto"
+	for k, v := range env {
+		out[k] = v
+	}
+	return out
 }
 
 func (d *Driver) Copy(ctx context.Context, id domain.SandboxID, opts driver.CopyOptions) error {
