@@ -21,7 +21,7 @@ type Config struct {
 	BootMemMiB uint32
 
 	// BootVCPUs is the initial vCPU count passed to the driver.
-	// 0 is treated as the driver default (1 vCPU).
+	// 0 applies DefaultBootVCPUs (min(host CPUs, 8); 1 when host is unknown).
 	BootVCPUs uint32
 
 	// MemMaxMiB is the explicit RAM ceiling in MiB.
@@ -29,7 +29,8 @@ type Config struct {
 	MemMaxMiB uint32
 
 	// VCPUsMax is the explicit vCPU ceiling.
-	// 0 applies the default: max(4 × BootVCPUs, 4, host CPU count).
+	// 0 applies the default: max(boot, min(max(4 × boot, 4), host CPUs));
+	// the host clamp is skipped when host capacity is unknown.
 	VCPUsMax uint32
 
 	// DiskMaxGiB is the explicit disk-grow ceiling in GiB.
@@ -48,6 +49,25 @@ type Config struct {
 // refused with "host has 559 MiB available, need 3072 MiB" (2026-09-19).
 const NestedMemMaxFloorMiB = 8192
 
+// MaxDefaultBootVCPUs caps the default boot vCPU count. Toolchains (vitest,
+// make -j) size worker pools from nproc at start, so the guest must boot with
+// its parallelism visible; the governor cannot raise nproc in time.
+const MaxDefaultBootVCPUs = 8
+
+// DefaultBootVCPUs is the boot vCPU count used when neither flag nor config
+// sets one: min(host CPUs, MaxDefaultBootVCPUs), or 1 when host CPUs are
+// unknown. CPU time is compressible, so no admission reserves this count.
+func DefaultBootVCPUs() uint32 {
+	n := HostCapacityFunc().NCPU
+	if n == 0 {
+		return 1
+	}
+	if n > MaxDefaultBootVCPUs {
+		return MaxDefaultBootVCPUs
+	}
+	return n
+}
+
 // Result holds the resolved auto-resize boot configuration.
 // All fields are ready to be assigned directly to a driver Config and cmdline.
 type Result struct {
@@ -58,6 +78,11 @@ type Result struct {
 	// Assign to driver.Config.MemoryMaxMiB; the driver uses it to size the
 	// VirtioMem hotplug region and emit memhp kernel parameters (driver.go:65-66).
 	MemoryMaxMiB uint32
+
+	// BootVCPUs is the resolved boot vCPU count. Callers MUST hand this (not
+	// the raw flag) to the driver so the guest boots with the count that
+	// Bounds.VCPUMin assumes.
+	BootVCPUs uint32
 
 	// VCPUMax is the resolved vCPU ceiling count.
 	// Assign to driver.Config.VCPUMax.
@@ -83,14 +108,14 @@ type Result struct {
 //     consumed >4 GiB; 4096 MiB is the measured lower bound.  4× reaches
 //     4096 MiB only when boot memory ≥ 1024 MiB; the floor prevents a
 //     512 MiB default sandbox from getting only 2048 MiB.
-//   - VCPUsMax:   4× BootVCPUs, minimum 4, raised to the host CPU count.
-//     Host capacity comes from HostCapacityFunc; unknown (0) falls back to the
-//     fixed 4096 MiB / 4 vCPU floors.
+//   - VCPUsMax:   max(boot, min(max(4× boot, 4), host CPUs)): never above the
+//     host core count. Host capacity comes from HostCapacityFunc; unknown (0)
+//     falls back to the fixed 4096 MiB / 4 vCPU floors (no host clamp).
 //   - DiskMaxGiB: 100 GiB.
 //
 // Driver defaults (substituted when BootMemMiB or BootVCPUs is 0):
 //   - BootMemMiB = 0 → 512 MiB (driver.Config.MemoryMiB zero-value).
-//   - BootVCPUs  = 0 → 1 vCPU (driver.Config.VCPUs zero-value).
+//   - BootVCPUs  = 0 → DefaultBootVCPUs() (min(host, 8); 1 if host unknown).
 func Resolve(c Config) Result {
 	// Resolve driver defaults so ceiling multiples and floor checks are computed
 	// against the actual VM sizing, not a raw zero.
@@ -100,7 +125,7 @@ func Resolve(c Config) Result {
 	}
 	bootCPUs := c.BootVCPUs
 	if bootCPUs == 0 {
-		bootCPUs = 1 // driver default (Config.VCPUs = 0 → 1 vCPU)
+		bootCPUs = DefaultBootVCPUs()
 	}
 
 	// Ceiling defaults.
@@ -133,10 +158,13 @@ func Resolve(c Config) Result {
 		if vcpuMax < 4 {
 			vcpuMax = 4
 		}
-		// CPU is compressible: the governor hot-plugs on guest PSI up to the
-		// host CPU count.
-		if n := HostCapacityFunc().NCPU; n > vcpuMax {
+		// Never default above host cores (boot 12 on a 12-CPU host gave 48,
+		// letting the guest reach 13 vCPUs). Boot itself is a floor.
+		if n := HostCapacityFunc().NCPU; n > 0 && vcpuMax > n {
 			vcpuMax = n
+		}
+		if vcpuMax < bootCPUs {
+			vcpuMax = bootCPUs
 		}
 	}
 	diskMax := c.DiskMaxGiB
@@ -155,6 +183,7 @@ func Resolve(c Config) Result {
 	return Result{
 		Bounds:       bounds,
 		MemoryMaxMiB: memMax,
+		BootVCPUs:    bootCPUs,
 		VCPUMax:      vcpuMax,
 		// Leading space is intentional: the caller concatenates this after
 		// "--" (e.g. diskBootCmdlineBase + " --" + result.PID1Args).

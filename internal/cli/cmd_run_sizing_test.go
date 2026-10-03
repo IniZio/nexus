@@ -31,6 +31,13 @@ func TestResolveRunSizingNoFlags(t *testing.T) {
 	if r.PID1Args != mibCeil(4096) {
 		t.Errorf("PID1Args: got %q, want %q", r.PID1Args, mibCeil(4096))
 	}
+	// Pinned 2-CPU host: boot 2, ceiling clamped to 2 (no hotplug headroom).
+	if r.BootVCPUs != 2 {
+		t.Errorf("BootVCPUs: got %d, want 2", r.BootVCPUs)
+	}
+	if r.DriverVCPUMax != 0 {
+		t.Errorf("DriverVCPUMax: got %d, want 0 (ceiling == boot)", r.DriverVCPUMax)
+	}
 }
 
 func TestResolveRunSizingExplicitCeiling(t *testing.T) {

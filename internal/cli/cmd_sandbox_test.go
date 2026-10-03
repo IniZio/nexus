@@ -753,11 +753,13 @@ func TestAutoResize_GovBoundsWired(t *testing.T) {
 	if bounds.MemMinBytes != wantMemMin {
 		t.Errorf("GovBounds.MemMinBytes: got %d, want %d (boot default)", bounds.MemMinBytes, wantMemMin)
 	}
+	// Explicit --vcpus-max 4 wins over the host clamp; TestMain pins a
+	// 2-CPU host so boot = 2.
 	if bounds.VCPUMax != 4 {
-		t.Errorf("GovBounds.VCPUMax: got %d, want 4", bounds.VCPUMax)
+		t.Errorf("GovBounds.VCPUMax: got %d, want 4 (explicit)", bounds.VCPUMax)
 	}
-	if bounds.VCPUMin != 1 {
-		t.Errorf("GovBounds.VCPUMin: got %d, want 1 (boot default)", bounds.VCPUMin)
+	if bounds.VCPUMin != 2 {
+		t.Errorf("GovBounds.VCPUMin: got %d, want 2 (boot default)", bounds.VCPUMin)
 	}
 	const wantDiskMax = int64(100) * 1024 * 1024 * 1024
 	if bounds.DiskMaxBytes != wantDiskMax {
@@ -785,9 +787,13 @@ func TestAutoResize_CeilingDefaults(t *testing.T) {
 	if bounds.MemMaxBytes != wantMemMax {
 		t.Errorf("default MemMaxBytes: got %d, want %d (4× boot default 512 MiB, floor 4096 MiB)", bounds.MemMaxBytes, wantMemMax)
 	}
-	// Default: 4× boot vCPUs (1 driver default → 4), min 4.
-	if bounds.VCPUMax != 4 {
-		t.Errorf("default VCPUMax: got %d, want 4 (4× boot default 1 vCPU)", bounds.VCPUMax)
+	// Pinned 2-CPU host: boot = min(host, 8) = 2; ceiling = max(boot,
+	// min(max(4×boot, 4), host)) = 2; VCPUMin tracks boot.
+	if res.BootVCPUs != 2 || bounds.VCPUMin != 2 {
+		t.Errorf("default boot/VCPUMin: got %d/%d, want 2/2", res.BootVCPUs, bounds.VCPUMin)
+	}
+	if bounds.VCPUMax != 2 {
+		t.Errorf("default VCPUMax: got %d, want 2 (clamped to 2-CPU host)", bounds.VCPUMax)
 	}
 	// Default: 100 GiB (matches OLD-nexus diskMaxBytes).
 	const wantDiskMax = int64(100) * 1024 * 1024 * 1024
@@ -902,6 +908,9 @@ func TestAutoResize_Cmdline(t *testing.T) {
 // Revert the builderCfg.MemoryMaxMiB / VCPUMax / Cmdline assignments in
 // cmd_sandbox.go and this test fails.
 func TestBuilderVM_AutoResizeFullyWired(t *testing.T) {
+	origHost := vmcfg.HostCapacityFunc
+	t.Cleanup(func() { vmcfg.HostCapacityFunc = origHost })
+	vmcfg.HostCapacityFunc = func() vmcfg.HostCapacity { return vmcfg.HostCapacity{NCPU: 12, RAMMiB: 4096} }
 	// Reproduce the builder-VM config assembly without booting a real VM.
 	// These are the same inputs the production path uses.
 	bootMemMiB := uint32(builder.DefaultBuilderMemMiB) // 2048
@@ -952,7 +961,7 @@ func TestBuilderVM_AutoResizeFullyWired(t *testing.T) {
 	if cfg.MemoryMaxMiB != wantMemMaxMiB {
 		t.Errorf("builder VM MemoryMaxMiB: got %d, want %d (DefaultBuilderMemMaxMiB)", cfg.MemoryMaxMiB, wantMemMaxMiB)
 	}
-	// 2 vCPU boot → expect 8 vCPU ceiling (4×2, floor 4).
+	// 2 vCPU boot → expect 8 vCPU ceiling (4×2, floor 4) on a host with >= 8 CPUs.
 	const wantVCPUMax = uint32(4 * builder.DefaultBuilderVCPUs)
 	if cfg.VCPUMax != wantVCPUMax {
 		t.Errorf("builder VM VCPUMax: got %d, want %d (4×DefaultBuilderVCPUs)", cfg.VCPUMax, wantVCPUMax)

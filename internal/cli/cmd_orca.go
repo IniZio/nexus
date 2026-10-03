@@ -676,7 +676,9 @@ func orcaCreate(ctx context.Context, w io.Writer) error {
 	// is the exclusive governor host (D-DC-12). vmcfg.Resolve with zero inputs
 	// applies the documented defaults:
 	// MemMin=512MiB, MemMax=4096MiB, VCPUMin=1, VCPUMax=4, DiskMax=100GiB.
-	govBounds := vmcfg.Resolve(vmcfg.Config{}).Bounds
+	// BootVCPUs is pinned to 1: the orca driver boots 1 vCPU (buildCHConfig
+	// gets 0), so VCPUMin must match instead of the host-derived default.
+	govBounds := vmcfg.Resolve(vmcfg.Config{BootVCPUs: 1}).Bounds
 
 	// ── SpawnDetached: supervisor takes ownership of VM + perimeter ───────────
 	// Resolve the guest path so buildOrcaSpawnConfig can embed a

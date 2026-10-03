@@ -137,7 +137,7 @@ func runRun(ctx context.Context, args []string, out *Output) error {
 	newDriver := buildSandboxDriverFactory(sandboxDriverSpec{
 		KernelPath:   kernelPath,
 		MemoryMiB:    memoryMiB,
-		VCPUs:        vcpus,
+		VCPUs:        sizing.BootVCPUs,
 		MemoryMaxMiB: sizing.DriverMemoryMaxMiB,
 		VCPUMax:      sizing.DriverVCPUMax,
 		PID1Args:     sizing.PID1Args,
@@ -199,6 +199,7 @@ type runSizingResult struct {
 	PID1Args           string
 	DriverMemoryMaxMiB uint32
 	DriverVCPUMax      uint32
+	BootVCPUs          uint32
 }
 
 func resolveRunSizing(memoryMiB, memoryMaxMiB, vcpus, vcpusMax uint32) (runSizingResult, error) {
@@ -234,10 +235,7 @@ func resolveRunSizing(memoryMiB, memoryMaxMiB, vcpus, vcpusMax uint32) (runSizin
 		driverMem = ar.MemoryMaxMiB
 	}
 
-	effectiveCPUs := vcpus
-	if effectiveCPUs == 0 {
-		effectiveCPUs = 1
-	}
+	effectiveCPUs := ar.BootVCPUs
 	driverVCPU := uint32(0)
 	if ar.VCPUMax > effectiveCPUs {
 		driverVCPU = ar.VCPUMax
@@ -247,5 +245,6 @@ func resolveRunSizing(memoryMiB, memoryMaxMiB, vcpus, vcpusMax uint32) (runSizin
 		PID1Args:           ar.PID1Args,
 		DriverMemoryMaxMiB: driverMem,
 		DriverVCPUMax:      driverVCPU,
+		BootVCPUs:          ar.BootVCPUs,
 	}, nil
 }

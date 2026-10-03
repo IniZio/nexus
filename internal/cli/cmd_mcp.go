@@ -102,7 +102,7 @@ func (m *mcpService) CreateAndBoot(ctx context.Context, project, name string, op
 	newDriver := buildSandboxDriverFactory(sandboxDriverSpec{
 		KernelPath:   kernelPath,
 		MemoryMiB:    opts.MemoryMiB,
-		VCPUs:        opts.VCPUs,
+		VCPUs:        mcpSizing.BootVCPUs,
 		MemoryMaxMiB: mcpSizing.DriverMemoryMaxMiB,
 		VCPUMax:      mcpSizing.DriverVCPUMax,
 		NestedVirt:   opts.NestedVirt,
@@ -163,7 +163,7 @@ func (m *mcpService) RunEphemeral(ctx context.Context, project, name string, opt
 	newDriver := buildSandboxDriverFactory(sandboxDriverSpec{
 		KernelPath:   kernelPath,
 		MemoryMiB:    opts.MemoryMiB,
-		VCPUs:        opts.VCPUs,
+		VCPUs:        mcpRunSizing.BootVCPUs,
 		MemoryMaxMiB: mcpRunSizing.DriverMemoryMaxMiB,
 		VCPUMax:      mcpRunSizing.DriverVCPUMax,
 		NestedVirt:   opts.NestedVirt,

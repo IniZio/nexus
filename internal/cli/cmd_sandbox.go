@@ -1363,6 +1363,9 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 		VCPUsMax:   f.vcpusMax,
 		DiskMaxGiB: f.diskMaxGiB,
 	})
+	// The driver, supervisor handoff, and governor VCPUMin must all see the
+	// resolved boot count, not the raw (possibly zero) flag.
+	f.vcpus = ar.BootVCPUs
 	govBounds := ar.Bounds
 	effectiveMemMaxMiB := ar.MemoryMaxMiB
 	slog.Info("auto-resize: hotplug hardware configured; governor activates in supervisor",
