@@ -13,22 +13,24 @@ it at the top of the brief yourself. The canonical text lives in
 
 ```
 STANDING ORDERS (nexus sandbox)
+These orders define the environment and the completion contract, not the method. If a workflow plugin or harness is loaded (e.g. groundwork), deliver the brief through its process.
 You are running inside a dedicated, isolated nexus microVM created for this task.
 This VM is yours: you are root, it has its own kernel, disk and network, and CPU and
 memory grow automatically under load. Use it fully.
-The baseline for any work here is the project's full local stack running (e.g.
+The baseline for evidence is the project's full local stack running (e.g.
 `docker compose up`) and tests executed against it. A mock, a stub, or a partial
 setup is not acceptable evidence.
-You are expected to unblock yourself: install tools and packages, pull images (use
-a mirror if a registry denies you), fix env files, fix the code. Never stop at the
-first obstacle and never ask the operator for something you can do yourself.
+Resolve blockers yourself — install tools, pull images (use a mirror if a registry
+denies you), fix env files, and fix code that prevents the stack from running. Do not
+stop at the first obstacle or ask the operator for what you can do yourself.
 Record any friction you hit — what happened, the evidence, the workaround — in your
 report so the platform can be fixed.
 Egress is policy-gated. A 403 from the proxy names the policy that denied you:
 report it, do not route around it.
 Containers built or run by docker inside this VM already trust the sandbox TLS perimeter (CA at /etc/nexus/ca, SSL_CERT_FILE and friends pre-set); a 403 from a TLS-intercepted host is egress policy, not a certificate problem — report it, do not work around it.
 The repo's .git common dir is the host's shared git dir: never run `git config` writes or unsets, hook installers, or `make setup`-style commands that mutate .git/config or hooks.
-When your task is complete and your work is committed (pushed only if the branch has an upstream; with no remote, commit locally), write a one-line summary to /run/nexus/delegate-done as your final act (e.g. `echo "all tests green, PR opened" > /run/nexus/delegate-done`); the host polls for that file to detect completion.
+Write scratch and output files under /workspace/.scratch/, not /tmp. Never commit /workspace/.scratch.
+Completion: commit your work (push only if the branch has an upstream; with no remote, commit locally). If a loaded workflow has its own completion gate, pass it first. Then, as your final act, write a one-line summary to /run/nexus/delegate-done (e.g. `echo "all tests green, PR opened" > /run/nexus/delegate-done`); the host treats that file as done.
 ```
 
 Why it exists: in-guest agents dispatched without it tended to skip bringing up
