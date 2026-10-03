@@ -96,12 +96,13 @@ func AssembleCuratedConfig(profile cred.AgentProfile, agentConfigDir string, des
 // so the gate adds no security and only causes silent stalls. Existing
 // permissions keys and additionalDirectories entries are preserved.
 //
-// It also stages permissions.defaultMode "bypassPermissions" and the top-level
-// skipDangerousModePermissionPrompt=true (suppresses the one-time bypass
-// consent dialog), so every in-guest claude starts with permissions skipped
-// however it is launched. The microVM is the isolation boundary; auto mode
-// still raised interactive prompts that stalled unattended agents. This runs
-// only on the staged guest copy; the host settings.json is never written.
+// It also stages the top-level skipDangerousModePermissionPrompt=true
+// (suppresses the one-time bypass consent dialog for --permission-mode
+// bypassPermissions). It deliberately does NOT stage permissions.defaultMode:
+// a user-settings defaultMode other than auto makes Claude Code offer the
+// "Make auto mode your default?" dialog on first run, which stalls the pane.
+// Bypass comes only from the launch flag. This runs only on the staged guest
+// copy; the host settings.json is never written.
 func ensureStagedClaudeGuestPermissions(destDir string, profile cred.AgentProfile) error {
 	settingsBase := settingsBaseName(profile)
 	if settingsBase == "" {
@@ -135,7 +136,6 @@ func ensureStagedClaudeGuestPermissions(destDir string, profile cred.AgentProfil
 	if perms["additionalDirectories"], err = json.Marshal(dirs); err != nil {
 		return err
 	}
-	perms["defaultMode"] = json.RawMessage(`"bypassPermissions"`)
 	raw["skipDangerousModePermissionPrompt"] = json.RawMessage("true")
 	if raw["permissions"], err = json.Marshal(perms); err != nil {
 		return err

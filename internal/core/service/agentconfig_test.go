@@ -706,9 +706,9 @@ func TestAssembleCuratedConfig_ClaudeReadAnywhere(t *testing.T) {
 	var staged struct {
 		Model       string `json:"model"`
 		Permissions struct {
-			Dirs        []string `json:"additionalDirectories"`
-			DefaultMode string   `json:"defaultMode"`
+			Dirs []string `json:"additionalDirectories"`
 		} `json:"permissions"`
+		SkipPrompt bool `json:"skipDangerousModePermissionPrompt"`
 	}
 	if err := json.Unmarshal(data, &staged); err != nil {
 		t.Fatal(err)
@@ -716,8 +716,11 @@ func TestAssembleCuratedConfig_ClaudeReadAnywhere(t *testing.T) {
 	if staged.Model != "m" || len(staged.Permissions.Dirs) != 1 || staged.Permissions.Dirs[0] != "/" {
 		t.Errorf("want model kept and additionalDirectories [\"/\"], got %s", data)
 	}
-	if staged.Permissions.DefaultMode != "bypassPermissions" {
-		t.Errorf("want staged permissions.defaultMode bypassPermissions, got %s", data)
+	if !staged.SkipPrompt {
+		t.Errorf("want skipDangerousModePermissionPrompt true, got %s", data)
+	}
+	if strings.Contains(string(data), "defaultMode") {
+		t.Errorf("defaultMode must not be staged (triggers auto-mode offer dialog), got %s", data)
 	}
 	// Host settings must be untouched.
 	if got, _ := os.ReadFile(filepath.Join(srcDir, "settings.json")); string(got) != host {
@@ -730,9 +733,8 @@ func TestAssembleCuratedConfig_ClaudeReadAnywhere(t *testing.T) {
 func isNexusReadAnywherePerms(key string, v json.RawMessage) bool {
 	var p struct {
 		Dirs []string `json:"additionalDirectories"`
-		Mode string   `json:"defaultMode"`
 	}
 	var all map[string]json.RawMessage
 	return key == "permissions" && json.Unmarshal(v, &p) == nil && json.Unmarshal(v, &all) == nil &&
-		len(all) == 2 && len(p.Dirs) == 1 && p.Dirs[0] == "/" && p.Mode == "bypassPermissions"
+		len(all) == 1 && len(p.Dirs) == 1 && p.Dirs[0] == "/"
 }

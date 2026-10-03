@@ -90,11 +90,13 @@ func controllerSettingsJSON(permMode string) string {
 	if permMode == "" {
 		permMode = "default"
 	}
-	settings := map[string]any{
-		"permissions": map[string]any{"defaultMode": permMode},
-	}
+	settings := map[string]any{}
 	if permMode == "bypassPermissions" {
+		// Bypass comes only from --permission-mode: a defaultMode of bypass in
+		// settings can trigger Claude Code's "make auto mode your default?" offer.
 		settings["skipDangerousModePermissionPrompt"] = true
+	} else {
+		settings["permissions"] = map[string]any{"defaultMode": permMode}
 	}
 	b, _ := json.Marshal(settings)
 	return string(b)

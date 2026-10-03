@@ -130,9 +130,9 @@ For `claude-code`, `CLAUDE_CODE_OAUTH_TOKEN` is set to a broker placeholder in t
 
 There are two distinct launch paths with different permission modes:
 
-**Controller path** (`nexus-controller`, Slack-triggered): sandboxes run in `bypassPermissions` mode. The sandboxed egress policy (default-deny passt) is the security boundary; only allowlisted and brokered hosts are reachable. `IS_SANDBOX=1` is set in the pane environment so Claude accepts bypass mode as root. Every controller guest launch passes `--permission-mode bypassPermissions` and writes `permissions.defaultMode = "bypassPermissions"` + `skipDangerousModePermissionPrompt = true` into the guest settings file.
+**Controller path** (`nexus-controller`, Slack-triggered): sandboxes run in `bypassPermissions` mode. The sandboxed egress policy (default-deny passt) is the security boundary; only allowlisted and brokered hosts are reachable. `IS_SANDBOX=1` is set in the pane environment so Claude accepts bypass mode as root. Every controller guest launch passes `--permission-mode bypassPermissions` and writes `skipDangerousModePermissionPrompt = true` (no `defaultMode`) into the guest settings file.
 
-**Delegate path** (`delegate_agent_dispatch`, `nexus herdr agent`): sandboxes run in `bypassPermissions` mode (`--permission-mode bypassPermissions`; staged guest settings carry `permissions.defaultMode` and `skipDangerousModePermissionPrompt`). The microVM is the isolation boundary. The `claudeReadyMatch` detector matches the bypass-mode ready footer (`"bypass permissions on"`).
+**Delegate path** (`delegate_agent_dispatch`, `nexus herdr agent`): sandboxes run in `bypassPermissions` mode (`--permission-mode bypassPermissions`; staged guest settings carry `skipDangerousModePermissionPrompt` but no `permissions.defaultMode`, which would trigger Claude Code's auto-mode-default offer). The microVM is the isolation boundary. The `claudeReadyMatch` detector matches the bypass-mode ready footer (`"bypass permissions on"`).
 
 ---
 

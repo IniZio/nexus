@@ -3317,19 +3317,21 @@ func TestProvisionSettingsConsistency(t *testing.T) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// settings JSON written via nexus exec must contain "bypassPermissions".
+	// settings JSON written via nexus exec must carry the consent key and no defaultMode.
 	var settingsFound bool
 	for _, c := range n.calls {
 		if c.argv[0] == "exec" {
 			joined := strings.Join(c.argv, " ")
-			if strings.Contains(joined, "defaultMode") && strings.Contains(joined, "bypassPermissions") {
+			if strings.Contains(joined, "defaultMode") {
+				t.Errorf("settings exec must not write defaultMode for bypass: %v", c.argv)
+			}
+			if strings.Contains(joined, "skipDangerousModePermissionPrompt") {
 				settingsFound = true
-				break
 			}
 		}
 	}
 	if !settingsFound {
-		t.Errorf("settings exec did not contain defaultMode:bypassPermissions; exec calls: %v", n.calls)
+		t.Errorf("settings exec did not contain skipDangerousModePermissionPrompt; exec calls: %v", n.calls)
 	}
 
 	// CLI flag must also use bypassPermissions.
@@ -3355,8 +3357,8 @@ func TestControllerSettingsJSONBypassIncludesSkipPrompt(t *testing.T) {
 	if !strings.Contains(got, `"skipDangerousModePermissionPrompt":true`) {
 		t.Errorf("bypassPermissions settings missing skipDangerousModePermissionPrompt:true; got: %s", got)
 	}
-	if !strings.Contains(got, `"bypassPermissions"`) {
-		t.Errorf("bypassPermissions settings missing defaultMode:bypassPermissions; got: %s", got)
+	if strings.Contains(got, "defaultMode") {
+		t.Errorf("bypassPermissions settings must not carry defaultMode; got: %s", got)
 	}
 
 	for _, mode := range []string{"auto", "default", "acceptEdits", ""} {

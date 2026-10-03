@@ -2796,9 +2796,10 @@ func sealEnv(env []string) []string {
  * (Auto mode's footer reads "auto mode on"; the guest no longer runs in auto.)
  *
  * The token is mode-invariant and the autonomous argument is ignored, because
- * a guest claude ALWAYS runs in permissions.defaultMode bypassPermissions:
- * the guest is an isolated microVM, and auto mode still raised interactive
- * prompts that stalled unattended agents.
+ * a guest claude ALWAYS runs in bypassPermissions mode (via the launch flag,
+ * never a staged settings defaultMode, which triggers the "make auto mode your
+ * default?" offer dialog): the guest is an isolated microVM, and auto mode
+ * still raised interactive prompts that stalled unattended agents.
  * guestAgentLaunchCommand passes --permission-mode bypassPermissions on every launch, and
  * since D-1 the guest's ~/.claude IS the host's (live rw mount), so the mode a
  * bare `claude` starts in is whatever the operator's settings.json says —
