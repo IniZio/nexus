@@ -54,7 +54,7 @@ A fresh guest has no `~/.claude.json`, so `claude` blocks on the workspace-trust
 }
 ```
 
-Running `claude --permission-mode auto` as root (the guest default user) additionally requires `IS_SANDBOX=1`.
+Running `claude --permission-mode bypassPermissions` as root (the guest default user) additionally requires `IS_SANDBOX=1`.
 
 ---
 
@@ -84,7 +84,7 @@ It starts the sandbox, creates or reuses its herdr space, opens the guest pane, 
 
 The sandbox must have source mounted. `herdr agent` refuses one that does not, because an agent with nothing to work on looks identical to a healthy agent.
 
-`--autonomous` launches the agent in auto permission mode (`--permission-mode auto`) so it acts without asking approval per tool call. It is off by default and always asked, never assumed.
+`--autonomous` launches the agent with permissions skipped (`--permission-mode bypassPermissions`) so it acts without asking approval per tool call. It is off by default and always asked, never assumed.
 
 Start the brief with the standing orders from `delegate-briefs.md` (the VM is the agent's, the full local stack is the baseline, unblock yourself, report friction). The `delegate_agent_dispatch` MCP tool prepends them automatically; `herdr agent` by hand does not.
 
@@ -97,7 +97,7 @@ Start the brief with the standing orders from `delegate-briefs.md` (the VM is th
 Three traps, each of which produces something that looks like a working agent:
 
 - **`herdr pane run` is wrong for a TUI.** It sends the text and Enter in one call. Against a shell that is fine; against claude the text lands in the input box and *sits there unsubmitted*. Send the text, pause, then send `Enter` separately.
-- **The "agent is ready" token depends on the launch path.** Controller guests (`nexus-controller`) launch with `--permission-mode bypassPermissions` and `IS_SANDBOX=1`. Delegate guests (`delegate_agent_dispatch`, `nexus herdr agent`) launch with `--permission-mode auto`; the ready token is `auto mode on`. The manual-mode footer (`? for shortcuts`) never appears in either path. Do **not** match the prompt glyph `❯`: it is also every wizard's selector glyph, so it reports ready mid-dialog.
+- **The "agent is ready" token depends on the launch path.** Controller guests (`nexus-controller`) launch with `--permission-mode bypassPermissions` and `IS_SANDBOX=1`. Delegate guests (`delegate_agent_dispatch`, `nexus herdr agent`) launch with `--permission-mode bypassPermissions`; the ready token is `bypass permissions on`. The manual-mode footer (`? for shortcuts`) never appears in either path. Do **not** match the prompt glyph `❯`: it is also every wizard's selector glyph, so it reports ready mid-dialog.
 - **`send-keys` key names**: `ctrl+c` and `C-c` work; `ctrl-c` and `^C` are rejected as invalid.
 
 ---

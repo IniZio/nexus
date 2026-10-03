@@ -327,8 +327,8 @@ func TestAssembleCuratedConfig_BypassConsentPreservesLowerLayerKeys(t *testing.T
 			t.Errorf("staged lower settings.json missing key %q (portable key must survive AssembleCuratedConfig)", key)
 		}
 	}
-	if _, ok := staged["skipDangerousModePermissionPrompt"]; ok {
-		t.Errorf("skipDangerousModePermissionPrompt must NOT be injected for claude-code profile (BypassConsentKey is empty)")
+	if string(staged["skipDangerousModePermissionPrompt"]) != "true" {
+		t.Errorf("claude-code guest settings must carry skipDangerousModePermissionPrompt:true; got %s", data)
 	}
 }
 
@@ -343,9 +343,6 @@ func TestAssembleCuratedConfig_BypassConsentPresentWhenNoHostSettings(t *testing
 
 	settingsPath := filepath.Join(destDir, "settings.json")
 	data, readErr := os.ReadFile(settingsPath)
-	if os.IsNotExist(readErr) {
-		return
-	}
 	if readErr != nil {
 		t.Fatalf("read settings.json: %v", readErr)
 	}
@@ -353,8 +350,8 @@ func TestAssembleCuratedConfig_BypassConsentPresentWhenNoHostSettings(t *testing
 	if err := json.Unmarshal(data, &staged); err != nil {
 		t.Fatalf("staged settings.json is not valid JSON: %v", err)
 	}
-	if _, ok := staged["skipDangerousModePermissionPrompt"]; ok {
-		t.Error("skipDangerousModePermissionPrompt must not be injected for a live-mount profile (BypassConsentKey is empty)")
+	if string(staged["skipDangerousModePermissionPrompt"]) != "true" {
+		t.Errorf("claude-code guest settings must carry skipDangerousModePermissionPrompt:true; got %s", data)
 	}
 }
 
@@ -709,7 +706,8 @@ func TestAssembleCuratedConfig_ClaudeReadAnywhere(t *testing.T) {
 	var staged struct {
 		Model       string `json:"model"`
 		Permissions struct {
-			Dirs []string `json:"additionalDirectories"`
+			Dirs        []string `json:"additionalDirectories"`
+			DefaultMode string   `json:"defaultMode"`
 		} `json:"permissions"`
 	}
 	if err := json.Unmarshal(data, &staged); err != nil {
@@ -718,12 +716,23 @@ func TestAssembleCuratedConfig_ClaudeReadAnywhere(t *testing.T) {
 	if staged.Model != "m" || len(staged.Permissions.Dirs) != 1 || staged.Permissions.Dirs[0] != "/" {
 		t.Errorf("want model kept and additionalDirectories [\"/\"], got %s", data)
 	}
+	if staged.Permissions.DefaultMode != "bypassPermissions" {
+		t.Errorf("want staged permissions.defaultMode bypassPermissions, got %s", data)
+	}
+	// Host settings must be untouched.
+	if got, _ := os.ReadFile(filepath.Join(srcDir, "settings.json")); string(got) != host {
+		t.Errorf("host settings.json modified: %s", got)
+	}
 }
 
 // isNexusReadAnywherePerms reports whether (key, v) is the only "permissions"
 // value nexus itself injects, so host-permission leak checks can tell it apart.
 func isNexusReadAnywherePerms(key string, v json.RawMessage) bool {
-	var p map[string][]string
-	return key == "permissions" && json.Unmarshal(v, &p) == nil &&
-		len(p) == 1 && len(p["additionalDirectories"]) == 1 && p["additionalDirectories"][0] == "/"
+	var p struct {
+		Dirs []string `json:"additionalDirectories"`
+		Mode string   `json:"defaultMode"`
+	}
+	var all map[string]json.RawMessage
+	return key == "permissions" && json.Unmarshal(v, &p) == nil && json.Unmarshal(v, &all) == nil &&
+		len(all) == 2 && len(p.Dirs) == 1 && p.Dirs[0] == "/" && p.Mode == "bypassPermissions"
 }

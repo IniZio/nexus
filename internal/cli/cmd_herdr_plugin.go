@@ -2791,11 +2791,15 @@ func sealEnv(env []string) []string {
  * finished starting and its input box is accepting text. Verbatim footer from
  * a live guest pane (claude v2.1.272, 2026-09-15):
  *
- * 	⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
+ * 	⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent
+ *
+ * (Auto mode's footer reads "auto mode on"; the guest no longer runs in auto.)
  *
  * The token is mode-invariant and the autonomous argument is ignored, because
- * under D-2 a guest claude ALWAYS runs in permissions.defaultMode auto:
- * guestAgentLaunchCommand passes --permission-mode auto on every launch, and
+ * a guest claude ALWAYS runs in permissions.defaultMode bypassPermissions:
+ * the guest is an isolated microVM, and auto mode still raised interactive
+ * prompts that stalled unattended agents.
+ * guestAgentLaunchCommand passes --permission-mode bypassPermissions on every launch, and
  * since D-1 the guest's ~/.claude IS the host's (live rw mount), so the mode a
  * bare `claude` starts in is whatever the operator's settings.json says —
  * not something this code can select by flag spelling. The old two-token
@@ -2812,13 +2816,16 @@ func sealEnv(env []string) []string {
  *     theme picker — precisely the failure this wait exists to prevent.
  */
 func claudeReadyMatch(_ bool) string {
-	return "auto mode on"
+	return "bypass permissions on"
 }
 
 /**
  * guestAgentLaunchCommand returns the shell command typed into the guest pane
- * to start claude: "IS_SANDBOX=1 claude --permission-mode auto", regardless
- * of the autonomous argument (D-2: the guest always runs in auto mode).
+ * to start claude: "IS_SANDBOX=1 claude --permission-mode bypassPermissions",
+ * regardless of the autonomous argument (the guest always runs with permissions
+ * skipped; the microVM is the isolation boundary). The first-run bypass
+ * consent dialog is suppressed by skipDangerousModePermissionPrompt, staged in
+ * the guest settings.json by service.AssembleCuratedConfig.
  * IS_SANDBOX=1 is required alongside it: claude refuses root execution unless
  * that variable marks the environment as already-isolated.
  *
@@ -2838,7 +2845,7 @@ func claudeReadyMatch(_ bool) string {
  * explicit flag is defence in depth, and the readiness wait is the fix.
  */
 func guestAgentLaunchCommand(_ bool) string {
-	return "IS_SANDBOX=1 claude --permission-mode auto"
+	return "IS_SANDBOX=1 claude --permission-mode bypassPermissions"
 }
 
 /**
@@ -3282,7 +3289,7 @@ func briefInputBoxContentOnly(visible string) string {
  * working pane is confirmed on the first read instead of waiting out a repaint,
  * and for no other purpose.
  *
- * NOTE what is deliberately NOT here: "auto mode on" and "? for shortcuts".
+ * NOTE what is deliberately NOT here: "bypass permissions on" and "? for shortcuts".
  * Those are claudeReadyMatch's tokens — permission-mode footers present BEFORE
  * and AFTER submission alike. Matching on them is what made the original
  * dispatch report success on a stranded brief.
@@ -3666,8 +3673,9 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	}
 
 	/**
-	 * 4. (No bypass-permissions consent step: guest claude launches in auto
-	 *    permission mode via --permission-mode auto; no consent prompt appears.)
+	 * 4. (No bypass-permissions consent step: guest claude launches in
+	 *    bypassPermissions via --permission-mode; the consent dialog is
+	 *    suppressed by the staged skipDangerousModePermissionPrompt.)
 	 */
 
 	/**

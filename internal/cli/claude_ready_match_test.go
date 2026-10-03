@@ -6,12 +6,9 @@ import (
 )
 
 func TestClaudeReadyMatch_AutoModeFooter(t *testing.T) {
-	// T0a evidence: auto-mode footer is "⏵⏵ auto mode on (shift+tab to cycle)";
-	// discriminator must be "auto mode on" (substring match, herdr pane wait-output).
-	// Mutation: claudeReadyMatch returns OLD bypass value "shift+tab to cycle"
-	// → autoModeTranscript test FAILS. Bypass footer "shift+tab to cycle (bypass mode)"
-	// → must NOT match (distinguishes modes).
-	const want = "auto mode on"
+	// Bypass-mode footer is "⏵⏵ bypass permissions on (shift+tab to cycle)";
+	// discriminator must be "bypass permissions on" (substring match, herdr pane wait-output).
+	const want = "bypass permissions on"
 	if got := claudeReadyMatch(true); got != want {
 		t.Errorf("claudeReadyMatch(true) = %q; want %q", got, want)
 	}
@@ -36,21 +33,17 @@ func TestClaudeReadyMatch_ModeInvariant(t *testing.T) {
 }
 
 func TestClaudeReadyMatch_MatchesAutoTranscript(t *testing.T) {
-	const autoModeFooter = "⏵⏵ auto mode on (shift+tab to cycle)"
+	const autoModeFooter = "⏵⏵ bypass permissions on (shift+tab to cycle)"
 	discriminator := claudeReadyMatch(true)
 	if !strings.Contains(autoModeFooter, discriminator) {
 		t.Errorf("auto-mode footer %q does not contain discriminator %q", autoModeFooter, discriminator)
 	}
 }
 
-func TestClaudeReadyMatch_DoesNotMatchBypassFooter(t *testing.T) {
-	const bypassFooter = "shift+tab to cycle"
+func TestClaudeReadyMatch_DoesNotMatchAutoFooter(t *testing.T) {
 	discriminator := claudeReadyMatch(true)
-	if discriminator == bypassFooter {
-		t.Errorf("discriminator %q equals the old bypass footer — mode distinction is lost", discriminator)
-	}
-	const bypassOnlyFooter = "shift+tab to cycle (bypass)" // representative bypass-only line
-	if strings.Contains(bypassOnlyFooter, discriminator) {
-		t.Errorf("bypass-only footer %q contains discriminator %q — mode distinction is lost", bypassOnlyFooter, discriminator)
+	const autoFooter = "⏵⏵ auto mode on (shift+tab to cycle)"
+	if strings.Contains(autoFooter, discriminator) {
+		t.Errorf("auto footer %q contains discriminator %q — guest must be in bypass mode", autoFooter, discriminator)
 	}
 }

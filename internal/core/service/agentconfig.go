@@ -79,7 +79,7 @@ func AssembleCuratedConfig(profile cred.AgentProfile, agentConfigDir string, des
 	// Agents with no BypassConsentKey (e.g. cursor, whose skip-permissions
 	// posture is a launch-time flag) skip this step entirely.
 	if profile.Name == cred.ClaudeCodeProfileName {
-		if err := ensureStagedClaudeReadAnywhere(destDir, profile); err != nil {
+		if err := ensureStagedClaudeGuestPermissions(destDir, profile); err != nil {
 			return err
 		}
 	}
@@ -89,13 +89,20 @@ func AssembleCuratedConfig(profile cred.AgentProfile, agentConfigDir string, des
 	return ensureStagedBypassConsentKey(destDir, profile)
 }
 
-// ensureStagedClaudeReadAnywhere adds "/" to permissions.additionalDirectories
+// ensureStagedClaudeGuestPermissions adds "/" to permissions.additionalDirectories
 // in the staged Claude settings so the Read tool never raises the interactive
 // "Allow reads outside the working directories?" dialog. The guest is an
 // isolated microVM running as root where Bash cat can already read anything,
 // so the gate adds no security and only causes silent stalls. Existing
 // permissions keys and additionalDirectories entries are preserved.
-func ensureStagedClaudeReadAnywhere(destDir string, profile cred.AgentProfile) error {
+//
+// It also stages permissions.defaultMode "bypassPermissions" and the top-level
+// skipDangerousModePermissionPrompt=true (suppresses the one-time bypass
+// consent dialog), so every in-guest claude starts with permissions skipped
+// however it is launched. The microVM is the isolation boundary; auto mode
+// still raised interactive prompts that stalled unattended agents. This runs
+// only on the staged guest copy; the host settings.json is never written.
+func ensureStagedClaudeGuestPermissions(destDir string, profile cred.AgentProfile) error {
 	settingsBase := settingsBaseName(profile)
 	if settingsBase == "" {
 		return nil
@@ -128,6 +135,8 @@ func ensureStagedClaudeReadAnywhere(destDir string, profile cred.AgentProfile) e
 	if perms["additionalDirectories"], err = json.Marshal(dirs); err != nil {
 		return err
 	}
+	perms["defaultMode"] = json.RawMessage(`"bypassPermissions"`)
+	raw["skipDangerousModePermissionPrompt"] = json.RawMessage("true")
 	if raw["permissions"], err = json.Marshal(perms); err != nil {
 		return err
 	}

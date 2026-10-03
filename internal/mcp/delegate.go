@@ -411,7 +411,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Name: "delegate_agent_dispatch",
 		Description: "Deliver a task brief to the claude agent running inside a worktree sandbox " +
 			"via `nexus herdr space-agent --autonomous --no-focus`. " +
-			"The in-guest claude runs in auto permission mode (--permission-mode auto). " +
+			"The in-guest claude runs with permissions skipped (--permission-mode bypassPermissions); the microVM is the isolation boundary. " +
 			"Returns {delivered, output}: delivered=true iff herdr agent exits 0 (brief accepted); " +
 			"delivered=false with output on non-zero exit (not IsError — caller decides how to react).",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args delegateAgentDispatchArgs) (*gosdk.CallToolResult, any, error) {

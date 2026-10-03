@@ -202,7 +202,7 @@ func TestHerdrPaneWaitOutput_ArgvShape(t *testing.T) {
 // TestClaudeReadyMatch_NeverMatchesAWizard pins that the readiness token is
 // not the prompt glyph: ❯ is also the selector glyph in every first-run wizard.
 func TestClaudeReadyMatch_NeverMatchesAWizard(t *testing.T) {
-	const autonomousFooter = "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+	const autonomousFooter = "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
 	tok := claudeReadyMatch(true)
 	if !strings.Contains(autonomousFooter, tok) {
 		t.Errorf("token %q does not appear in the auto-mode footer %q", tok, autonomousFooter)
@@ -263,7 +263,7 @@ func TestHerdrPaneSubmitToAgent_SendsTextThenEnterSeparately(t *testing.T) {
 // says, which the readiness wait cannot predict.
 // PACING: race on /etc/profile.d; observed live: bareword "claude" silently fails.
 func TestGuestAgentLaunchCommand_DoesNotDependOnTheShellFunction(t *testing.T) {
-	const permFlag = "--permission-mode auto"
+	const permFlag = "--permission-mode bypassPermissions"
 	const oldBypassFlag = "--dangerously-skip-permissions"
 
 	for _, autonomous := range []bool{true, false} {
