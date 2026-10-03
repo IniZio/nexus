@@ -163,6 +163,8 @@ install-plugin:
 		claude plugin marketplace add "$(CURDIR)"
 	@claude plugin list 2>/dev/null | grep -q 'nexus@nexus' || \
 		claude plugin install nexus@nexus --yes
+	@claude plugin list 2>/dev/null | grep -q 'nexus-subagent@nexus' || \
+		claude plugin install nexus-subagent@nexus --yes
 
 vet:
 	go vet -p $(GOBUILD_P) ./...
