@@ -4,7 +4,7 @@ set -u
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 S=$(dirname "$0")/sprite-guest.sh
 fail=0
-check() { # name want-rc got-rc
+check() {
 	[ "$2" = "$3" ] && echo "ok   $1" || { echo "FAIL $1 (want $2 got $3)"; fail=1; }
 }
 printf 'MemTotal:        8388608 kB\n' > "$d/mem"
