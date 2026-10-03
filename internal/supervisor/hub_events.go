@@ -20,8 +20,7 @@ type hubEmitter interface {
 type clientHubEmitter struct{ c *hubclient.Client }
 
 func (e clientHubEmitter) emit(ctx context.Context, ev hubclient.Event) error {
-	_, err := e.c.Append(ctx, ev)
-	return err
+	return e.c.Emit(ctx, ev)
 }
 
 func newProdHubEmitter() hubEmitter { return clientHubEmitter{c: hubclient.New()} }

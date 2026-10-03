@@ -1034,6 +1034,8 @@ func RunDetached(cfg Config) error {
 	if !cfg.Ephemeral {
 		hubEv = newLifecycleEvents(newProdHubEmitter(), sb.ID.String(), sb.Handle())
 		hubEv.adopted()
+		startDelegateWatch(ctx, newProdHubEmitter(), sb)
+		startSyslogForward(ctx, drv, sb.ID)
 	}
 
 	// ── 7. Block until shutdown ───────────────────────────────────────────────

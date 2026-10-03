@@ -236,6 +236,7 @@ func main() {
 
 	go startSSHForward(ctx, con)
 	go startPortForwardMux(ctx, con)
+	startSyslogForward(ctx, con)
 
 	a := New(ctrlLis, dataLis)
 	if err := a.Run(ctx); err != nil {
