@@ -457,6 +457,17 @@ func TestDelegateAgentDispatch_PrependsStandingOrders(t *testing.T) {
 	if !strings.HasSuffix(delivered, "X") {
 		t.Fatalf("delivered brief does not end with caller brief:\n%s", delivered)
 	}
+	if !strings.Contains(delivered, "Sandbox id: proj/slice") {
+		t.Fatalf("delivered brief missing sandbox id line:\n%s", delivered)
+	}
+	for _, w := range []string{"ce@32473", "delegate.done", "sandbox:<SANDBOX_ID>", "timeout 1 logger --rfc5424", "|| true"} {
+		if !strings.Contains(standingOrders, w) {
+			t.Fatalf("standing orders missing %q", w)
+		}
+	}
+	if !strings.Contains(standingOrders, "echo \"all tests green, PR opened\" > "+delegateDoneMarker) {
+		t.Fatalf("marker write instruction changed")
+	}
 	if delivered == "X" || !strings.Contains(standingOrders, "isolated nexus microVM") {
 		t.Fatalf("standing orders missing or empty")
 	}

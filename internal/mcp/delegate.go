@@ -36,8 +36,23 @@ Containers built or run by docker inside this VM already trust the sandbox TLS p
 The repo's .git common dir is the host's shared git dir: never run ` + "`git config`" + ` writes or unsets, hook installers, or ` + "`make setup`" + `-style commands that mutate .git/config or hooks.
 Write scratch and output files under /workspace/.scratch/, not /tmp. Never commit /workspace/.scratch.
 Completion: commit your work (push only if the branch has an upstream; with no remote, commit locally). If a loaded workflow has its own completion gate, pass it first. Then, as your final act, write a one-line summary to ` + delegateDoneMarker + ` (e.g. ` + "`" + `echo "all tests green, PR opened" > ` + delegateDoneMarker + "`" + `); the host treats that file as done.
+After writing the marker, also log a best-effort completion event (never let it fail or delay you; <SANDBOX_ID> is the sandbox id given below): ` + "`" + `timeout 1 logger --rfc5424 --sd-id ce@32473 --sd-param specversion=\"1.0\" --sd-param id=\"done-$(date +%s)\" --sd-param source=\"nexus:///delegate\" --sd-param type=\"delegate.done\" --sd-param subject=\"sandbox:<SANDBOX_ID>\" '{}' 2>/dev/null || true` + "`" + `
 
 `
+
+// delegateSandboxID resolves ref to a sandbox ID, falling back to ref itself.
+func delegateSandboxID(ctx context.Context, svc SandboxService, ref string) string {
+	sbs, err := svc.List(ctx)
+	if err != nil {
+		return ref
+	}
+	for _, sb := range sbs {
+		if id := sb.ID.String(); id == ref || sb.Handle() == ref || (len(ref) >= 4 && strings.HasPrefix(id, ref)) {
+			return id
+		}
+	}
+	return ref
+}
 
 // delegateDoneMarker is the path the in-guest agent writes as its final act to
 // signal completion. It lives outside /workspace so it never dirties git status.
@@ -333,7 +348,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			}
 		}
 		_, _, _, _ = svc.Exec(ctx, args.Ref, []string{"rm", "-f", delegateDoneMarker}, nil, "/", "")
-		brief := standingOrders
+		brief := standingOrders + "Sandbox id: " + delegateSandboxID(ctx, svc, args.Ref) + "\n\n"
 		if args.BriefPath != "" {
 			brief += "Your task brief is in /workspace/" + briefFileName + " — read it first and follow it.\n\n"
 		}

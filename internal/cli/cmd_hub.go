@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"strconv"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/hubclient"
+	"github.com/IniZio/nexus/internal/hubclient/journal"
 )
 
 func init() {
@@ -22,19 +23,42 @@ func init() {
 	})
 }
 
-const hubUsage = "usage: nexus hub watch [--topic T] [--cursor N] [--seat S] [--ack] | ps | emit binary-installed --path P --version V --agent-hash H"
+const hubUsage = "usage: nexus hub watch [--topic T] [--seat S] [--cursor C] | ps | emit binary-installed --path P --version V --agent-hash H | hello [--pid N] [--seat S] [--kind K] [--agent A] [--cwd C] [--shell] | seat take <seat> | seats [--json] | send <seat> [text|-] | inbox --seat S [--urgent] [--since-cursor] [--ack] | ack --seat S [--cursor C] [--mail id[,id...]] | digest --seat S | heartbeat [--session ID]"
 
 // hubAPI is the subset of the hub client the command needs.
 type hubAPI interface {
 	Emit(ctx context.Context, ev hubclient.Event) error
 	Last(ctx context.Context, subject string) (*hubclient.Event, error)
 	LastAll(ctx context.Context) ([]hubclient.Event, error)
-	Watch(ctx context.Context, topic string, cursor int64, ack bool, seat string, stdout io.Writer) error
+	Read(ctx context.Context, f hubclient.Filter, cursor string) (<-chan hubclient.Item, error)
 }
 
 // hubNewClient builds the production client; overridden in tests.
 var hubNewClient = func() (hubAPI, error) {
-	return clientHub{c: hubclient.New()}, nil
+	return hubclient.New(), nil
+}
+
+func init() {
+	hubclient.RegisterTransport(func() hubclient.Transport { return journalTransport{r: journal.NewReader()} })
+}
+
+// journalTransport composes journal.Emit with a journal.Reader.
+type journalTransport struct{ r *journal.Reader }
+
+func (journalTransport) Emit(ctx context.Context, ev hubclient.Event) error {
+	return journal.Emit(ctx, ev)
+}
+
+func (t journalTransport) Read(ctx context.Context, f hubclient.Filter, cursor string) (<-chan hubclient.Item, error) {
+	return t.r.Read(ctx, f, cursor)
+}
+
+func (t journalTransport) Last(ctx context.Context, subject string) (*hubclient.Event, error) {
+	return t.r.Last(ctx, subject)
+}
+
+func (t journalTransport) LastAll(ctx context.Context) ([]hubclient.Event, error) {
+	return t.r.LastAll(ctx)
 }
 
 // hubStoreRoot resolves the sandbox store root; overridden in tests.
@@ -52,8 +76,10 @@ func runHub(ctx context.Context, args []string, out *Output) error {
 		return runHubPS(ctx, rest, out)
 	case "emit":
 		return runHubEmit(ctx, rest, out)
+	case "hello", "seat", "seats", "send", "inbox", "digest", "heartbeat", "ack":
+		return runHubSession(ctx, verb, rest, out)
 	default:
-		return &UsageError{Msg: fmt.Sprintf("hub: unknown subcommand %q; valid: watch, ps, emit", verb)}
+		return &UsageError{Msg: fmt.Sprintf("hub: unknown subcommand %q; valid: watch, ps, emit, hello, seat, seats, send, inbox, digest, heartbeat, ack", verb)}
 	}
 }
 
@@ -61,30 +87,38 @@ func runHubWatch(ctx context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("hub watch", flag.ContinueOnError)
 	fs.SetOutput(out.Stderr())
 	topic := fs.String("topic", "", "topic to watch (empty: all)")
-	cursor := fs.Int64("cursor", 0, "resume after this seq")
-	ack := fs.Bool("ack", false, "acknowledge delivered events")
-	seat := fs.String("seat", "", "consumer name; resumes from its stored cursor (default $NEXUS_HUB_SESSION)")
-	fs.StringVar(seat, "consumer", "", "alias for --seat")
+	cursor := fs.String("cursor", "", "resume after this journal cursor (empty: from now)")
+	seat := fs.String("seat", "", "also watch seat:<S> direct events")
 	if err := fs.Parse(args); err != nil {
 		return &UsageError{Msg: "hub watch: " + err.Error()}
 	}
-	cursorSet := false
-	fs.Visit(func(f *flag.Flag) { cursorSet = cursorSet || f.Name == "cursor" })
-	if *seat == "" {
-		*seat = os.Getenv(hubclient.EnvSession)
-	}
-	if *seat != "" && !cursorSet {
-		*cursor = -1
-	}
 	if fs.NArg() != 0 {
 		return &UsageError{Msg: hubUsage}
+	}
+	var f hubclient.Filter
+	if *topic != "" {
+		f.Topics = append(f.Topics, *topic)
+	}
+	if *seat != "" {
+		f.Topics = append(f.Topics, hubclient.SeatTopic(*seat))
 	}
 	c, err := hubNewClient()
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "hub watch: " + err.Error(), Err: err}
 	}
-	if err := c.Watch(ctx, *topic, *cursor, *ack, *seat, out.Stdout()); err != nil && ctx.Err() == nil {
+	items, err := c.Read(ctx, f, *cursor)
+	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "hub watch: " + err.Error(), Err: err}
+	}
+	enc := json.NewEncoder(out.Stdout())
+	for it := range items {
+		wl := hubclient.WatchLine{Kind: hubclient.KindEvent, Event: it.Event}
+		if it.Gap {
+			wl = hubclient.WatchLine{Kind: hubclient.KindGap}
+		}
+		if err := enc.Encode(wl); err != nil {
+			return &CodedError{Code: ErrCodeInternalError, Msg: "hub watch: " + err.Error(), Err: err}
+		}
 	}
 	return nil
 }
@@ -93,7 +127,7 @@ type hubPSRow struct {
 	ID        string `json:"id"`
 	Handle    string `json:"handle"`
 	State     string `json:"state"`
-	LastSeq   int64  `json:"last_seq,omitempty"`
+	LastID    string `json:"last_id,omitempty"`
 	LastType  string `json:"last_type,omitempty"`
 	LastTS    int64  `json:"last_ts,omitempty"`
 	LastCause string `json:"last_cause,omitempty"`
@@ -140,13 +174,12 @@ func runHubPS(ctx context.Context, args []string, out *Output) error {
 		row := hubPSRow{ID: sb.ID.String(), Handle: sb.Handle(), State: sb.State.String()}
 		ev, ok := last[row.ID]
 		if !ok {
-			// LastAll may be limited; fall back to a point lookup.
 			if p, lerr := c.Last(ctx, row.ID); lerr == nil && p != nil {
 				ev, ok = *p, true
 			}
 		}
 		if ok {
-			row.LastSeq, row.LastType, row.LastTS = ev.Seq, ev.Type, ev.TS
+			row.LastID, row.LastType, row.LastTS = ev.ID, ev.Type, ev.TS
 			var p struct {
 				Cause string `json:"cause"`
 			}
@@ -159,9 +192,9 @@ func runHubPS(ctx context.Context, args []string, out *Output) error {
 	if !out.IsJSON() {
 		trs := make([][]string, 0, len(rows))
 		for _, r := range rows {
-			trs = append(trs, []string{r.ID, r.Handle, r.State, r.LastType, r.LastCause, strconv.FormatInt(r.LastSeq, 10)})
+			trs = append(trs, []string{r.ID, r.Handle, r.State, r.LastType, r.LastCause, r.LastID})
 		}
-		fmt.Fprint(out.Stdout(), hubTable([]string{"ID", "HANDLE", "STATE", "LAST EVENT", "CAUSE", "SEQ"}, trs))
+		fmt.Fprint(out.Stdout(), hubTable([]string{"ID", "HANDLE", "STATE", "LAST EVENT", "CAUSE", "EVENT ID"}, trs))
 	}
 	out.EmitSuccess("hub.ps", rows, fmt.Sprintf("%d sandboxes", len(rows)))
 	return nil
@@ -215,37 +248,17 @@ func hubActor() string {
 	return hubclient.ActorAnonymous
 }
 
-// clientHub adapts hubclient.Client to hubAPI.
-type clientHub struct{ c *hubclient.Client }
-
-func (h clientHub) Emit(ctx context.Context, ev hubclient.Event) error {
-	_, err := h.c.Append(ctx, ev)
-	return err
-}
-
-func (h clientHub) Last(ctx context.Context, subject string) (*hubclient.Event, error) {
-	return h.c.Last(ctx, subject)
-}
-
-func (h clientHub) LastAll(ctx context.Context) ([]hubclient.Event, error) {
-	return h.c.LastAll(ctx)
-}
-
-func (h clientHub) Watch(ctx context.Context, topic string, cursor int64, ack bool, seat string, stdout io.Writer) error {
-	w, err := h.c.Watch(ctx, topic, cursor, ack, seat)
+func hubRepoRoot(cwd string) string {
+	b, err := exec.Command("git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
 	if err != nil {
-		return err
+		return cwd
 	}
-	enc := json.NewEncoder(stdout)
-	for wl := range w.Lines {
-		if err := enc.Encode(wl); err != nil {
-			return err
-		}
-		if ack && wl.Kind == hubclient.KindEvent {
-			if err := w.Ack(wl.Seq); err != nil {
-				return err
-			}
-		}
+	dir := strings.TrimSpace(string(b))
+	if dir == "" {
+		return cwd
 	}
-	return w.Wait()
+	if filepath.Base(dir) == ".git" {
+		return filepath.Dir(dir)
+	}
+	return dir
 }

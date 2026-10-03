@@ -11,7 +11,7 @@ import (
 	"github.com/IniZio/nexus/internal/hubclient"
 )
 
-// hubEmitTimeout bounds each hub call so a hung nexus-hub cannot stall lifecycle ops.
+// hubEmitTimeout bounds each hub call so a slow journal write cannot stall lifecycle ops.
 const hubEmitTimeout = 5 * time.Second
 
 // HubEmitter delivers a session-hub event. Implementations must be best-effort:

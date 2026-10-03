@@ -991,7 +991,9 @@ func TestHerdrDefaultShell_UnboundWorktree_AutoCreateSucceeds(t *testing.T) {
 		childArgv = argv
 		return nil
 	}
-	t.Cleanup(func() { herdrWtChildRunnerFn = oldChild })
+	oldSpawn := herdrWtSpawnDetachedReapFn
+	herdrWtSpawnDetachedReapFn = func(HerdrSpaceBinding) error { return nil }
+	t.Cleanup(func() { herdrWtChildRunnerFn = oldChild; herdrWtSpawnDetachedReapFn = oldSpawn })
 
 	oldPaner := herdrWtPaneListerFn
 	herdrWtPaneListerFn = func(_ context.Context, _, _ string) (int, error) { return 1, nil }
@@ -1514,4 +1516,45 @@ func TestGuestShellFallbackPrintsMarker(t *testing.T) {
 	if !strings.Contains(buf.String(), dialErr.Error()) {
 		t.Errorf("stderr does not contain dial error %q; got: %q", dialErr.Error(), buf.String())
 	}
+}
+
+func TestHerdrWtDetachedReapCmd_RecursionGuard(t *testing.T) {
+	b := HerdrSpaceBinding{SandboxHandle: "h"}
+	if _, err := herdrWtDetachedReapCmd("/x/cli.test", b, nil); err == nil {
+		t.Fatal("want refusal for .test binary")
+	}
+	t.Setenv(herdrWtReexecDepthEnv, "1")
+	if _, err := herdrWtDetachedReapCmd("/x/nexus", b, nil); err == nil {
+		t.Fatal("want refusal when depth env set")
+	}
+	t.Setenv(herdrWtReexecDepthEnv, "")
+	cmd, err := herdrWtDetachedReapCmd("/x/nexus", b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range cmd.Env {
+		if e == herdrWtReexecDepthEnv+"=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("child env missing depth marker")
+	}
+}
+
+type labelRecorder struct{ key, val string }
+
+func (l *labelRecorder) SetLabel(_ context.Context, _, key, value string) error {
+	l.key, l.val = key, value
+	return nil
+}
+
+func TestHerdrSetPaneLabel(t *testing.T) {
+	r := &labelRecorder{}
+	herdrSetPaneLabel(context.Background(), r, "h", "p9")
+	if r.key != "herdr_pane" || r.val != "p9" {
+		t.Fatalf("got %+v", r)
+	}
+	herdrSetPaneLabel(context.Background(), struct{}{}, "h", "p9") // no SetLabel: no panic
 }

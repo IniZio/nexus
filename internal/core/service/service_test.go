@@ -400,6 +400,18 @@ func TestLifecycle_StartStop(t *testing.T) {
 	}
 }
 
+func TestSetLabel(t *testing.T) {
+	svc := newSvc(t)
+	sb, _ := svc.Create(ctx(), "proj", "box", service.CreateOptions{})
+	if err := svc.SetLabel(ctx(), sb.ID.String(), "herdr_pane", "p1"); err != nil {
+		t.Fatalf("SetLabel: %v", err)
+	}
+	got, err := svc.Get(ctx(), sb.ID.String())
+	if err != nil || got.Labels["herdr_pane"] != "p1" {
+		t.Fatalf("labels = %v err=%v", got.Labels, err)
+	}
+}
+
 func TestLifecycle_PauseResume(t *testing.T) {
 	svc := newSvc(t)
 	sb, _ := svc.Create(ctx(), "proj", "box", service.CreateOptions{})

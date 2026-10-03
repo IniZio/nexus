@@ -15,10 +15,12 @@ import (
 )
 
 type fakeHub struct {
-	emitted   []hubclient.Event
-	emitErr   error
-	all       []hubclient.Event
-	watchArgs []any
+	emitted    []hubclient.Event
+	emitErr    error
+	all        []hubclient.Event
+	readFilter hubclient.Filter
+	readCursor string
+	items      []hubclient.Item
 }
 
 func (f *fakeHub) Emit(_ context.Context, ev hubclient.Event) error {
@@ -27,10 +29,14 @@ func (f *fakeHub) Emit(_ context.Context, ev hubclient.Event) error {
 }
 func (f *fakeHub) Last(context.Context, string) (*hubclient.Event, error) { return nil, nil }
 func (f *fakeHub) LastAll(context.Context) ([]hubclient.Event, error)     { return f.all, nil }
-func (f *fakeHub) Watch(_ context.Context, topic string, cursor int64, ack bool, seat string, w io.Writer) error {
-	f.watchArgs = []any{topic, cursor, ack, seat}
-	_, _ = w.Write([]byte(`{"kind":"event"}` + "\n"))
-	return nil
+func (f *fakeHub) Read(_ context.Context, flt hubclient.Filter, cursor string) (<-chan hubclient.Item, error) {
+	f.readFilter, f.readCursor = flt, cursor
+	ch := make(chan hubclient.Item, len(f.items))
+	for _, it := range f.items {
+		ch <- it
+	}
+	close(ch)
+	return ch, nil
 }
 
 func useFakeHub(t *testing.T, f *fakeHub, root string) {
@@ -41,45 +47,21 @@ func useFakeHub(t *testing.T, f *fakeHub, root string) {
 	hubStoreRoot = func() (string, error) { return root, nil }
 }
 
-func TestHubWatchPassesFlags(t *testing.T) {
-	f := &fakeHub{}
+func TestHubWatchFlagsAndLines(t *testing.T) {
+	f := &fakeHub{items: []hubclient.Item{{Gap: true}, {Event: hubclient.Event{ID: "e1", Cursor: "c1", Type: "message"}}}}
 	useFakeHub(t, f, t.TempDir())
 	var so bytes.Buffer
 	out := NewOutput(&so, io.Discard, false)
-	if err := runHub(context.Background(), []string{"watch", "--topic", "host", "--cursor", "7", "--ack"}, out); err != nil {
+	if err := runHub(context.Background(), []string{"watch", "--topic", "host", "--seat", "s1", "--cursor", "c0"}, out); err != nil {
 		t.Fatal(err)
 	}
-	if f.watchArgs[0] != "host" || f.watchArgs[1] != int64(7) || f.watchArgs[2] != true {
-		t.Errorf("watch args = %v", f.watchArgs)
+	if got := f.readFilter.Topics; len(got) != 2 || got[0] != "host" || got[1] != "seat:s1" || f.readCursor != "c0" {
+		t.Errorf("filter=%v cursor=%q", got, f.readCursor)
 	}
-	if !strings.Contains(so.String(), `"kind":"event"`) {
+	lines := strings.Split(strings.TrimSpace(so.String()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"kind":"gap"`) ||
+		!strings.Contains(lines[1], `"kind":"event"`) || !strings.Contains(lines[1], `"cursor":"c1"`) {
 		t.Errorf("stdout = %q", so.String())
-	}
-}
-
-func TestHubWatchSeatPassthrough(t *testing.T) {
-	t.Setenv(hubclient.EnvSession, "")
-	run := func(args ...string) []any {
-		f := &fakeHub{}
-		useFakeHub(t, f, t.TempDir())
-		out := NewOutput(io.Discard, io.Discard, false)
-		if err := runHub(context.Background(), append([]string{"watch", "--topic", "h"}, args...), out); err != nil {
-			t.Fatal(err)
-		}
-		return f.watchArgs
-	}
-	if a := run("--consumer", "s1"); a[1] != int64(-1) || a[3] != "s1" {
-		t.Errorf("consumer: %v", a)
-	}
-	if a := run("--seat", "s1", "--cursor", "5"); a[1] != int64(5) || a[3] != "s1" {
-		t.Errorf("explicit cursor: %v", a)
-	}
-	if a := run(); a[1] != int64(0) || a[3] != "" {
-		t.Errorf("none: %v", a)
-	}
-	t.Setenv(hubclient.EnvSession, "envseat")
-	if a := run(); a[1] != int64(-1) || a[3] != "envseat" {
-		t.Errorf("env: %v", a)
 	}
 }
 
@@ -128,7 +110,7 @@ func TestHubPSListsSandboxesWithLastEvent(t *testing.T) {
 	if err := st.Create(context.Background(), sb); err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeHub{all: []hubclient.Event{{Seq: 9, Type: "sandbox.died", Subject: id.String(), Payload: json.RawMessage(`{"cause":"host_oom"}`)}}}
+	f := &fakeHub{all: []hubclient.Event{{ID: "evt-9", Type: "sandbox.died", Subject: id.String(), Payload: json.RawMessage(`{"cause":"host_oom"}`)}}}
 	useFakeHub(t, f, root)
 	var so bytes.Buffer
 	out := NewOutput(&so, io.Discard, false)
@@ -136,7 +118,7 @@ func TestHubPSListsSandboxesWithLastEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := so.String()
-	for _, w := range []string{id.String(), "sandbox.died", "host_oom", "9"} {
+	for _, w := range []string{id.String(), "sandbox.died", "host_oom", "evt-9"} {
 		if !strings.Contains(s, w) {
 			t.Errorf("missing %q in %q", w, s)
 		}

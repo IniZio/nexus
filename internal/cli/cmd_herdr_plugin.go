@@ -1624,11 +1624,26 @@ func herdrPluginSpaceCreate(ctx context.Context, ref string, w io.Writer, svc he
 	 */
 	herdrCloseRootPane(ctx, herdrBin, "space-create", rootPaneID)
 	b.GuestPaneID = paneID
+	herdrSetPaneLabel(ctx, svc, ref, paneID)
 	if err := HerdrSpacePut(ctx, storeRoot, b); err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: "space-create: store binding: " + err.Error(), Err: err}
 	}
 	fmt.Fprintf(w, "opened pane: pane_id=%s\n", paneID)
 	return nil
+}
+
+// herdrSetPaneLabel records the guest pane on the sandbox as herdr_pane so the
+// supervisor delegate watcher can find it. Best effort.
+func herdrSetPaneLabel(ctx context.Context, svc any, ref, paneID string) {
+	ls, ok := svc.(interface {
+		SetLabel(ctx context.Context, ref, key, value string) error
+	})
+	if !ok {
+		return
+	}
+	if err := ls.SetLabel(ctx, ref, "herdr_pane", paneID); err != nil {
+		slog.Warn("space-create: set herdr_pane label failed", "ref", ref, "err", err)
+	}
 }
 
 /**
@@ -4219,6 +4234,9 @@ func herdrWorktreeSandboxParsePosture(args []string) (rest []string, posture str
 func herdrWorktreeSandboxCreateArgsPosture(posture, handle, mountSpec, imageFlag, imageVal string, extraMounts, secrets []string, allowedRepo string, pathPolicies domain.EgressPathPolicies, mcpPolicies domain.EgressMCPPolicies, nested bool) []string {
 	worker := posture == herdrPostureWorker
 	args := []string{imageFlag, imageVal, "--mount", mountSpec}
+	if hostPath, _, ok := strings.Cut(mountSpec, ":"); ok && hostPath != "" {
+		args = append(args, "--label", "worktree="+hostPath)
+	}
 	for _, m := range extraMounts {
 		args = append(args, "--mount", m)
 	}

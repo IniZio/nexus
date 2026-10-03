@@ -55,6 +55,12 @@ func TestMain(m *testing.M) {
 	}
 	herdrBaseImageRegistryReachableFn = func(_ string) error { return nil }
 
+	herdrWtSpawnDetachedReapFn = func(HerdrSpaceBinding) error {
+		fmt.Fprintln(os.Stderr, "cli: test reached real herdrWtSpawnDetachedReapFn; stub it (fork-bomb guard)")
+		os.Exit(3)
+		return nil
+	}
+
 	code := m.Run()
 	_ = os.RemoveAll(stateRoot)
 	_ = os.RemoveAll(kernelDir)

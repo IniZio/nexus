@@ -963,6 +963,7 @@ const (
 	herdrWtReapWorkspaceEnv = "NEXUS_WT_REAP_WORKSPACE"
 	herdrWtReapPaneEnv      = "NEXUS_WT_REAP_PANE"
 	herdrWtReapSandboxIDEnv = "NEXUS_WT_REAP_SANDBOX_ID"
+	herdrWtReexecDepthEnv   = "NEXUS_REEXEC_DEPTH"
 )
 
 var herdrWtReapSettle = 1500 * time.Millisecond
@@ -981,7 +982,10 @@ func herdrWtSpawnDetachedReap(binding HerdrSpaceBinding) error {
 	}
 	defer devNull.Close()
 
-	cmd := herdrWtDetachedReapCmd(self, binding, devNull)
+	cmd, err := herdrWtDetachedReapCmd(self, binding, devNull)
+	if err != nil {
+		return err
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("wt/ detached reap: start: %w", err)
 	}
@@ -1008,7 +1012,13 @@ func herdrWtReapOwnPane(getenv func(string) string, binding HerdrSpaceBinding) s
 }
 
 // real reaper: Setsid (escapes herdr's process-group SIGKILL) and the binding
-func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.File) *osexec.Cmd {
+func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.File) (*osexec.Cmd, error) {
+	if os.Getenv(herdrWtReexecDepthEnv) != "" {
+		return nil, fmt.Errorf("wt/ detached reap: refusing nested re-exec (%s set)", herdrWtReexecDepthEnv)
+	}
+	if strings.HasSuffix(filepath.Base(self), ".test") {
+		return nil, fmt.Errorf("wt/ detached reap: refusing to re-exec test binary %s", self)
+	}
 	return &osexec.Cmd{
 		Path: self,
 		Args: []string{"nexus-guest-shell"},
@@ -1017,12 +1027,13 @@ func herdrWtDetachedReapCmd(self string, binding HerdrSpaceBinding, devNull *os.
 			herdrWtReapWorkspaceEnv+"="+binding.HerdrWorkspaceID,
 			herdrWtReapPaneEnv+"="+herdrWtReapOwnPane(os.Getenv, binding),
 			herdrWtReapSandboxIDEnv+"="+binding.SandboxID,
+			herdrWtReexecDepthEnv+"=1",
 		),
 		Stdin:       devNull,
 		Stdout:      devNull,
 		Stderr:      devNull,
 		SysProcAttr: &syscall.SysProcAttr{Setsid: true},
-	}
+	}, nil
 }
 
 func herdrWtReapBindingFromEnv(getenv func(string) string) (HerdrSpaceBinding, bool) {

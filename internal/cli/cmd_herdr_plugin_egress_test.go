@@ -523,6 +523,12 @@ func TestHerdrWorktreeSandboxCreateArgs_Posture(t *testing.T) {
 			t.Errorf("handle must be last: %v", args)
 		}
 	})
+	t.Run("worktree label carries host path", func(t *testing.T) {
+		args := herdrWorktreeSandboxCreateArgsPosture(herdrPostureDefault, "owner/branch", "/host/wt:/workspace", "--image", "img", nil, nil, "", nil, nil, false)
+		if !has(args, "worktree=/host/wt") {
+			t.Errorf("missing worktree label: %v", args)
+		}
+	})
 	t.Run("worker keeps default egress args and never passes --egress open", func(t *testing.T) {
 		pp := domain.EgressPathPolicies{"": {"api.github.com": {Paths: []string{"GET /repos/**"}}}}
 		secrets := []string{"FOO@example.com"}

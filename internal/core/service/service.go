@@ -273,6 +273,21 @@ type CreateOptions struct {
 	AgentName string
 }
 
+// withOwnerSeatLabel stamps the hub owner-seat label from $NEXUS_HUB_SEAT
+// unless the caller already set one.
+func withOwnerSeatLabel(labels map[string]string) map[string]string {
+	seat := os.Getenv(hubclient.EnvSeat)
+	if seat == "" || labels[hubclient.LabelOwnerSeat] != "" {
+		return labels
+	}
+	out := maps.Clone(labels)
+	if out == nil {
+		out = map[string]string{}
+	}
+	out[hubclient.LabelOwnerSeat] = seat
+	return out
+}
+
 // netModeEnvTombstone is the CheckNetModeEnv error text.
 const netModeEnvTombstone = "NEXUS_NET_MODE is no longer supported (tap networking was removed in S9d; vhost-user is the only mode): unset NEXUS_NET_MODE"
 
@@ -312,7 +327,7 @@ func (s *Service) Create(ctx context.Context, project, name string, opts CreateO
 		ID:           domain.NewSandboxID(),
 		Name:         name,
 		Project:      project,
-		Labels:       opts.Labels,
+		Labels:       withOwnerSeatLabel(opts.Labels),
 		State:        domain.Created,
 		Envelope:     domain.Envelope{}, // frozen at creation; future slices populate fields
 		RemoveOnExit: opts.RemoveOnExit,
@@ -659,6 +674,21 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 
 	s.emitStarted(ctx, updated.ID.String(), updated.Handle())
 	return updated, nil
+}
+
+// SetLabel sets one label on the sandbox identified by ref.
+func (s *Service) SetLabel(ctx context.Context, ref, key, value string) error {
+	sb, err := s.resolve(ctx, ref)
+	if err != nil {
+		return err
+	}
+	return s.store.Update(ctx, sb.ID, func(rec *domain.Sandbox) error {
+		if rec.Labels == nil {
+			rec.Labels = map[string]string{}
+		}
+		rec.Labels[key] = value
+		return nil
+	})
 }
 
 // Stop stops the running sandbox identified by ref.
