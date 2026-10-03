@@ -1,0 +1,8 @@
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_JCTL_ARGV"
+for a in "$@"; do
+  case "$a" in
+    --cursor=*) cat "$FAKE_JCTL_PROBE" 2>/dev/null; exit 0 ;;
+  esac
+done
+cat "$FAKE_JCTL_OUT"
