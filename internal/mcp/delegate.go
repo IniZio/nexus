@@ -1,19 +1,13 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/herdragent"
-	"github.com/IniZio/nexus/internal/herdrout"
+	"github.com/IniZio/nexus/internal/herdrworktree"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -51,52 +45,39 @@ Completion: commit your work (push only if the branch has an upstream; with no r
 // fall back to ${XDG_RUNTIME_DIR:-/tmp}/nexus-delegate-done instead.
 const delegateDoneMarker = "/run/nexus/delegate-done"
 
-// runHostCLI runs the nexus host binary with argv and returns its combined
-// output. It is a package variable so tests can substitute a fake executor.
-var runHostCLI = func(ctx context.Context, argv ...string) (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve executable: %w", err)
-	}
-	return runBinary(ctx, exe, argv...)
-}
+// runHostCLI, runHerdrCLI and runGitCLI are package variables so tests can
+// substitute fake executors; they default to the herdrworktree runners.
+var (
+	runHostCLI  = herdrworktree.RunHostCLI
+	runHerdrCLI = herdrworktree.RunHerdrCLI
+	runGitCLI   = herdrworktree.RunGitCLI
+)
 
-// runHerdrCLI runs the herdr binary (resolved by resolveHerdrBin) with argv
-// and returns its combined output. Separate from runHostCLI so tests can tell
-// herdr calls from nexus calls and fake each independently.
-var runHerdrCLI = func(ctx context.Context, herdrBin string, argv ...string) (string, error) {
-	return runBinary(ctx, herdrBin, argv...)
-}
-
-var runGitCLI = func(ctx context.Context, argv ...string) (string, error) {
-	return runBinary(ctx, "git", argv...)
-}
-
-var teardownPollInterval = 500 * time.Millisecond
-var teardownPollTimeout = 15 * time.Second
+var teardownPollInterval = herdrworktree.DefaultPollInterval
+var teardownPollTimeout = herdrworktree.DefaultPollTimeout
 
 // agentClientOpts overrides herdragent.New options in tests (e.g. zero settle sleep).
 var agentClientOpts []herdragent.Option
 
-func runBinary(ctx context.Context, bin string, argv ...string) (string, error) {
-	var buf bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin, argv...)
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	return buf.String(), err
+// WorktreeCreateArgs are the inputs of delegate_worktree_create and `nexus herdr worktree-create`.
+type WorktreeCreateArgs = herdrworktree.CreateArgs
+
+const briefFileName = herdrworktree.BriefFileName
+
+func validateBriefPath(p string) error { return herdrworktree.ValidateBriefPath(p) }
+
+func installBrief(ctx context.Context, briefPath, worktree string) error {
+	return herdrworktree.InstallBrief(ctx, worktreeRunners(), briefPath, worktree)
 }
 
-// WorktreeCreateArgs are the inputs of delegate_worktree_create and `nexus herdr worktree-create`.
-type WorktreeCreateArgs struct {
-	RepoPath        string   `json:"repo_path"                  jsonschema:"absolute host path to the git repo checkout that is open as a herdr workspace (required)"`
-	Branch          string   `json:"branch"                     jsonschema:"branch name for the new linked git worktree (required)"`
-	Base            string   `json:"base,omitempty"             jsonschema:"base ref for the new branch (optional; herdr default when empty)"`
-	ImageRef        string   `json:"image_ref,omitempty"        jsonschema:"MUST NOT be set — the image comes from the checkout's .nexus/config.yaml (or .nexus/Containerfile); any value here returns an error"`
-	MemoryMiB       uint32   `json:"memory_mib,omitempty"       jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
-	VCPUs           uint32   `json:"vcpus,omitempty"            jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
-	AllowedBranches []string `json:"allowed_branches,omitempty" jsonschema:"MUST NOT be set — branch policy is derived from the worktree; any value here returns an error"`
-	BriefPath       string   `json:"brief_path,omitempty"       jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md and excluded from commits (optional)"`
+func worktreePathForRef(ctx context.Context, ref string) (string, error) {
+	return herdrworktree.PathForRef(ctx, worktreeRunners(), ref)
+}
+
+func resolveHerdrBin() (string, error) { return herdrworktree.ResolveHerdrBin() }
+
+func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID, paneID string, ok bool) {
+	return herdrworktree.ParseListBindingByRef(out, ref)
 }
 
 type delegateAgentDispatchArgs struct {
@@ -141,276 +122,6 @@ type delegateAgentPollResult struct {
 type delegateTeardownArgs struct {
 	Ref   string `json:"ref"             jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
 	Force bool   `json:"force,omitempty" jsonschema:"Remove the worktree even if it has uncommitted or untracked changes; those changes are discarded"`
-}
-
-func validateWorktreeCreate(args WorktreeCreateArgs) error {
-	if args.RepoPath == "" {
-		return fmt.Errorf("repo_path is required")
-	}
-	if !filepath.IsAbs(args.RepoPath) {
-		return fmt.Errorf("repo_path must be an absolute path (got %q)", args.RepoPath)
-	}
-	if st, err := os.Stat(args.RepoPath); err != nil {
-		return fmt.Errorf("repo_path %q: %w", args.RepoPath, err)
-	} else if !st.IsDir() {
-		return fmt.Errorf("repo_path %q is not a directory", args.RepoPath)
-	}
-	if args.Branch == "" {
-		return fmt.Errorf("branch is required")
-	}
-	if err := validateBriefPath(args.BriefPath); err != nil {
-		return err
-	}
-	if len(args.AllowedBranches) > 0 {
-		return fmt.Errorf(
-			"delegate_worktree_create: allowed_branches cannot be set by the caller "+
-				"(value %v rejected); branch policy is derived from the worktree's "+
-				"current branch by the service layer and cannot be widened via this tool",
-			args.AllowedBranches,
-		)
-	}
-	if args.ImageRef != "" {
-		return fmt.Errorf(
-			"delegate_worktree_create: image_ref is not supported (value %q rejected); "+
-				"the image is taken from %s (or .nexus/Containerfile) exactly as a herdr worktree sandbox",
-			args.ImageRef, filepath.Join(args.RepoPath, ".nexus", "config.yaml"),
-		)
-	}
-	if args.MemoryMiB > 0 || args.VCPUs > 0 {
-		return fmt.Errorf(
-			"delegate_worktree_create: memory_mib/vcpus are not supported by the herdr worktree-sandbox path "+
-				"(memory_mib=%d vcpus=%d rejected); the verb has no flags for them",
-			args.MemoryMiB, args.VCPUs,
-		)
-	}
-	return nil
-}
-
-const briefFileName = ".brief.md"
-
-// briefExcludes keep the brief and the report file briefs ask for out of commits.
-var briefExcludes = []string{briefFileName, ".slice-report.md"}
-
-func validateBriefPath(p string) error {
-	if p == "" {
-		return nil
-	}
-	if !filepath.IsAbs(p) {
-		return fmt.Errorf("brief_path must be an absolute path (got %q)", p)
-	}
-	st, err := os.Stat(p)
-	if err != nil {
-		return fmt.Errorf("brief_path %q: %w", p, err)
-	}
-	if !st.Mode().IsRegular() {
-		return fmt.Errorf("brief_path %q is not a regular file", p)
-	}
-	return nil
-}
-
-// installBrief copies briefPath into worktree as .brief.md and appends
-// briefExcludes to info/exclude. Git reads info/exclude only from the common
-// dir, so for a linked worktree `rev-parse --git-path info/exclude` resolves
-// to the shared file; there is no per-worktree exclude to target.
-func installBrief(ctx context.Context, briefPath, worktree string) error {
-	data, err := os.ReadFile(briefPath)
-	if err != nil {
-		return fmt.Errorf("read brief_path: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(worktree, briefFileName), data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", briefFileName, err)
-	}
-	out, err := runGitCLI(ctx, "-C", worktree, "rev-parse", "--git-path", "info/exclude")
-	if err != nil {
-		return fmt.Errorf("rev-parse --git-path info/exclude: %w\n%s", err, out)
-	}
-	excl := strings.TrimSpace(out)
-	if !filepath.IsAbs(excl) {
-		excl = filepath.Join(worktree, excl)
-	}
-	existing, err := os.ReadFile(excl)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read %s: %w", excl, err)
-	}
-	have := map[string]bool{}
-	for _, l := range strings.Split(string(existing), "\n") {
-		have[strings.TrimSpace(l)] = true
-	}
-	var add strings.Builder
-	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
-		add.WriteString("\n")
-	}
-	n := add.Len()
-	for _, e := range briefExcludes {
-		if !have[e] {
-			add.WriteString(e + "\n")
-		}
-	}
-	if add.Len() == n {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(excl), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(excl, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.WriteString(add.String())
-	return err
-}
-
-// worktreePathForRef resolves the host worktree directory bound to ref.
-func worktreePathForRef(ctx context.Context, ref string) (string, error) {
-	herdrBin, err := resolveHerdrBin()
-	if err != nil {
-		return "", err
-	}
-	listOut, err := runHostCLI(ctx, "herdr", "list")
-	if err != nil {
-		return "", fmt.Errorf("nexus herdr list: %w\n%s", err, listOut)
-	}
-	ws, _, _, _, ok := parseHerdrListBindingByRef(listOut, ref)
-	if !ok {
-		return "", fmt.Errorf("no herdr binding for %q", ref)
-	}
-	wtOut, err := runHerdrCLI(ctx, herdrBin, "worktree", "list", "--json")
-	if err != nil {
-		return "", fmt.Errorf("herdr worktree list: %w\n%s", err, wtOut)
-	}
-	p := herdrout.WorktreePathByWorkspaceID(wtOut, ws)
-	if p == "" {
-		return "", fmt.Errorf("worktree path for workspace %s not found", ws)
-	}
-	return p, nil
-}
-
-// resolveHerdrBin mirrors the CLI's herdr binary lookup: HERDR_BIN_PATH, else PATH.
-func resolveHerdrBin() (string, error) {
-	if p := os.Getenv("HERDR_BIN_PATH"); p != "" {
-		return p, nil
-	}
-	if p, err := exec.LookPath("herdr"); err == nil {
-		return p, nil
-	}
-	return "", fmt.Errorf(`herdr not found: HERDR_BIN_PATH is unset and no "herdr" binary is on PATH`)
-}
-
-// findHerdrWorkspaceID picks the herdr workspace whose checkout path matches
-// repoPath: exact match first, then prefix, then HERDR_WORKSPACE_ID from env.
-func findHerdrWorkspaceID(workspaceListOut, repoPath string) (string, error) {
-	var parsed struct {
-		Result struct {
-			Workspaces []struct {
-				WorkspaceID string `json:"workspace_id"`
-				Worktree    struct {
-					CheckoutPath string `json:"checkout_path"`
-				} `json:"worktree"`
-			} `json:"workspaces"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(workspaceListOut), &parsed); err != nil {
-		// Output may carry non-JSON lines; scan for the first JSON object line.
-		for _, line := range strings.Split(workspaceListOut, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &parsed) == nil {
-				break
-			}
-		}
-	}
-	want := filepath.Clean(repoPath)
-	for _, ws := range parsed.Result.Workspaces {
-		if ws.Worktree.CheckoutPath != "" && filepath.Clean(ws.Worktree.CheckoutPath) == want {
-			return ws.WorkspaceID, nil
-		}
-	}
-	for _, ws := range parsed.Result.Workspaces {
-		if ws.Worktree.CheckoutPath == "" {
-			continue
-		}
-		cp := filepath.Clean(ws.Worktree.CheckoutPath)
-		if strings.HasPrefix(want, cp+string(filepath.Separator)) || strings.HasPrefix(cp, want+string(filepath.Separator)) {
-			return ws.WorkspaceID, nil
-		}
-	}
-	if env := os.Getenv("HERDR_WORKSPACE_ID"); env != "" {
-		return env, nil
-	}
-	return "", fmt.Errorf("repo %s is not open as a herdr workspace; open it in herdr first", repoPath)
-}
-
-// parseHerdrListBinding finds the `nexus herdr list` line for workspaceID
-// and returns its handle and sandbox_id.
-func parseHerdrListBinding(out, workspaceID string) (handle, sandboxID string, ok bool) {
-	needle := "workspace_id=" + workspaceID
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Split(strings.TrimSpace(line), "\t")
-		matched := false
-		for _, f := range fields {
-			if f == needle {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			continue
-		}
-		for _, f := range fields {
-			if v, found := strings.CutPrefix(f, "handle="); found {
-				handle = v
-			} else if v, found := strings.CutPrefix(f, "sandbox_id="); found {
-				sandboxID = v
-			}
-		}
-		return handle, sandboxID, true
-	}
-	return "", "", false
-}
-
-// parseHerdrListBindingByRef matches ref against handle= or a sandbox_id= prefix.
-func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID, paneID string, ok bool) {
-	if ref == "" {
-		return "", "", "", "", false
-	}
-	for _, line := range strings.Split(out, "\n") {
-		var ws, h, sb, pi string
-		for _, f := range strings.Split(strings.TrimSpace(line), "\t") {
-			if v, found := strings.CutPrefix(f, "workspace_id="); found {
-				ws = v
-			} else if v, found := strings.CutPrefix(f, "handle="); found {
-				h = v
-			} else if v, found := strings.CutPrefix(f, "sandbox_id="); found {
-				sb = v
-			} else if v, found := strings.CutPrefix(f, "pane_id="); found {
-				pi = v
-			}
-		}
-		if ws == "" {
-			continue
-		}
-		if h == ref || (sb != "" && strings.HasPrefix(sb, ref)) {
-			return ws, h, sb, pi, true
-		}
-	}
-	return "", "", "", "", false
-}
-
-func isSandboxNotFound(err error, output string) bool {
-	combined := strings.ToLower(err.Error() + " " + output)
-	return strings.Contains(combined, "not found") || strings.Contains(combined, "no such")
-}
-
-// sandboxListed reports whether `nexus sandbox list` still shows handle or sandboxID.
-func sandboxListed(psOut, handle, sandboxID string) bool {
-	for _, line := range strings.Split(psOut, "\n") {
-		for _, tok := range strings.Fields(line) {
-			if (handle != "" && tok == handle) || (sandboxID != "" && tok == sandboxID) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 const maxAgentWaitMs = 10 * 60 * 1000 // 10 minutes
@@ -549,103 +260,28 @@ func observeAgentState(ctx context.Context, ref string, waitMs int) herdragent.S
 }
 
 // WorktreeSandboxResult is the outcome of CreateWorktreeSandbox.
-type WorktreeSandboxResult struct {
-	WorkspaceID  string `json:"workspace_id"`
-	WorktreePath string `json:"worktree_path"`
-	Branch       string `json:"branch"`
-	Handle       string `json:"handle"`
-	SandboxID    string `json:"sandbox_id"`
-	Output       string `json:"output"`
-}
+type WorktreeSandboxResult = herdrworktree.SandboxResult
 
 // WorktreeRunners are the herdr and nexus CLI executors CreateWorktreeSandbox drives.
-type WorktreeRunners struct {
-	Herdr func(ctx context.Context, herdrBin string, argv ...string) (string, error)
-	Host  func(ctx context.Context, argv ...string) (string, error)
-}
+type WorktreeRunners = herdrworktree.Runners
 
 // DefaultWorktreeRunners returns runners backed by the real binaries.
-func DefaultWorktreeRunners() WorktreeRunners {
-	return WorktreeRunners{Herdr: runHerdrCLI, Host: runHostCLI}
+func DefaultWorktreeRunners() WorktreeRunners { return herdrworktree.DefaultRunners() }
+
+// worktreeRunners builds runners from the package-level CLI vars so tests can fake them.
+func worktreeRunners() WorktreeRunners {
+	return WorktreeRunners{
+		Herdr: runHerdrCLI, Host: runHostCLI, Git: runGitCLI,
+		PollInterval: teardownPollInterval, PollTimeout: teardownPollTimeout,
+	}
 }
 
 // CreateWorktreeSandbox creates a herdr worktree for args.Branch and binds a nexus sandbox to it.
 func CreateWorktreeSandbox(ctx context.Context, args WorktreeCreateArgs, r WorktreeRunners) (WorktreeSandboxResult, error) {
-	if err := validateWorktreeCreate(args); err != nil {
-		return WorktreeSandboxResult{}, err
+	if r.Git == nil {
+		r.Git = runGitCLI
 	}
-	herdrBin, err := resolveHerdrBin()
-	if err != nil {
-		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: %w; delegate_worktree_create binds the sandbox to a herdr workspace and needs herdr running", err)
-	}
-
-	wsListOut, err := r.Herdr(ctx, herdrBin, "workspace", "list")
-	if err != nil {
-		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: herdr workspace list: %w\n%s", err, wsListOut)
-	}
-	parent, err := findHerdrWorkspaceID(wsListOut, args.RepoPath)
-	if err != nil {
-		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: %w", err)
-	}
-
-	storeRoot, _ := store.DefaultRoot()
-	defer herdrout.ClaimWorktree(storeRoot, args.Branch)()
-
-	createArgv := []string{"worktree", "create", "--workspace", parent, "--branch", args.Branch}
-	if args.Base != "" {
-		createArgv = append(createArgv, "--base", args.Base)
-	}
-	createArgv = append(createArgv, "--no-focus")
-	createOut, err := r.Herdr(ctx, herdrBin, createArgv...)
-	if err != nil {
-		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: herdr worktree create: %w\n%s", err, createOut)
-	}
-	ws := herdrout.WorktreeCreateWorkspaceID(createOut)
-	if ws == "" {
-		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: herdr worktree create: no workspace_id ({\"ws\":...} or result.workspace.workspace_id) in output\n%s", createOut)
-	}
-
-	worktreePath := ""
-	if args.BriefPath != "" {
-		if wtOut, wtErr := r.Herdr(ctx, herdrBin, "worktree", "list", "--workspace", ws, "--json"); wtErr == nil {
-			worktreePath = herdrout.WorktreePath(wtOut, args.Branch)
-		}
-		if worktreePath == "" {
-			return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: brief_path set but worktree path for branch %q not found (workspace %s was created)", args.Branch, ws)
-		}
-		if err := installBrief(ctx, args.BriefPath, worktreePath); err != nil {
-			return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: brief_path: %w (workspace %s was created)", err, ws)
-		}
-	}
-
-	bindOut, err := r.Host(ctx, "herdr", "worktree-sandbox", ws)
-	if err != nil {
-		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: nexus herdr worktree-sandbox: %w\n%s", err, bindOut)
-	}
-
-	listOut, err := r.Host(ctx, "herdr", "list")
-	if err != nil {
-		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: nexus herdr list: %w\n%s", err, listOut)
-	}
-	handle, sandboxID, ok := parseHerdrListBinding(listOut, ws)
-	if !ok {
-		return WorktreeSandboxResult{}, fmt.Errorf("delegate_worktree_create: sandbox binding for workspace %s not found after worktree-sandbox\n%s", ws, listOut)
-	}
-
-	if worktreePath == "" {
-		if wtOut, wtErr := r.Herdr(ctx, herdrBin, "worktree", "list", "--workspace", ws, "--json"); wtErr == nil {
-			worktreePath = herdrout.WorktreePath(wtOut, args.Branch)
-		}
-	}
-
-	return WorktreeSandboxResult{
-		WorkspaceID:  ws,
-		WorktreePath: worktreePath,
-		Branch:       args.Branch,
-		Handle:       handle,
-		SandboxID:    sandboxID,
-		Output:       createOut + bindOut,
-	}, nil
+	return herdrworktree.CreateSandbox(ctx, args, r)
 }
 
 func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
@@ -861,118 +497,20 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		if args.Ref == "" {
 			return errorResult(fmt.Errorf("ref is required")), nil, nil
 		}
-		listOut, err := runHostCLI(ctx, "herdr", "list")
+		res, err := herdrworktree.Teardown(ctx, args.Ref, args.Force, worktreeRunners())
 		if err != nil {
-			return errorResult(fmt.Errorf("delegate_teardown: nexus herdr list: %w\n%s", err, listOut)), nil, nil
+			return errorResult(err), nil, nil
 		}
-		ws, handle, sandboxID, _, bound := parseHerdrListBindingByRef(listOut, args.Ref)
-		if !bound {
-			out, runErr := runHostCLI(ctx, "sandbox", "rm", args.Ref)
-			if runErr != nil {
-				return errorResult(fmt.Errorf("delegate_teardown: sandbox rm: %w\n%s", runErr, out)), nil, nil
-			}
-			return successResult(map[string]interface{}{"removed": true, "output": out}), nil, nil
-		}
-		herdrBin, err := resolveHerdrBin()
-		if err != nil {
-			return errorResult(fmt.Errorf("delegate_teardown: %w; workspace %s is bound to %s and must be removed through herdr", err, ws, args.Ref)), nil, nil
-		}
-		rmArgv := []string{"worktree", "remove", "--workspace", ws}
-		if args.Force {
-			rmArgv = append(rmArgv, "--force")
-		}
-		rmOut, err := runHerdrCLI(ctx, herdrBin, rmArgv...)
-		if err != nil {
-			if !args.Force {
-				errCode, errMsg, parsed := herdrout.ParseHerdrErrorCode(rmOut)
-				if parsed && errCode == "dirty_worktree_requires_force" {
-					wtPath := ""
-					if wtOut, wtErr := runHerdrCLI(ctx, herdrBin, "worktree", "list", "--workspace", ws, "--json"); wtErr == nil {
-						wtPath = herdrout.WorktreePathByWorkspaceID(wtOut, ws)
-					}
-					if wtPath == "" {
-						if i := strings.Index(errMsg, "'"); i >= 0 {
-							if j := strings.Index(errMsg[i+1:], "'"); j >= 0 {
-								wtPath = errMsg[i+1 : i+1+j]
-							}
-						}
-					}
-					if wtPath != "" {
-						statusOut, _ := runGitCLI(ctx, "-C", wtPath, "status", "--porcelain", "--untracked-files=all")
-						var lines []string
-						for _, l := range strings.Split(strings.TrimRight(statusOut, "\n"), "\n") {
-							if l != "" {
-								lines = append(lines, l)
-							}
-						}
-						n := len(lines)
-						const porcelainCap = 50
-						suffix := ""
-						if n > porcelainCap {
-							suffix = fmt.Sprintf("\n... and %d more", n-porcelainCap)
-							lines = lines[:porcelainCap]
-						}
-						return errorResult(fmt.Errorf(
-							"delegate_teardown: worktree %s has uncommitted changes (%d files):\n%s%s\nHarvest or commit them first, or call delegate_teardown again with force:true to discard them.",
-							wtPath, n, strings.Join(lines, "\n"), suffix,
-						)), nil, nil
-					}
-					return errorResult(fmt.Errorf(
-						"delegate_teardown: herdr worktree remove --workspace %s: dirty worktree (code=%s: %s); "+
-							"harvest or commit changes first, or call delegate_teardown again with force:true to discard them.",
-						ws, errCode, errMsg,
-					)), nil, nil
-				}
-				if parsed {
-					return errorResult(fmt.Errorf("delegate_teardown: herdr worktree remove --workspace %s: code=%s: %s\n%s", ws, errCode, errMsg, rmOut)), nil, nil
-				}
-			}
-			return errorResult(fmt.Errorf("delegate_teardown: herdr worktree remove --workspace %s: %w\n%s", ws, err, rmOut)), nil, nil
-		}
-
-		out := rmOut
-		how := "removed-by-hook"
-		deadline := time.Now().Add(teardownPollTimeout)
-		stillListed := false
-		for {
-			psOut, listErr := runHostCLI(ctx, "sandbox", "list")
-			if listErr != nil {
-				return errorResult(fmt.Errorf("delegate_teardown: nexus sandbox list: %w\n%s", listErr, psOut)), nil, nil
-			}
-			if !sandboxListed(psOut, handle, sandboxID) {
-				break
-			}
-			if time.Now().After(deadline) {
-				stillListed = true
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return errorResult(fmt.Errorf("delegate_teardown: context cancelled waiting for sandbox %s to disappear", handle)), nil, nil
-			case <-time.After(teardownPollInterval):
-			}
-		}
-		if stillListed {
-			fallbackOut, runErr := runHostCLI(ctx, "sandbox", "rm", args.Ref)
-			if runErr != nil {
-				if isSandboxNotFound(runErr, fallbackOut) {
-					how = "already-gone"
-					out += fallbackOut
-				} else {
-					return errorResult(fmt.Errorf("delegate_teardown: sandbox %s still listed after herdr worktree remove; sandbox rm: %w\n%s", handle, runErr, fallbackOut)), nil, nil
-				}
-			} else {
-				how = "removed-by-fallback"
-				out += fallbackOut
-			}
+		if !res.Bound {
+			return successResult(map[string]interface{}{"removed": true, "output": res.Output}), nil, nil
 		}
 		return successResult(map[string]interface{}{
 			"removed":      true,
-			"how":          how,
-			"workspace_id": ws,
-			"handle":       handle,
-			"sandbox_id":   sandboxID,
-			"output":       out,
+			"how":          res.How,
+			"workspace_id": res.WorkspaceID,
+			"handle":       res.Handle,
+			"sandbox_id":   res.SandboxID,
+			"output":       res.Output,
 		}), nil, nil
 	})
 }

@@ -69,6 +69,7 @@ var hostExecAllowlist = map[string]map[string]string{
 		"internal/cli":                      "herdr integration (optional)",
 		"internal/clientagent":              "herdr integration (optional)",
 		"internal/controller/backend/herdr": "herdr integration (optional)",
+		"internal/herdrworktree":            "herdr integration (optional)",
 		"internal/mcp":                      "herdr integration (optional)",
 		"internal/testutil/livenexus":       "herdr integration (optional)",
 	},

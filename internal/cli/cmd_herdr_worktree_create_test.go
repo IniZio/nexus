@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	mcpsrv "github.com/IniZio/nexus/internal/mcp"
+	wt "github.com/IniZio/nexus/internal/herdrworktree"
 )
 
 func TestHerdrWorktreeCreate_PrintsJSONResult(t *testing.T) {
@@ -16,8 +16,8 @@ func TestHerdrWorktreeCreate_PrintsJSONResult(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	repo := t.TempDir()
 	var calls []string
-	worktreeCreateRunners = func() mcpsrv.WorktreeRunners {
-		return mcpsrv.WorktreeRunners{
+	worktreeCreateRunners = func() wt.Runners {
+		return wt.Runners{
 			Herdr: func(_ context.Context, _ string, argv ...string) (string, error) {
 				calls = append(calls, "herdr "+strings.Join(argv, " "))
 				switch argv[0] + " " + argv[1] {
@@ -37,7 +37,7 @@ func TestHerdrWorktreeCreate_PrintsJSONResult(t *testing.T) {
 			},
 		}
 	}
-	t.Cleanup(func() { worktreeCreateRunners = mcpsrv.DefaultWorktreeRunners })
+	t.Cleanup(func() { worktreeCreateRunners = wt.DefaultRunners })
 
 	var stdout, stderr bytes.Buffer
 	err := runHerdrWorktreeCreate(context.Background(), []string{"--repo", repo, "--branch", "feat/x"}, NewOutput(&stdout, &stderr, false))
@@ -54,7 +54,7 @@ func TestHerdrWorktreeCreate_PrintsJSONResult(t *testing.T) {
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %q, want %q", calls, wantCalls)
 	}
-	var got mcpsrv.WorktreeSandboxResult
+	var got wt.SandboxResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &got); err != nil {
 		t.Fatalf("stdout not one JSON object: %v (%q)", err, stdout.String())
 	}

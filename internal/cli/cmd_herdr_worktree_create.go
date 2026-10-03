@@ -8,10 +8,10 @@ import (
 	"os/exec"
 	"strings"
 
-	mcpsrv "github.com/IniZio/nexus/internal/mcp"
+	wt "github.com/IniZio/nexus/internal/herdrworktree"
 )
 
-var worktreeCreateRunners = mcpsrv.DefaultWorktreeRunners
+var worktreeCreateRunners = wt.DefaultRunners
 
 func runHerdrWorktreeCreate(ctx context.Context, args []string, out *Output) error {
 	fs := flag.NewFlagSet("herdr worktree-create", flag.ContinueOnError)
@@ -32,7 +32,7 @@ func runHerdrWorktreeCreate(ctx context.Context, args []string, out *Output) err
 		}
 		*repo = strings.TrimSpace(string(top))
 	}
-	result, err := mcpsrv.CreateWorktreeSandbox(ctx, mcpsrv.WorktreeCreateArgs{RepoPath: *repo, Branch: *branch, Base: *base}, worktreeCreateRunners())
+	result, err := wt.CreateSandbox(ctx, wt.CreateArgs{RepoPath: *repo, Branch: *branch, Base: *base}, worktreeCreateRunners())
 	if err != nil {
 		return &CodedError{Code: ErrCodeInternalError, Msg: err.Error(), Err: err}
 	}
