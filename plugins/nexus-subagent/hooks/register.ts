@@ -111,15 +111,6 @@ const ORCHESTRATE_SECTION =
   'For each ticket call mcp__nexus-subagent__spawn (one sandbox per ticket); that ticket agent orchestrates its own subagents inside the sandbox. ' +
   'Read, Glob, Grep, read-only Bash and SendMessage remain available. Toggle with /orchestrate on|off|status.'
 
-// Parent id of a spawn event or agent info; field names vary by engine version.
-function parentOf(x: unknown): string | undefined {
-  const o = x as Record<string, unknown>
-  for (const k of ['parentAgentId', 'parent_agent_id', 'parentId', 'callerAgentId']) {
-    if (typeof o?.[k] === 'string' && o[k]) return o[k] as string
-  }
-  return undefined
-}
-
 export const register: Register = on => {
   const foreign = new Set<string>()
   const createdRefs = new Map<string, string>()
@@ -161,24 +152,21 @@ export const register: Register = on => {
     return started
   })
 
-  on('command.run', async ($, e, next) => {
-    const c = e as unknown as { command?: string; name?: string; args?: string; arg?: string }
-    if ((c.command ?? c.name)?.replace(/^\//, '') !== 'orchestrate') return next(e)
-    const mode = parseOrchestrateArg(c.args ?? c.arg)
-    if (!mode) return { result: 'usage: /orchestrate on|off|status' }
+  on('command.run', { command: 'orchestrate' }, async ($, e, next) => {
+    const mode = parseOrchestrateArg(e.args)
+    if (!mode) return { text: 'usage: /orchestrate on|off|status' }
     if (mode !== 'status') {
       await update($, ORCHESTRATE, () => mode === 'on')
       $.ui.status(mode === 'on' ? 'orchestrate on' : undefined)
     }
     const now = mode === 'status' ? await orchestrateOn($) : mode === 'on'
-    return { result: `orchestrate ${now ? 'on' : 'off'}` }
+    return { text: `orchestrate ${now ? 'on' : 'off'}` }
   })
 
   on('prompt.compose', async ($, e, next) => {
     const out = await next(e)
     if (!(await orchestrateOn($))) return out
-    const o = out as unknown as { sections?: unknown[] }
-    return { ...out, sections: [...(o.sections ?? []), { id: 'nexus-subagent.orchestrate', text: ORCHESTRATE_SECTION }] } as typeof out
+    return { sections: [...out.sections, { id: 'nexus-subagent:orchestrate', text: ORCHESTRATE_SECTION, scope: 'session' }] }
   })
 
   on('tool.call', { tool: 'mcp__nexus-subagent__teardown' }, async ($, e) => {
@@ -263,7 +251,7 @@ export const register: Register = on => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const parent = parentOf(e)
+    const parent = e.parentAgentId
     const inherited = parent ? await bindingOf($, parent) : undefined
     if (inherited) {
       const child = await next({ ...e, cwd: inherited.root })
@@ -271,8 +259,6 @@ export const register: Register = on => {
       return child
     }
     if (e.subagentType !== WORKER_TYPE) return next(e)
-    const resumed = (e as unknown as { agentId?: string }).agentId
-    if (resumed && (await bindingOf($, resumed))) return next(e)
     const target = e.cwd ?? worktreeInPrompt(e.prompt)
     if (!target) return { deny: `${WORKER_TYPE} needs a line "worktree: <herdr worktree path>" in its prompt` }
     const root = await realpath($, target)
@@ -294,13 +280,17 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
-    if (!e.agentId) return next(e)
+    if (!e.agentId) {
+      if (!(await orchestrateOn($))) return next(e)
+      const deny = orchestrateDeny(e.tool, (e as unknown as { command?: unknown }).command)
+      return deny === undefined ? next(e) : { deny }
+    }
     const r = route(e.tool)
     if (r.kind === 'engine') return next(e)
     let b = await bindingOf($, e.agentId)
     if (!b) {
       const info = (await $.agent.list()).find(a => a.id === e.agentId)
-      const parent = parentOf(info)
+      const parent = info?.parentId
       const pb = parent ? await bindingOf($, parent) : undefined
       if (pb) {
         await bind($, e.agentId, pb)
@@ -372,19 +362,12 @@ export const register: Register = on => {
     }
     return { deny: `nexus worker: unrouted ${e.tool}` }
   }).catch(async ($, e, next) => {
-    if (e.agentId && !foreign.has(e.agentId)) {
-      return { deny: `nexus-subagent hook failed (${String(next.error)}); refusing rather than running on the host` }
+    if (e.agentId) {
+      if (!foreign.has(e.agentId)) {
+        return { deny: `nexus-subagent hook failed (${String(next.error)}); refusing rather than running on the host` }
+      }
+      return next(e)
     }
-    return next(e)
-  })
-
-  on('tool.call', async ($, e, next) => {
-    if (e.agentId) return next(e)
-    if (!(await orchestrateOn($))) return next(e)
-    const deny = orchestrateDeny(e.tool, (e as unknown as { command?: unknown }).command)
-    return deny === undefined ? next(e) : { deny }
-  }).catch(async ($, e, next) => {
-    if (e.agentId) return next(e)
     let enabled = true
     try {
       enabled = await orchestrateOn($)
