@@ -878,20 +878,18 @@ func makeVolumeWithAllocatedDisk(t *testing.T, s *VolumeStore, name string, nDat
 	}
 }
 
-// (a) 133 MB-vs-3.7 GB regression: sparse candidate must not replace large fresh copy.
-func TestPromoteToWarm_ShrinkGuard_SkipsSmallCandidate(t *testing.T) {
+// (a) A larger candidate must not replace a smaller fresh seed (anti-snowball).
+func TestPromoteToWarm_ReplaceGuard_LargerCandidateSkipped(t *testing.T) {
 	s := newWarmStore(t)
 	key := "proj-shrinkguard-aabbccddeeff"
 
-	const existingAlloc int64 = 100 * 4096
+	const existingAlloc int64 = 10 * 4096
 	makeTinyWarmFull(t, s, key, WarmKindDocker, existingAlloc, time.Now(), 0)
-	makeVolumeWithDisk(t, s, "vol-small", 4096)
+	makeVolumeWithAllocatedDisk(t, s, "vol-small", 100)
 
-	oldRatio := WarmShrinkRatio
 	oldStale := WarmStaleAfter
-	WarmShrinkRatio = 0.5
 	WarmStaleAfter = 7 * 24 * time.Hour
-	t.Cleanup(func() { WarmShrinkRatio = oldRatio; WarmStaleAfter = oldStale })
+	t.Cleanup(func() { WarmStaleAfter = oldStale })
 
 	old := reflinkFileFn
 	reflinkFileFn = copyClone
@@ -907,20 +905,18 @@ func TestPromoteToWarm_ShrinkGuard_SkipsSmallCandidate(t *testing.T) {
 	}
 }
 
-// (b) Stale existing: smaller candidate replaces when existing older than WarmStaleAfter.
+// (b) Stale existing: larger candidate replaces when existing older than WarmStaleAfter.
 func TestPromoteToWarm_ShrinkGuard_StaleExistingAllowsReplace(t *testing.T) {
 	s := newWarmStore(t)
 	key := "proj-shrinkstale-aabbccddeeff"
 
 	staleTime := time.Now().Add(-10 * 24 * time.Hour)
-	makeTinyWarmFull(t, s, key, WarmKindDocker, 100*4096, staleTime, 0)
-	makeVolumeWithDisk(t, s, "vol-stale-cand", 4096)
+	makeTinyWarmFull(t, s, key, WarmKindDocker, 10*4096, staleTime, 0)
+	makeVolumeWithAllocatedDisk(t, s, "vol-stale-cand", 100)
 
-	oldRatio := WarmShrinkRatio
 	oldStale := WarmStaleAfter
-	WarmShrinkRatio = 0.5
 	WarmStaleAfter = 7 * 24 * time.Hour
-	t.Cleanup(func() { WarmShrinkRatio = oldRatio; WarmStaleAfter = oldStale })
+	t.Cleanup(func() { WarmStaleAfter = oldStale })
 
 	old := reflinkFileFn
 	reflinkFileFn = copyClone
@@ -936,19 +932,17 @@ func TestPromoteToWarm_ShrinkGuard_StaleExistingAllowsReplace(t *testing.T) {
 	}
 }
 
-// (c) Larger or comparable candidate replaces.
-func TestPromoteToWarm_ShrinkGuard_LargerCandidateReplaces(t *testing.T) {
+// (c) A smaller candidate replaces a larger fresh seed.
+func TestPromoteToWarm_ReplaceGuard_SmallerCandidateReplaces(t *testing.T) {
 	s := newWarmStore(t)
 	key := "proj-shrinkbig-aabbccddeeff"
 
-	makeTinyWarmFull(t, s, key, WarmKindDocker, 4*4096, time.Now(), 0)
-	makeVolumeWithAllocatedDisk(t, s, "vol-big", 10)
+	makeTinyWarmFull(t, s, key, WarmKindDocker, 100*4096, time.Now(), 0)
+	makeVolumeWithAllocatedDisk(t, s, "vol-big", 60)
 
-	oldRatio := WarmShrinkRatio
 	oldStale := WarmStaleAfter
-	WarmShrinkRatio = 0.5
 	WarmStaleAfter = 7 * 24 * time.Hour
-	t.Cleanup(func() { WarmShrinkRatio = oldRatio; WarmStaleAfter = oldStale })
+	t.Cleanup(func() { WarmStaleAfter = oldStale })
 
 	old := reflinkFileFn
 	reflinkFileFn = copyClone
@@ -956,7 +950,7 @@ func TestPromoteToWarm_ShrinkGuard_LargerCandidateReplaces(t *testing.T) {
 
 	err := s.PromoteToWarm(context.Background(), "vol-big", key, WarmKindDocker)
 	if err != nil {
-		t.Errorf("larger candidate: expected promote success, got: %v", err)
+		t.Errorf("smaller candidate: expected promote success, got: %v", err)
 	}
 	entries, _ := s.ListWarm()
 	if len(entries) != 1 || entries[0].Meta.SourceVolume != "vol-big" {
@@ -969,9 +963,9 @@ func TestPromoteToWarm_TooLarge(t *testing.T) {
 	s := newWarmStore(t)
 	key := "proj-toolarge-aabbccddeeff"
 
-	oldMax := WarmMaxCopyBytes
-	WarmMaxCopyBytes = 4 * 4096
-	t.Cleanup(func() { WarmMaxCopyBytes = oldMax })
+	oldMax := WarmMaxDockerCopyBytes
+	WarmMaxDockerCopyBytes = 4 * 4096
+	t.Cleanup(func() { WarmMaxDockerCopyBytes = oldMax })
 
 	makeVolumeWithAllocatedDisk(t, s, "vol-toolarge", 10)
 
@@ -985,6 +979,69 @@ func TestPromoteToWarm_TooLarge(t *testing.T) {
 	}
 	if _, statErr := os.Stat(s.WarmDiskPath(key, WarmKindDocker)); statErr == nil {
 		t.Error("warm disk must not exist after ErrWarmTooLarge")
+	}
+}
+
+// Tiny candidate (below ratio floor) must not wipe a healthy under-cap seed.
+func TestPromoteToWarm_ReplaceGuard_TinyCandidateRejected(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-tiny-aabbccddeeff"
+	makeTinyWarmFull(t, s, key, WarmKindDocker, 100*4096, time.Now(), 0)
+	makeVolumeWithAllocatedDisk(t, s, "vol-tiny", 5)
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+	if err := s.PromoteToWarm(context.Background(), "vol-tiny", key, WarmKindDocker); !errors.Is(err, ErrWarmNotReplaced) {
+		t.Errorf("expected ErrWarmNotReplaced, got %v", err)
+	}
+}
+
+// Oversized legacy seed is replaceable by any under-cap candidate, even tiny.
+func TestPromoteToWarm_ReplaceGuard_OversizedSeedReplaceable(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-oversized-aabbccddeeff"
+	oldMax := WarmMaxDockerCopyBytes
+	WarmMaxDockerCopyBytes = 20 * 4096
+	t.Cleanup(func() { WarmMaxDockerCopyBytes = oldMax })
+	makeTinyWarmFull(t, s, key, WarmKindDocker, 100*4096, time.Now(), 0)
+	makeVolumeWithAllocatedDisk(t, s, "vol-under", 5)
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+	if err := s.PromoteToWarm(context.Background(), "vol-under", key, WarmKindDocker); err != nil {
+		t.Errorf("under-cap candidate must replace oversized seed: %v", err)
+	}
+}
+
+// The docker cap does not apply to other kinds.
+func TestPromoteToWarm_DockerCapDoesNotLimitGoCache(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-gocache-aabbccddeeff"
+	oldMax := WarmMaxDockerCopyBytes
+	WarmMaxDockerCopyBytes = 4 * 4096
+	t.Cleanup(func() { WarmMaxDockerCopyBytes = oldMax })
+	makeVolumeWithAllocatedDisk(t, s, "vol-gc", 10)
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+	if err := s.PromoteToWarm(context.Background(), "vol-gc", key, WarmKindGoCache); err != nil {
+		t.Errorf("gocache must ignore docker cap: %v", err)
+	}
+}
+
+// The cap is measured on allocated bytes: a hugely sparse disk is promoted.
+func TestPromoteToWarm_CapUsesAllocatedNotApparent(t *testing.T) {
+	s := newWarmStore(t)
+	key := "proj-sparse-aabbccddeeff"
+	oldMax := WarmMaxDockerCopyBytes
+	WarmMaxDockerCopyBytes = 4 * 4096
+	t.Cleanup(func() { WarmMaxDockerCopyBytes = oldMax })
+	makeVolumeWithDisk(t, s, "vol-sparse", 8<<20) // 8 MiB apparent >> cap, ~0 allocated
+	old := reflinkFileFn
+	reflinkFileFn = copyClone
+	defer func() { reflinkFileFn = old }()
+	if err := s.PromoteToWarm(context.Background(), "vol-sparse", key, WarmKindDocker); err != nil {
+		t.Errorf("sparse candidate must be promoted: %v", err)
 	}
 }
 
@@ -1067,13 +1124,11 @@ func TestPromoteToWarm_LegacyMetaNoAllocBytes(t *testing.T) {
 		t.Fatalf("write legacy meta: %v", err)
 	}
 
-	makeVolumeWithDisk(t, s, "vol-legacy-cand", 4096)
+	makeVolumeWithAllocatedDisk(t, s, "vol-legacy-cand", 200)
 
-	oldRatio := WarmShrinkRatio
 	oldStale := WarmStaleAfter
-	WarmShrinkRatio = 0.5
 	WarmStaleAfter = 7 * 24 * time.Hour
-	t.Cleanup(func() { WarmShrinkRatio = oldRatio; WarmStaleAfter = oldStale })
+	t.Cleanup(func() { WarmStaleAfter = oldStale })
 
 	old := reflinkFileFn
 	reflinkFileFn = copyClone

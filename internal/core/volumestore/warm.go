@@ -32,15 +32,19 @@ const (
 var ErrReflinkUnsupported = errors.New("volumestore: reflink (FICLONE) not supported on this filesystem")
 
 var (
-	ErrWarmNotReplaced = errors.New("volumestore: warm copy not replaced (candidate too small and existing too fresh)")
+	ErrWarmNotReplaced = errors.New("volumestore: warm copy not replaced (candidate outside the replace window of a fresh, in-cap seed)")
 	ErrWarmTooLarge    = errors.New("volumestore: warm copy too large")
 )
 
 var (
-	WarmShrinkRatio   = 0.5
-	WarmStaleAfter    = 7 * 24 * time.Hour
-	WarmMaxCopyBytes  = int64(16 << 30) // 16 GiB
-	WarmMaxTotalBytes = int64(64 << 30) // 64 GiB
+	WarmShrinkRatio  = 0.5
+	WarmStaleAfter   = 7 * 24 * time.Hour
+	WarmMaxCopyBytes = int64(16 << 30) // 16 GiB; gocache/gopath
+	// WarmMaxDockerCopyBytes caps docker seeds (allocated bytes). Every new
+	// sandbox physically copies the seed on non-reflink filesystems, so a
+	// big seed taxes every create.
+	WarmMaxDockerCopyBytes = int64(4 << 30)
+	WarmMaxTotalBytes      = int64(64 << 30) // 64 GiB
 )
 
 type WarmMeta struct {
@@ -307,13 +311,24 @@ func (s *VolumeStore) PromoteToWarm(ctx context.Context, name, projectKey string
 	if statErr != nil {
 		return fmt.Errorf("volumestore: promote stat src disk: %w", statErr)
 	}
-	if allocBytes > WarmMaxCopyBytes {
-		return fmt.Errorf("%w: candidate %d bytes > limit %d", ErrWarmTooLarge, allocBytes, WarmMaxCopyBytes)
+	maxBytes := WarmMaxCopyBytes
+	if kind == WarmKindDocker && WarmMaxDockerCopyBytes < maxBytes {
+		maxBytes = WarmMaxDockerCopyBytes
 	}
+	if allocBytes > maxBytes {
+		return fmt.Errorf("%w: candidate %d allocated bytes > limit %d", ErrWarmTooLarge, allocBytes, maxBytes)
+	}
+	// Replace iff the seed is stale, or oversized for this kind's cap (a
+	// legacy snowballed seed), or the candidate is in [seed*ratio, seed].
+	// Larger candidates are the seed plus churn (snowball); much smaller ones
+	// are near-empty sandboxes that must not wipe a useful seed.
 	if existAlloc, existAt, ok := s.readWarmMetaForGuard(projectKey, kind); ok && existAlloc > 0 {
-		threshold := int64(float64(existAlloc) * WarmShrinkRatio)
-		if allocBytes < threshold && time.Since(existAt) < WarmStaleAfter {
-			return fmt.Errorf("%w: candidate %d bytes < %.0f%% of existing %d bytes", ErrWarmNotReplaced, allocBytes, WarmShrinkRatio*100, existAlloc)
+		stale := time.Since(existAt) >= WarmStaleAfter
+		if !stale && existAlloc <= maxBytes {
+			floor := int64(float64(existAlloc) * WarmShrinkRatio)
+			if allocBytes > existAlloc || allocBytes < floor {
+				return fmt.Errorf("%w: candidate %d bytes outside [%d, %d] of existing", ErrWarmNotReplaced, allocBytes, floor, existAlloc)
+			}
 		}
 	}
 	if err := s.checkFreeSpace(wDir, allocBytes); err != nil {

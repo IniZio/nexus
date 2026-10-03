@@ -68,9 +68,10 @@ The policy lives in `internal/core/volumestore/warm.go`. Key types and vars:
 
 | Name | Value | Purpose |
 |---|---|---|
-| `WarmShrinkRatio` | 0.5 | replace-guard threshold |
+| `WarmShrinkRatio` | 0.5 | replace-guard lower bound (candidate / seed) |
 | `WarmStaleAfter` | 7 days | staleness bound for replace guard |
-| `WarmMaxCopyBytes` | 16 GiB | per-copy size cap |
+| `WarmMaxCopyBytes` | 16 GiB | per-copy size cap (gocache/gopath) |
+| `WarmMaxDockerCopyBytes` | 4 GiB | per-copy size cap for docker seeds |
 | `WarmMaxTotalBytes` | 64 GiB | total `.warm/` size cap |
 
 These are package vars today; user-configurable thresholds are a follow-up
@@ -81,21 +82,23 @@ volume, not the logical sparse size. Logical size is identical across copies
 (all volumes are created at the same declared capacity), so it gives no
 signal; allocated bytes reflect how full the cache actually is.
 
-**Replace guard.** An existing warm copy is NOT replaced when both conditions
-hold:
+**Replace guard.** Caps are on allocated bytes. A candidate replaces the
+existing warm copy iff any of:
 
-- candidate's `AllocatedBytes` < `WarmShrinkRatio` × existing `AllocatedBytes`
-- existing copy's `PromotedAt` < `WarmStaleAfter` ago (i.e., it is still fresh)
+- (a) the existing copy's `PromotedAt` is older than `WarmStaleAfter`;
+- (b) the existing copy's `AllocatedBytes` exceed the kind's cap (an oversized
+  legacy seed is replaceable by any under-cap candidate);
+- (c) candidate `AllocatedBytes` <= existing and >= `WarmShrinkRatio` x existing.
 
-When rejected, `Promote` returns `ErrWarmNotReplaced`.
+Otherwise `Promote` returns `ErrWarmNotReplaced`.
 
-Rationale: the incident that motivated this guard had an auto-spawned sandbox
-whose `docker` volume held 133 MB (never built anything) overwrite a 3.7 GB
-warm copy under a latest-teardown-wins policy. A near-empty volume almost
-always means a short-lived or never-built sandbox, not a fresher cache. The
-staleness bound (`WarmStaleAfter`) prevents a large-but-obsolete copy from
-pinning forever: once the copy ages past 7 days the guard disengages, allowing
-any new candidate — even a smaller one — to replace it.
+Rationale: sandboxes are seeded from the warm copy, so a larger candidate is
+the seed plus churn; accepting it made seeds snowball (a docker seed reached
+14.7 GiB, copied physically on every create on non-reflink filesystems). The
+upper bound ends that. The lower bound keeps the original incident fix: an
+auto-spawned sandbox whose `docker` volume held 133 MB (never built anything)
+overwrote a 3.7 GB copy under latest-teardown-wins. The staleness bound stops
+an obsolete copy pinning forever.
 
 Legacy `WarmMeta` records without `AllocatedBytes` (written before this
 field existed): the allocated size is measured from `disk.ext4` via `stat`
