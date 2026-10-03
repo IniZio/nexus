@@ -99,6 +99,16 @@ define CAPPED
 		echo "make: NEXUS_ALLOW_UNCAPPED set — running WITHOUT a memory cap." >&2; \
 		exec choom -n 1000 -- env GOMAXPROCS=$(GOMAXPROCS) $(1); \
 	fi; \
+	if ! command -v systemd-run >/dev/null 2>&1 && [ "$$(cat /proc/1/comm 2>/dev/null)" = nexus-agent ]; then \
+		cg=/sys/fs/cgroup/nexus-make-$$$$; \
+		echo "+memory" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; \
+		mkdir "$$cg" || { echo "make: cannot create cgroup $$cg; refusing to run uncapped" >&2; exit 1; }; \
+		{ echo "$(GOTEST_MEM_HIGH)" > "$$cg/memory.high" && echo "$(GOTEST_MEM_MAX)" > "$$cg/memory.max" \
+			&& echo 0 > "$$cg/memory.swap.max"; } || { rmdir "$$cg"; echo "make: cannot set cgroup limits; refusing to run uncapped" >&2; exit 1; }; \
+		echo "make: guest cgroup $$cg memory.max=$$(cat $$cg/memory.max)" >&2; \
+		rc=0; ( sh -c 'echo $$PPID' > "$$cg/cgroup.procs" && exec choom -n 1000 -- env GOMAXPROCS=$(GOMAXPROCS) $(1) ) || rc=$$?; \
+		rmdir "$$cg" 2>/dev/null || true; exit $$rc; \
+	fi; \
 	exec systemd-run --user --scope -q \
 		-p MemoryHigh=$(GOTEST_MEM_HIGH) -p MemoryMax=$(GOTEST_MEM_MAX) \
 		-p MemorySwapMax=0 -p ManagedOOMPreference=avoid \

@@ -85,3 +85,9 @@ When it does not, `make test` is unavailable and `-race` cannot work, since the
 race detector needs cgo. Install them (`apt-get install -y build-essential`)
 rather than falling back to bare `go` commands — the fallback drops the guards
 described above and silently disables the race detector.
+
+Guests have no `systemd-run` (PID 1 is `nexus-agent`, not systemd). In that case
+`make` creates a cgroup v2 child (`/sys/fs/cgroup/nexus-make-$$`) and applies
+the same `GOTEST_MEM_HIGH`/`GOTEST_MEM_MAX` there, so `make test` works
+unmodified; it fails closed if the cgroup cannot be set up. Do not set
+`NEXUS_ALLOW_UNCAPPED` in a guest.
