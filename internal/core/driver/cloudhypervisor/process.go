@@ -180,6 +180,9 @@ type managedProcess struct {
 	// managedProcess values constructed directly in tests that bypass
 	// newManagedProcess.
 	deathCh chan struct{}
+	// waitStatus is reapWatcher's Wait4 status, valid once deathCh is closed.
+	// Zero when Wait4 failed (e.g. ECHILD).
+	waitStatus syscall.WaitStatus
 	// sharedGroup marks a process that joined another process's group (the
 	// netns child's): kill signals the pid, never -pid.
 	sharedGroup bool
@@ -218,16 +221,15 @@ func newManagedProcess(cmd *exec.Cmd, pid int, stderrBuf *vmmStderrBuf) *managed
 //     pipe write-ends from closing, keeping cmd.Wait() blocked indefinitely.
 //     See ch_netns.go's goroutine at the Wait4 loop for the same rationale.
 //
-//  2. RunNetnsChild already has its own goroutine calling syscall.Wait4 on
-//     the same pid (ch_netns.go). If reapWatcher gets there first, the
-//     netns loop receives ECHILD and breaks safely (see that loop's comment).
-//     If the netns loop gets there first, reapWatcher receives ECHILD and
-//     breaks here. Both orders converge correctly.
+//  2. reapWatcher is the single waiter on the pid. It records the wait
+//     status in waitStatus before closing deathCh; the netns helper reads
+//     that instead of calling Wait4 itself, so the status is never lost.
 func (p *managedProcess) reapWatcher() {
 	var ws syscall.WaitStatus
 	for {
 		_, err := syscall.Wait4(p.pid, &ws, 0, nil)
 		if err == nil {
+			p.waitStatus = ws
 			break // reaped
 		}
 		if errors.Is(err, syscall.EINTR) {

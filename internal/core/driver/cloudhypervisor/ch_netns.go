@@ -181,6 +181,14 @@ type NetnsRuntime struct {
 	// kill(-ChildPGID, 0) returns ESRCH. Callers that need to observe VM
 	// death without blocking Stop() read from this channel.
 	deathCh chan struct{}
+
+	// exit is the decoded wait status of the netns child, recorded by
+	// watchParentOwnedDeath before deathCh closes. Unset for adopted runtimes.
+	exitMu    sync.Mutex
+	exit      ExitInfo
+	exitKnown bool
+	// sandboxID keys the lastExits record that outlives d.nets removal.
+	sandboxID string
 }
 
 // DeathCh returns a channel that is closed exactly once when the netns child
@@ -195,6 +203,15 @@ func (rt *NetnsRuntime) DeathCh() <-chan struct{} { return rt.deathCh }
 // once, in a goroutine, after StartNetnsRuntime's readiness poll completes.
 func (rt *NetnsRuntime) watchParentOwnedDeath() {
 	_ = rt.cmd.Wait() // single owner: reaps the child, eliminating the zombie
+	if ps := rt.cmd.ProcessState; ps != nil {
+		ws, _ := ps.Sys().(syscall.WaitStatus)
+		rt.exitMu.Lock()
+		rt.exit, rt.exitKnown = decodeChildExit(ws), true
+		if rt.sandboxID != "" {
+			lastExits.Store(rt.sandboxID, rt.exit)
+		}
+		rt.exitMu.Unlock()
+	}
 	close(rt.deathCh)
 }
 
@@ -282,6 +299,7 @@ func netnsSocketpairFiles() (perimFile, pumpFile *os.File, err error) {
 // (create) and the parent (connect); /tmp satisfies this because only the
 // mount namespace is shared.
 func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, socketPath, restoreURL string) (*NetnsRuntime, error) {
+	ForgetRuntimeExit(id.String())
 	if cfg.NoNet {
 		return startNetnsRuntimeNoNet(ctx, cfg, id, socketPath)
 	}
@@ -436,6 +454,7 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 		cmd:            cmd,
 		stderrBuf:      stderrBuf,
 		deathCh:        make(chan struct{}),
+		sandboxID:      id.String(),
 	}
 	// Start the single owner of cmd.Wait(). The readiness poll above has
 	// already confirmed the VM is up, so we can now hand off Wait ownership
@@ -512,6 +531,7 @@ func startNetnsRuntimeNoNet(ctx context.Context, cfg Config, id domain.SandboxID
 		cmd:            cmd,
 		stderrBuf:      stderrBuf,
 		deathCh:        make(chan struct{}),
+		sandboxID:      id.String(),
 	}
 	go rt.watchParentOwnedDeath()
 	return rt, nil
@@ -829,18 +849,8 @@ func runNetnsChildNoNet() {
 		os.Exit(1)
 	}
 
-	var ws syscall.WaitStatus
-	for {
-		wpid, werr := syscall.Wait4(proc.pid, &ws, 0, nil)
-		if werr == nil && wpid == proc.pid {
-			break
-		}
-		if errors.Is(werr, syscall.EINTR) {
-			continue
-		}
-		break
-	}
-	os.Exit(0)
+	<-proc.deathCh // reapWatcher is the sole waiter and records the status
+	exitLikeChild(proc.waitStatus)
 }
 
 // RunNetnsChild is the exported child-side entry point for the netns-runtime.
@@ -959,34 +969,11 @@ func RunNetnsChild() {
 	// killed with this process; CH is also killed by the group signal; CH's
 	// zombie (if any) is reparented to init which reaps it — no leak there.
 	go func() {
-		// Wait for CH to exit and reap its zombie.
-		//
-		// We use syscall.Wait4 directly instead of proc.cmd.Wait() because
-		// cmd.Wait() blocks in awaitGoroutines until ALL internal io.Copy
-		// goroutines finish draining their pipes. Those goroutines finish when
-		// the write ends of CH's stdout/stderr pipes close. In the user+network
-		// namespace context, an fd can leak across the fork boundary and prevent
-		// those write ends from closing, keeping cmd.Wait() blocked indefinitely.
-		//
-		// syscall.Wait4 is a direct syscall: it waits only for process exit and
-		// does not involve any pipe-draining machinery. It returns as soon as CH
-		// exits (or is already a zombie), which is the only signal we care about.
-		// NOTE (AC-12c): managedProcess.reapWatcher also calls syscall.Wait4
-		// on proc.pid. Whichever waiter fires first gets the exit status; the
-		// other receives ECHILD and breaks via the clause below. Both orders
-		// converge to os.Exit(0) without blocking or leaking a zombie.
-		var ws syscall.WaitStatus
-		for {
-			wpid, err := syscall.Wait4(proc.pid, &ws, 0, nil)
-			if err == nil && wpid == proc.pid {
-				break // CH reaped
-			}
-			if errors.Is(err, syscall.EINTR) {
-				continue // interrupted by signal, retry
-			}
-			break // unexpected error (ECHILD if reaped elsewhere, etc.) — exit anyway
-		}
-		os.Exit(0) // exit this process: no reason to outlive CH
+		// managedProcess.reapWatcher is the single waiter on CH's pid and
+		// records its status; waiting here too would race it and lose the
+		// signal. The helper then mirrors CH's fate (see exitLikeChild).
+		<-proc.deathCh
+		exitLikeChild(proc.waitStatus)
 	}()
 
 	// Wrap the pump end so a replacement supervisor can swap a fresh one in

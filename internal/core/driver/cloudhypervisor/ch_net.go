@@ -309,6 +309,9 @@ func (d *CHDriver) teardownSandboxNet(id domain.SandboxID) {
 	if ns.rt != nil {
 		ns.rt.Stop()
 	}
+	// Teardown is the graceful path; a VM that died on its own never reaches
+	// here before the supervisor has read RuntimeExit.
+	ForgetRuntimeExit(id.String())
 }
 
 // GuestNetworkFD implements driver.NetworkHook. Returns the perimeter-facing

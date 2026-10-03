@@ -567,6 +567,18 @@ func newInstanceID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// removeStaleVsock unlinks the vsock multiplexer socket and per-port listener
+// sockets (<vsock>_<port>) left by a killed VMM. Call only once the VMM is
+// confirmed absent; a stale vsock makes the next CH bind fail EADDRINUSE.
+func (d *CHDriver) removeStaleVsock(id domain.SandboxID) {
+	base := d.vsockPath(id)
+	_ = os.Remove(base)
+	matches, _ := filepath.Glob(base + "_*")
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+}
+
 // clearState removes the socket file, the IID sidecar, the proc entry, and
 // all sandbox network and virtiofs resources for id. It is idempotent: missing
 // files and absent map entries are not errors.
@@ -720,6 +732,7 @@ func (d *CHDriver) Start(ctx context.Context, req driver.StartRequest) (string, 
 			return "", fmt.Errorf("cloudhypervisor: start %s: %s: %w", id, socketPath, ErrVMMAlreadyBound)
 		case isAbsent(pingErr):
 			_ = os.Remove(socketPath)
+			d.removeStaleVsock(id)
 		default:
 			// Socket state undetermined (hung VMM, I/O error, …).
 			return "", fmt.Errorf("cloudhypervisor: start %s: pre-flight ping %s: %w", id, socketPath, pingErr)
