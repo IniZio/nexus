@@ -472,6 +472,17 @@ func TestLooksLikeDialog_PositiveBlockedPane(t *testing.T) {
 	}
 }
 
+func TestLooksLikeDialog_PositiveReadOutsideWorkingDirs(t *testing.T) {
+	pane := "● Read(/tmp/web.txt)\n\n" + strings.Repeat("─", 60) + "\n" +
+		" Allow reads outside the working directories?\n\n" +
+		"   Read /tmp/web.txt\n\n" +
+		" ❯ 1. Yes\n   2. Yes, and always allow reads from /tmp\n   3. No\n\n" +
+		" Esc to cancel · Tab to amend\n"
+	if !herdragent.LooksLikeDialog(pane) {
+		t.Error("read-outside-working-dirs dialog: want true, got false")
+	}
+}
+
 func TestLooksLikeDialog_NegativeCueAboveRule(t *testing.T) {
 	// Cue and cursor appear before the last full-width rule — must return false.
 	screen := " Do you want to proceed?\n ❯ 1. Yes\n   2. No\n" +

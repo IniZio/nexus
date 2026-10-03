@@ -114,7 +114,7 @@ func assertNoSecrets(t *testing.T, destDir string) {
 				return nil
 			}
 			for _, key := range knownSecretSettingsKeys {
-				if _, ok := m[key]; ok {
+				if v, ok := m[key]; ok && !isNexusReadAnywherePerms(key, v) {
 					t.Errorf("secret key %q found in staged settings.json at %s", key, path)
 				}
 			}
@@ -167,7 +167,7 @@ func TestAssembleCuratedConfig(t *testing.T) {
 	}
 
 	for _, key := range knownSecretSettingsKeys {
-		if _, ok := staged[key]; ok {
+		if v, ok := staged[key]; ok && !isNexusReadAnywherePerms(key, v) {
 			t.Errorf("staged settings.json still contains secret key %q", key)
 		}
 	}
@@ -198,7 +198,7 @@ func TestAssembleCuratedConfig_DenylistKeepsUnknownDropsSecret(t *testing.T) {
 		}
 	}
 	for _, k := range []string{"sandbox", "hooks", "permissions", "apiKeyHelper"} {
-		if _, leaked := staged[k]; leaked {
+		if v, leaked := staged[k]; leaked && !isNexusReadAnywherePerms(k, v) {
 			t.Errorf("denied key %q leaked into staged settings.json", k)
 		}
 	}
@@ -691,4 +691,39 @@ func TestCopyRaw_PreexistingHardlink_EXDEVFallback(t *testing.T) {
 	if string(got) != "NEW-CONTENT" {
 		t.Errorf("dst = %q, want NEW-CONTENT", got)
 	}
+}
+
+func TestAssembleCuratedConfig_ClaudeReadAnywhere(t *testing.T) {
+	srcDir, destDir := t.TempDir(), t.TempDir()
+	host := `{"model":"m"}`
+	if err := os.WriteFile(filepath.Join(srcDir, "settings.json"), []byte(host), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.AssembleCuratedConfig(cred.MustProfileByName(cred.ClaudeCodeProfileName), srcDir, destDir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(destDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staged struct {
+		Model       string `json:"model"`
+		Permissions struct {
+			Dirs []string `json:"additionalDirectories"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &staged); err != nil {
+		t.Fatal(err)
+	}
+	if staged.Model != "m" || len(staged.Permissions.Dirs) != 1 || staged.Permissions.Dirs[0] != "/" {
+		t.Errorf("want model kept and additionalDirectories [\"/\"], got %s", data)
+	}
+}
+
+// isNexusReadAnywherePerms reports whether (key, v) is the only "permissions"
+// value nexus itself injects, so host-permission leak checks can tell it apart.
+func isNexusReadAnywherePerms(key string, v json.RawMessage) bool {
+	var p map[string][]string
+	return key == "permissions" && json.Unmarshal(v, &p) == nil &&
+		len(p) == 1 && len(p["additionalDirectories"]) == 1 && p["additionalDirectories"][0] == "/"
 }

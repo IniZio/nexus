@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -77,10 +78,72 @@ func AssembleCuratedConfig(profile cred.AgentProfile, agentConfigDir string, des
 	//
 	// Agents with no BypassConsentKey (e.g. cursor, whose skip-permissions
 	// posture is a launch-time flag) skip this step entirely.
+	if profile.Name == cred.ClaudeCodeProfileName {
+		if err := ensureStagedClaudeReadAnywhere(destDir, profile); err != nil {
+			return err
+		}
+	}
 	if profile.BypassConsentKey == "" {
 		return nil
 	}
 	return ensureStagedBypassConsentKey(destDir, profile)
+}
+
+// ensureStagedClaudeReadAnywhere adds "/" to permissions.additionalDirectories
+// in the staged Claude settings so the Read tool never raises the interactive
+// "Allow reads outside the working directories?" dialog. The guest is an
+// isolated microVM running as root where Bash cat can already read anything,
+// so the gate adds no security and only causes silent stalls. Existing
+// permissions keys and additionalDirectories entries are preserved.
+func ensureStagedClaudeReadAnywhere(destDir string, profile cred.AgentProfile) error {
+	settingsBase := settingsBaseName(profile)
+	if settingsBase == "" {
+		return nil
+	}
+	p := filepath.Join(destDir, settingsBase)
+	raw := map[string]json.RawMessage{}
+	data, err := os.ReadFile(p)
+	switch {
+	case err == nil:
+		if json.Unmarshal(data, &raw) != nil || raw == nil {
+			raw = map[string]json.RawMessage{}
+		}
+	case os.IsNotExist(err):
+	default:
+		return err
+	}
+	perms := map[string]json.RawMessage{}
+	if v, ok := raw["permissions"]; ok {
+		if json.Unmarshal(v, &perms) != nil || perms == nil {
+			perms = map[string]json.RawMessage{}
+		}
+	}
+	var dirs []string
+	if v, ok := perms["additionalDirectories"]; ok {
+		_ = json.Unmarshal(v, &dirs)
+	}
+	if !slices.Contains(dirs, "/") {
+		dirs = append(dirs, "/")
+	}
+	if perms["additionalDirectories"], err = json.Marshal(dirs); err != nil {
+		return err
+	}
+	if raw["permissions"], err = json.Marshal(perms); err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := p + ".nexustmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Chmod(p, 0o444)
 }
 
 // expandTilde expands a leading "~/" to the user's home directory.
