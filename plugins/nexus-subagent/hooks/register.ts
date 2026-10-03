@@ -72,6 +72,15 @@ async function bindingOf($: EngineInterface, agentId: string): Promise<NexusBind
   return (await $.state.get(BINDINGS)).value?.[agentId]
 }
 
+const TEARDOWN_SCHEMA = {
+  type: 'object',
+  properties: {
+    agent_id: { type: 'string', description: 'Id of the nexus worker whose worktree and sandbox to remove' },
+    worktree: { type: 'string', description: 'Herdr worktree path to remove (alternative to agent_id)' },
+    force: { type: 'boolean', description: 'Remove even if the worktree has uncommitted changes' },
+  },
+}
+
 async function bind($: EngineInterface, agentId: string, b: NexusBinding): Promise<void> {
   await update($, BINDINGS, all => ({ ...(all ?? {}), [agentId]: b }))
 }
@@ -89,6 +98,8 @@ export const register: Register = on => {
   const foreign = new Set<string>()
   const createdRefs = new Map<string, string>()
   const guestBashCalls = new Map<string, string>()
+  const toolSpawns = new Set<string>()
+  const tornDown = new Set<string>()
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -108,10 +119,54 @@ export const register: Register = on => {
         'Use for implementation work that should be isolated from the host and land on its own branch.',
       inputSchema: SPAWN_SCHEMA,
     })
+    await $.tool.register({
+      name: 'teardown',
+      description:
+        'Remove a nexus worker\'s git worktree and sandbox (host-side nexus herdr worktree-remove). ' +
+        'Refuses a dirty worktree unless force is set. The branch is kept and reported so you can merge or delete it. ' +
+        'The worker cannot be resumed afterwards.',
+      inputSchema: TEARDOWN_SCHEMA,
+    })
     return started
   })
 
-  on('agent.offer', { agent: WORKER_TYPE }, () => ({ isOffered: false }))
+  on('tool.call', { tool: 'mcp__nexus-subagent__teardown' }, async ($, e) => {
+    const a = e as unknown as { agent_id?: string; worktree?: string; force?: boolean }
+    if (!a.agent_id && !a.worktree) return { deny: 'teardown needs agent_id or worktree' }
+    const all = (await $.state.get(BINDINGS)).value ?? {}
+    let root: string
+    if (a.agent_id) {
+      const b = all[a.agent_id]
+      if (!b) return { deny: `no nexus worker binding for ${a.agent_id}${tornDown.has(a.agent_id) ? ' (already torn down)' : ''}` }
+      root = b.root
+    } else {
+      root = await realpath($, a.worktree as string)
+      if (!sandboxRefFor(root)) return { deny: `${root} is not a herdr worktree path` }
+    }
+    const argv = ['nexus', 'herdr', 'worktree-remove', '--ref', root, ...(a.force ? ['--force'] : [])]
+    $.ui.status(`nexus: removing worktree ${root}…`)
+    const r = await $.process.run(argv, { timeoutMs: 300_000 })
+    $.ui.status(undefined)
+    const out = lastLine(r.stdout)
+    let v: { removed?: boolean; error?: string; branch?: string; files?: string[] } = {}
+    try {
+      v = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1))
+    } catch {}
+    if (r.exitCode !== 0 || v.removed === false) {
+      if (v.error === 'dirty_worktree') {
+        return { deny: `worktree ${root} has uncommitted changes (${(v.files ?? []).join(', ')}); commit them or pass force: true` }
+      }
+      return { deny: `${argv.join(' ')} exited ${r.exitCode}: ${(r.stderr.trim() || out).slice(-1500)}` }
+    }
+    const ids = Object.keys(all).filter(id => all[id]?.root === root)
+    await update($, BINDINGS, cur => Object.fromEntries(Object.entries(cur ?? {}).filter(([, b]) => b.root !== root)))
+    for (const id of ids) tornDown.add(id)
+    return {
+      result:
+        `Removed worktree ${root} and its sandbox.\n` +
+        `branch: ${v.branch ?? '(see git branch in the repo)'} (kept; merge or delete it yourself)`,
+    }
+  })
 
   on('tool.call', { tool: 'mcp__nexus-subagent__spawn' }, async ($, e) => {
     const a = e as unknown as Record<string, string | undefined>
@@ -139,12 +194,14 @@ export const register: Register = on => {
     }
     const root = await realpath($, created.worktree_path)
     createdRefs.set(root, created.handle)
+    toolSpawns.add(root)
     const spawned = await $.agent.spawn({
       subagentType: WORKER_TYPE,
       description: a.description ?? `nexus ${a.branch}`,
       prompt: `worktree: ${root}\n\n${a.task}`,
       ...(a.model ? { model: a.model } : {}),
     })
+    toolSpawns.delete(root)
     if (spawned.deny !== undefined) return { deny: `worker spawn refused: ${spawned.deny}` }
     return {
       result:
@@ -156,9 +213,14 @@ export const register: Register = on => {
 
   on('agent.spawn', async ($, e, next) => {
     if (e.subagentType !== WORKER_TYPE) return next(e)
+    const resumed = (e as unknown as { agentId?: string }).agentId
+    if (resumed && (await bindingOf($, resumed))) return next(e)
     const target = e.cwd ?? worktreeInPrompt(e.prompt)
     if (!target) return { deny: `${WORKER_TYPE} needs a line "worktree: <herdr worktree path>" in its prompt` }
     const root = await realpath($, target)
+    if (!toolSpawns.has(root)) {
+      return { deny: `${WORKER_TYPE} can only be started with the mcp__nexus-subagent__spawn tool` }
+    }
     const ref = createdRefs.get(root) ?? sandboxRefFor(root)
     if (!ref) return { deny: `${root} is not a herdr worktree path` }
     const probe = await $.process.run(['nexus', 'exec', ref, '--', 'test', '-w', '/workspace'], { timeoutMs: 15_000 })
@@ -180,7 +242,11 @@ export const register: Register = on => {
     const b = await bindingOf($, e.agentId)
     if (!b) {
       return (await isUnboundWorker($, e.agentId, foreign))
-        ? { deny: 'nexus worker has no sandbox binding yet; retry once' }
+        ? {
+            deny: tornDown.has(e.agentId)
+              ? 'nexus worker was torn down; its sandbox is gone. Start a new worker with spawn.'
+              : 'nexus worker has no sandbox binding (not bound yet, or torn down); refusing to run on the host',
+          }
         : next(e)
     }
     if (r.kind === 'deny') return { deny: r.reason }
