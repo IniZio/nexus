@@ -242,6 +242,13 @@ the path expanded. If the mount is missing entirely the sandbox predates the
 `apt-get install -y build-essential` first in the brief; it takes effect
 immediately without an image rebuild.
 
+### make guard in a Sprites guest
+
+Sprites have no `systemd-run` and no delegable memory cgroup (PID 1 is
+`tini`). `make` detects a root-owned `/.sprite/api.sock` plus non-systemd
+PID 1 and caps with `choom`, `GOMAXPROCS`, `GOMEMLIMIT`; stderr says
+`nexus-make: sprite guest`. Never set `NEXUS_ALLOW_UNCAPPED`.
+
 ### rm kills the workspace
 
 Every remaining pane is guest-backed; they exit with the VM and the

@@ -91,3 +91,9 @@ Guests have no `systemd-run` (PID 1 is `nexus-agent`, not systemd). In that case
 the same `GOTEST_MEM_HIGH`/`GOTEST_MEM_MAX` there, so `make test` works
 unmodified; it fails closed if the cgroup cannot be set up. Do not set
 `NEXUS_ALLOW_UNCAPPED` in a guest.
+
+Fly Sprites guests (PID 1 `tini`, cgroup memory not delegable) take a third
+branch: `scripts/sprite-guest.sh` requires a root-owned `/.sprite/api.sock`
+socket and a non-systemd PID 1. The VM is the memory boundary, so `make`
+caps with `choom`, `GOMAXPROCS`, and `GOMEMLIMIT` (75% of MemTotal) and prints
+which guard is active. Never set `NEXUS_ALLOW_UNCAPPED` there either.

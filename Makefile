@@ -93,6 +93,10 @@ GOTEST_ARGS     ?=
 # the warning went to stderr where an agent never saw it. On 2026-08-30 that
 # fallback let a run reach 28G in session-4.scope (memory.max=max) with swap
 # 100% full. If the scope cannot be created now, the run does not start.
+# Third branch: Fly Sprites guests (PID 1 tini, no systemd-run, no delegable
+# cgroup). scripts/sprite-guest.sh detects them: root-owned socket
+# /.sprite/api.sock AND PID 1 not systemd. The VM is the memory boundary, so
+# the cap is choom + GOMAXPROCS + GOMEMLIMIT (75% of MemTotal) + -p/-parallel.
 define CAPPED
 	@set -e; \
 	if [ -n "$$NEXUS_ALLOW_UNCAPPED" ]; then \
@@ -108,6 +112,10 @@ define CAPPED
 		echo "make: guest cgroup $$cg memory.max=$$(cat $$cg/memory.max)" >&2; \
 		rc=0; ( sh -c 'echo $$PPID' > "$$cg/cgroup.procs" && exec choom -n 1000 -- env GOMAXPROCS=$(GOMAXPROCS) $(1) ) || rc=$$?; \
 		rmdir "$$cg" 2>/dev/null || true; exit $$rc; \
+	fi; \
+	if ! command -v systemd-run >/dev/null 2>&1 && ml=$$($(CURDIR)/scripts/sprite-guest.sh); then \
+		echo "nexus-make: sprite guest, VM is the memory boundary; capped via GOMEMLIMIT=$${ml}MiB GOMAXPROCS=$(GOMAXPROCS) choom -n 1000" >&2; \
+		exec choom -n 1000 -- env GOMAXPROCS=$(GOMAXPROCS) GOMEMLIMIT=$${ml}MiB $(1); \
 	fi; \
 	exec systemd-run --user --scope -q \
 		-p MemoryHigh=$(GOTEST_MEM_HIGH) -p MemoryMax=$(GOTEST_MEM_MAX) \
