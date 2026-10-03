@@ -55,9 +55,13 @@ var hostExecAllowlist = map[string]map[string]string{
 	"free": {
 		"internal/test/repro": "test tooling",
 	},
+	"gh": {
+		"internal/cli": "gh auth token fallback for sprites tier-A GH_TOKEN (optional)",
+	},
 	"git": {
 		"internal/cli":                      "git worktree/clone integration (optional)",
 		"internal/controller/backend/herdr": "git worktree/clone integration (optional)",
+		"internal/core/driver/sprites":      "host git bundle/fetch for worktree sync (optional)",
 		"internal/core/service":             "git worktree/clone integration (optional)",
 		"internal/test/selfhost":            "git worktree/clone integration (optional)",
 		"internal/testutil/livenexus":       "git worktree/clone integration (optional)",
