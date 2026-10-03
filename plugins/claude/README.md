@@ -22,6 +22,21 @@ claude plugin install nexus@nexus
 Run `/nexus:nexus-doctor` in a Claude Code session to confirm the MCP server
 connects.
 
+### Optional: nexus-subagent mod
+
+`plugins/nexus-subagent/` is a sibling Claude Code hooks mod (a `tool.check`
+policy plus `nexus:worker` subagent types whose file tools and Bash run inside
+a worktree sandbox VM). It ships in the same marketplace, so install it next to
+the nexus plugin:
+
+```sh
+claude plugin install nexus-subagent@nexus
+```
+
+From a checkout, load it for one session without installing:
+`claude --plugin-dir plugins/nexus-subagent`. Design:
+`.groundwork/design/claude-mod-subagents.md`.
+
 ## Uninstall
 
 ```sh

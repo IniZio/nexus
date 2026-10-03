@@ -1,0 +1,1 @@
+{ "name": "nexus-subagent", "version": "0.2.1", "description": "nexus:worker subagents whose Bash runs inside a worktree sandbox VM", "types": "./types/index.d.ts" }

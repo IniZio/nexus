@@ -299,3 +299,12 @@ invisible to both. Guest RAM is memfd-backed — five idle finished sandboxes
 cost as much as five busy ones. Reclaim explicitly (step above).
 `space-prune --apply` will reap sandboxes with live, dirty worktrees — do
 not use it as a substitute for proper reclaim.
+
+## Subagents inside the sandbox (nexus-subagent mod)
+
+The `nexus-subagent` plugin (`plugins/nexus-subagent/`, same marketplace as the
+nexus plugin) registers `nexus:worker` subagents whose Bash and file tools run
+inside the worktree sandbox VM instead of on the host. Install with
+`claude plugin install nexus-subagent@nexus`, or load a checkout for one
+session with `claude --plugin-dir plugins/nexus-subagent`. Policy tests:
+`claude plugin test plugins/nexus-subagent` (plain `bun test` cannot resolve `claude-code/testing`).

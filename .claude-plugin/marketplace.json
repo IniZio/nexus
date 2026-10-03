@@ -19,6 +19,22 @@
         "sandbox",
         "nexus"
       ]
+    },
+    {
+      "name": "nexus-subagent",
+      "source": "./plugins/nexus-subagent",
+      "description": "nexus:worker subagents whose Bash runs inside a worktree sandbox VM",
+      "version": "0.2.1",
+      "author": {
+        "name": "IniZio"
+      },
+      "category": "development",
+      "keywords": [
+        "microvm",
+        "sandbox",
+        "nexus",
+        "subagent"
+      ]
     }
   ]
 }
