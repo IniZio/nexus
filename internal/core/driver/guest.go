@@ -113,3 +113,14 @@ func (NoGuest) Copy(context.Context, domain.SandboxID, CopyOptions) error {
 }
 
 func (NoGuest) Capabilities() CapabilitySet { return CapabilitySet{} }
+
+// WorktreeSyncer is optional: substrates without a shared filesystem seed a
+// guest checkout from a host repo and export guest commits back. The host
+// worktree stays the source of truth; callers type-assert.
+type WorktreeSyncer interface {
+	// SeedWorktree makes guestDir a checkout of hostRepoDir's ref at the same commit.
+	SeedWorktree(ctx context.Context, id domain.SandboxID, hostRepoDir, ref, guestDir string) error
+	// ExportWorktree fast-forwards hostRepoDir's branch to guestDir's HEAD and
+	// returns the new head. A non-fast-forward is refused.
+	ExportWorktree(ctx context.Context, id domain.SandboxID, guestDir, hostRepoDir, branch string) (string, error)
+}
