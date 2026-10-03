@@ -42,13 +42,13 @@ func TestRefusedFS(t *testing.T) {
 		magic int64
 		want  bool
 	}{
-		{0x6969, true},      // NFS
-		{0x01021997, true},  // 9p
-		{0x65735546, true},  // FUSE (virtiofs)
-		{0x517B, true},      // SMB
-		{0xEF53, false},     // ext4
-		{0x58465342, false}, // xfs
-		{0x01021994, false}, // tmpfs
+		{0x6969, true},     // NFS
+		{0x01021997, true}, // 9p
+		{0x65735546, true}, // FUSE (virtiofs)
+		{0x517B, true},     // SMB
+		{0xEF53, false},    // ext4
+		{0x58465342, false},
+		{0x01021994, false},
 	}
 	for _, c := range cases {
 		if _, got := refusedFSName(c.magic); got != c.want {
@@ -97,7 +97,7 @@ func TestRoundTrip(t *testing.T) {
 	if err := h.Ack(ctx, "seat1", "sandbox:a", s2); err != nil {
 		t.Fatal(err)
 	}
-	_ = h.Ack(ctx, "seat1", "sandbox:a", s1) // must not move back
+	_ = h.Ack(ctx, "seat1", "sandbox:a", s1)
 	if c, _ := h.Cursor(ctx, "seat1", "sandbox:a"); c != s2 {
 		t.Fatalf("cursor = %d want %d", c, s2)
 	}

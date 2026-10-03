@@ -11,10 +11,10 @@ const ExitProtocolMismatch = 3
 
 // Verbs.
 const (
-	VerbAppend  = "append"   // stdin: one event JSON; stdout: {"seq":n}
-	VerbLast    = "last"     // --subject S
-	VerbLastAll = "last-all" // last event per subject
-	VerbWatch   = "watch"    // --topic T --cursor C [--ack]; JSONL stdout, acks on stdin with --ack
+	VerbAppend  = "append" // stdin: one event JSON; stdout: {"seq":n}
+	VerbLast    = "last"
+	VerbLastAll = "last-all"
+	VerbWatch   = "watch"
 	VerbVersion = "version"
 )
 
