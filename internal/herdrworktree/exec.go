@@ -27,6 +27,7 @@ type Runners struct {
 	Git          func(ctx context.Context, argv ...string) (string, error)
 	PollInterval time.Duration
 	PollTimeout  time.Duration
+	SpriteSync   SpriteSyncFor // nil = resolve the real sprites driver
 }
 
 // DefaultRunners returns runners backed by the real binaries.

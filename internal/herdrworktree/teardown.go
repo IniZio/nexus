@@ -39,6 +39,9 @@ func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownR
 	}
 	ws, handle, sandboxID, _, bound := ParseListBindingByRef(listOut, ref)
 	if !bound {
+		if err := guardUnboundSprite(ctx, r, ref, force); err != nil {
+			return TeardownResult{}, err
+		}
 		out, runErr := r.Host(ctx, "sandbox", "rm", ref)
 		if runErr != nil {
 			return TeardownResult{}, fmt.Errorf("sandbox rm: %w\n%s", runErr, out)
@@ -48,6 +51,9 @@ func Teardown(ctx context.Context, ref string, force bool, r Runners) (TeardownR
 	herdrBin, err := ResolveHerdrBin()
 	if err != nil {
 		return TeardownResult{}, fmt.Errorf("%w; workspace %s is bound to %s and must be removed through herdr", err, ws, ref)
+	}
+	if err := guardSprite(ctx, r, herdrBin, ws, handle, sandboxID, force); err != nil {
+		return TeardownResult{}, err
 	}
 	rmArgv := []string{"worktree", "remove", "--workspace", ws}
 	if force {

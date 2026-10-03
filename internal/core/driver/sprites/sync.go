@@ -117,6 +117,9 @@ func (d *Driver) ExportWorktree(ctx context.Context, id domain.SandboxID, guestD
 		return "", fmt.Errorf("sprites export: %w", err)
 	}
 	newHead := strings.TrimSpace(head.String())
+	if at, _ := d.GuestAtSeed(ctx, id, guestDir); at {
+		return newHead, nil // no commits since the seed: nothing to export
+	}
 	oldTip, err := hostGit(ctx, hostRepoDir, "rev-parse", "--verify", "refs/heads/"+branch)
 	if err != nil {
 		return "", fmt.Errorf("sprites export: %w", err)
@@ -156,4 +159,28 @@ func (d *Driver) ExportWorktree(ctx context.Context, id domain.SandboxID, guestD
 		return "", fmt.Errorf("sprites export: %w", err)
 	}
 	return newHead, nil
+}
+
+// GuestStatus returns `git status --porcelain` for guestDir; empty means clean.
+func (d *Driver) GuestStatus(ctx context.Context, id domain.SandboxID, guestDir string) (string, error) {
+	var out bytes.Buffer
+	if err := d.guestRun(ctx, id, ExecRequest{
+		Argv:   []string{"git", "-C", guestDir, "status", "--porcelain", "--untracked-files=all"},
+		Stdout: &out,
+	}); err != nil {
+		return "", fmt.Errorf("sprites status: %w", err)
+	}
+	return out.String(), nil
+}
+
+// GuestAtSeed reports whether guest HEAD is still the seeded commit.
+func (d *Driver) GuestAtSeed(ctx context.Context, id domain.SandboxID, guestDir string) (bool, error) {
+	var head, seed bytes.Buffer
+	if err := d.guestRun(ctx, id, ExecRequest{Argv: []string{"git", "-C", guestDir, "rev-parse", "HEAD"}, Stdout: &head}); err != nil {
+		return false, fmt.Errorf("sprites at-seed: %w", err)
+	}
+	if err := d.guestRun(ctx, id, ExecRequest{Argv: []string{"git", "-C", guestDir, "rev-parse", "--verify", "-q", seedRef + "^{commit}"}, Stdout: &seed}); err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(head.String()) == strings.TrimSpace(seed.String()), nil
 }

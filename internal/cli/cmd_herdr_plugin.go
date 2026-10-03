@@ -5563,6 +5563,14 @@ func herdrWorktreeSandbox(
 				break
 			}
 		}
+		if workspaceMount == nil && backend == registry.Sprites {
+			msg := fmt.Sprintf("sprites sandbox %s exists but has no binding; re-seeding could discard work in it. Remove it with `nexus sandbox rm %s` and re-run", handle, handle)
+			fmt.Fprintf(w, "worktree-sandbox: %s\n", msg)
+			if !failSafe {
+				return fmt.Errorf("worktree-sandbox: %s", msg)
+			}
+			return nil
+		}
 		if workspaceMount == nil {
 			fmt.Fprintf(w, "worktree-sandbox: sandbox %s has no /workspace mount — cannot adopt\n", handle)
 			if !failSafe {

@@ -131,3 +131,36 @@ func TestExportNonCheckedOutBranch(t *testing.T) {
 		t.Fatal("checked-out main moved")
 	}
 }
+
+func TestExportNoGuestCommitsHostAdvanced(t *testing.T) {
+	d, id, host, guest := syncFixture(t)
+	ctx := context.Background()
+	if err := d.SeedWorktree(ctx, id, host, "HEAD", guest); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, host, "h")
+	before := git(t, host, "rev-parse", "main")
+	if _, err := d.ExportWorktree(ctx, id, guest, host, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if git(t, host, "rev-parse", "main") != before {
+		t.Fatal("host branch moved")
+	}
+}
+
+func TestGuestStatus(t *testing.T) {
+	d, id, host, guest := syncFixture(t)
+	ctx := context.Background()
+	if err := d.SeedWorktree(ctx, id, host, "HEAD", guest); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := d.GuestStatus(ctx, id, guest); err != nil || out != "" {
+		t.Fatalf("clean = %q, %v", out, err)
+	}
+	if err := os.WriteFile(filepath.Join(guest, "u"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := d.GuestStatus(ctx, id, guest); err != nil || !strings.Contains(out, "u") {
+		t.Fatalf("dirty = %q, %v", out, err)
+	}
+}
