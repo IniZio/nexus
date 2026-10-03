@@ -74,6 +74,7 @@ var hostExecAllowlist = map[string]map[string]string{
 		"internal/controller/backend/herdr": "herdr integration (optional)",
 		"internal/herdrworktree":            "herdr integration (optional)",
 		"internal/mcp":                      "herdr integration (optional)",
+		"internal/supervisor":               "delegate pane watch (optional)",
 		"internal/testutil/livenexus":       "herdr integration (optional)",
 	},
 	"lsof": {

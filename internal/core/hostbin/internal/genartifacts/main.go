@@ -28,8 +28,6 @@ func main() {
 	out := flag.String("out", "", "output directory for .zst files (required)")
 	agentTag := flag.String("agent-tag", "dev", "build tag embedded in nexus-agent via -X main.agentBuildTag")
 	agentPkg := flag.String("agent-pkg", "./cmd/nexus-agent", "Go package path for nexus-agent")
-	hubPkg := flag.String("hub-pkg", "./cmd/nexus-hub", "Go package path for nexus-hub")
-	skipHub := flag.Bool("skip-hub", false, "skip building nexus-hub (leave existing files untouched)")
 	skipAgent := flag.Bool("skip-agent", false, "skip building nexus-agent (leave existing files untouched)")
 	localDir := flag.String("local-dir", "", "directory of locally-built binaries; <dir>/<goarch>/<name> or <dir>/<name> used instead of network fetch")
 	virtiofsdDir := flag.String("virtiofsd-dir", os.Getenv("VIRTIOFSD_DIR"), "local dir with pre-built virtiofsd (verified against pin sha256)")
@@ -163,13 +161,6 @@ func main() {
 		}
 	}
 
-	if !*skipHub {
-		if err := buildEmbedded(*out, *goarch, "nexus-hub", *hubPkg, "-s -w"); err != nil {
-			fmt.Fprintf(os.Stderr, "genartifacts: build nexus-hub: %v\n", err)
-			exitCode = 1
-		}
-	}
-
 	entries, err := os.ReadDir(*out)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "genartifacts: readdir %s: %v\n", *out, err)
@@ -180,7 +171,7 @@ func main() {
 			continue
 		}
 		base := strings.TrimSuffix(e.Name(), ".zst")
-		if downloadable[base] || base == "nexus-agent" || base == "nexus-hub" {
+		if downloadable[base] || base == "nexus-agent" {
 			continue
 		}
 		stale := filepath.Join(*out, e.Name())
@@ -189,6 +180,7 @@ func main() {
 		} else {
 			fmt.Printf("removed stale %s\n", e.Name())
 		}
+		_ = os.Remove(filepath.Join(*out, base+".sha256"))
 	}
 
 	os.Exit(exitCode)
