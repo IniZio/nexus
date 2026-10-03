@@ -88,8 +88,9 @@ type InGuestBuildOptions struct {
 //  3. Write a runc wrapper at /run/buildkit/nexus-runc that injects
 //     --no-new-keyring into runc run/create subcommands, preventing session
 //     keyring exhaustion on long builds.
-//  4. Start buildkitd rootful with --oci-worker-snapshotter=native (overlay
-//     cannot be nested on virtiofs).
+//  4. Start buildkitd rootful; snapshotter is overlayfs when the state dir is
+//     ext4/xfs (the cache disk), else native (overlay cannot sit on virtiofs
+//     or overlay), with a GC cap and a post-build prune + FITRIM.
 //  5. Poll the buildkitd Unix socket for readiness (up to 90 s).
 //  6. Drive builder.NewBuildkitClient("unix:///run/buildkit/buildkitd.sock")
 //     + client.Solve(SolveRequest{...}, rootfsDir) to produce a rootfs tree.

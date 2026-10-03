@@ -94,6 +94,9 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	}
 	if buildkitStateIsPersistent(inGuestBuildkitState) {
 		log.Printf("in-guest build: /var/lib/buildkit is a persistent ext4 mount — skipping tmpfs, layer cache will persist")
+		// Registered first so it runs LAST: after buildkitd is cancelled and the
+		// export scratch is removed, discard freed blocks to the host.
+		defer trimBuildkitState(inGuestBuildkitState)
 	} else {
 		if err := mountTmpFS(inGuestBuildkitState, "4g"); err != nil {
 			log.Printf("in-guest build: WARNING: tmpfs on %s failed (%v); state will be on virtiofs",
@@ -137,20 +140,12 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 		return fmt.Errorf("in-guest build: create bkd log: %w", err)
 	}
 
-	bkCmd := exec.CommandContext(bkCtx, bkdPath,
-		"--root", inGuestBuildkitState, // same as G2: --root=/var/lib/buildkit
-		"--addr", "unix://"+sockPath,
-		"--oci-worker-snapshotter=native",
-		// Pass the absolute runc path so buildkitd doesn't need PATH lookup.
-		// The kernel init PATH omits /usr/local/bin (where buildkit-runc lives),
-		// so exec.LookPath("buildkit-runc") would fail without this.
-		"--oci-worker-binary="+runcPath,
-		// D-ORCH-11: run OCI worker steps in the guest's host network namespace so
-		// build steps inherit DNS (192.168.127.1 via gvproxy) and outbound egress.
-		"--oci-worker-net=host",
-	)
+	snapshotter := selectSnapshotter(inGuestBuildkitState)
+	// --oci-worker-binary gets an absolute runc path (kernel init PATH omits
+	// /usr/local/bin); --oci-worker-net=host gives build steps DNS/egress.
+	bkCmd := exec.CommandContext(bkCtx, bkdPath, buildkitdArgs(inGuestBuildkitState, sockPath, snapshotter, runcPath)...)
 	bkCmd.Env = append(os.Environ(),
-		"BUILDKITD_SNAPSHOTTER=native",
+		"BUILDKITD_SNAPSHOTTER="+snapshotter,
 		// Ensure /usr/local/bin is in PATH so buildkitd can find its bundled
 		// runc even if the kernel init PATH omits it. We also pass
 		// --oci-worker-binary with an absolute path (above) as the primary fix.
@@ -257,7 +252,10 @@ func buildInGuestImageLinux(ctx context.Context, opts InGuestBuildOptions) error
 	solveCtx, solveCancel := context.WithTimeout(ctx, solveTimeout)
 	defer solveCancel()
 
-	if err := bkClient.Solve(solveCtx, newInGuestSolveRequest(baseRef, opts), rootfsDir); err != nil {
+	solveErr := bkClient.Solve(solveCtx, newInGuestSolveRequest(baseRef, opts), rootfsDir)
+	// Enforce the GC cap now (success or failure); the VM dies right after.
+	pruneBuildkitCache(sockPath)
+	if err := solveErr; err != nil {
 		// Prototype finding (2026-08): the async log-forward goroutine is cut off
 		// at shutdown, so the buildkitd failure reason never reaches the host.
 		// Synchronously flush the buildkitd log and write the solve error to

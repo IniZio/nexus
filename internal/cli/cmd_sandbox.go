@@ -1259,6 +1259,7 @@ func runSandboxCreate(ctx context.Context, args []string, out *Output, svc *serv
 				BootMemMiB: builderBootMemMiB,
 				BootVCPUs:  builderBootVCPUs,
 				MemMaxMiB:  builder.MemMaxMiB(spec),
+				DiskMaxGiB: builder.BuildkitCacheDiskMaxGiB,
 			})
 
 			builderSocketDir, err := orcaSocketDir()

@@ -16,6 +16,13 @@ import (
 	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
+// BuildkitCacheDiskMaxGiB caps governor growth of the builder VM's buildkit
+// cache disk. The disk is grow-only (never shrinks); with the overlayfs
+// snapshotter and a ~20 GB GC cap (agent buildkitGCKeepStorage) a cold build
+// of a large image needs well under 40 GiB, whereas the 100 GiB workspace
+// default let one build balloon the host file to ~57 GiB apparent.
+const BuildkitCacheDiskMaxGiB uint32 = 40
+
 const cacheDiskSizeBytes int64 = 10 * 1024 * 1024 * 1024 // default sparse size for new per-ecosystem cache disks
 
 // ErrE2fsckUnavailable is returned by the default fsck runner when e2fsprogs
