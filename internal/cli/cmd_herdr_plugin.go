@@ -4333,7 +4333,7 @@ func herdrWorktreeSandboxCreateArgsPosture(posture, handle, mountSpec, imageFlag
 		args = append(args, "--mount-named", herdrNexusStateDiskVolumeName(handle)+":/root/.local/state/nexus:size=24g")
 	}
 	if worker {
-		return append(args, "--no-user-mounts", "--no-share-settings", "--egress", "open", handle)
+		return append(args, "--no-user-mounts", "--no-share-settings", handle)
 	}
 	args = append(args, "--agent", herdrPrimaryAgent(), "--egress", "open", handle)
 	return args

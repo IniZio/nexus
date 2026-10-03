@@ -514,13 +514,35 @@ func TestHerdrWorktreeSandboxCreateArgs_Posture(t *testing.T) {
 		if anyContains(args, "agentcfg") {
 			t.Errorf("worker posture must not mount agentcfg: %v", args)
 		}
-		for _, want := range []string{"--no-user-mounts", "--no-share-settings", "--egress", "open"} {
+		for _, want := range []string{"--no-user-mounts", "--no-share-settings"} {
 			if !has(args, want) {
 				t.Errorf("worker posture missing %s: %v", want, args)
 			}
 		}
 		if args[len(args)-1] != "owner/branch" {
 			t.Errorf("handle must be last: %v", args)
+		}
+	})
+	t.Run("worker keeps default egress args and never passes --egress open", func(t *testing.T) {
+		pp := domain.EgressPathPolicies{"": {"api.github.com": {Paths: []string{"GET /repos/**"}}}}
+		secrets := []string{"FOO@example.com"}
+		egressArgs := func(args []string) []string {
+			var out []string
+			for i, a := range args {
+				switch a {
+				case "--secret", "--repo", "--egress-policy-json", "--egress-mcp-json":
+					out = append(out, a, args[i+1])
+				}
+			}
+			return out
+		}
+		w := herdrWorktreeSandboxCreateArgsPosture(herdrPostureWorker, "o/b", "s:d", "--image", "img", nil, secrets, "own/repo", pp, nil, false)
+		d := herdrWorktreeSandboxCreateArgsPosture(herdrPostureDefault, "o/b", "s:d", "--image", "img", nil, secrets, "own/repo", pp, nil, false)
+		if strings.Join(egressArgs(w), "\x00") != strings.Join(egressArgs(d), "\x00") || len(egressArgs(w)) < 6 {
+			t.Errorf("worker egress args %v != default %v", egressArgs(w), egressArgs(d))
+		}
+		if has(w, "--egress") {
+			t.Errorf("worker posture must not pass --egress: %v", w)
 		}
 	})
 	t.Run("default unchanged", func(t *testing.T) {
