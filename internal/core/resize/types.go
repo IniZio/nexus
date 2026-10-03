@@ -119,6 +119,15 @@ type Sample struct {
 	CPUPSISomeAvg10 float64 `json:"cpu_psi_some_avg10"`
 	CPUPSISupported bool    `json:"cpu_psi_supported"`
 
+	// CPUBusyFrac is the guest-wide CPU busy fraction (0-1) over the interval
+	// since the previous sample: (total - idle - iowait) / total from the
+	// /proc/stat aggregate line. PSI "some" stays ~0 on a saturated guest whose
+	// runnable threads fit its vCPUs, so the CPU governor needs this to avoid
+	// unplugging busy vCPUs. CPUBusySupported is false on the first sample and
+	// for old agents that omit the field; the governor never shrinks then.
+	CPUBusyFrac      float64 `json:"cpu_busy_frac,omitempty"`
+	CPUBusySupported bool    `json:"cpu_busy_supported,omitempty"`
+
 	// DiskUsedBytes and DiskTotalBytes are from statfs of the workspace mount.
 	// The disk governor grows the backing image when
 	// DiskUsedBytes/DiskTotalBytes > diskGrowThreshold (0.80).

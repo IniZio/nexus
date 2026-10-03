@@ -35,6 +35,9 @@ func TestCPUControlLawConstants(t *testing.T) {
 	if cpuGrowPressure != 15.0 {
 		t.Errorf("cpuGrowPressure = %v, want 15.0 (OLD cpu_resize.go:41)", cpuGrowPressure)
 	}
+	if cpuShrinkBusyMax != 0.5 {
+		t.Errorf("cpuShrinkBusyMax = %v, want 0.5", cpuShrinkBusyMax)
+	}
 	if cpuShrinkPressure != 2.0 {
 		t.Errorf("cpuShrinkPressure = %v, want 2.0 (OLD cpu_resize.go:42)", cpuShrinkPressure)
 	}
@@ -42,8 +45,8 @@ func TestCPUControlLawConstants(t *testing.T) {
 	if cpuGrowWindow != 0 {
 		t.Errorf("cpuGrowWindow = %v, want 0s (eager: (cpuGrowConsecutive-1)×cpuEvalInterval)", cpuGrowWindow)
 	}
-	if cpuShrinkWindow != 20*time.Second {
-		t.Errorf("cpuShrinkWindow = %v, want 20s ((cpuShrinkConsecutive-1)×cpuEvalInterval, matches OLD fire-at-5th-sample)", cpuShrinkWindow)
+	if cpuShrinkWindow != 60*time.Second {
+		t.Errorf("cpuShrinkWindow = %v, want 60s (busy-aware shrink; PSI alone is blind on a saturated guest)", cpuShrinkWindow)
 	}
 }
 
@@ -122,8 +125,10 @@ func pressuredSample() resize.Sample {
 // idleSample returns a sample with CPU PSI below the shrink threshold.
 func idleSample() resize.Sample {
 	return resize.Sample{
-		CPUPSISupported: true,
-		CPUPSISomeAvg10: 0.5, // below cpuShrinkPressure (2.0)
+		CPUPSISupported:  true,
+		CPUPSISomeAvg10:  0.5, // below cpuShrinkPressure (2.0)
+		CPUBusySupported: true,
+		CPUBusyFrac:      0.05,
 	}
 }
 
@@ -175,13 +180,25 @@ func TestCPUSampleSignals(t *testing.T) {
 		},
 		{
 			name:       "PSI present, some_avg10 < 2 => shrink",
-			s:          resize.Sample{CPUPSISupported: true, CPUPSISomeAvg10: 0},
+			s:          resize.Sample{CPUPSISupported: true, CPUPSISomeAvg10: 0, CPUBusySupported: true, CPUBusyFrac: 0.05},
 			wantGrow:   false,
 			wantShrink: true,
 		},
 		{
 			name:       "PSI present, dead band (8) => neither",
 			s:          resize.Sample{CPUPSISupported: true, CPUPSISomeAvg10: 8},
+			wantGrow:   false,
+			wantShrink: false,
+		},
+		{
+			name:       "low PSI but busy guest (0.95) => NOT shrink",
+			s:          resize.Sample{CPUPSISupported: true, CPUPSISomeAvg10: 0, CPUBusySupported: true, CPUBusyFrac: 0.95},
+			wantGrow:   false,
+			wantShrink: false,
+		},
+		{
+			name:       "low PSI, busy unsupported (old agent) => NOT shrink",
+			s:          resize.Sample{CPUPSISupported: true, CPUPSISomeAvg10: 0},
 			wantGrow:   false,
 			wantShrink: false,
 		},
@@ -199,7 +216,7 @@ func TestCPUSampleSignals(t *testing.T) {
 		},
 		{
 			name:       "just below shrink threshold 1.99 => shrink",
-			s:          resize.Sample{CPUPSISupported: true, CPUPSISomeAvg10: 1.99},
+			s:          resize.Sample{CPUPSISupported: true, CPUPSISomeAvg10: 1.99, CPUBusySupported: true, CPUBusyFrac: 0.05},
 			wantGrow:   false,
 			wantShrink: true,
 		},
@@ -382,43 +399,47 @@ func TestCPUGrowCooldown(t *testing.T) {
 }
 
 // TestCPUShrinkCooldown proves that a second shrink is suppressed within
-// cpuShrinkCooldown after the first.
-//
-// The window-accumulation property is also verified: idle samples during the
-// cooldown keep shrinkSince set, so when the cooldown expires the window is
-// already satisfied and the next idle sample fires immediately.
+// cpuShrinkCooldown after the first, and that the shrink window does NOT
+// accumulate during the cooldown: after it expires, a full cpuShrinkWindow of
+// sustained idle is required again.
 func TestCPUShrinkCooldown(t *testing.T) {
 	clk := newFakeClock()
 	bounds := cpuBounds(1, 8)
 	g, a, fr := newCPUGovernorAndAxis(clk, 4, bounds)
 	ctx := context.Background()
 
-	// Drive first shrink: inject idle at t=0 (sets shrinkSince), then advance
-	// past cpuShrinkWindow so the next evaluation fires.
-	injectCPUSample(g, clk, idleSample()) // t=0: shrinkSince=0
-	a.Evaluate(ctx)
-	clk.Advance(cpuShrinkWindow) // t=25s
 	injectCPUSample(g, clk, idleSample())
-	a.Evaluate(ctx) // fires: elapsed=25s >= cpuShrinkWindow
+	a.Evaluate(ctx)
+	clk.Advance(cpuShrinkWindow)
+	injectCPUSample(g, clk, idleSample())
+	a.Evaluate(ctx)
 	if fr.callCount() != 1 {
 		t.Fatalf("first shrink: ResizeCPU called %d times; want 1", fr.callCount())
 	}
 
-	// Inject an idle sample during cooldown: sets shrinkSince for the next cycle.
-	clk.Advance(cpuEvalInterval) // t=30s (still in 120s cooldown)
+	// Idle samples during cooldown: suppressed and must not start the window.
+	clk.Advance(cpuEvalInterval)
 	injectCPUSample(g, clk, idleSample())
-	a.Evaluate(ctx) // in cooldown → suppressed, but shrinkSince is now set
+	a.Evaluate(ctx)
 	if fr.callCount() != 1 {
 		t.Fatalf("in shrink cooldown: ResizeCPU called %d times; want 1", fr.callCount())
 	}
+	if !a.shrinkSince.IsZero() {
+		t.Fatal("shrink window accumulated during cooldown")
+	}
 
-	// Advance past shrink cooldown: shrinkSince was set during cooldown so the
-	// window is already satisfied — the next idle sample fires immediately.
-	clk.Advance(cpuShrinkCooldown + time.Second) // t >> 120s, elapsed from shrinkSince >> 25s
+	// First sample after cooldown starts the window; it must not fire yet.
+	clk.Advance(cpuShrinkCooldown + time.Second)
+	injectCPUSample(g, clk, idleSample())
+	a.Evaluate(ctx)
+	if fr.callCount() != 1 {
+		t.Fatalf("right after cooldown: ResizeCPU called %d times; want 1 (window restarts)", fr.callCount())
+	}
+	clk.Advance(cpuShrinkWindow)
 	injectCPUSample(g, clk, idleSample())
 	a.Evaluate(ctx)
 	if fr.callCount() != 2 {
-		t.Fatalf("after shrink cooldown: ResizeCPU called %d times; want 2", fr.callCount())
+		t.Fatalf("after cooldown + window: ResizeCPU called %d times; want 2", fr.callCount())
 	}
 }
 
@@ -602,3 +623,103 @@ var errFakeResizeFailure = errCPUResizeFail("cpu resize failed")
 type errCPUResizeFail string
 
 func (e errCPUResizeFail) Error() string { return string(e) }
+
+// busySample is a saturated guest: PSI some ~0 because runnable <= vCPUs.
+func busySample(online int32) resize.Sample {
+	return resize.Sample{
+		CPUPSISupported: true, CPUPSISomeAvg10: 0,
+		CPUBusySupported: true, CPUBusyFrac: 0.95,
+		VCPUOnline: online,
+	}
+}
+
+func growTo(t *testing.T, g *Governor, clk *fakeClock, a *cpuAxis, fr *fakeCPUResizer, n int32) {
+	t.Helper()
+	for i := 0; i < 80 && fr.current < n; i++ {
+		s := pressuredSample()
+		s.VCPUOnline = fr.current
+		injectCPUSample(g, clk, s)
+		a.Evaluate(context.Background())
+		clk.Advance(5 * time.Second)
+	}
+	if fr.current != n {
+		t.Fatalf("setup: vcpus=%d want %d", fr.current, n)
+	}
+}
+
+// TestBusyZeroPSIMustNotShrink: a fully busy guest with PSI some = 0 keeps its vCPUs.
+func TestBusyZeroPSIMustNotShrink(t *testing.T) {
+	clk := newFakeClock()
+	g, a, fr := newCPUGovernorAndAxis(clk, 1, cpuBounds(1, 4))
+	growTo(t, g, clk, a, fr, 4)
+	n := len(fr.calls)
+	for i := 0; i < 120; i++ {
+		injectCPUSample(g, clk, busySample(fr.current))
+		a.Evaluate(context.Background())
+		clk.Advance(5 * time.Second)
+	}
+	if len(fr.calls) != n || fr.current != 4 {
+		t.Fatalf("busy guest resized: vcpus=%d calls=%v", fr.current, fr.calls)
+	}
+}
+
+// TestOldAgentBusyUnsupportedNeverShrinks: no busy field => no shrink even when PSI is 0.
+func TestOldAgentBusyUnsupportedNeverShrinks(t *testing.T) {
+	clk := newFakeClock()
+	g, a, fr := newCPUGovernorAndAxis(clk, 1, cpuBounds(1, 4))
+	growTo(t, g, clk, a, fr, 4)
+	n := len(fr.calls)
+	for i := 0; i < 120; i++ {
+		s := resize.Sample{CPUPSISupported: true, CPUPSISomeAvg10: 0, VCPUOnline: fr.current}
+		injectCPUSample(g, clk, s)
+		a.Evaluate(context.Background())
+		clk.Advance(5 * time.Second)
+	}
+	if len(fr.calls) != n {
+		t.Fatalf("old agent shrank: calls=%v", fr.calls)
+	}
+}
+
+// TestGrowAllowedRightAfterShrink: the 120s post-shrink cooldown must not block a grow.
+func TestGrowAllowedRightAfterShrink(t *testing.T) {
+	clk := newFakeClock()
+	g, a, fr := newCPUGovernorAndAxis(clk, 1, cpuBounds(1, 4))
+	growTo(t, g, clk, a, fr, 3)
+	clk.Advance(cpuGrowCooldown)
+	for i := 0; i < 40 && fr.current == 3; i++ {
+		s := idleSample()
+		s.VCPUOnline = fr.current
+		injectCPUSample(g, clk, s)
+		a.Evaluate(context.Background())
+		clk.Advance(5 * time.Second)
+	}
+	if fr.current != 2 {
+		t.Fatalf("setup: expected shrink to 2, got %d (calls=%v)", fr.current, fr.calls)
+	}
+	s := pressuredSample()
+	s.VCPUOnline = fr.current
+	injectCPUSample(g, clk, s)
+	a.Evaluate(context.Background())
+	if fr.current != 3 {
+		t.Fatalf("grow right after shrink blocked: vcpus=%d calls=%v", fr.current, fr.calls)
+	}
+}
+
+// TestShrinkNotBelowBusyFloor: busy 0.4 on 3 vCPUs needs ceil(1.2)+1 = 3, so no shrink.
+func TestShrinkNotBelowBusyFloor(t *testing.T) {
+	clk := newFakeClock()
+	g, a, fr := newCPUGovernorAndAxis(clk, 1, cpuBounds(1, 4))
+	growTo(t, g, clk, a, fr, 3)
+	n := len(fr.calls)
+	for i := 0; i < 60; i++ {
+		s := idleSample()
+		s.CPUBusyFrac = 0.4
+		s.VCPUOnline = fr.current
+		injectCPUSample(g, clk, s)
+		a.Evaluate(context.Background())
+		clk.Advance(5 * time.Second)
+	}
+	if len(fr.calls) != n {
+		t.Fatalf("shrunk below busy floor: calls=%v", fr.calls)
+	}
+}

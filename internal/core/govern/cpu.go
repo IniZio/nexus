@@ -3,6 +3,7 @@ package govern
 import (
 	"context"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/resize"
@@ -45,6 +46,16 @@ const (
 	// Source: OLD cpu_resize.go:33.
 	cpuShrinkConsecutive = 5
 
+	// cpuShrinkWindowSecs is the sustained-idle duration required before a
+	// shrink. PSI "some" is ~0 whenever runnable threads <= vCPUs, even at 100%
+	// utilisation, so shrink also needs measured busy fraction (below); the
+	// longer window keeps brief lulls inside a busy build from unplugging vCPUs.
+	cpuShrinkWindow = 60 * time.Second
+
+	// cpuShrinkBusyMax: shrink only while guest CPU busy fraction (from
+	// /proc/stat) stays strictly below this for the whole window.
+	cpuShrinkBusyMax = 0.5
+
 	// cpuGrowCooldown / cpuShrinkCooldown gate the inter-resize interval.
 	// Source: OLD cpu_resize.go:35-36.
 	cpuGrowCooldown   = 60 * time.Second
@@ -67,14 +78,6 @@ const (
 	// cpuGrowConsecutive=1 (eager) → (1-1)×5s = 0s: the first pressured sample
 	// fires immediately. The formula generalises if cpuGrowConsecutive ever changes.
 	cpuGrowWindow = time.Duration(cpuGrowConsecutive-1) * cpuEvalInterval // = 0 s
-
-	// cpuShrinkWindow is the minimum sustained-idle duration before a shrink fires.
-	// OLD increments shrinkCount to 1 on the first idle sample and fires at >= 5,
-	// so it fires on the 5th idle sample = (5-1)×5s = 20s after the first.
-	// Using wall time rather than sample count makes the law invariant to the
-	// adaptive poll cadence. Without this fix: 5×2s = 10s under memory pressure,
-	// 2× more shrink-aggressive than the ported 20s law.
-	cpuShrinkWindow = time.Duration(cpuShrinkConsecutive-1) * cpuEvalInterval // = 20 s
 
 	// cpuDriftSettle: quiet window after a resize before drift reconciliation fires.
 	// Guest onliner ticks every 3s; 10s covers that plus sample-scheduling latency.
@@ -171,18 +174,26 @@ func (a *cpuAxis) Evaluate(ctx context.Context) {
 		current = minVCPUs
 	}
 
-	// Update time-based run windows. These are updated BEFORE the cooldown check
-	// so the windows accumulate during cooldown — matching OLD recordCPUStatsSample
-	// behaviour (counters built up while in cooldown so the next step fires
-	// immediately when the cooldown expires).
-	// Source: OLD cpu_resize.go:104-126.
+	// Cooldowns are per direction. A grow is blocked only by a recent grow; a
+	// shrink is blocked by any recent resize (shrink: 120s, grow: 60s). The
+	// shrink window never accumulates while shrink is blocked, so a long
+	// cooldown cannot pre-load the window.
+	// CPU has NO urgent bypass (unlike memory). Source: OLD cpu_resize.go:217-249.
+	sinceResize := now.Sub(a.lastResizeTime)
+	growBlocked := !a.lastResizeTime.IsZero() && !a.lastResizeWasShrink && sinceResize < cpuGrowCooldown
+	shrinkCooldown := cpuGrowCooldown
+	if a.lastResizeWasShrink {
+		shrinkCooldown = cpuShrinkCooldown
+	}
+	shrinkBlocked := !a.lastResizeTime.IsZero() && sinceResize < shrinkCooldown
+
 	switch {
 	case cpuSampleWantsGrow(s):
 		if a.growSince.IsZero() {
 			a.growSince = now
 		}
 		a.shrinkSince = time.Time{}
-	case cpuSampleWantsShrink(s):
+	case cpuSampleWantsShrink(s) && !shrinkBlocked:
 		if a.shrinkSince.IsZero() {
 			a.shrinkSince = now
 		}
@@ -192,23 +203,11 @@ func (a *cpuAxis) Evaluate(ctx context.Context) {
 		a.shrinkSince = time.Time{}
 	}
 
-	// Post-resize cooldown — CPU has NO urgent bypass (unlike memory).
-	// Source: OLD cpu_resize.go:217-249.
-	if !a.lastResizeTime.IsZero() {
-		cooldown := cpuGrowCooldown
-		if a.lastResizeWasShrink {
-			cooldown = cpuShrinkCooldown
-		}
-		if now.Sub(a.lastResizeTime) < cooldown {
-			return
-		}
-	}
-
 	var target int32
 	isShrink := false
 
 	switch {
-	case cpuSampleWantsGrow(s) && !a.growSince.IsZero() && now.Sub(a.growSince) >= cpuGrowWindow:
+	case !growBlocked && cpuSampleWantsGrow(s) && !a.growSince.IsZero() && now.Sub(a.growSince) >= cpuGrowWindow:
 		// cpuGrowWindow = 0s: fires immediately on the first pressured sample (eager).
 		if current >= maxVCPUs {
 			slog.Warn("govern.cpu.hard_max",
@@ -220,9 +219,13 @@ func (a *cpuAxis) Evaluate(ctx context.Context) {
 		}
 		target = current + 1
 
-	case cpuSampleWantsShrink(s) && !a.shrinkSince.IsZero() && now.Sub(a.shrinkSince) >= cpuShrinkWindow:
-		// cpuShrinkWindow = 20s: requires sustained idle for (cpuShrinkConsecutive-1) × cpuEvalInterval.
+	case !shrinkBlocked && cpuSampleWantsShrink(s) && !a.shrinkSince.IsZero() && now.Sub(a.shrinkSince) >= cpuShrinkWindow:
+		// Requires sustained low PSI and low busy for cpuShrinkWindow.
 		if current <= minVCPUs {
+			return
+		}
+		// Never shrink below the vCPUs the measured load needs, plus one spare.
+		if current-1 < int32(math.Ceil(s.CPUBusyFrac*float64(current)))+1 {
 			return
 		}
 		target = current - 1
@@ -284,7 +287,11 @@ func cpuSampleWantsGrow(s resize.Sample) bool {
 // cpuSampleWantsShrink reports whether s indicates spare vCPUs the VM can give back.
 // Strict less-than (not <=) enforces hysteresis with cpuGrowPressure.
 // Gated on CPUPSISupported — an absent PSI zero must not drive a spurious shrink.
+// Also requires a measured busy fraction below cpuShrinkBusyMax: PSI some is ~0
+// on a fully busy guest whose runnable threads fit its vCPUs. An old agent that
+// reports no busy fraction therefore never shrinks.
 // Source: OLD cpu_resize.go:135-136.
 func cpuSampleWantsShrink(s resize.Sample) bool {
-	return s.CPUPSISupported && s.CPUPSISomeAvg10 < cpuShrinkPressure
+	return s.CPUPSISupported && s.CPUPSISomeAvg10 < cpuShrinkPressure &&
+		s.CPUBusySupported && s.CPUBusyFrac < cpuShrinkBusyMax
 }

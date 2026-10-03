@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -35,6 +36,7 @@ var (
 	samplePSICPUPath  = "/proc/pressure/cpu"
 	sampleStatfsFunc  = func(path string, st *unix.Statfs_t) error { return unix.Statfs(path, st) }
 	sampleCPUSysPath  = "/sys/devices/system/cpu"
+	sampleProcStat    = "/proc/stat"
 	resizeExecFunc    = execCollect
 )
 
@@ -59,6 +61,7 @@ func collectSample(disks []resizableDisk) (resize.Sample, error) {
 	memSomeAvg10, memFullAvg10, memPSISupported := readMemoryPSI(samplePSIMemPath)
 	cpuSomeAvg10, cpuPSISupported := readCPUPSI(samplePSICPUPath)
 	vcpuCount, vcpuOnline := readVCPUs(sampleCPUSysPath)
+	cpuBusy, cpuBusySupported := cpuBusySampler.sample(sampleProcStat, time.Now())
 
 	diskStats := readMultiDiskStats(disks)
 
@@ -84,6 +87,8 @@ func collectSample(disks []resizableDisk) (resize.Sample, error) {
 		MemPSISupported:   memPSISupported,
 		CPUPSISomeAvg10:   cpuSomeAvg10,
 		CPUPSISupported:   cpuPSISupported,
+		CPUBusyFrac:       cpuBusy,
+		CPUBusySupported:  cpuBusySupported,
 		DiskUsedBytes:     diskUsed,
 		DiskTotalBytes:    diskTotal,
 		DiskSupported:     diskSupported,
@@ -474,4 +479,93 @@ func onlineOfflineCPUs() {
 		}
 		fmt.Fprintf(os.Stderr, "nexus-agent: cpu-onliner: onlined %s\n", name)
 	}
+}
+
+// cpuBusyMinInterval is the minimum spacing between /proc/stat baselines.
+// Polls and push-path triggers can arrive in bursts; a delta over a few ms is
+// mostly noise, so closer calls reuse the last computed value.
+const cpuBusyMinInterval = time.Second
+
+// cpuBusyState derives the guest CPU busy fraction from /proc/stat deltas.
+type cpuBusyState struct {
+	mu        sync.Mutex
+	have      bool
+	busy      uint64
+	total     uint64
+	at        time.Time
+	lastFrac  float64
+	lastValid bool
+}
+
+var cpuBusySampler = &cpuBusyState{}
+
+// sample returns the busy fraction since the previous baseline. The first call
+// (and any read/parse failure) returns supported=false.
+func (c *cpuBusyState) sample(path string, now time.Time) (float64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	busy, total, ok := readProcStatCPU(path)
+	if !ok {
+		return 0, false
+	}
+	if !c.have {
+		c.have, c.busy, c.total, c.at = true, busy, total, now
+		return 0, false
+	}
+	if now.Sub(c.at) < cpuBusyMinInterval {
+		return c.lastFrac, c.lastValid
+	}
+	prevBusy, prevTotal := c.busy, c.total
+	c.busy, c.total, c.at = busy, total, now
+	if total <= prevTotal || busy < prevBusy {
+		// no ticks elapsed or counters went backwards
+		c.lastFrac, c.lastValid = 0, false
+		return 0, false
+	}
+	dTotal := total - prevTotal
+	dBusy := busy - prevBusy
+	frac := float64(dBusy) / float64(dTotal)
+	if frac > 1 {
+		frac = 1
+	}
+	c.lastFrac, c.lastValid = frac, true
+	return frac, true
+}
+
+// readProcStatCPU parses the aggregate "cpu" line of /proc/stat and returns
+// busy = total - idle - iowait and total, in clock ticks. Guest time is already
+// included in user/nice, so it is not added again.
+func readProcStatCPU(path string) (busy, total uint64, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	return parseProcStatCPU(string(data))
+}
+
+func parseProcStatCPU(content string) (busy, total uint64, ok bool) {
+	for _, line := range strings.Split(content, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 || f[0] != "cpu" {
+			continue
+		}
+		// user nice system idle iowait irq softirq steal [guest guest_nice]
+		var v [8]uint64
+		for i := 0; i < 8 && i+1 < len(f); i++ {
+			n, err := strconv.ParseUint(f[i+1], 10, 64)
+			if err != nil {
+				return 0, 0, false
+			}
+			v[i] = n
+		}
+		for _, x := range v {
+			total += x
+		}
+		idle := v[3] + v[4]
+		if idle > total {
+			return 0, 0, false
+		}
+		return total - idle, total, true
+	}
+	return 0, 0, false
 }
