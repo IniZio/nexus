@@ -21,6 +21,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/registry"
+	"github.com/IniZio/nexus/internal/core/driver/sprites"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/herdragent"
 )
@@ -377,6 +378,8 @@ func herdrDefaultShellCore(
 	// the existing fail-open behaviour for daemon-unreachable is preserved.
 	// (CRITICAL 4 + CRITICAL 5)
 	cwd := "/root"
+	shellCmd := []string{"/bin/bash", "--login"}
+	closedPane := binding.IsWorktreeManaged()
 	if svc != nil {
 		sb, sbErr := svc.Get(ctx, binding.SandboxHandle)
 		if sbErr != nil {
@@ -386,6 +389,7 @@ func herdrDefaultShellCore(
 			return execHostShell()
 		}
 		closed := binding.IsWorktreeManaged() || (sb.Backend != "" && sb.Backend != registry.CloudHypervisor)
+		closedPane = closed
 		/**
 		 * A Stopped worktree sandbox is the normal state after its last pane
 		 * closed (herdrWtTeardownFn stops rather than removes). Opening a pane
@@ -417,7 +421,11 @@ func herdrDefaultShellCore(
 			fmt.Fprintf(herdrFallbackStderrFn(), "%s sandbox not running (state=%v)\n", guestShellFallbackMarker, sb.State)
 			return execHostShell()
 		}
-		if d, ok := svc.(sandboxDialer); ok {
+		if sb.Backend == registry.Sprites {
+			// No vsock: the pane runs a TTY exec through the driver instead of dialing the guest.
+			cwd = sprites.CloneDir
+			shellCmd = sprites.ShellArgv
+		} else if d, ok := svc.(sandboxDialer); ok {
 			dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			conn, dialErr := d.DialGuest(dialCtx, binding.SandboxHandle, driver.AgentControlPort)
 			cancel()
@@ -431,13 +439,16 @@ func herdrDefaultShellCore(
 			}
 			conn.Close()
 		}
-		cwd = herdrShellCwdFromSandbox(sb)
+		if sb.Backend != registry.Sprites {
+			cwd = herdrShellCwdFromSandbox(sb)
+		}
 	}
 
 	// FAIL-OPEN: execFn is syscall.Exec in production. If it returns — either
 	// because exec itself failed, or because a test seam replaced it — the
 	// process was NOT replaced. An exec failure is logged and execHostShell is
-	argv := []string{nexusBin, "exec", "--pty", "--cwd", cwd, binding.SandboxHandle, "/bin/bash", "--login"}
+	argv := []string{nexusBin, "exec", "--pty", "--cwd", cwd, binding.SandboxHandle}
+	argv = append(argv, shellCmd...)
 
 	// pane-close SIGHUP (sent to the process group by herdr) so it can run
 	if binding.IsWorktreeManaged() {
@@ -445,6 +456,9 @@ func herdrDefaultShellCore(
 	}
 
 	if err := execFn(nexusBin, argv, os.Environ()); err != nil {
+		if closedPane {
+			return refuse(fmt.Sprintf("exec into %s failed: %v", binding.SandboxHandle, err))
+		}
 		slog.Warn("nexus-guest-shell: exec failed; falling back to host shell", "err", err)
 		return execHostShell()
 	}

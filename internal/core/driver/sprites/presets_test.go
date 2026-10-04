@@ -38,7 +38,7 @@ func TestProvisionNoPresetInstallsNothing(t *testing.T) {
 	if err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{AllowedHosts: []string{"github.com"}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.execs) != 0 || len(f.policies) != 1 {
+	if len(f.execs) != 1 || len(f.policies) != 1 {
 		t.Fatalf("execs=%d policies=%d", len(f.execs), len(f.policies))
 	}
 	for _, h := range append(DockerAptHosts, DockerRegistryHosts...) {
@@ -55,7 +55,7 @@ func TestProvisionDockerEgressWindow(t *testing.T) {
 	if err := d.Provision(context.Background(), id, Spec{Presets: []string{"docker"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(f.calls, ","); got != "create,policy,policy,exec,policy" {
+	if got := strings.Join(f.calls, ","); got != "create,policy,policy,exec,policy,exec" {
 		t.Fatalf("calls = %s", got)
 	}
 	base, window, tight := f.policies[0], f.policies[1], f.policies[2]
@@ -98,7 +98,7 @@ func TestProvisionDockerOpenEgressNoWindow(t *testing.T) {
 	if err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{OpenEgress: true, Presets: []string{"docker"}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.policies) != 0 || len(f.execs) != 1 {
+	if len(f.policies) != 0 || len(f.execs) != 2 {
 		t.Fatalf("policies=%d execs=%d", len(f.policies), len(f.execs))
 	}
 }

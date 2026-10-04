@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	sdk "github.com/superfly/sprites-go"
 )
 
 const (
@@ -144,14 +146,19 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 	}
 	// Armed before CreateSprite: a create that errors client-side (timeout, reset)
 	// may still have created the sprite server-side.
+	preexisting := false
 	defer func() {
-		if err != nil {
+		if err != nil && !preexisting {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 			defer cancel()
 			_ = withRetry(dctx, func() error { return d.api.DeleteSprite(dctx, name) })
 		}
 	}()
 	if err := d.api.CreateSprite(ctx, name); err != nil {
+		// 409: the name belongs to a sprite this call did not create; never delete it.
+		if ae := sdk.IsAPIError(err); ae != nil && ae.StatusCode == http.StatusConflict {
+			preexisting = true
+		}
 		return fmt.Errorf("sprites: create %s: %w", name, err)
 	}
 	if !s.OpenEgress {
@@ -173,6 +180,13 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 		}
 		s.CloneDir = CloneDir
 	case s.Sync == SyncBundle:
+		code, err := d.api.Exec(ctx, name, ExecRequest{Argv: []string{"mkdir", "-p", CloneDir}, Dir: "/"})
+		if err != nil {
+			return fmt.Errorf("sprites: mkdir %s: %w", CloneDir, err)
+		}
+		if code != 0 {
+			return fmt.Errorf("sprites: mkdir %s exited %d", CloneDir, code)
+		}
 		s.CloneDir = CloneDir
 	}
 	return d.writeSpec(id, s)

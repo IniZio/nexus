@@ -116,7 +116,7 @@ func TestProvisionClosedEgress(t *testing.T) {
 	if err := d.Provision(context.Background(), id, Spec{AllowedHosts: []string{"github.com"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(f.calls, ","); got != "create,policy" {
+	if got := strings.Join(f.calls, ","); got != "create,policy,exec" {
 		t.Fatalf("calls = %s", got)
 	}
 	if f.created[0] != SpriteName(id) {
@@ -389,8 +389,8 @@ func TestProvisionBundleNeverClones(t *testing.T) {
 		if err := d.Provision(context.Background(), id, Spec{Repo: repo}); err != nil {
 			t.Fatal(err)
 		}
-		if len(f.execs) != 0 {
-			t.Fatalf("repo %q: execs = %d, want 0", repo, len(f.execs))
+		if len(f.execs) != 1 || strings.Join(f.execs[0].Argv, " ") != "mkdir -p "+CloneDir {
+			t.Fatalf("repo %q: execs = %+v, want only mkdir -p %s", repo, f.execs, CloneDir)
 		}
 		b, err := os.ReadFile(d.specPath(id))
 		if err != nil || !strings.Contains(string(b), `"clone_dir":"`+CloneDir+`"`) {
@@ -421,5 +421,28 @@ func TestSSHToHTTPS(t *testing.T) {
 		if got := SSHToHTTPS(in); got != want {
 			t.Errorf("%s: got %s want %s", in, got, want)
 		}
+	}
+}
+
+func TestProvisionCreateConflictKeepsExistingSprite(t *testing.T) {
+	f := &fakeAPI{createErr: &sdk.APIError{StatusCode: 409}}
+	d, _ := newTestDriver(t, f)
+	if err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{OpenEgress: true}); err == nil {
+		t.Fatal("want error")
+	}
+	if len(f.deleted) != 0 {
+		t.Fatalf("deleted %v on 409; must not delete a pre-existing sprite", f.deleted)
+	}
+}
+
+func TestProvisionCreateTimeoutRollsBack(t *testing.T) {
+	f := &fakeAPI{createErr: context.DeadlineExceeded}
+	d, _ := newTestDriver(t, f)
+	id := domain.NewSandboxID()
+	if err := d.Provision(context.Background(), id, Spec{OpenEgress: true}); err == nil {
+		t.Fatal("want error")
+	}
+	if len(f.deleted) != 1 || f.deleted[0] != SpriteName(id) {
+		t.Fatalf("deleted = %v, want rollback of %s", f.deleted, SpriteName(id))
 	}
 }

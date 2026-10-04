@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/IniZio/nexus/internal/core/agent"
+	"github.com/IniZio/nexus/internal/core/agent/agentpb"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/registry"
 	"github.com/IniZio/nexus/internal/core/driver/sprites"
@@ -69,5 +70,47 @@ func TestBackendRoutingLive_CHDefaultServiceDrivesSprite(t *testing.T) {
 	removed = true
 	if obs, err := prov.Observe(ctx, sb.ID); err != nil || obs.State != driver.Absent {
 		t.Fatalf("sprite still present after Remove: state=%v err=%v", obs.State, err)
+	}
+}
+
+// The pane's guest shell path (TTY exec in the clone dir via a CH-default service) must work on a sprite.
+func TestBackendRoutingLive_PaneShellExecTTY(t *testing.T) {
+	if os.Getenv("SPRITES_TOKEN") == "" && os.Getenv("SPRITES_API_TOKEN") == "" {
+		t.Skip("set SPRITES_TOKEN")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("NEXUS_BACKEND", "")
+	svc, err := newSandboxService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	drv, err := newSpritesDriver()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := drv.(*sprites.Driver)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	sb, err := svc.Create(ctx, "route", "shell", service.CreateOptions{Backend: registry.Sprites})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.Remove(context.Background(), sb.ID.String()) }()
+	if err := prov.Provision(ctx, sb.ID, sprites.Spec{OpenEgress: true}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if _, err := svc.Start(ctx, sb.ID.String()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var out, errb bytes.Buffer
+	code, err := svc.Exec(ctx, sb.ID.String(), agent.ExecOptions{
+		Argv:   []string{"sh", "-c", "echo inside-$(hostname)"},
+		Cwd:    sprites.CloneDir,
+		Pty:    &agentpb.PtyOptions{Term: "xterm", InitialSize: &agentpb.WinSize{Rows: 24, Cols: 80}},
+		Stdout: &out,
+		Stderr: &errb,
+	})
+	if err != nil || code != 0 || !strings.Contains(out.String(), "inside-") {
+		t.Fatalf("Exec TTY: code=%d out=%q err=%v stderr=%q", code, out.String(), err, errb.String())
 	}
 }

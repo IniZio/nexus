@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,11 +9,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/sprites"
 	"github.com/IniZio/nexus/internal/herdragent"
 )
 
@@ -537,6 +540,64 @@ func TestHerdrDefaultShell_GuestDialable(t *testing.T) {
 	}
 	if svc.dialedPort != driver.AgentControlPort {
 		t.Errorf("DialGuest port = %d, want %d (AgentControlPort)", svc.dialedPort, driver.AgentControlPort)
+	}
+}
+
+func spritesShellGetenv(k string) string {
+	switch k {
+	case "HERDR_WORKSPACE_ID":
+		return testBinding.HerdrWorkspaceID
+	case "SHELL":
+		return "/bin/bash"
+	}
+	return ""
+}
+
+func spritesShellSvc() *fakeDialableGetter {
+	return &fakeDialableGetter{
+		fakeDefaultShellGetter: fakeDefaultShellGetter{
+			sb: domain.Sandbox{State: domain.Running, Backend: "sprites"},
+		},
+		dialErr: errors.New(`driver "sprites" does not support guest dialing`),
+	}
+}
+
+func TestHerdrDefaultShell_SpritesUsesExecTTYNotDial(t *testing.T) {
+	root := t.TempDir()
+	b := testBinding
+	makeBindings(t, root, []HerdrSpaceBinding{b})
+	svc := spritesShellSvc()
+	cap := &capturedExec{}
+	if err := runCore(context.Background(), spritesShellGetenv, root, svc, cap.fn); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if svc.dialed {
+		t.Error("DialGuest called for sprites-backed sandbox")
+	}
+	want := append([]string{"/fake/nexus", "exec", "--pty", "--cwd", sprites.CloneDir, b.SandboxHandle}, sprites.ShellArgv...)
+	if cap.argv0 != "/fake/nexus" || !slices.Equal(cap.argv, want) {
+		t.Errorf("argv = %v, want %v", cap.argv, want)
+	}
+}
+
+func TestHerdrDefaultShell_SpritesExecFailureRefuses(t *testing.T) {
+	root := t.TempDir()
+	makeBindings(t, root, []HerdrSpaceBinding{testBinding})
+	var execs []string
+	fail := func(argv0 string, _ []string, _ []string) error {
+		execs = append(execs, argv0)
+		return errors.New("exec boom")
+	}
+	var buf bytes.Buffer
+	prev := herdrFallbackStderrFn
+	herdrFallbackStderrFn = func() io.Writer { return &buf }
+	defer func() { herdrFallbackStderrFn = prev }()
+	err := runCore(context.Background(), spritesShellGetenv, root, spritesShellSvc(), fail)
+	if !errors.Is(err, errGuestShellRefused) {
+		t.Fatalf("err = %v; want errGuestShellRefused", err)
+	}
+	if len(execs) != 1 || execs[0] != "/fake/nexus" {
+		t.Errorf("execs = %v; host shell must not be exec'd", execs)
 	}
 }
 
@@ -1567,7 +1628,6 @@ func TestGuestShellRefusesHostShellForUndialableSandbox(t *testing.T) {
 		binding HerdrSpaceBinding
 		backend string
 	}{
-		"sprites backend":  {testBinding, "sprites"},
 		"worktree managed": {HerdrSpaceBinding{HerdrWorkspaceID: "wXX", SandboxHandle: "ac3/testbox", WorktreeManaged: true}, ""},
 	}
 	for name, tc := range cases {
