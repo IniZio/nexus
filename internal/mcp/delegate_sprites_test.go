@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -100,10 +102,11 @@ func TestPoll_CHMarker_NoHostEmit(t *testing.T) {
 
 func TestDispatchClearsDoneFlag_AllowsSecondEmit(t *testing.T) {
 	evs := captureDelegateEmits(t)
-	emitDelegateDoneOnce(context.Background(), "sb1", "a")
-	emitDelegateDoneOnce(context.Background(), "sb1", "a")
-	clearDelegateDoneFlag("sb1")
-	emitDelegateDoneOnce(context.Background(), "sb1", "b")
+	sbID := domain.NewSandboxID().String()
+	emitDelegateDoneOnce(context.Background(), sbID, "a")
+	emitDelegateDoneOnce(context.Background(), sbID, "a")
+	clearDelegateDoneFlag(sbID)
+	emitDelegateDoneOnce(context.Background(), sbID, "b")
 	if len(*evs) != 2 {
 		t.Fatalf("emits = %d, want 2", len(*evs))
 	}
@@ -130,5 +133,23 @@ func TestDispatch_SpritesBrief(t *testing.T) {
 	}
 	if got := svc.argvs[0]; len(got) != 3 || got[2] != spritesDoneMarker {
 		t.Fatalf("rm argv = %v", got)
+	}
+}
+
+func TestClearDelegateDoneFlag_RejectsTraversal(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	victim := filepath.Join(state, "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"../../victim", "../victim", victim, "sb1", ""} {
+		clearDelegateDoneFlag(id)
+		if _, ok := delegateDoneFlag(id); ok {
+			t.Errorf("delegateDoneFlag(%q) accepted invalid id", id)
+		}
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("file outside flag dir was deleted: %v", err)
 	}
 }

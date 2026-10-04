@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/hubclient"
 )
@@ -83,7 +84,12 @@ func clearDelegateDoneFlag(id string) {
 	}
 }
 
+// delegateDoneFlag builds the flag path; ids that are not canonical sandbox ids
+// are rejected so a raw ref can never escape the flag directory.
 func delegateDoneFlag(id string) (string, bool) {
+	if _, err := domain.ParseSandboxID(id); err != nil {
+		return "", false
+	}
 	root, err := store.DefaultRoot()
 	if err != nil {
 		return "", false

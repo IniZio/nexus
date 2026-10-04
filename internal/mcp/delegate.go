@@ -389,7 +389,9 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		sandboxID := delegateSandboxID(ctx, svc, args.Ref)
 		_, _, _, _ = svc.Exec(ctx, args.Ref, []string{"rm", "-f", tgt.marker}, nil, "/", "")
-		clearDelegateDoneFlag(sandboxID)
+		if sb, ok := delegateSandbox(ctx, svc, args.Ref); ok {
+			clearDelegateDoneFlag(sb.ID.String())
+		}
 		brief := tgt.orders + "Sandbox id: " + sandboxID + "\n\n"
 		if args.BriefPath != "" {
 			brief += "Your task brief is in " + tgt.workDir + "/" + briefFileName + " — read it first and follow it.\n\n"
