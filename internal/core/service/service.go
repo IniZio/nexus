@@ -497,7 +497,9 @@ func (s *Service) reapBuilders(ctx context.Context, all []domain.Sandbox) {
 		}
 		// Non-fatal: if CH is already gone the Stop returns nil after clearState.
 		// Ignore errors; we proceed to delete the record regardless.
-		_ = s.driver.Stop(ctx, sb.ID)
+		if d, derr := s.drvFor(sb); derr == nil {
+			_ = d.Stop(ctx, sb.ID)
+		}
 
 		// Delete the store record. ErrNotFound is harmless — a concurrent
 		// reap already deleted it.
@@ -683,42 +685,7 @@ func (s *Service) Start(ctx context.Context, ref string) (domain.Sandbox, error)
 		rec.State = tr.NextState
 		rec.InstanceID = instanceID
 		rec.StopReason = "" // cleared: sandbox is running; StopReason only qualifies stopped
-		// Persist the netns adoption identity fields so a replacement supervisor
-		// can call AdoptNetnsRuntime without consulting ps/nsenter. The optional
-		// NetnsStateProvider interface is implemented only by drivers that use
-		// StartNetnsRuntime; other drivers leave these fields zero/empty.
-		if nsp, ok := drv.(driver.NetnsStateProvider); ok {
-			ns, hasNetns := nsp.NetnsState(rec.ID)
-			if hasNetns {
-				rec.NetnsChildPID = ns.ChildPID
-				rec.NetnsChildPGID = ns.ChildPGID
-				rec.NetnsChildStartTime = ns.ChildStartTime
-				rec.VhostSocket = ns.VhostSocket
-				rec.CHAPISocket = ns.APISocket
-				rec.NetnsControlSocket = ns.ControlSocket
-				rec.NetnsControlToken = ns.ControlToken
-			} else {
-				// Driver reported no active netns runtime: clear any stale
-				// values from a previous Start so AdoptNetnsRuntime cannot
-				// target a recycled pid.
-				rec.NetnsChildPID = 0
-				rec.NetnsChildPGID = 0
-				rec.NetnsChildStartTime = 0
-				rec.VhostSocket = ""
-				rec.CHAPISocket = ""
-				rec.NetnsControlSocket = ""
-				rec.NetnsControlToken = ""
-			}
-		} else {
-			// Driver does not use netns runtime at all: clear the fields.
-			rec.NetnsChildPID = 0
-			rec.NetnsChildPGID = 0
-			rec.NetnsChildStartTime = 0
-			rec.VhostSocket = ""
-			rec.CHAPISocket = ""
-			rec.NetnsControlSocket = ""
-			rec.NetnsControlToken = ""
-		}
+		persistNetnsState(rec, drv)
 		updated = *rec
 		return nil
 	}); err != nil {
@@ -778,6 +745,9 @@ func (s *Service) Stop(ctx context.Context, ref string) (domain.Sandbox, error) 
 
 	if _, err := s.machine.Next(sb.State, lifecycle.TriggerStop); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("service: stop %s: %w", sb.ID, err)
+	}
+	if sb.State == domain.Hibernated {
+		return s.stopHibernated(ctx, sb)
 	}
 
 	// driver.Stop is called inside store.Update for the same reason as Start:
@@ -1318,7 +1288,11 @@ func (s *Service) StartPerimeterOnly(ctx context.Context, sb domain.Sandbox, see
 	if sb.State != domain.Running {
 		return fmt.Errorf("service: start perimeter only: sandbox %s is not running", sb.ID)
 	}
-	hook, ok := s.driver.(driver.NetworkHook)
+	drv, err := s.drvFor(sb)
+	if err != nil {
+		return err
+	}
+	hook, ok := drv.(driver.NetworkHook)
 	if !ok || s.broker == nil {
 		return nil
 	}
@@ -1445,11 +1419,15 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 
 	// Capability check is outside the lock: a type assertion has no I/O and
 	// fails fast without contending on the per-sandbox flock.
-	snapper, ok := s.driver.(driver.Snapshotter)
+	drv, err := s.drvFor(sb)
+	if err != nil {
+		return artifact.Snapshot{}, err
+	}
+	snapper, ok := drv.(driver.Snapshotter)
 	if !ok {
 		return artifact.Snapshot{}, fmt.Errorf(
 			"service: snapshot %s: driver %q does not support snapshots: %w",
-			sb.ID, s.driver.Name(), ErrNoSubstrate,
+			sb.ID, drv.Name(), ErrNoSubstrate,
 		)
 	}
 
@@ -1472,10 +1450,7 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 		// exist and any added later — which per-caller gating does not. TBR-PD-15
 		// will design snapshot-with-volumes as a whole; this gate is not a settled
 		// semantic. Use independent nexus create calls for sandboxes that need volumes.
-		var attachedVolDescs []string
-		for _, va := range rec.MountedVolumes {
-			attachedVolDescs = append(attachedVolDescs, va.Name+"(kind="+va.Kind+")")
-		}
+		attachedVolDescs := attachedVolumeDescs(*rec)
 		if len(attachedVolDescs) > 0 {
 			return fmt.Errorf(
 				"sandbox has attached named volume(s) [%s]: "+
@@ -1490,10 +1465,7 @@ func (s *Service) Snapshot(ctx context.Context, ref string) (artifact.Snapshot, 
 		// RestoreFromSnapshot → ForkFrom would then give the restored child a live
 		// virtiofs link back to the same host directory, meaning two VMs share one
 		// mutable host directory — the exact corruption D-PD-53 exists to prevent.
-		var liveMountDescs []string
-		for _, lm := range rec.LiveMounts {
-			liveMountDescs = append(liveMountDescs, lm.HostPath+"→"+lm.GuestPath)
-		}
+		liveMountDescs := liveMountDescs(*rec)
 		if len(liveMountDescs) > 0 {
 			return fmt.Errorf(
 				"sandbox has live host-directory mount(s) [%s]: "+
@@ -1646,18 +1618,22 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 	}
 
 	// Capability checks outside the lock: type assertions have no I/O.
-	snapper, ok := s.driver.(driver.Snapshotter)
+	drv, err := s.drvFor(parent)
+	if err != nil {
+		return nil, err
+	}
+	snapper, ok := drv.(driver.Snapshotter)
 	if !ok {
 		return nil, fmt.Errorf(
 			"service: fork %s: driver %q does not support snapshots: %w",
-			parent.ID, s.driver.Name(), ErrNoSubstrate,
+			parent.ID, drv.Name(), ErrNoSubstrate,
 		)
 	}
-	forker, ok := s.driver.(driver.Forker)
+	forker, ok := drv.(driver.Forker)
 	if !ok {
 		return nil, fmt.Errorf(
 			"service: fork %s: driver %q does not support fork: %w",
-			parent.ID, s.driver.Name(), ErrNoSubstrate,
+			parent.ID, drv.Name(), ErrNoSubstrate,
 		)
 	}
 
@@ -1743,7 +1719,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 
 	instanceIDs, err := forker.ForkFrom(ctx, snap, childIDs)
 	if err != nil {
-		if remover, ok := s.driver.(driver.SnapshotRemover); ok {
+		if remover, ok := drv.(driver.SnapshotRemover); ok {
 			_ = remover.RemoveSnapshot(snap.ID)
 		}
 		return nil, fmt.Errorf("service: fork %s: driver: %w", parent.ID, err)
@@ -1768,6 +1744,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 			Project:    parent.Project,
 			Labels:     maps.Clone(parent.Labels),
 			State:      domain.Running,
+			Backend:    parent.Backend,
 			InstanceID: instanceIDs[i],
 			Envelope: domain.Envelope{
 				ImageDigest:  parent.Envelope.ImageDigest,
@@ -1781,7 +1758,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 				SourceSnapshot: string(snap.ID),
 			},
 		}
-		s.recordNetnsIdentity(&child)
+		recordNetnsIdentity(drv, &child)
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: fork %s: persist child %s: %w", parent.ID, id, err)
 		}
@@ -1800,7 +1777,7 @@ func (s *Service) Fork(ctx context.Context, ref string, count int, opts ...ForkO
 	// only chance to attach a perimeter. Same gate as Start: NetworkHook
 	// plus a broker. The driver already holds a per-child perimConn
 	// (cloudhypervisor/fork.go); GuestNetworkFD claims it here.
-	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
+	if hook, ok := drv.(driver.NetworkHook); ok && s.broker != nil {
 		for i := range children {
 			if err := s.startSupervisor(ctx, hook, children[i], nil); err != nil {
 				return nil, fmt.Errorf("service: fork %s: perimeter child %s: %w", parent.ID, children[i].ID, err)
@@ -1821,8 +1798,8 @@ func refuseLegacyNIC(sb domain.Sandbox, ref string) error {
 }
 
 // recordNetnsIdentity copies the driver's live netns identity onto a child.
-func (s *Service) recordNetnsIdentity(child *domain.Sandbox) {
-	nsp, ok := s.driver.(driver.NetnsStateProvider)
+func recordNetnsIdentity(drv driver.Driver, child *domain.Sandbox) {
+	nsp, ok := drv.(driver.NetnsStateProvider)
 	if !ok {
 		return
 	}
@@ -1882,7 +1859,15 @@ func (s *Service) SnapshotRemove(ctx context.Context, id artifact.SnapshotID) er
 	// non-existent snapshot — kept so that drivers without SnapshotRemover
 	// still remove the artifact record, and so that the two Store objects
 	// (which share the same on-disk root in production) converge correctly.
-	if remover, ok := s.driver.(driver.SnapshotRemover); ok {
+	rmDrv := s.driver
+	if snap, rerr := s.artifacts.Read(id); rerr == nil {
+		if origin, gerr := s.store.Get(ctx, snap.SandboxID); gerr == nil {
+			if d, derr := s.drvFor(origin); derr == nil {
+				rmDrv = d
+			}
+		}
+	}
+	if remover, ok := rmDrv.(driver.SnapshotRemover); ok {
 		if err := remover.RemoveSnapshot(id); err != nil {
 			return fmt.Errorf("service: snapshot rm %s: driver: %w", id, err)
 		}
@@ -1923,15 +1908,6 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 		return nil, fmt.Errorf("service: restore %s: snapshot integrity: %w", snapID, err)
 	}
 
-	// Capability check outside the lock: type assertion has no I/O.
-	forker, ok := s.driver.(driver.Forker)
-	if !ok {
-		return nil, fmt.Errorf(
-			"service: restore %s: driver %q does not support fork: %w",
-			snapID, s.driver.Name(), ErrNoSubstrate,
-		)
-	}
-
 	// Mint child IDs. Each is a UUIDv7; collision-free even in the same ms.
 	childIDs := make([]domain.SandboxID, count)
 	for i := range childIDs {
@@ -1967,6 +1943,17 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 	if originErr != nil {
 		return nil, fmt.Errorf("service: restore %s: origin sandbox %s unavailable — cannot reconstruct egress policy (D-PD-33): %w", snapID, snap.SandboxID, originErr)
 	}
+	drv, err := s.drvFor(origin)
+	if err != nil {
+		return nil, err
+	}
+	forker, ok := drv.(driver.Forker)
+	if !ok {
+		return nil, fmt.Errorf(
+			"service: restore %s: driver %q does not support fork: %w",
+			snapID, drv.Name(), ErrNoSubstrate,
+		)
+	}
 
 	// Lease every child's disks before the driver writes them (TBD-PD-38).
 	// Restore had NO leases at all: both the ULID-keyed <childID>.raw and the
@@ -2001,6 +1988,7 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 			ID:         id,
 			Name:       fmt.Sprintf("restore-%s", id.String()[3:]),
 			State:      domain.Running,
+			Backend:    origin.Backend,
 			InstanceID: instanceIDs[i],
 			Project:    origin.Project,
 			Labels:     maps.Clone(origin.Labels),
@@ -2016,7 +2004,7 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 				SourceSnapshot: string(snapID),
 			},
 		}
-		s.recordNetnsIdentity(&child)
+		recordNetnsIdentity(drv, &child)
 		if err := s.store.Create(ctx, child); err != nil {
 			return nil, fmt.Errorf("service: restore %s: persist child %s: %w", snapID, id, err)
 		}
@@ -2027,7 +2015,7 @@ func (s *Service) RestoreFromSnapshot(ctx context.Context, snapID artifact.Snaps
 		children = append(children, child)
 	}
 
-	if hook, ok := s.driver.(driver.NetworkHook); ok && s.broker != nil {
+	if hook, ok := drv.(driver.NetworkHook); ok && s.broker != nil {
 		for i := range children {
 			if err := s.startSupervisor(ctx, hook, children[i], nil); err != nil {
 				return nil, fmt.Errorf("service: restore %s: perimeter child %s: %w", snapID, children[i].ID, err)
@@ -2115,6 +2103,24 @@ func buildMCPPolicies(mp domain.EgressMCPPolicies) map[string]mitm.MCPPolicy {
 			Allow: p.Allow,
 			Args:  p.Args,
 		}
+	}
+	return out
+}
+
+// attachedVolumeDescs describes the named volumes attached to rec ("name(kind=k)").
+func attachedVolumeDescs(rec domain.Sandbox) []string {
+	var out []string
+	for _, va := range rec.MountedVolumes {
+		out = append(out, va.Name+"(kind="+va.Kind+")")
+	}
+	return out
+}
+
+// liveMountDescs describes the live host-directory mounts of rec ("host→guest").
+func liveMountDescs(rec domain.Sandbox) []string {
+	var out []string
+	for _, lm := range rec.LiveMounts {
+		out = append(out, lm.HostPath+"→"+lm.GuestPath)
 	}
 	return out
 }
