@@ -215,10 +215,13 @@ type sandboxInfoJSON struct {
 	Labels       map[string]string `json:"labels,omitempty"`
 	RemoveOnExit bool              `json:"remove_on_exit,omitempty"`
 	StopReason   string            `json:"stop_reason,omitempty"`
+	// Set only while State == hibernated.
+	SnapshotBytes       int64 `json:"snapshot_bytes,omitempty"`
+	SnapshotBytesOnDisk int64 `json:"snapshot_bytes_on_disk,omitempty"`
 }
 
 func toSandboxInfoJSON(sb domain.Sandbox) sandboxInfoJSON {
-	return sandboxInfoJSON{
+	info := sandboxInfoJSON{
 		ID:           sb.ID.String(),
 		Project:      sb.Project,
 		Name:         sb.Name,
@@ -228,6 +231,19 @@ func toSandboxInfoJSON(sb domain.Sandbox) sandboxInfoJSON {
 		RemoveOnExit: sb.RemoveOnExit,
 		StopReason:   string(sb.StopReason),
 	}
+	if sb.State == domain.Hibernated {
+		info.SnapshotBytes = sb.SnapshotBytes
+		info.SnapshotBytesOnDisk = sb.SnapshotBytesOnDisk
+	}
+	return info
+}
+
+// sandboxListState is the STATE column: hibernated sandboxes show snapshot size.
+func sandboxListState(sb domain.Sandbox) string {
+	if sb.State == domain.Hibernated {
+		return fmt.Sprintf("%s (%s)", sb.State, humanBytes(sb.SnapshotBytesOnDisk))
+	}
+	return sb.State.String()
 }
 
 type sandboxListDataJSON struct {
@@ -1869,9 +1885,29 @@ func workspaceGuestPathFor(ws *service.WorkspaceSpec) string {
 }
 
 func spawnPersistedSupervisor(ctx context.Context, svc *service.Service, id domain.SandboxID, stateDir string) error {
+	return spawnSupervisorFn(ctx, svc, id, stateDir, nil)
+}
+
+// restoreSpawn asks the spawned supervisor to resume a Hibernated sandbox from
+// Dir instead of cold-booting it. The request rides argv only; it is never
+// written to spawn.json.
+type restoreSpawn struct {
+	Dir            string
+	Mode           string
+	NoColdFallback bool
+}
+
+// spawnSupervisorFn is a test seam over spawnPersistedSupervisorRestore.
+var spawnSupervisorFn = spawnPersistedSupervisorRestore
+
+func spawnPersistedSupervisorRestore(ctx context.Context, svc *service.Service, id domain.SandboxID, stateDir string, rs *restoreSpawn) error {
 	cfg, err := supervisor.ReadSpawnSpec(stateDir)
 	if err != nil {
 		return err
+	}
+	if rs != nil {
+		_ = os.Remove(supervisor.ResumeOutcomePath(stateDir))
+		cfg.RestoreFrom, cfg.RestoreMode, cfg.NoColdFallback = rs.Dir, rs.Mode, rs.NoColdFallback
 	}
 	pid, _, err := supervisor.SpawnDetached(supervisor.SpawnConfig{
 		Config:       cfg,
@@ -1934,9 +1970,21 @@ func reconcileDeadSupervisor(ctx context.Context, id domain.SandboxID) error {
 }
 
 func ensureDetachedSupervisor(ctx context.Context, svc *service.Service, sb domain.Sandbox) error {
+	return ensureDetachedSupervisorRestore(ctx, svc, sb, nil)
+}
+
+// ensureDetachedSupervisorRestore is ensureDetachedSupervisor with an optional
+// restore request: for a Hibernated sandbox the spawned supervisor resumes the
+// snapshot instead of cold-booting.
+func ensureDetachedSupervisorRestore(ctx context.Context, svc *service.Service, sb domain.Sandbox, rs *restoreSpawn) error {
 	if sb.SupervisorPID > 0 {
 		alive, _ := supervisor.CheckAndReconcile(sb.SupervisorPID, sb.SupervisorSock)
 		if alive {
+			if sb.State == domain.Hibernated {
+				// The hibernating supervisor is still exiting; adopting it would
+				// report success while the VM stays down.
+				return fmt.Errorf("sandbox %s: supervisor (pid %d) is still exiting after hibernate; retry in a moment", sb.ID, sb.SupervisorPID)
+			}
 			return nil
 		}
 		_ = svc.ClearSupervisor(ctx, sb.ID)
@@ -1965,7 +2013,77 @@ func ensureDetachedSupervisor(ctx context.Context, svc *service.Service, sb doma
 	if _, err := os.Stat(supervisor.SpecPath(stateDir)); err != nil {
 		return fmt.Errorf("no spawn spec for %s: %w", sb.ID, err)
 	}
-	return spawnPersistedSupervisor(ctx, svc, sb.ID, stateDir)
+	return spawnSupervisorFn(ctx, svc, sb.ID, stateDir, rs)
+}
+
+// resumeOptions tunes resumeHibernated.
+type resumeOptions struct {
+	Mode           string // copy | ondemand; "" = copy
+	NoColdFallback bool
+}
+
+// resumeResult reports resumeHibernated. Report is nil when the sandbox was
+// already Running (or resumed in place from Paused).
+type resumeResult struct {
+	Already bool
+	Sandbox domain.Sandbox
+	Report  *supervisor.ResumeReport
+}
+
+// resumeHibernated brings a Hibernated sandbox back to Running by spawning its
+// detached supervisor in restore mode. Running is a no-op (Already); Paused
+// and illegal states are handled by Service.ResumeHibernated. The `resume`
+// verb (HB-12) is a thin layer over this.
+func resumeHibernated(ctx context.Context, svc *service.Service, ref string, opts resumeOptions) (resumeResult, error) {
+	sb, err := svc.ResolveRef(ctx, ref)
+	if err != nil {
+		return resumeResult{}, err
+	}
+	if sb.State == domain.Running && sb.SupervisorSock != "" && !supervisorLiveFn(sb) {
+		// Running on record but its supervisor (and VMM) are gone, e.g. killed
+		// mid-hibernate before the record flipped. "Already running" would be a
+		// lie: reconcile and cold-start on the same disks.
+		t0 := time.Now()
+		if err := ensureDetachedSupervisor(ctx, svc, sb); err != nil {
+			return resumeResult{}, err
+		}
+		res := resumeResult{Sandbox: sb}
+		if fresh, getErr := svc.GetSandboxByID(ctx, sb.ID); getErr == nil {
+			res.Sandbox = fresh
+		}
+		res.Report = &supervisor.ResumeReport{
+			ID: sb.ID.String(), State: res.Sandbox.State.String(), ResumedFrom: service.ResumedFromCold,
+			FallbackReason: "supervisor and VMM were gone while the record said running (interrupted hibernate or crash); cold-started",
+			TotalMs:        time.Since(t0).Milliseconds(),
+		}
+		return res, nil
+	}
+	if sb.State != domain.Hibernated {
+		out, err := svc.ResumeHibernated(ctx, ref, service.ResumeOptions{})
+		if err != nil {
+			return resumeResult{}, err
+		}
+		return resumeResult{Already: out.Already, Sandbox: out.Sandbox}, nil
+	}
+	rs := &restoreSpawn{Dir: sb.HibernateDir, Mode: opts.Mode, NoColdFallback: opts.NoColdFallback}
+	if err := ensureDetachedSupervisorRestore(ctx, svc, sb, rs); err != nil {
+		// The supervisor reports its failure as text (supervisor.err); restore
+		// the sentinel so strict resume maps to snapshot_failed.
+		if opts.NoColdFallback && strings.Contains(err.Error(), service.ErrSnapshotFailed.Error()) {
+			return resumeResult{}, fmt.Errorf("%w: %v", service.ErrSnapshotFailed, err)
+		}
+		return resumeResult{}, err
+	}
+	res := resumeResult{Sandbox: sb}
+	if fresh, getErr := svc.GetSandboxByID(ctx, sb.ID); getErr == nil {
+		res.Sandbox = fresh
+	}
+	if storeRoot, rerr := store.DefaultRoot(); rerr == nil {
+		if rep, rerr := supervisor.ReadResumeOutcome(supervisor.DefaultStateDir(storeRoot, sb.ID)); rerr == nil {
+			res.Report = &rep
+		}
+	}
+	return res, nil
 }
 
 const supervisorExitTimeout = 15 * time.Second
@@ -2069,7 +2187,7 @@ func runSandboxList(ctx context.Context, args []string, out *Output, svc *servic
 			for _, sb := range all {
 				rows = append(rows, []string{
 					sb.Handle(),
-					sb.State.String(),
+					sandboxListState(sb),
 					herdrWorkspaceAgent(sb),
 					herdrWorkspaceMounts(sb),
 					sb.ID.String(),
@@ -2240,6 +2358,17 @@ func runSandboxStart(ctx context.Context, args []string, out *Output, svc *servi
 	if err != nil {
 		return errSandbox("sandbox start", err)
 	}
+	if sb.State == domain.Hibernated {
+		// No in-process fallback: Service.Start refuses Hibernated, and a
+		// failed restore must surface rather than be retried as a cold boot.
+		res, resumeErr := resumeHibernated(ctx, svc, args[0], resumeOptions{})
+		if resumeErr != nil {
+			return errSandbox("sandbox start", resumeErr)
+		}
+		out.EmitSuccess("sandbox.started", toSandboxInfoJSON(res.Sandbox),
+			fmt.Sprintf("started sandbox %s (%s)", res.Sandbox.Handle(), res.Sandbox.ID))
+		return nil
+	}
 	if supervisorErr := ensureDetachedSupervisor(ctx, svc, sb); supervisorErr != nil {
 		slog.Info("sandbox start: no detached supervisor; in-process start", "sandbox", sb.ID, "err", supervisorErr)
 		started, startErr := svc.Start(ctx, args[0])
@@ -2266,7 +2395,7 @@ func runSandboxStop(ctx context.Context, args []string, out *Output, svc *servic
 	if err != nil {
 		return errSandbox("sandbox stop", err)
 	}
-	if sb.SupervisorSock != "" {
+	if sb.SupervisorSock != "" && sb.State != domain.Hibernated {
 		alive, _ := supervisor.CheckAndReconcile(sb.SupervisorPID, sb.SupervisorSock)
 		if alive {
 			waitErr := stopDetachedSupervisor(ctx, svc, sb)

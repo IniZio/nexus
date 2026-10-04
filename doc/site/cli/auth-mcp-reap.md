@@ -65,7 +65,7 @@ Run the nexus MCP server over stdio. The server exposes the full sandbox lifecyc
 nexus mcp
 ```
 
-Connect a host MCP client to this process over stdio. The server exposes exactly 7 lifecycle tools: `sandbox_create`, `sandbox_list`, `sandbox_start`, `sandbox_stop`, `sandbox_pause`, `sandbox_resume`, `sandbox_remove`. Response shape: `{"ok": true|false, "data": ..., "truncated": null}`. For the full envelope and MCP scope rationale, see [Response envelopes](/cli/#response-envelopes).
+Connect a host MCP client to this process over stdio. The server exposes exactly 8 lifecycle tools: `sandbox_create`, `sandbox_list`, `sandbox_start`, `sandbox_stop`, `sandbox_pause`, `sandbox_hibernate`, `sandbox_resume`, `sandbox_remove`. Response shape: `{"ok": true|false, "data": ..., "truncated": null}`. For the full envelope and MCP scope rationale, see [Response envelopes](/cli/#response-envelopes).
 
 ## nexus reap
 

@@ -21,6 +21,11 @@ type SandboxService interface {
 	Stop(ctx context.Context, ref string) (domain.Sandbox, error)
 	Pause(ctx context.Context, ref string) (domain.Sandbox, error)
 	Resume(ctx context.Context, ref string) (domain.Sandbox, error)
+	// Hibernate snapshots a running sandbox to disk (idempotent on Hibernated).
+	Hibernate(ctx context.Context, ref string) (HibernateResult, error)
+	// ResumeSandbox resumes a Paused or Hibernated sandbox; mode is "" (copy
+	// default), "copy" or "ondemand".
+	ResumeSandbox(ctx context.Context, ref, mode string, noColdFallback bool) (ResumeResult, error)
 	Remove(ctx context.Context, ref string) error
 	Exec(ctx context.Context, ref string, argv []string, env map[string]string, cwd, stdin string) (exitCode int32, stdout, stderr string, err error)
 	RunEphemeral(ctx context.Context, project, name string, opts service.CreateAndBootOptions, argv []string, env map[string]string, cwd, stdin string) (exitCode int32, stdout, stderr string, err error)
@@ -54,6 +59,41 @@ func toSandboxList(sbs []domain.Sandbox) []sandboxJSON {
 		out[i] = toSandboxJSON(sb)
 	}
 	return out
+}
+
+// HibernateResult is the sandbox_hibernate result; fields mirror the CLI
+// `hibernate --json` contract.
+type HibernateResult struct {
+	ID                  string `json:"id"`
+	State               string `json:"state"`
+	Already             bool   `json:"already"`
+	PauseMs             int64  `json:"pause_ms"`
+	SnapshotMs          int64  `json:"snapshot_ms"`
+	TotalMs             int64  `json:"total_ms"`
+	SnapshotBytes       int64  `json:"snapshot_bytes"`
+	SnapshotBytesOnDisk int64  `json:"snapshot_bytes_on_disk"`
+	SnapshotDir         string `json:"snapshot_dir"`
+}
+
+// ResumeResult is the sandbox_resume result; fields mirror the CLI
+// `resume --json` contract.
+type ResumeResult struct {
+	ID             string `json:"id"`
+	State          string `json:"state"`
+	Already        bool   `json:"already"`
+	ResumedFrom    string `json:"resumed_from,omitempty"`
+	RestoreMode    string `json:"restore_mode,omitempty"`
+	RestoreMs      int64  `json:"restore_ms"`
+	AgentReadyMs   int64  `json:"agent_ready_ms"`
+	TotalMs        int64  `json:"total_ms"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+	ClockSkewMs    int64  `json:"clock_skew_ms,omitempty"`
+}
+
+type resumeArgs struct {
+	Ref            string `json:"ref"                       jsonschema:"sandbox reference: exact ID, ID prefix, or project/name handle"`
+	RestoreMode    string `json:"restore_mode,omitempty"    jsonschema:"snapshot restore mode for a hibernated sandbox: copy (default) or ondemand"`
+	NoColdFallback bool   `json:"no_cold_fallback,omitempty" jsonschema:"fail instead of cold-starting when snapshot restore fails"`
 }
 
 type createArgs struct {
@@ -129,6 +169,7 @@ func KnownTools() []string {
 		"sandbox_start",
 		"sandbox_stop",
 		"sandbox_pause",
+		"sandbox_hibernate",
 		"sandbox_resume",
 		"sandbox_remove",
 		"sandbox_exec",
@@ -262,17 +303,34 @@ func registerTools(srv *gosdk.Server, svc SandboxService) {
 	})
 
 	gosdk.AddTool(srv, &gosdk.Tool{
-		Name:        "sandbox_resume",
-		Description: "Resume a paused sandbox. Returns the updated sandbox as JSON.",
+		Name:        "sandbox_hibernate",
+		Description: "Snapshot a running sandbox to disk and free its RAM (cloud-hypervisor only). Returns {id,state,already,pause_ms,snapshot_ms,total_ms,snapshot_bytes,snapshot_bytes_on_disk,snapshot_dir}. Error codes: hibernate_unsupported, hibernate_refused, illegal_transition, snapshot_failed. sandbox_resume restores it.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args refArgs) (*gosdk.CallToolResult, any, error) {
 		if args.Ref == "" {
 			return nil, nil, fmt.Errorf("ref is required")
 		}
-		sb, err := svc.Resume(ctx, args.Ref)
+		res, err := svc.Hibernate(ctx, args.Ref)
 		if err != nil {
-			return errorResult(err), nil, nil
+			return hibernateErrorResult(err), nil, nil
 		}
-		return successResult(toSandboxJSON(sb)), nil, nil
+		return successResult(res), nil, nil
+	})
+
+	gosdk.AddTool(srv, &gosdk.Tool{
+		Name:        "sandbox_resume",
+		Description: "Resume a paused or hibernated sandbox. Returns {id,state,already,resumed_from,restore_mode,restore_ms,agent_ready_ms,total_ms,fallback_reason,clock_skew_ms}. Optional restore_mode (copy|ondemand) and no_cold_fallback apply to hibernated sandboxes. Error codes: hibernate_unsupported, hibernate_refused, illegal_transition, snapshot_failed.",
+	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args resumeArgs) (*gosdk.CallToolResult, any, error) {
+		if args.Ref == "" {
+			return nil, nil, fmt.Errorf("ref is required")
+		}
+		if m := args.RestoreMode; m != "" && m != "copy" && m != "ondemand" {
+			return nil, nil, fmt.Errorf("restore_mode %q: want copy or ondemand", m)
+		}
+		res, err := svc.ResumeSandbox(ctx, args.Ref, args.RestoreMode, args.NoColdFallback)
+		if err != nil {
+			return hibernateErrorResult(err), nil, nil
+		}
+		return successResult(res), nil, nil
 	})
 
 	gosdk.AddTool(srv, &gosdk.Tool{

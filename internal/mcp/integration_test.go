@@ -60,13 +60,14 @@ func TestMCPIntegration_stdio(t *testing.T) {
 
 	// ── tools/list ────────────────────────────────────────────────────────────
 	wantTools := map[string]bool{
-		"sandbox_create": false,
-		"sandbox_list":   false,
-		"sandbox_start":  false,
-		"sandbox_stop":   false,
-		"sandbox_pause":  false,
-		"sandbox_resume": false,
-		"sandbox_remove": false,
+		"sandbox_create":    false,
+		"sandbox_list":      false,
+		"sandbox_start":     false,
+		"sandbox_stop":      false,
+		"sandbox_pause":     false,
+		"sandbox_resume":    false,
+		"sandbox_hibernate": false,
+		"sandbox_remove":    false,
 	}
 	if init.Capabilities.Tools == nil {
 		t.Fatal("server advertises no tools capability")

@@ -2,6 +2,10 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
+
+	"github.com/IniZio/nexus/internal/core/lifecycle"
+	"github.com/IniZio/nexus/internal/core/service"
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -48,7 +52,28 @@ func successResult(data any) *gosdk.CallToolResult {
 // errorResult returns a CallToolResult with IsError: true so MCP clients
 // recognise tool errors. The envelope carries ok=false and the error message.
 func errorResult(err error) *gosdk.CallToolResult {
-	r := Response{OK: false, Error: &ErrorInfo{Code: "error", Message: err.Error()}}
+	return codedErrorResult("error", err)
+}
+
+// hibernateErrorResult is errorResult with the hibernate/resume error codes.
+func hibernateErrorResult(err error) *gosdk.CallToolResult {
+	var illegalT *lifecycle.IllegalTransitionError
+	code := "error"
+	switch {
+	case errors.Is(err, service.ErrHibernateUnsupported):
+		code = "hibernate_unsupported"
+	case errors.Is(err, service.ErrHibernateRefused):
+		code = "hibernate_refused"
+	case errors.Is(err, service.ErrSnapshotFailed):
+		code = "snapshot_failed"
+	case errors.As(err, &illegalT):
+		code = "illegal_transition"
+	}
+	return codedErrorResult(code, err)
+}
+
+func codedErrorResult(code string, err error) *gosdk.CallToolResult {
+	r := Response{OK: false, Error: &ErrorInfo{Code: code, Message: err.Error()}}
 	b, _ := json.Marshal(r)
 	return &gosdk.CallToolResult{
 		IsError: true,

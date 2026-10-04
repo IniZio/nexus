@@ -17,6 +17,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/builder"
 	"github.com/IniZio/nexus/internal/core/driver/cloudhypervisor"
 	"github.com/IniZio/nexus/internal/core/driver/fake"
+	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/service"
@@ -1524,5 +1525,53 @@ func TestResolveExtraSecretHosts_IncludesExtraAgentOpenEgress(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("resolveExtraSecretHosts: cursor CredentialedHost %q not in %v; extra agent not brokered", cursorProfile.CredentialedHost, hosts)
+	}
+}
+
+func TestSandboxList_Hibernated_SnapshotFields(t *testing.T) {
+	st, err := store.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(st, fake.New(), lifecycle.New())
+	ctx := context.Background()
+	hib, _ := svc.Create(ctx, "p", "hib", service.CreateOptions{})
+	run, _ := svc.Create(ctx, "p", "run", service.CreateOptions{})
+	_ = run
+	if err := st.Update(ctx, hib.ID, func(r *domain.Sandbox) error {
+		r.State = domain.Hibernated
+		r.SnapshotBytes = 2048
+		r.SnapshotBytesOnDisk = 1024
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, stdout, _ := capture(true)
+	if err := runSandboxList(ctx, nil, out, svc); err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Data struct {
+			Sandboxes []map[string]any `json:"sandboxes"`
+		} `json:"data"`
+	}
+	decodeOne(t, stdout, &env)
+	for _, m := range env.Data.Sandboxes {
+		if m["name"] == "hib" {
+			if m["state"] != "hibernated" || m["snapshot_bytes"] != float64(2048) || m["snapshot_bytes_on_disk"] != float64(1024) {
+				t.Errorf("hibernated entry: %v", m)
+			}
+		} else if _, ok := m["snapshot_bytes"]; ok {
+			t.Errorf("non-hibernated entry has snapshot_bytes: %v", m)
+		}
+	}
+
+	hout, hstdout, _ := capture(false)
+	if err := runSandboxList(ctx, nil, hout, svc); err != nil {
+		t.Fatal(err)
+	}
+	if s := hstdout.String(); !strings.Contains(s, "hibernated (1.0 KiB)") {
+		t.Errorf("human output missing hibernated size:\n%s", s)
 	}
 }

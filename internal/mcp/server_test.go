@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/lifecycle"
 	"github.com/IniZio/nexus/internal/core/service"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -41,6 +42,16 @@ type stubService struct {
 	startRef, stopRef, pauseRef, resumeRef             string
 	startResult, stopResult, pauseResult, resumeResult domain.Sandbox
 	startErr, stopErr, pauseErr, resumeErr             error
+
+	// Hibernate / ResumeSandbox
+	hibernateRef    string
+	hibernateResult HibernateResult
+	hibernateErr    error
+	resumeSbRef     string
+	resumeSbMode    string
+	resumeSbNoCold  bool
+	resumeSbResult  ResumeResult
+	resumeSbErr     error
 
 	// Remove
 	removeRef string
@@ -110,6 +121,16 @@ func (s *stubService) Pause(_ context.Context, ref string) (domain.Sandbox, erro
 func (s *stubService) Resume(_ context.Context, ref string) (domain.Sandbox, error) {
 	s.resumeRef = ref
 	return s.resumeResult, s.resumeErr
+}
+
+func (s *stubService) Hibernate(_ context.Context, ref string) (HibernateResult, error) {
+	s.hibernateRef = ref
+	return s.hibernateResult, s.hibernateErr
+}
+
+func (s *stubService) ResumeSandbox(_ context.Context, ref, mode string, noCold bool) (ResumeResult, error) {
+	s.resumeSbRef, s.resumeSbMode, s.resumeSbNoCold = ref, mode, noCold
+	return s.resumeSbResult, s.resumeSbErr
 }
 
 func (s *stubService) Remove(_ context.Context, ref string) error {
@@ -207,6 +228,15 @@ func resultData(t *testing.T, res *gosdk.CallToolResult) []byte {
 		t.Fatalf("re-marshal data: %v", err)
 	}
 	return b
+}
+
+func toolData(t *testing.T, res *gosdk.CallToolResult) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(resultData(t, res), &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -369,14 +399,84 @@ func TestSandboxPause_invokesService(t *testing.T) {
 func TestSandboxResume_invokesService(t *testing.T) {
 	id := domain.NewSandboxID()
 	stub := &stubService{
-		resumeResult: domain.Sandbox{ID: id, Project: "p", Name: "n", State: domain.Running},
+		resumeSbResult: ResumeResult{ID: id.String(), State: "running", ResumedFrom: "snapshot", RestoreMode: "ondemand", RestoreMs: 7, AgentReadyMs: 3, TotalMs: 11, ClockSkewMs: 2},
 	}
 	cs, close := connectPair(t, stub)
 	defer close()
 
-	callTool(t, cs, "sandbox_resume", map[string]any{"ref": "p/n"})
-	if stub.resumeRef != "p/n" {
-		t.Errorf("Resume ref: want %q, got %q", "p/n", stub.resumeRef)
+	res := callTool(t, cs, "sandbox_resume", map[string]any{"ref": "p/n", "restore_mode": "ondemand", "no_cold_fallback": true})
+	if stub.resumeSbRef != "p/n" || stub.resumeSbMode != "ondemand" || !stub.resumeSbNoCold {
+		t.Errorf("ResumeSandbox args: ref=%q mode=%q noCold=%v", stub.resumeSbRef, stub.resumeSbMode, stub.resumeSbNoCold)
+	}
+	data := toolData(t, res)
+	for _, k := range []string{"id", "state", "already", "resumed_from", "restore_mode", "restore_ms", "agent_ready_ms", "total_ms", "clock_skew_ms"} {
+		if _, ok := data[k]; !ok {
+			t.Errorf("resume result missing %q: %v", k, data)
+		}
+	}
+}
+
+func TestSandboxResume_rejectsBadRestoreMode(t *testing.T) {
+	stub := &stubService{}
+	cs, close := connectPair(t, stub)
+	defer close()
+	res, err := cs.CallTool(context.Background(), &gosdk.CallToolParams{Name: "sandbox_resume", Arguments: map[string]any{"ref": "p/n", "restore_mode": "bogus"}})
+	if err == nil && (res == nil || !res.IsError) {
+		t.Fatal("want error for bad restore_mode")
+	}
+	if stub.resumeSbRef != "" {
+		t.Error("service must not be called")
+	}
+}
+
+func TestSandboxHibernate_invokesService(t *testing.T) {
+	id := domain.NewSandboxID()
+	stub := &stubService{
+		hibernateResult: HibernateResult{ID: id.String(), State: "hibernated", PauseMs: 1, SnapshotMs: 2, TotalMs: 3, SnapshotBytes: 4, SnapshotBytesOnDisk: 5, SnapshotDir: "/x"},
+	}
+	cs, close := connectPair(t, stub)
+	defer close()
+
+	res := callTool(t, cs, "sandbox_hibernate", map[string]any{"ref": "p/n"})
+	if stub.hibernateRef != "p/n" {
+		t.Errorf("Hibernate ref: want p/n, got %q", stub.hibernateRef)
+	}
+	data := toolData(t, res)
+	for _, k := range []string{"id", "state", "already", "pause_ms", "snapshot_ms", "total_ms", "snapshot_bytes", "snapshot_bytes_on_disk", "snapshot_dir"} {
+		if _, ok := data[k]; !ok {
+			t.Errorf("hibernate result missing %q: %v", k, data)
+		}
+	}
+}
+
+func TestHibernateResume_errorCodes(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("x: %w", service.ErrHibernateUnsupported), "hibernate_unsupported"},
+		{fmt.Errorf("x: %w", service.ErrHibernateRefused), "hibernate_refused"},
+		{fmt.Errorf("x: %w", service.ErrSnapshotFailed), "snapshot_failed"},
+		{&lifecycle.IllegalTransitionError{From: domain.Stopped}, "illegal_transition"},
+		{errors.New("boom"), "error"},
+	}
+	for _, tc := range cases {
+		stub := &stubService{hibernateErr: tc.err, resumeSbErr: tc.err}
+		cs, close := connectPair(t, stub)
+		for _, tool := range []string{"sandbox_hibernate", "sandbox_resume"} {
+			res, err := cs.CallTool(context.Background(), &gosdk.CallToolParams{Name: tool, Arguments: map[string]any{"ref": "p/n"}})
+			if err != nil || !res.IsError {
+				t.Fatalf("%s: want tool error, got err=%v res=%v", tool, err, res)
+			}
+			var env Response
+			if jerr := json.Unmarshal([]byte(res.Content[0].(*gosdk.TextContent).Text), &env); jerr != nil {
+				t.Fatal(jerr)
+			}
+			if env.Error == nil || env.Error.Code != tc.want {
+				t.Errorf("%s: code want %q got %+v", tool, tc.want, env.Error)
+			}
+		}
+		close()
 	}
 }
 
@@ -498,15 +598,16 @@ func TestToolsRegistered(t *testing.T) {
 	defer close()
 
 	want := map[string]bool{
-		"sandbox_create": false,
-		"sandbox_list":   false,
-		"sandbox_start":  false,
-		"sandbox_stop":   false,
-		"sandbox_pause":  false,
-		"sandbox_resume": false,
-		"sandbox_remove": false,
-		"sandbox_exec":   false,
-		"sandbox_run":    false,
+		"sandbox_create":    false,
+		"sandbox_list":      false,
+		"sandbox_start":     false,
+		"sandbox_stop":      false,
+		"sandbox_pause":     false,
+		"sandbox_resume":    false,
+		"sandbox_hibernate": false,
+		"sandbox_remove":    false,
+		"sandbox_exec":      false,
+		"sandbox_run":       false,
 	}
 	for tool, err := range cs.Tools(context.Background(), nil) {
 		if err != nil {

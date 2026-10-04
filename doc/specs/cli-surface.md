@@ -159,6 +159,14 @@ No flags. Args: `<sandbox-ref> <hostPort>:<guestPort>`
 
 ---
 
+### ## hibernate
+
+Summary: Snapshot a running sandbox to disk and free its RAM (CH only)
+
+No flags. Args: `<sandbox-ref>`. Routes through the sandbox's supervisor. Already Hibernated is a no-op (exit 0, `already:true`). JSON: `id, state, already, pause_ms, snapshot_ms, total_ms, snapshot_bytes, snapshot_bytes_on_disk, snapshot_dir`. `snapshot_bytes` is the apparent (logical) size and can approach guest RAM, including the sparse hotplug region; `snapshot_bytes_on_disk` is allocated blocks, so use it for disk budgeting. `ls` shows the on-disk size. Error codes: `hibernate_unsupported`, `hibernate_refused`, `illegal_transition`, `snapshot_failed`.
+
+---
+
 ### ## hub
 
 Summary: Session hub event log (watch, ps, emit)
@@ -240,6 +248,14 @@ Delegates to `sandbox pause`. Args: `<sandbox-ref>`
 
 ---
 
+### ## pause
+
+Summary: Freeze a running sandbox in memory (RAM stays allocated)
+
+No flags. Args: `<sandbox-ref>`.
+
+---
+
 ### ## ps
 
 Summary: List sandboxes (flat spelling of `sandbox list`)
@@ -270,6 +286,18 @@ No flags documented; see cmd_recover.go. Args: `<sandbox-ref>`
 Summary: Resume a paused sandbox (flat spelling of `sandbox resume`)
 
 Delegates to `sandbox resume`. Args: `<sandbox-ref>`
+
+---
+
+### ## resume
+
+Summary: Resume a paused or hibernated sandbox
+
+Flags:
+- `--restore-mode copy|ondemand` — snapshot restore mode (default copy)
+- `--no-cold-fallback` — fail instead of cold-starting when snapshot restore fails
+
+Args: `<sandbox-ref>`. Already Running is a no-op (exit 0, `already:true`). Cold fallback exits 0 with a stderr warning. JSON: `id, state, already, resumed_from, restore_mode, restore_ms, agent_ready_ms, total_ms, fallback_reason?, clock_skew_ms?`.
 
 ---
 

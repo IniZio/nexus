@@ -13,6 +13,7 @@ egress
 exec
 forward
 herdr
+hibernate
 hub
 image
 kernel install
@@ -20,9 +21,11 @@ log
 ls
 mcp
 orca
+pause
 ps
 reap
 recover
+resume
 rm
 run
 sandbox

@@ -48,7 +48,8 @@ The server exposes 13 tools: nine covering sandbox lifecycle and execution, and 
 | `sandbox_start` | Start a created or stopped sandbox |
 | `sandbox_stop` | Stop a running sandbox |
 | `sandbox_pause` | Pause a running sandbox |
-| `sandbox_resume` | Resume a paused sandbox |
+| `sandbox_hibernate` | Snapshot a running sandbox to disk and free its RAM (cloud-hypervisor only) |
+| `sandbox_resume` | Resume a paused or hibernated sandbox (`restore_mode`, `no_cold_fallback`) |
 | `sandbox_remove` | Remove a sandbox record |
 | `sandbox_exec` | Run a command inside an existing sandbox; returns `{exit_code, stdout, stderr, stdout_bytes, stderr_bytes}` with truncation metadata for output exceeding 64 KiB |
 | `sandbox_run` | Ephemeral create+boot+exec+remove in one call; args `{image, argv, memory?, vcpus?, project?, name?}`; the sandbox is removed unconditionally on completion |

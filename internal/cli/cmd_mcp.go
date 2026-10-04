@@ -52,6 +52,25 @@ type mcpService struct {
 	fetchTools toolFetchFn
 }
 
+// Hibernate implements mcpsrv.SandboxService.Hibernate via the CLI routing.
+func (m *mcpService) Hibernate(ctx context.Context, ref string) (mcpsrv.HibernateResult, error) {
+	_, data, err := hibernateSandbox(ctx, m.Service, ref)
+	if err != nil {
+		return mcpsrv.HibernateResult{}, err
+	}
+	return mcpsrv.HibernateResult(data), nil
+}
+
+// ResumeSandbox implements mcpsrv.SandboxService.ResumeSandbox via the CLI
+// resumeHibernated helper (Running no-op, Paused thaw, Hibernated restore).
+func (m *mcpService) ResumeSandbox(ctx context.Context, ref, mode string, noColdFallback bool) (mcpsrv.ResumeResult, error) {
+	res, err := resumeHibernatedFn(ctx, m.Service, ref, resumeOptions{Mode: mode, NoColdFallback: noColdFallback})
+	if err != nil {
+		return mcpsrv.ResumeResult{}, err
+	}
+	return mcpsrv.ResumeResult(resumeData(res)), nil
+}
+
 // toolFetch returns the configured fetch function, falling back to the default
 // toolcache fetcher rooted at the parent of cacheRoot (storeRoot).
 func (m *mcpService) toolFetch() toolFetchFn {

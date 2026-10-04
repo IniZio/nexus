@@ -26,6 +26,11 @@ var knownOptionalSupervisorConfigFields = map[string]string{
 	// SIGKILL'd. Persistent supervisors are intentionally long-lived after
 	// CLI exit and do not use the pipe.
 	"ParentPipeFD": "0 = no watchdog pipe; only ephemeral supervisors use it",
+	// Restore*: per-spawn hibernate-resume request set by spawnPersistedSupervisorRestore
+	// and carried in argv; the persisted spec must never hold it.
+	"RestoreFrom":    "per-spawn resume request; never persisted to spawn.json",
+	"RestoreMode":    "per-spawn resume request; never persisted to spawn.json",
+	"NoColdFallback": "per-spawn resume request; never persisted to spawn.json",
 	// MCPOAuthRefreshConfigs: nil is correct when no OAuth MCP servers are
 	// configured. The field is populated only when BuildMCPOAuthBinds finds
 	// OAuth entries in ~/.claude/.credentials.json; its absence is never a bug.
