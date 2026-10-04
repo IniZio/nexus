@@ -1502,3 +1502,71 @@ func TestDelegateWorktreeCreate_BackendReachesWorktreeSandboxArgv(t *testing.T) 
 		})
 	}
 }
+
+func TestDelegateAgentDispatch_ModelArg(t *testing.T) {
+	orig := runHostCLI
+	t.Cleanup(func() { runHostCLI = orig })
+	var got []string
+	runHostCLI = func(_ context.Context, argv ...string) (string, error) {
+		got = append([]string(nil), argv...)
+		return "ok", nil
+	}
+	cs, done := connectPair(t, &stubService{})
+	defer done()
+
+	res := callTool(t, cs, "delegate_agent_dispatch", map[string]any{"ref": "p/s", "brief": "X", "model": "haiku"})
+	if res.IsError {
+		t.Fatalf("error: %s", resultText(t, res))
+	}
+	want := []string{"herdr", "agent", "--autonomous", "--no-focus", "--model", "haiku", "p/s"}
+	if len(got) != len(want)+1 || strings.Join(got[:len(want)], "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("argv = %q, want prefix %q", got, want)
+	}
+
+	got = nil
+	callTool(t, cs, "delegate_agent_dispatch", map[string]any{"ref": "p/s", "brief": "X"})
+	for _, a := range got {
+		if a == "--model" {
+			t.Fatalf("default dispatch must not pass --model: %q", got)
+		}
+	}
+
+	for _, bad := range []string{"", "  ", "a b"} {
+		got = nil
+		res := callTool(t, cs, "delegate_agent_dispatch", map[string]any{"ref": "p/s", "brief": "X", "model": bad})
+		if !res.IsError || got != nil {
+			t.Errorf("model %q: IsError=%v invoked=%v", bad, res.IsError, got != nil)
+		}
+	}
+}
+
+func TestDelegateAgentDispatch_SchemaListsModel(t *testing.T) {
+	cs, closeFn := connectPair(t, &stubService{})
+	defer closeFn()
+	for tool, err := range cs.Tools(context.Background(), nil) {
+		if err != nil {
+			t.Fatalf("Tools: %v", err)
+		}
+		if tool.Name != "delegate_agent_dispatch" {
+			continue
+		}
+		raw, _ := json.Marshal(tool.InputSchema)
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("schema: %v", err)
+		}
+		if _, ok := schema.Properties["model"]; !ok {
+			t.Errorf("input schema lacks model property: %s", raw)
+		}
+		for _, r := range schema.Required {
+			if r == "model" {
+				t.Errorf("model must be optional: %s", raw)
+			}
+		}
+		return
+	}
+	t.Fatal("delegate_agent_dispatch not registered")
+}

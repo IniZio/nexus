@@ -397,19 +397,26 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 	case "space-agent":
 		autonomous := false
 		focus := true
+		model := ""
 		for len(rest) > 0 && strings.HasPrefix(rest[0], "--") {
 			switch rest[0] {
 			case "--autonomous":
 				autonomous = true
 			case "--no-focus":
 				focus = false
+			case "--model":
+				if len(rest) < 2 {
+					return &UsageError{Msg: "__herdr-plugin space-agent: --model requires a value"}
+				}
+				model = rest[1]
+				rest = rest[1:]
 			default:
 				return &UsageError{Msg: "__herdr-plugin space-agent: unknown flag: " + rest[0]}
 			}
 			rest = rest[1:]
 		}
 		if len(rest) < 2 {
-			return &UsageError{Msg: "__herdr-plugin space-agent: usage: space-agent [--autonomous] [--no-focus] <sandbox-ref> <brief>"}
+			return &UsageError{Msg: "__herdr-plugin space-agent: usage: space-agent [--autonomous] [--no-focus] [--model <m>] <sandbox-ref> <brief>"}
 		}
 		svc, err := newSandboxService()
 		if err != nil {
@@ -421,7 +428,7 @@ func runHerdrPlugin(ctx context.Context, args []string, out *Output) error {
 		}
 		ref := rest[0]
 		brief := strings.Join(rest[1:], " ")
-		return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, focus, out.w, svc, storeRoot)
+		return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, focus, model, out.w, svc, storeRoot)
 
 	case "space-agent-from-file":
 		svc, err := newSandboxService()
@@ -2951,6 +2958,44 @@ func guestCursorLaunchCommand(autonomous bool) string {
 	return "cursor-agent"
 }
 
+var agentModelRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]*$`)
+
+// withAgentModel appends --model to a launch command; the value is typed into a shell, so it is charset-checked and quoted.
+func withAgentModel(cmd, model string) (string, error) {
+	if model == "" {
+		return cmd, nil
+	}
+	if !agentModelRe.MatchString(model) {
+		return "", &UsageError{Msg: fmt.Sprintf("space-agent: invalid --model %q", model)}
+	}
+	return cmd + " --model '" + model + "'", nil
+}
+
+// spritesClaudeStageScript seeds first-run state the sprite lacks so claude reaches its prompt without wizards or dialogs; existing files are kept.
+const spritesClaudeStageScript = `set -e
+mkdir -p "$HOME/.claude"
+[ -e "$HOME/.claude/settings.json" ] || printf '%s' '{"skipDangerousModePermissionPrompt":true}' > "$HOME/.claude/settings.json"
+[ -e "$HOME/.claude.json" ] || printf '%s' "{\"hasCompletedOnboarding\":true,\"theme\":\"dark\",\"projects\":{\"$1\":{\"hasTrustDialogAccepted\":true,\"hasCompletedProjectOnboarding\":true,\"allowedTools\":[]}}}" > "$HOME/.claude.json"
+`
+
+func herdrStageSpritesClaude(ctx context.Context, ref, projectDir string, svc sandboxGetter) error {
+	ex, ok := svc.(spritesExecer)
+	if !ok {
+		return nil
+	}
+	var errBuf bytes.Buffer
+	code, err := ex.Exec(ctx, ref, agent.ExecOptions{
+		Argv:   []string{"sh", "-c", spritesClaudeStageScript, "stage", projectDir},
+		Cwd:    "/",
+		Stderr: &errBuf,
+	})
+	if err != nil || code != 0 {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: fmt.Sprintf("space-agent: stage claude config in sprite: exit=%d err=%v %s", code, err, strings.TrimSpace(errBuf.String())), Err: err}
+	}
+	return nil
+}
+
 /**
  * agentLaunchDescriptor is the per-agent, declarative launch contract used by
  * herdr space-agent dispatch: how to start the agent in a guest shell pane,
@@ -3615,10 +3660,14 @@ var herdrEnsureFn = herdrAgentEnsureSandboxExists
  * go re-create a sandbox that was never the problem.
  */
 func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGetter) (string, error) {
-	if _, getErr := svc.Get(ctx, ref); getErr != nil {
+	sb, getErr := svc.Get(ctx, ref)
+	if getErr != nil {
 		return "", &UsageError{
 			Msg: fmt.Sprintf("space-agent: no such sandbox %q: %v (list them with: nexus sandbox list)", ref, getErr),
 		}
+	}
+	if sb.Backend == registry.Sprites {
+		return herdrSpritesProjectDir(ctx, ref, svc)
 	}
 	projectDir := herdrShellCwd(ctx, ref, svc)
 	if projectDir == "/root" {
@@ -3629,6 +3678,32 @@ func herdrSpaceAgentProjectDir(ctx context.Context, ref string, svc sandboxGette
 		}
 	}
 	return projectDir, nil
+}
+
+// spritesExecer is the exec surface *service.Service offers; sprites sandboxes have no mounts, so the clone is probed through it.
+type spritesExecer interface {
+	Exec(ctx context.Context, ref string, opts agent.ExecOptions) (int32, error)
+}
+
+// herdrSpritesProjectDir accepts a sprites sandbox only when its clone dir is a git work tree.
+func herdrSpritesProjectDir(ctx context.Context, ref string, svc sandboxGetter) (string, error) {
+	ex, ok := svc.(spritesExecer)
+	if !ok {
+		return "", &UsageError{Msg: fmt.Sprintf("space-agent: cannot probe the clone of sprites sandbox %q: no exec surface", ref)}
+	}
+	var out, errBuf bytes.Buffer
+	code, err := ex.Exec(ctx, ref, agent.ExecOptions{
+		Argv:   []string{"git", "-C", sprites.CloneDir, "rev-parse", "--is-inside-work-tree"},
+		Cwd:    "/",
+		Stdout: &out,
+		Stderr: &errBuf,
+	})
+	if err != nil || code != 0 || strings.TrimSpace(out.String()) != "true" {
+		return "", &UsageError{Msg: fmt.Sprintf("space-agent: sprites sandbox %q has no git work tree at %s "+
+			"(exit=%d err=%v %s), so an agent started in it would have nothing to work on; "+
+			"re-create it with a worktree-sandbox (bundle or push sync)", ref, sprites.CloneDir, code, err, strings.TrimSpace(errBuf.String()))}
+	}
+	return sprites.CloneDir, nil
 }
 
 // herdrSpaceAgentCheckFallbackPane replaces a reused fallback host-shell pane
@@ -3656,7 +3731,7 @@ func herdrSpaceAgentCheckFallbackPane(
 	return freshID, nil
 }
 
-func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, focus bool, w io.Writer, svc *service.Service, storeRoot string) error {
+func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, focus bool, model string, w io.Writer, svc *service.Service, storeRoot string) error {
 	/**
 	 * 0. Ensure the sandbox exists. If it has never been created, build it now
 	 *    from .nexus/config.yaml (same precedence rules as `sandbox create`). This runs
@@ -3683,7 +3758,8 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	 *    operator who simply mistyped the handle, sending them to re-create a
 	 *    sandbox that was never the problem.
 	 */
-	if _, err := herdrSpaceAgentProjectDir(ctx, ref, svc); err != nil {
+	projectDir, err := herdrSpaceAgentProjectDir(ctx, ref, svc)
+	if err != nil {
 		return err
 	}
 
@@ -3733,7 +3809,15 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 		return &CodedError{Code: ErrCodeInternalError,
 			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor resolution (nexus doctor; NEXUS_CLOUD_HYPERVISOR_PATH)", paneID)}
 	}
+	sb, sbErr := svc.Get(ctx, ref)
+	if sbErr != nil {
+		return &CodedError{Code: ErrCodeInternalError,
+			Msg: "space-agent: re-resolve sandbox for agent dispatch: " + sbErr.Error(), Err: sbErr}
+	}
 	guestPrompt := sandboxHandleHostname(ref)
+	if sb.Backend == registry.Sprites {
+		guestPrompt = "sprite@" // the sprite hostname is not the sandbox handle
+	}
 	fmt.Fprintf(w, "space-agent: waiting for the guest shell (match=%q) ...\n", guestPrompt)
 	if err := herdrPaneWaitOutput(ctx, herdrBin, paneID, guestPrompt, guestShellTimeoutMS); err != nil {
 		return &CodedError{Code: ErrCodeInternalError,
@@ -3747,13 +3831,16 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	 *     empty name (plain sandbox) or a name predating this registry falls
 	 *     back to claude's descriptor via resolveAgentLaunchDescriptor.
 	 */
-	sb, sbErr := svc.Get(ctx, ref)
-	if sbErr != nil {
-		return &CodedError{Code: ErrCodeInternalError,
-			Msg: "space-agent: re-resolve sandbox for agent dispatch: " + sbErr.Error(), Err: sbErr}
-	}
 	launchDesc := resolveAgentLaunchDescriptor(sb.AgentName)
-	launchCmd := launchDesc.command(autonomous)
+	if sb.Backend == registry.Sprites && sb.AgentName != cred.CursorAgentProfileName {
+		if err := herdrStageSpritesClaude(ctx, ref, projectDir, svc); err != nil {
+			return err
+		}
+	}
+	launchCmd, err := withAgentModel(launchDesc.command(autonomous), model)
+	if err != nil {
+		return err
+	}
 	readyMatch := launchDesc.readyMatch(autonomous)
 
 	if err := herdrPaneReleaseAgent(ctx, herdrBin, paneID, ref); err != nil {
@@ -3836,7 +3923,7 @@ func herdrPluginSpaceAgentFromFile(ctx context.Context, r io.Reader, w io.Writer
 		}
 	}
 
-	return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, true, w, svc, storeRoot)
+	return herdrPluginSpaceAgent(ctx, ref, brief, autonomous, true, "", w, svc, storeRoot)
 }
 
 // ── worktree-sandbox helpers ──────────────────────────────────────────────────
@@ -4323,7 +4410,7 @@ func herdrSpritesCreate(ctx context.Context, w io.Writer, handle, worktree strin
 	if push && (err != nil || origin == "") {
 		return fmt.Errorf("sprites create: worktree %s has no origin remote (push mode clones it in the sprite)", worktree)
 	}
-	createArgv := []string{"sandbox", "create", handle}
+	createArgv := []string{"sandbox", "create", "--agent", herdrPrimaryAgent(), handle}
 	if err == nil && origin != "" {
 		createArgv = append(createArgv, "--repo", origin)
 	}

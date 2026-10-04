@@ -313,7 +313,7 @@ func TestHerdrPluginSpaceAgent_EnsureIsCalled(t *testing.T) {
 				panic(r)
 			}
 		}()
-		err = herdrPluginSpaceAgent(context.Background(), "proj/box", "brief", false, false, &buf, nil, "")
+		err = herdrPluginSpaceAgent(context.Background(), "proj/box", "brief", false, false, "", &buf, nil, "")
 	}()
 
 	if !called {

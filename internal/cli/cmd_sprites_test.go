@@ -155,6 +155,8 @@ func TestSpritesCreateUnknownPreset(t *testing.T) {
 }
 
 func TestHerdrSpritesCreateOrigin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	old := herdrExecCommandContext
 	t.Cleanup(func() { herdrExecCommandContext = old })
 	run := func(sync string) (argv []string, err error) {
@@ -170,6 +172,15 @@ func TestHerdrSpritesCreateOrigin(t *testing.T) {
 		return
 	}
 	argv, err := run("")
+	if err == nil {
+		f, perr := parseSandboxCreateArgs(argv[1:])
+		if perr != nil || f.agentName != herdrPrimaryAgent() {
+			t.Fatalf("create argv %v: agent=%q err=%v, want %q", argv, f.agentName, perr, herdrPrimaryAgent())
+		}
+		if names, nerr := spritesSecretNames(config.Config{}, f); nerr != nil || !slices.Contains(names, sprites.SecretClaudeOAuth) {
+			t.Fatalf("secret names %v err=%v lack %s", names, nerr, sprites.SecretClaudeOAuth)
+		}
+	}
 	if err != nil || slices.Contains(argv, "--repo") {
 		t.Fatalf("bundle no-origin: argv=%v err=%v", argv, err)
 	}

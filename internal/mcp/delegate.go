@@ -106,9 +106,10 @@ func parseHerdrListBindingByRef(out, ref string) (workspaceID, handle, sandboxID
 }
 
 type delegateAgentDispatchArgs struct {
-	Ref       string `json:"ref"                  jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
-	Brief     string `json:"brief,omitempty"      jsonschema:"task brief to deliver to the in-guest claude agent (required unless brief_path is set)"`
-	BriefPath string `json:"brief_path,omitempty" jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md (excluded from commits) and the agent is told to read it (optional)"`
+	Ref       string  `json:"ref"                  jsonschema:"sandbox reference: ID, ID prefix, or project/name handle (required)"`
+	Brief     string  `json:"brief,omitempty"      jsonschema:"task brief to deliver to the in-guest claude agent (required unless brief_path is set)"`
+	BriefPath string  `json:"brief_path,omitempty" jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md (excluded from commits) and the agent is told to read it (optional)"`
+	Model     *string `json:"model,omitempty"      jsonschema:"model for the in-guest agent, passed as --model (e.g. haiku, sonnet, opus); non-empty, no whitespace; default: the agent's own default (optional)"`
 }
 
 type delegateAgentWaitArgs struct {
@@ -313,6 +314,15 @@ func CreateWorktreeSandbox(ctx context.Context, args WorktreeCreateArgs, r Workt
 	return herdrworktree.CreateSandbox(ctx, args, r)
 }
 
+// dispatchArgv is the `nexus herdr` argv that launches the agent and delivers brief.
+func dispatchArgv(args delegateAgentDispatchArgs, brief string) []string {
+	argv := []string{"herdr", "agent", "--autonomous", "--no-focus"}
+	if args.Model != nil {
+		argv = append(argv, "--model", *args.Model)
+	}
+	return append(argv, args.Ref, brief)
+}
+
 func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 	gosdk.AddTool(srv, &gosdk.Tool{
 		Name: "delegate_worktree_create",
@@ -339,6 +349,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		Name: "delegate_agent_dispatch",
 		Description: "Deliver a task brief to the claude agent running inside a worktree sandbox " +
 			"via `nexus herdr space-agent --autonomous --no-focus`. " +
+			"Optional model is passed to the agent as --model; default unchanged. " +
 			"The in-guest claude runs with permissions skipped (--permission-mode bypassPermissions); the microVM is the isolation boundary. " +
 			"Optional brief_path (absolute host file) is installed as .brief.md in the worktree (excluded from commits) and the agent is told to read it; brief then becomes optional extra text. " +
 			"Returns {delivered, output}: delivered=true iff herdr agent exits 0 (brief accepted); " +
@@ -352,6 +363,9 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 		}
 		if err := validateBriefPath(args.BriefPath); err != nil {
 			return errorResult(fmt.Errorf("delegate_agent_dispatch: %w", err)), nil, nil
+		}
+		if args.Model != nil && (strings.TrimSpace(*args.Model) == "" || strings.ContainsAny(*args.Model, " \t\r\n")) {
+			return errorResult(fmt.Errorf("delegate_agent_dispatch: model must be a non-empty string without whitespace")), nil, nil
 		}
 		tgt := delegateTargetFor(ctx, svc, args.Ref)
 		if args.BriefPath != "" {
@@ -381,7 +395,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			brief += "Your task brief is in " + tgt.workDir + "/" + briefFileName + " — read it first and follow it.\n\n"
 		}
 		brief += args.Brief
-		out, runErr := runHostCLI(ctx, "herdr", "agent", "--autonomous", "--no-focus", args.Ref, brief)
+		out, runErr := runHostCLI(ctx, dispatchArgv(args, brief)...)
 		delivered := runErr == nil
 		const maxOut = 4000
 		if len(out) > maxOut {
