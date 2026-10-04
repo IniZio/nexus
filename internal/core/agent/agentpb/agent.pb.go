@@ -1076,6 +1076,96 @@ func (*RestartAgentResponse) Descriptor() ([]byte, []int) {
 	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
+type SetClockRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Host wall clock, nanoseconds since the Unix epoch.
+	UnixNanos     int64 `protobuf:"varint,1,opt,name=unix_nanos,json=unixNanos,proto3" json:"unix_nanos,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetClockRequest) Reset() {
+	*x = SetClockRequest{}
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetClockRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetClockRequest) ProtoMessage() {}
+
+func (x *SetClockRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetClockRequest.ProtoReflect.Descriptor instead.
+func (*SetClockRequest) Descriptor() ([]byte, []int) {
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *SetClockRequest) GetUnixNanos() int64 {
+	if x != nil {
+		return x.UnixNanos
+	}
+	return 0
+}
+
+type SetClockResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Guest wall clock immediately before the set, nanoseconds since epoch.
+	PreviousUnixNanos int64 `protobuf:"varint,1,opt,name=previous_unix_nanos,json=previousUnixNanos,proto3" json:"previous_unix_nanos,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *SetClockResponse) Reset() {
+	*x = SetClockResponse{}
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetClockResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetClockResponse) ProtoMessage() {}
+
+func (x *SetClockResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_nexus_agent_v1_agent_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetClockResponse.ProtoReflect.Descriptor instead.
+func (*SetClockResponse) Descriptor() ([]byte, []int) {
+	return file_nexus_agent_v1_agent_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *SetClockResponse) GetPreviousUnixNanos() int64 {
+	if x != nil {
+		return x.PreviousUnixNanos
+	}
+	return 0
+}
+
 var File_nexus_agent_v1_agent_proto protoreflect.FileDescriptor
 
 const file_nexus_agent_v1_agent_proto_rawDesc = "" +
@@ -1141,7 +1231,12 @@ const file_nexus_agent_v1_agent_proto_rawDesc = "" +
 	"stagedPath\x12%\n" +
 	"\x0eexpected_bytes\x18\x02 \x01(\x03R\rexpectedBytes\x12\x14\n" +
 	"\x05force\x18\x03 \x01(\bR\x05force\"\x16\n" +
-	"\x14RestartAgentResponse*b\n" +
+	"\x14RestartAgentResponse\"0\n" +
+	"\x0fSetClockRequest\x12\x1d\n" +
+	"\n" +
+	"unix_nanos\x18\x01 \x01(\x03R\tunixNanos\"B\n" +
+	"\x10SetClockResponse\x12.\n" +
+	"\x13previous_unix_nanos\x18\x01 \x01(\x03R\x11previousUnixNanos*b\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SESSION_STATE_RUNNING\x10\x01\x12\x18\n" +
@@ -1149,7 +1244,7 @@ const file_nexus_agent_v1_agent_proto_rawDesc = "" +
 	"\rCopyDirection\x12\x1e\n" +
 	"\x1aCOPY_DIRECTION_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13COPY_DIRECTION_PUSH\x10\x01\x12\x17\n" +
-	"\x13COPY_DIRECTION_PULL\x10\x022\xc3\x04\n" +
+	"\x13COPY_DIRECTION_PULL\x10\x022\x92\x05\n" +
 	"\fAgentService\x12A\n" +
 	"\x04Exec\x12\x1b.nexus.agent.v1.ExecRequest\x1a\x1c.nexus.agent.v1.ExecResponse\x12G\n" +
 	"\x06Signal\x12\x1d.nexus.agent.v1.SignalRequest\x1a\x1e.nexus.agent.v1.SignalResponse\x12\\\n" +
@@ -1157,7 +1252,8 @@ const file_nexus_agent_v1_agent_proto_rawDesc = "" +
 	"\fListSessions\x12#.nexus.agent.v1.ListSessionsRequest\x1a$.nexus.agent.v1.ListSessionsResponse\x12A\n" +
 	"\x04Copy\x12\x1b.nexus.agent.v1.CopyRequest\x1a\x1c.nexus.agent.v1.CopyResponse\x12P\n" +
 	"\tAgentInfo\x12 .nexus.agent.v1.AgentInfoRequest\x1a!.nexus.agent.v1.AgentInfoResponse\x12Y\n" +
-	"\fRestartAgent\x12#.nexus.agent.v1.RestartAgentRequest\x1a$.nexus.agent.v1.RestartAgentResponseB=Z;github.com/IniZio/nexus/internal/core/agent/agentpb;agentpbb\x06proto3"
+	"\fRestartAgent\x12#.nexus.agent.v1.RestartAgentRequest\x1a$.nexus.agent.v1.RestartAgentResponse\x12M\n" +
+	"\bSetClock\x12\x1f.nexus.agent.v1.SetClockRequest\x1a .nexus.agent.v1.SetClockResponseB=Z;github.com/IniZio/nexus/internal/core/agent/agentpb;agentpbb\x06proto3"
 
 var (
 	file_nexus_agent_v1_agent_proto_rawDescOnce sync.Once
@@ -1172,7 +1268,7 @@ func file_nexus_agent_v1_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_nexus_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_nexus_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_nexus_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_nexus_agent_v1_agent_proto_goTypes = []any{
 	(SessionState)(0),             // 0: nexus.agent.v1.SessionState
 	(CopyDirection)(0),            // 1: nexus.agent.v1.CopyDirection
@@ -1193,11 +1289,13 @@ var file_nexus_agent_v1_agent_proto_goTypes = []any{
 	(*AgentInfoResponse)(nil),     // 16: nexus.agent.v1.AgentInfoResponse
 	(*RestartAgentRequest)(nil),   // 17: nexus.agent.v1.RestartAgentRequest
 	(*RestartAgentResponse)(nil),  // 18: nexus.agent.v1.RestartAgentResponse
-	nil,                           // 19: nexus.agent.v1.ExecRequest.EnvEntry
+	(*SetClockRequest)(nil),       // 19: nexus.agent.v1.SetClockRequest
+	(*SetClockResponse)(nil),      // 20: nexus.agent.v1.SetClockResponse
+	nil,                           // 21: nexus.agent.v1.ExecRequest.EnvEntry
 }
 var file_nexus_agent_v1_agent_proto_depIdxs = []int32{
 	2,  // 0: nexus.agent.v1.PtyOptions.initial_size:type_name -> nexus.agent.v1.WinSize
-	19, // 1: nexus.agent.v1.ExecRequest.env:type_name -> nexus.agent.v1.ExecRequest.EnvEntry
+	21, // 1: nexus.agent.v1.ExecRequest.env:type_name -> nexus.agent.v1.ExecRequest.EnvEntry
 	3,  // 2: nexus.agent.v1.ExecRequest.pty:type_name -> nexus.agent.v1.PtyOptions
 	0,  // 3: nexus.agent.v1.SessionInfo.state:type_name -> nexus.agent.v1.SessionState
 	8,  // 4: nexus.agent.v1.SessionStatusResponse.info:type_name -> nexus.agent.v1.SessionInfo
@@ -1210,15 +1308,17 @@ var file_nexus_agent_v1_agent_proto_depIdxs = []int32{
 	13, // 11: nexus.agent.v1.AgentService.Copy:input_type -> nexus.agent.v1.CopyRequest
 	15, // 12: nexus.agent.v1.AgentService.AgentInfo:input_type -> nexus.agent.v1.AgentInfoRequest
 	17, // 13: nexus.agent.v1.AgentService.RestartAgent:input_type -> nexus.agent.v1.RestartAgentRequest
-	5,  // 14: nexus.agent.v1.AgentService.Exec:output_type -> nexus.agent.v1.ExecResponse
-	7,  // 15: nexus.agent.v1.AgentService.Signal:output_type -> nexus.agent.v1.SignalResponse
-	10, // 16: nexus.agent.v1.AgentService.SessionStatus:output_type -> nexus.agent.v1.SessionStatusResponse
-	12, // 17: nexus.agent.v1.AgentService.ListSessions:output_type -> nexus.agent.v1.ListSessionsResponse
-	14, // 18: nexus.agent.v1.AgentService.Copy:output_type -> nexus.agent.v1.CopyResponse
-	16, // 19: nexus.agent.v1.AgentService.AgentInfo:output_type -> nexus.agent.v1.AgentInfoResponse
-	18, // 20: nexus.agent.v1.AgentService.RestartAgent:output_type -> nexus.agent.v1.RestartAgentResponse
-	14, // [14:21] is the sub-list for method output_type
-	7,  // [7:14] is the sub-list for method input_type
+	19, // 14: nexus.agent.v1.AgentService.SetClock:input_type -> nexus.agent.v1.SetClockRequest
+	5,  // 15: nexus.agent.v1.AgentService.Exec:output_type -> nexus.agent.v1.ExecResponse
+	7,  // 16: nexus.agent.v1.AgentService.Signal:output_type -> nexus.agent.v1.SignalResponse
+	10, // 17: nexus.agent.v1.AgentService.SessionStatus:output_type -> nexus.agent.v1.SessionStatusResponse
+	12, // 18: nexus.agent.v1.AgentService.ListSessions:output_type -> nexus.agent.v1.ListSessionsResponse
+	14, // 19: nexus.agent.v1.AgentService.Copy:output_type -> nexus.agent.v1.CopyResponse
+	16, // 20: nexus.agent.v1.AgentService.AgentInfo:output_type -> nexus.agent.v1.AgentInfoResponse
+	18, // 21: nexus.agent.v1.AgentService.RestartAgent:output_type -> nexus.agent.v1.RestartAgentResponse
+	20, // 22: nexus.agent.v1.AgentService.SetClock:output_type -> nexus.agent.v1.SetClockResponse
+	15, // [15:23] is the sub-list for method output_type
+	7,  // [7:15] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
@@ -1237,7 +1337,7 @@ func file_nexus_agent_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_nexus_agent_v1_agent_proto_rawDesc), len(file_nexus_agent_v1_agent_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   18,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

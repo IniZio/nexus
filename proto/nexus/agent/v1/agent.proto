@@ -258,4 +258,19 @@ service AgentService {
   // The RPC may not return a response — a connection reset means the swap
   // was initiated; the host should poll Ping then AgentInfo to confirm.
   rpc RestartAgent(RestartAgentRequest) returns (RestartAgentResponse);
+
+  // SetClock sets the guest CLOCK_REALTIME to the host-provided time. Used
+  // after a snapshot restore, when the guest wall clock lags by the
+  // hibernated duration. Only callable from the host vsock CID.
+  rpc SetClock(SetClockRequest) returns (SetClockResponse);
+}
+
+message SetClockRequest {
+  // Host wall clock, nanoseconds since the Unix epoch.
+  int64 unix_nanos = 1;
+}
+
+message SetClockResponse {
+  // Guest wall clock immediately before the set, nanoseconds since epoch.
+  int64 previous_unix_nanos = 1;
 }

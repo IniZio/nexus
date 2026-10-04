@@ -26,6 +26,7 @@ const (
 	AgentService_Copy_FullMethodName          = "/nexus.agent.v1.AgentService/Copy"
 	AgentService_AgentInfo_FullMethodName     = "/nexus.agent.v1.AgentService/AgentInfo"
 	AgentService_RestartAgent_FullMethodName  = "/nexus.agent.v1.AgentService/RestartAgent"
+	AgentService_SetClock_FullMethodName      = "/nexus.agent.v1.AgentService/SetClock"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -61,6 +62,10 @@ type AgentServiceClient interface {
 	// The RPC may not return a response — a connection reset means the swap
 	// was initiated; the host should poll Ping then AgentInfo to confirm.
 	RestartAgent(ctx context.Context, in *RestartAgentRequest, opts ...grpc.CallOption) (*RestartAgentResponse, error)
+	// SetClock sets the guest CLOCK_REALTIME to the host-provided time. Used
+	// after a snapshot restore, when the guest wall clock lags by the
+	// hibernated duration. Only callable from the host vsock CID.
+	SetClock(ctx context.Context, in *SetClockRequest, opts ...grpc.CallOption) (*SetClockResponse, error)
 }
 
 type agentServiceClient struct {
@@ -141,6 +146,16 @@ func (c *agentServiceClient) RestartAgent(ctx context.Context, in *RestartAgentR
 	return out, nil
 }
 
+func (c *agentServiceClient) SetClock(ctx context.Context, in *SetClockRequest, opts ...grpc.CallOption) (*SetClockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetClockResponse)
+	err := c.cc.Invoke(ctx, AgentService_SetClock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
@@ -174,6 +189,10 @@ type AgentServiceServer interface {
 	// The RPC may not return a response — a connection reset means the swap
 	// was initiated; the host should poll Ping then AgentInfo to confirm.
 	RestartAgent(context.Context, *RestartAgentRequest) (*RestartAgentResponse, error)
+	// SetClock sets the guest CLOCK_REALTIME to the host-provided time. Used
+	// after a snapshot restore, when the guest wall clock lags by the
+	// hibernated duration. Only callable from the host vsock CID.
+	SetClock(context.Context, *SetClockRequest) (*SetClockResponse, error)
 	mustEmbedUnimplementedAgentServiceServer()
 }
 
@@ -204,6 +223,9 @@ func (UnimplementedAgentServiceServer) AgentInfo(context.Context, *AgentInfoRequ
 }
 func (UnimplementedAgentServiceServer) RestartAgent(context.Context, *RestartAgentRequest) (*RestartAgentResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RestartAgent not implemented")
+}
+func (UnimplementedAgentServiceServer) SetClock(context.Context, *SetClockRequest) (*SetClockResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetClock not implemented")
 }
 func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
 func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
@@ -352,6 +374,24 @@ func _AgentService_RestartAgent_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_SetClock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetClockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).SetClock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_SetClock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).SetClock(ctx, req.(*SetClockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -386,6 +426,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RestartAgent",
 			Handler:    _AgentService_RestartAgent_Handler,
+		},
+		{
+			MethodName: "SetClock",
+			Handler:    _AgentService_SetClock_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
