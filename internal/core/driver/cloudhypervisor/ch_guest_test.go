@@ -33,6 +33,11 @@ func TestCHCapabilitiesReflectOptionalInterfaces(t *testing.T) {
 	check("NetnsState", got.NetnsState, ok)
 	_, ok = drv.(driver.SessionAttacher)
 	check("SessionAttach", got.SessionAttach, ok)
+	_, ok = drv.(driver.Hibernator)
+	check("Hibernate", got.Hibernate, ok)
+	if !got.Hibernate {
+		t.Errorf("expected Hibernate true: %+v", got)
+	}
 
 	if got.GuestOS != driver.GuestOSLinux {
 		t.Errorf("GuestOS = %q", got.GuestOS)

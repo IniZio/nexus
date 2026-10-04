@@ -352,7 +352,7 @@ func TestCapabilities(t *testing.T) {
 		t.Fatalf("caps = %+v", c)
 	}
 	o := driver.OptionalInterfaces(d)
-	if o.Pause || o.Snapshot || o.Fork {
+	if o.Pause || o.Snapshot || o.Fork || o.Hibernate || c.Hibernate {
 		t.Fatalf("optional = %+v", o)
 	}
 }

@@ -172,6 +172,10 @@ type Config struct {
 	// and so on. See ExtraDisk for details. Only valid when DiskImagePath is set.
 	ExtraDisks []ExtraDisk
 
+	// restoreMode is the vm.restore memory mode handed to the netns child
+	// (RestoreInPlace only). Empty means copy.
+	restoreMode RestoreMode
+
 	// LiveMounts are host-directory virtiofs shares attached at boot. Each
 	// entry spawns one virtiofsd process and emits one FsConfig device in
 	// vm.create. VirtiofsdPath must be non-empty when LiveMounts is non-empty.

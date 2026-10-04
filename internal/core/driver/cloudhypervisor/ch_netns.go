@@ -95,6 +95,9 @@ const (
 	// the child issues vm.restore before starting the frame pump, so the VM is
 	// Running by the time framePump blocks.
 	netnsEnvRestoreURL = "NEXUS_NETNS_RESTORE_URL"
+	// netnsEnvRestoreMode carries memory_restore_mode ("copy"|"ondemand") for
+	// the child's vm.restore; absent means copy.
+	netnsEnvRestoreMode = "NEXUS_NETNS_RESTORE_MODE"
 )
 
 // NetnsRuntime is the parent-side handle to a running netns-runtime child.
@@ -376,6 +379,9 @@ func StartNetnsRuntime(ctx context.Context, cfg Config, id domain.SandboxID, soc
 	// after spawning CH instead of waiting for the parent to call vm.create+boot.
 	if restoreURL != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", netnsEnvRestoreURL, restoreURL))
+		if cfg.restoreMode != "" {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", netnsEnvRestoreMode, cfg.restoreMode))
+		}
 	}
 	// Console log: tell the child where to write CH stdout (guest virtio-console).
 	// When empty the child falls back to io.Discard while still draining the pipe.
@@ -936,15 +942,12 @@ func RunNetnsChild() {
 	// here. The normal boot path is byte-for-byte unchanged.
 	if restoreURL := os.Getenv(netnsEnvRestoreURL); restoreURL != "" {
 		chc := newClient(socketPath)
-		if err := chc.VMRestore(ctx, restoreURL); err != nil {
-			fmt.Fprintf(os.Stderr, "netns child: vm.restore %s: %v\n", restoreURL, err)
-			os.Exit(1)
-		}
+		mode, _ := ParseRestoreMode(os.Getenv(netnsEnvRestoreMode))
 		// vm.restore brings the VM to Paused state; vm.resume transitions it
-		// to Running. Without this call the parent's VMInfo poll would never
+		// to Running. Without resume the parent's VMInfo poll would never
 		// see Running and would time out after StartTimeout.
-		if err := chc.VMResume(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "netns child: vm.resume: %v\n", err)
+		if err := restoreAndResume(ctx, chc, restoreURL, mode); err != nil {
+			fmt.Fprintf(os.Stderr, "netns child: %v\n", err)
 			os.Exit(1)
 		}
 	}

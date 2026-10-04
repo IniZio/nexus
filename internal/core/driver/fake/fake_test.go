@@ -412,3 +412,9 @@ func TestFakeCapabilitiesMatchInterfaces(t *testing.T) {
 		t.Fatalf("Capabilities = %+v, want %+v", got, want)
 	}
 }
+
+func TestFakeNoHibernate(t *testing.T) {
+	if fake.New().Capabilities().Hibernate {
+		t.Fatal("fake must not report Hibernate")
+	}
+}

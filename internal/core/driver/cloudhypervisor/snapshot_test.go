@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/artifact"
@@ -226,5 +227,34 @@ func TestManifestRoundtrip(t *testing.T) {
 		if got.Files[i] != want {
 			t.Errorf("Files[%d]: got %+v, want %+v", i, got.Files[i], want)
 		}
+	}
+}
+
+func TestVMRestoreRequest_MemoryRestoreMode(t *testing.T) {
+	b, _ := json.Marshal(vmRestoreRequest{SourceURL: "file:///s"})
+	if strings.Contains(string(b), "memory_restore_mode") {
+		t.Errorf("copy must omit memory_restore_mode: %s", b)
+	}
+	b, _ = json.Marshal(vmRestoreRequest{SourceURL: "file:///s", MemoryRestoreMode: RestoreModeOnDemand})
+	if !strings.Contains(string(b), `"memory_restore_mode":"ondemand"`) {
+		t.Errorf("ondemand body: %s", b)
+	}
+}
+
+func TestParseRestoreMode(t *testing.T) {
+	for in, want := range map[string]RestoreMode{"": RestoreModeCopy, "copy": RestoreModeCopy, "ondemand": RestoreModeOnDemand} {
+		if got, err := ParseRestoreMode(in); err != nil || got != want {
+			t.Errorf("%q: got %q, %v", in, got, err)
+		}
+	}
+	if _, err := ParseRestoreMode("lazy"); err == nil {
+		t.Error("want error for unknown mode")
+	}
+}
+
+func TestProbeOnDemandRestore_missingDevice(t *testing.T) {
+	err := probeOnDemandRestore(filepath.Join(t.TempDir(), "no-such-uffd"))
+	if err == nil || !strings.Contains(err.Error(), "ondemand restore unavailable") {
+		t.Fatalf("want unavailable error, got %v", err)
 	}
 }

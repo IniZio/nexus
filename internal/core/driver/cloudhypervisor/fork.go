@@ -20,6 +20,8 @@ import (
 type vmRestoreRequest struct {
 	SourceURL string `json:"source_url"`
 	Prefault  bool   `json:"prefault"`
+	// MemoryRestoreMode is omitted for copy (CH default).
+	MemoryRestoreMode RestoreMode `json:"memory_restore_mode,omitempty"`
 }
 
 // restorePrefault is false only for shared (memfd) memory, where prefaulting
@@ -50,10 +52,18 @@ func restorePrefault(sourceURL string) bool {
 //
 // Returns nil on 204 No Content.
 func (c *client) VMRestore(ctx context.Context, sourceURL string) error {
-	resp, err := c.do(ctx, http.MethodPut, "/vm.restore", vmRestoreRequest{
-		SourceURL: sourceURL,
-		Prefault:  restorePrefault(sourceURL),
-	})
+	return c.VMRestoreMode(ctx, sourceURL, RestoreModeCopy)
+}
+
+// VMRestoreMode is VMRestore with an explicit memory restore mode. ondemand
+// sends prefault=false because CH rejects prefault with ondemand.
+func (c *client) VMRestoreMode(ctx context.Context, sourceURL string, mode RestoreMode) error {
+	req := vmRestoreRequest{SourceURL: sourceURL, Prefault: restorePrefault(sourceURL)}
+	if mode == RestoreModeOnDemand {
+		req.Prefault = false
+		req.MemoryRestoreMode = RestoreModeOnDemand
+	}
+	resp, err := c.do(ctx, http.MethodPut, "/vm.restore", req)
 	if err != nil {
 		return fmt.Errorf("cloudhypervisor: vm.restore: %w", err)
 	}

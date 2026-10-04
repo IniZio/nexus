@@ -88,6 +88,11 @@ type vmInfoResponse struct {
 type vmInfoConfig struct {
 	Memory  *vmInfoMemoryConfig  `json:"memory,omitempty"`
 	Balloon *vmInfoBalloonConfig `json:"balloon,omitempty"`
+	Disks   []vmInfoDiskConfig   `json:"disks,omitempty"`
+}
+
+type vmInfoDiskConfig struct {
+	Path string `json:"path"`
 }
 
 type vmInfoMemoryConfig struct {

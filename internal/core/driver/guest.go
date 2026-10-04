@@ -89,6 +89,7 @@ type CapabilitySet struct {
 	NetworkHook    bool
 	NetnsState     bool
 	SessionAttach  bool
+	Hibernate      bool
 	GuestOS        GuestOS
 	Egress         EgressLevel
 	Isolation      Isolation
@@ -106,6 +107,7 @@ func OptionalInterfaces(drv Driver) CapabilitySet {
 	_, c.NetworkHook = drv.(NetworkHook)
 	_, c.NetnsState = drv.(NetnsStateProvider)
 	_, c.SessionAttach = drv.(SessionAttacher)
+	_, c.Hibernate = drv.(Hibernator)
 	return c
 }
 

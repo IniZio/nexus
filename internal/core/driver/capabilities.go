@@ -67,6 +67,9 @@ func Capabilities(drv Driver) []string { // names of optional capability interfa
 	if _, ok := drv.(NetnsStateProvider); ok {
 		caps = append(caps, "NetnsStateProvider")
 	}
+	if _, ok := drv.(Hibernator); ok {
+		caps = append(caps, "Hibernator")
+	}
 	return caps
 }
 
