@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver/registry"
 	"github.com/IniZio/nexus/internal/core/driver/sprites"
+	"github.com/IniZio/nexus/internal/core/driver/sprites/broker"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/herdrout"
 )
@@ -75,7 +77,7 @@ func defaultSpriteSync(_ context.Context, sandboxID string) (SpriteSyncer, domai
 	if _, err := os.Stat(filepath.Join(root, registry.Sprites, id.String(), "spec.json")); err != nil {
 		return nil, id, false, nil
 	}
-	drv, err := registry.New(registry.Sprites, sprites.Config{StateDir: root})
+	drv, err := registry.New(registry.Sprites, sprites.Config{StateDir: root, Broker: &broker.Manager{StateDir: root, Launcher: broker.ExecLauncher{StateDir: root}, ReadyTimeout: 60 * time.Second}})
 	if err != nil {
 		return nil, id, true, err
 	}

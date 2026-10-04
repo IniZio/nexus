@@ -5,15 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/IniZio/nexus/internal/core/config"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/registry"
 	"github.com/IniZio/nexus/internal/core/driver/sprites"
+	"github.com/IniZio/nexus/internal/core/driver/sprites/broker"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/core/store"
@@ -26,8 +29,6 @@ func isolationNotice(i driver.Isolation) string {
 	return "isolation: " + string(i)
 }
 
-const spritesTokenNotice = "note: GH_TOKEN is passed to the sprite for clone only; weaker than Sprites Connectors."
-
 // SpritesGuestArgv is the guest argv a herdr pane runs through `nexus shell`
 // to get an interactive TTY shell in the sprite's clone dir.
 func SpritesGuestArgv() []string {
@@ -39,8 +40,35 @@ var newSpritesDriver = func() (driver.Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return registry.New(registry.Sprites, sprites.Config{StateDir: root, EnvResolver: spritesEnvResolver})
+	return registry.New(registry.Sprites, sprites.Config{StateDir: root, EnvResolver: spritesEnvResolver, Broker: spritesBrokerManager(root)})
 }
+
+// spritesBrokerManager builds the production broker manager. The executable is
+// resolved at spawn time. First start uploads the ~8 MB agent over Fly, so the
+// ready wait is 60s. The broker process itself never gets one (cmd_sprites_broker.go).
+func spritesBrokerManager(root string) *broker.Manager {
+	return &broker.Manager{StateDir: root, Launcher: broker.ExecLauncher{StateDir: root}, ReadyTimeout: 60 * time.Second}
+}
+
+// spritesOriginURL returns dir's origin remote URL, or "" when there is none.
+var spritesOriginURL = func(ctx context.Context, dir string) string {
+	b, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// spritesGitHubBinding is the owner/name GH_TOKEN is bound to: the explicit
+// repo, else (when no repo was given) the origin of the worktree dir.
+func spritesGitHubBinding(ctx context.Context, repo, dir string) string {
+	if repo != "" {
+		return githubOwnerName(repo)
+	}
+	return githubOwnerName(spritesOriginURL(ctx, dir))
+}
+
+const spritesNoGitHubBindingNotice = "note: GH_TOKEN not brokered: no GitHub owner/name (give --repo owner/name or run from a worktree with a github.com origin)."
 
 // backendDriverFactory builds drivers for sandboxes recorded under a backend
 // other than the process default.
@@ -144,17 +172,19 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		hosts = append(hosts, cred.MustProfileByName(cred.ClaudeCodeProfileName).EgressHosts...)
 	}
 
-	tok := os.Getenv("GH_TOKEN")
-	if tok == "" {
-		tok = os.Getenv("GITHUB_TOKEN")
-	}
-
+	// Broker mode: the host token never goes into the spec or the sprite; the
+	// broker resolves it. GH_TOKEN is brokered only when bound to a repo.
+	var ghRepo string
+	cwd, _ := os.Getwd()
 	if syncMode == sprites.SyncPush {
 		if secretNames, err = sprites.NormalizeSecretNames(append(secretNames, sprites.SecretGitHub)); err != nil {
 			return errSandbox(verb, err)
 		}
-		if tok, err = hostGitHubToken(ctx); err != nil {
-			return errSandbox(verb, err)
+	}
+	if slices.Contains(secretNames, sprites.SecretGitHub) {
+		if ghRepo = spritesGitHubBinding(ctx, repo, cwd); ghRepo == "" {
+			secretNames = slices.DeleteFunc(secretNames, func(n string) bool { return n == sprites.SecretGitHub })
+			fmt.Fprintln(out.Stderr(), spritesNoGitHubBindingNotice)
 		}
 	}
 
@@ -182,7 +212,7 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		}
 		return errSandbox(verb, cause)
 	}
-	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, SecretNames: secretNames, Presets: presets, Sync: syncMode, GitToken: tok}
+	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, SecretNames: secretNames, Presets: presets, Sync: syncMode, CredMode: sprites.CredModeBroker, GitHubRepo: ghRepo}
 	if err := prov.Provision(ctx, sb.ID, spec); err != nil {
 		return rollback(err)
 	}
@@ -195,9 +225,6 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 	fmt.Fprintln(out.Stderr(), sprites.CredentialsNotice)
 	if slices.Contains(secretNames, sprites.SecretGitHub) {
 		fmt.Fprintln(out.Stderr(), spritesGitHubTTLNotice)
-	}
-	if tok != "" {
-		fmt.Fprintln(out.Stderr(), spritesTokenNotice)
 	}
 	return nil
 }

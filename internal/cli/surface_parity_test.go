@@ -18,6 +18,7 @@ type surfaceEntry struct {
 // surfaceMap is the authoritative surface contract for N-AC4.
 var surfaceMap = []surfaceEntry{
 	{CLIVerb: "__herdr-plugin", CanonicalMethods: []string{"service.CreateAndBoot", "service.List", "service.Remove"}, MCPTools: nil},
+	{CLIVerb: "__sprites-broker", CLIOnly: true},
 	{CLIVerb: "herdr", CanonicalMethods: []string{"service.CreateAndBoot", "service.List", "service.Remove"}, MCPTools: []string{"delegate_worktree_create", "delegate_agent_dispatch", "delegate_agent_followup", "delegate_teardown"}},
 	{CLIVerb: "attach", CanonicalMethods: []string{"service.Exec"}, MCPTools: nil},
 	{CLIVerb: "auth", CLIOnly: true},
