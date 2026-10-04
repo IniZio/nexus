@@ -2971,29 +2971,107 @@ func withAgentModel(cmd, model string) (string, error) {
 	return cmd + " --model '" + model + "'", nil
 }
 
-// spritesClaudeStageScript seeds first-run state the sprite lacks so claude reaches its prompt without wizards or dialogs; existing files are kept.
-const spritesClaudeStageScript = `set -e
-mkdir -p "$HOME/.claude"
-[ -e "$HOME/.claude/settings.json" ] || printf '%s' '{"skipDangerousModePermissionPrompt":true}' > "$HOME/.claude/settings.json"
-[ -e "$HOME/.claude.json" ] || printf '%s' "{\"hasCompletedOnboarding\":true,\"theme\":\"dark\",\"projects\":{\"$1\":{\"hasTrustDialogAccepted\":true,\"hasCompletedProjectOnboarding\":true,\"allowedTools\":[]}}}" > "$HOME/.claude.json"
-`
+const (
+	spritesClaudeSettingsPath = ".claude/settings.json"
+	spritesClaudeStatePath    = ".claude.json"
+)
+
+func decodeJSONObject(b []byte) (map[string]json.RawMessage, error) {
+	obj := map[string]json.RawMessage{}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return obj, nil
+	}
+	if err := json.Unmarshal(b, &obj); err != nil || obj == nil {
+		return nil, fmt.Errorf("not a JSON object: %v", err)
+	}
+	return obj, nil
+}
+
+// mergeSpritesClaudeSettings sets the bypass-consent key in existing settings.json content, keeping every other key.
+func mergeSpritesClaudeSettings(existing []byte) ([]byte, error) {
+	obj, err := decodeJSONObject(existing)
+	if err != nil {
+		return nil, err
+	}
+	obj["skipDangerousModePermissionPrompt"] = json.RawMessage("true")
+	return json.MarshalIndent(obj, "", "  ")
+}
+
+// mergeSpritesClaudeState sets onboarding and trust for projectDir in existing ~/.claude.json content; theme and allowedTools are only defaulted.
+func mergeSpritesClaudeState(existing []byte, projectDir string) ([]byte, error) {
+	obj, err := decodeJSONObject(existing)
+	if err != nil {
+		return nil, err
+	}
+	obj["hasCompletedOnboarding"] = json.RawMessage("true")
+	if _, ok := obj["theme"]; !ok {
+		obj["theme"] = json.RawMessage(`"dark"`)
+	}
+	projects := map[string]json.RawMessage{}
+	if raw, ok := obj["projects"]; ok {
+		if projects, err = decodeJSONObject(raw); err != nil {
+			return nil, fmt.Errorf("projects: %w", err)
+		}
+	}
+	proj := map[string]json.RawMessage{}
+	if raw, ok := projects[projectDir]; ok {
+		if proj, err = decodeJSONObject(raw); err != nil {
+			return nil, fmt.Errorf("projects[%s]: %w", projectDir, err)
+		}
+	}
+	proj["hasTrustDialogAccepted"] = json.RawMessage("true")
+	proj["hasCompletedProjectOnboarding"] = json.RawMessage("true")
+	if _, ok := proj["allowedTools"]; !ok {
+		proj["allowedTools"] = json.RawMessage("[]")
+	}
+	if projects[projectDir], err = json.Marshal(proj); err != nil {
+		return nil, err
+	}
+	if obj["projects"], err = json.Marshal(projects); err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(obj, "", "  ")
+}
+
+// herdrSpritesMergeFile reads a file under the sprite $HOME, merges in the required keys on the host, and writes it back via temp file + rename.
+func herdrSpritesMergeFile(ctx context.Context, ex spritesExecer, ref, rel string, merge func([]byte) ([]byte, error)) error {
+	run := func(script string, stdin io.Reader, stdout io.Writer) error {
+		var errBuf bytes.Buffer
+		code, err := ex.Exec(ctx, ref, agent.ExecOptions{
+			Argv:   []string{"sh", "-c", script, "stage", rel},
+			Cwd:    "/",
+			Stdin:  stdin,
+			Stdout: stdout,
+			Stderr: &errBuf,
+		})
+		if err != nil || code != 0 {
+			return &CodedError{Code: ErrCodeInternalError,
+				Msg: fmt.Sprintf("space-agent: stage claude config %s in sprite: exit=%d err=%v %s", rel, code, err, strings.TrimSpace(errBuf.String())), Err: err}
+		}
+		return nil
+	}
+	var cur bytes.Buffer
+	if err := run(`f="$HOME/$1"; [ -e "$f" ] && cat "$f"; true`, nil, &cur); err != nil {
+		return err
+	}
+	out, err := merge(cur.Bytes())
+	if err != nil {
+		return &CodedError{Code: ErrCodeInternalError, Msg: fmt.Sprintf("space-agent: sprite ~/%s: %v", rel, err), Err: err}
+	}
+	return run(`set -e; f="$HOME/$1"; mkdir -p "$(dirname "$f")"; cat > "$f.nexustmp"; mv -f "$f.nexustmp" "$f"`, bytes.NewReader(append(out, '\n')), nil)
+}
 
 func herdrStageSpritesClaude(ctx context.Context, ref, projectDir string, svc sandboxGetter) error {
 	ex, ok := svc.(spritesExecer)
 	if !ok {
 		return nil
 	}
-	var errBuf bytes.Buffer
-	code, err := ex.Exec(ctx, ref, agent.ExecOptions{
-		Argv:   []string{"sh", "-c", spritesClaudeStageScript, "stage", projectDir},
-		Cwd:    "/",
-		Stderr: &errBuf,
-	})
-	if err != nil || code != 0 {
-		return &CodedError{Code: ErrCodeInternalError,
-			Msg: fmt.Sprintf("space-agent: stage claude config in sprite: exit=%d err=%v %s", code, err, strings.TrimSpace(errBuf.String())), Err: err}
+	if err := herdrSpritesMergeFile(ctx, ex, ref, spritesClaudeSettingsPath, mergeSpritesClaudeSettings); err != nil {
+		return err
 	}
-	return nil
+	return herdrSpritesMergeFile(ctx, ex, ref, spritesClaudeStatePath, func(b []byte) ([]byte, error) {
+		return mergeSpritesClaudeState(b, projectDir)
+	})
 }
 
 /**
