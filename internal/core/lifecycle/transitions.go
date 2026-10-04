@@ -78,6 +78,11 @@ const (
 	// transition — see the package-level note on transient states.
 	TriggerSnapshot Trigger = "snapshot"
 
+	// TriggerHibernate moves a running or paused sandbox into hibernated:
+	// memory snapshot on disk, no VMM, no supervisor. TriggerResume and
+	// TriggerStop leave hibernated.
+	TriggerHibernate Trigger = "hibernate"
+
 	// TriggerFork represents the fork operation from the perspective of the
 	// CHILDREN, not the parent. The parent has no transition (spec 06, edge 5:
 	// ∅→running; "fork: parent unchanged; edge 5 is the child"). TriggerFork
@@ -168,6 +173,14 @@ var table = []Edge{
 	{From: domain.Running, To: domain.Stopped, Trigger: TriggerStop, Initiator: InitiatorUser},  // 4
 	{From: domain.Stopped, To: domain.Running, Trigger: TriggerStart, Initiator: InitiatorUser}, // 5
 	{From: domain.Paused, To: domain.Stopped, Trigger: TriggerStop, Initiator: InitiatorUser},
+
+	// ── Hibernate ──────────────────────────────────────────────────────────────
+	// SubstrateLost is deliberately absent from hibernated: no VMM exists to lose.
+	{From: domain.Running, To: domain.Hibernated, Trigger: TriggerHibernate, Initiator: InitiatorUser},
+	{From: domain.Paused, To: domain.Hibernated, Trigger: TriggerHibernate, Initiator: InitiatorUser},
+	{From: domain.Hibernated, To: domain.Running, Trigger: TriggerResume, Initiator: InitiatorUser},
+	{From: domain.Hibernated, To: domain.Stopped, Trigger: TriggerStop, Initiator: InitiatorUser},
+	{From: domain.Hibernated, To: domain.Error, Trigger: TriggerFail, Initiator: InitiatorSystem},
 
 	// ── Snapshot self-edges ────────────────────────────────────────────────────
 	// Snapshot is a state-preserving self-edge: the sandbox remains in its

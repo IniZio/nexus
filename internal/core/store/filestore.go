@@ -64,6 +64,10 @@ type record struct {
 	// BaseRef is the shallow-clone boundary SHA recorded by G1 (D-PD-19).
 	// Omitted for sandboxes created without a git workspace.
 	BaseRef string `json:"base_ref,omitempty"`
+	// Hibernate snapshot location and sizes; set only while Hibernated.
+	HibernateDir        string `json:"hibernate_dir,omitempty"`
+	SnapshotBytes       int64  `json:"snapshot_bytes,omitempty"`
+	SnapshotBytesOnDisk int64  `json:"snapshot_bytes_on_disk,omitempty"`
 	// MountedVolumes records named volumes attached at create time (D-PD-82).
 	// Omitted for sandboxes with no attached volumes; nil on read is equivalent
 	// to an empty slice. Backward-compatible: old records without this field
@@ -121,6 +125,9 @@ func toRecord(sb domain.Sandbox) record {
 		SupervisorSock:      sb.SupervisorSock,
 		CreatorPID:          sb.CreatorPID,
 		BaseRef:             sb.BaseRef,
+		HibernateDir:        sb.HibernateDir,
+		SnapshotBytes:       sb.SnapshotBytes,
+		SnapshotBytesOnDisk: sb.SnapshotBytesOnDisk,
 		MountedVolumes:      sb.MountedVolumes,
 		LiveMounts:          sb.LiveMounts,
 		AgentName:           sb.AgentName,
@@ -176,6 +183,9 @@ func (r record) toDomain() domain.Sandbox {
 		SupervisorSock:      r.SupervisorSock,
 		CreatorPID:          r.CreatorPID,
 		BaseRef:             r.BaseRef,
+		HibernateDir:        r.HibernateDir,
+		SnapshotBytes:       r.SnapshotBytes,
+		SnapshotBytesOnDisk: r.SnapshotBytesOnDisk,
 		MountedVolumes:      r.MountedVolumes,
 		LiveMounts:          r.LiveMounts,
 		AgentName:           r.AgentName,

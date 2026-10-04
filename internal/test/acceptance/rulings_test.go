@@ -40,10 +40,12 @@ func TestRuling1_RmIsOneMachineOneExtraEdge(t *testing.T) {
 	t.Parallel()
 	m := lifecycle.New()
 
-	// 1. Exactly five durable states. A sixth would mean a new machine shape.
+	// 1. Exactly six durable states: the original five plus Hibernated
+	// (hibernate plan HB-1, not --rm related). Any further state would mean a
+	// new machine shape.
 	allStates := domain.AllStates()
-	if n := len(allStates); n != 5 {
-		t.Errorf("Ruling 1 broken: AllStates() returned %d states, want 5 — "+
+	if n := len(allStates); n != 6 {
+		t.Errorf("Ruling 1 broken: AllStates() returned %d states, want 6 — "+
 			"adding a state creates a second shape for --rm", n)
 	}
 

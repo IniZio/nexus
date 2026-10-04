@@ -17,7 +17,7 @@ import (
 // breaks immediately, forcing the author to revisit the transition table.
 func TestStateSetIsExactlyFive(t *testing.T) {
 	t.Parallel()
-	const want = 5
+	const want = 6
 	got := len(domain.AllStates())
 	if got != want {
 		t.Errorf("domain.AllStates() returned %d states; want exactly %d", got, want)
@@ -39,7 +39,8 @@ var allTriggers = []lifecycle.Trigger{
 	lifecycle.TriggerReset,
 	lifecycle.TriggerPrimaryCommandExit,
 	lifecycle.TriggerSnapshot, // added P2W0: snapshot self-edge
-	lifecycle.TriggerFork,     // added P2W0: fork (child-creation, always illegal from parent)
+	lifecycle.TriggerHibernate,
+	lifecycle.TriggerFork, // added P2W0: fork (child-creation, always illegal from parent)
 }
 
 // ── Exhaustive cross-product ─────────────────────────────────────────────────
@@ -517,10 +518,10 @@ func TestInitiatorMatchesTable(t *testing.T) {
 // added in P2W0 as state-preserving self-edges for snapshot operations. Fork
 // (TriggerFork) has no table entry — the parent has no transition (spec 06
 // edge 5: ∅→running for children).
-func TestTableHasExactly17Edges(t *testing.T) {
+func TestTableHasExactly22Edges(t *testing.T) {
 	t.Parallel()
 	m := lifecycle.New()
-	const want = 17
+	const want = 22
 	got := len(m.All())
 	if got != want {
 		t.Errorf("transition table has %d edges; want exactly %d", got, want)
@@ -664,5 +665,37 @@ func TestNoDuplicateTableEdges(t *testing.T) {
 			t.Errorf("duplicate table edge: (from=%q, trigger=%q) — second row is unreachable", e.From, e.Trigger)
 		}
 		seen[k] = true
+	}
+}
+
+// TestHibernateEdges pins the hibernated resting-state edges.
+func TestHibernateEdges(t *testing.T) {
+	t.Parallel()
+	m := lifecycle.New()
+	legal := []struct {
+		from, to domain.State
+		trigger  lifecycle.Trigger
+	}{
+		{domain.Running, domain.Hibernated, lifecycle.TriggerHibernate},
+		{domain.Paused, domain.Hibernated, lifecycle.TriggerHibernate},
+		{domain.Hibernated, domain.Running, lifecycle.TriggerResume},
+		{domain.Hibernated, domain.Stopped, lifecycle.TriggerStop},
+		{domain.Hibernated, domain.Error, lifecycle.TriggerFail},
+	}
+	for _, tc := range legal {
+		tr, err := m.Next(tc.from, tc.trigger)
+		if err != nil {
+			t.Errorf("Next(%v,%v): %v", tc.from, tc.trigger, err)
+			continue
+		}
+		if tr.NextState != tc.to {
+			t.Errorf("Next(%v,%v) = %v; want %v", tc.from, tc.trigger, tr.NextState, tc.to)
+		}
+	}
+	if _, err := m.Next(domain.Hibernated, lifecycle.TriggerSubstrateLost); err == nil {
+		t.Error("Next(hibernated, substrate_lost): want error")
+	}
+	if _, err := m.Next(domain.Created, lifecycle.TriggerHibernate); err == nil {
+		t.Error("Next(created, hibernate): want error")
 	}
 }

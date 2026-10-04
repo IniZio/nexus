@@ -193,6 +193,14 @@ type Sandbox struct {
 	// absent on a motive sandbox — callers must check.
 	BaseRef string `json:"base_ref,omitempty"`
 
+	// HibernateDir is the directory holding the committed hibernate snapshot.
+	// Set only while State == Hibernated.
+	HibernateDir string `json:"hibernate_dir,omitempty"`
+	// SnapshotBytes / SnapshotBytesOnDisk are the logical and allocated sizes of
+	// the hibernate snapshot. Set only while State == Hibernated.
+	SnapshotBytes       int64 `json:"snapshot_bytes,omitempty"`
+	SnapshotBytesOnDisk int64 `json:"snapshot_bytes_on_disk,omitempty"`
+
 	// MountedVolumes lists the named volumes attached to this sandbox at creation
 	// time (D-PD-82). Nil and empty slice are equivalent: no volumes are attached.
 	// Elements are frozen at creation and must not be mutated after the record is

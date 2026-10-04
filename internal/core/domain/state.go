@@ -24,7 +24,7 @@ import (
 	"fmt"
 )
 
-// State is the durable state of a Sandbox. Exactly five values exist.
+// State is the durable state of a Sandbox. Exactly six values exist.
 type State int
 
 const (
@@ -33,12 +33,14 @@ const (
 	Paused
 	Stopped
 	Error
+	// Hibernated is a resting state: memory snapshot on disk, no VMM, no supervisor.
+	Hibernated
 )
 
-// AllStates returns all valid states. Tests assert len(AllStates()) == 5 to
-// ensure that adding a sixth state breaks the test suite deliberately.
+// AllStates returns all valid states. Tests assert len(AllStates()) == 6 to
+// ensure that adding a seventh state breaks the test suite deliberately.
 func AllStates() []State {
-	return []State{Created, Running, Paused, Stopped, Error}
+	return []State{Created, Running, Paused, Stopped, Error, Hibernated}
 }
 
 // String returns the lowercase wire representation of the state.
@@ -54,6 +56,8 @@ func (s State) String() string {
 		return "stopped"
 	case Error:
 		return "error"
+	case Hibernated:
+		return "hibernated"
 	default:
 		return fmt.Sprintf("State(%d)", int(s))
 	}
@@ -72,6 +76,8 @@ func ParseState(s string) (State, error) {
 		return Stopped, nil
 	case "error":
 		return Error, nil
+	case "hibernated":
+		return Hibernated, nil
 	default:
 		return 0, fmt.Errorf("unknown state %q", s)
 	}
@@ -81,7 +87,7 @@ func ParseState(s string) (State, error) {
 // State is not valid and cannot be persisted.
 func (s State) Valid() bool {
 	switch s {
-	case Created, Running, Paused, Stopped, Error:
+	case Created, Running, Paused, Stopped, Error, Hibernated:
 		return true
 	}
 	return false

@@ -79,11 +79,24 @@ func TestStateUnknownRejected(t *testing.T) {
 	}
 }
 
+func TestHibernatedState(t *testing.T) {
+	if Hibernated.String() != "hibernated" {
+		t.Errorf("String = %q", Hibernated.String())
+	}
+	got, err := ParseState("hibernated")
+	if err != nil || got != Hibernated {
+		t.Errorf("ParseState = %v, %v", got, err)
+	}
+	if !Hibernated.Valid() {
+		t.Error("Hibernated not valid")
+	}
+}
+
 func TestExactlyFiveStates(t *testing.T) {
 	// If a sixth state is added to AllStates(), this test breaks deliberately.
 	// If a state is added as a constant but NOT to AllStates(), other tests
 	// (parse round-trips) may still catch it via coverage gaps.
-	const want = 5
+	const want = 6
 	got := len(AllStates())
 	if got != want {
 		t.Errorf("expected exactly %d states, got %d: %v", want, got, AllStates())
