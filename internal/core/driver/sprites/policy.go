@@ -1,6 +1,7 @@
 package sprites
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -46,4 +47,19 @@ func BuildPolicy(hosts []string, includeDefaults, open bool) *sdk.NetworkPolicy 
 	}
 	rules = append(rules, sdk.NetworkPolicyRule{Domain: "*", Action: "deny"})
 	return &sdk.NetworkPolicy{Rules: rules}
+}
+
+// SecretHosts are the hosts that carry brokered credentials; in broker mode
+// they are reachable only through the relay tunnel, never the direct allowlist.
+var SecretHosts = []string{"api.anthropic.com", "platform.claude.com", "github.com", "api.github.com"}
+
+// StripSecretHosts returns hosts without SecretHosts.
+func StripSecretHosts(hosts []string) []string {
+	var out []string
+	for _, h := range hosts {
+		if !slices.Contains(SecretHosts, strings.ToLower(strings.TrimSpace(h))) {
+			out = append(out, h)
+		}
+	}
+	return out
 }

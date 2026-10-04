@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -39,6 +40,16 @@ func NormalizeSyncMode(m string) (string, error) {
 	return "", fmt.Errorf("sprites: sync mode %q unsupported (want %s or %s)", m, SyncBundle, SyncPush)
 }
 
+// stripURLCreds drops any userinfo from an http(s) URL.
+func stripURLCreds(u string) string {
+	p, err := url.Parse(u)
+	if err != nil || p.User == nil {
+		return u
+	}
+	p.User = nil
+	return p.String()
+}
+
 // SSHToHTTPS rewrites git@host:path and ssh://git@host/path to https; sprites
 // hold no ssh keys. Other URLs pass through.
 func SSHToHTTPS(u string) string {
@@ -72,18 +83,28 @@ func (d *Driver) PreparePushBranch(ctx context.Context, id domain.SandboxID, gue
 	if guestDir == "" || branch == "" || strings.HasPrefix(branch, "-") {
 		return fmt.Errorf("sprites push prepare: guest dir and branch required")
 	}
-	env, err := d.projectedEnv(ctx, []string{SecretGitHub})
-	if err != nil {
-		return fmt.Errorf("sprites push prepare: %w", err)
-	}
 	var tok string
-	if env != nil {
-		tok = env[SecretGitHub]
+	genv := map[string]string{"GIT_TERMINAL_PROMPT": "0"}
+	if spec, serr := d.Spec(id); serr == nil && spec.CredMode == CredModeBroker {
+		benv, err := d.brokerEnv(ctx, id, spec, genv)
+		if err != nil {
+			return fmt.Errorf("sprites push prepare: %w", err)
+		}
+		genv = benv
+	} else {
+		env, err := d.projectedEnv(ctx, []string{SecretGitHub})
+		if err != nil {
+			return fmt.Errorf("sprites push prepare: %w", err)
+		}
+		if env != nil {
+			tok = env[SecretGitHub]
+		}
+		genv["GH_TOKEN"] = tok
 	}
 	stderr := &tailBuffer{max: copyStderrCap}
 	code, err := d.api.Exec(ctx, SpriteName(id), ExecRequest{
 		Argv:   []string{"sh", "-c", pushPrepScript, "sh", guestDir, branch, CredentialHelperKey, CredentialHelperValue},
-		Env:    map[string]string{"GH_TOKEN": tok, "GIT_TERMINAL_PROMPT": "0"},
+		Env:    genv,
 		Stderr: stderr,
 	})
 	if err != nil {
