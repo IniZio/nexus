@@ -27,6 +27,11 @@ func main() {
 		runGitSSHShim(os.Args[2:])
 	}
 
+	// sprite-relay: dispatch before PID-1 init (stdout is the tunnel)
+	if len(os.Args) >= 2 && os.Args[1] == "sprite-relay" {
+		runSpriteRelay(os.Args[2:])
+	}
+
 	isPid1 := os.Getpid() == 1
 
 	// hotSwap from NEXUS_HOT_SWAP env (skip cold-boot init if exec'd by prior agent)
