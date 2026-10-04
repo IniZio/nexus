@@ -26,10 +26,7 @@ func TestSelfBuildLive_Sprites(t *testing.T) {
 	}
 	repo := strings.TrimSpace(string(top))
 
-	drv, err := sprites.New(sprites.Config{StateDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	drv := liveBrokerDriver(t, t.TempDir())
 	id := domain.NewSandboxID()
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()

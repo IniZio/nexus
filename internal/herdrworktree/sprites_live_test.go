@@ -16,6 +16,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/sprites"
+	"github.com/IniZio/nexus/internal/core/driver/sprites/broker"
 )
 
 func hgit(t *testing.T, dir string, args ...string) string {
@@ -45,7 +46,14 @@ func TestSpriteTeardownGuardLive(t *testing.T) {
 		hgit(t, host, "commit", "-q", "-m", f)
 	}
 
-	drv, err := sprites.New(sprites.Config{StateDir: t.TempDir()})
+	bin := os.Getenv("NEXUS_LIVE_BIN")
+	if bin == "" {
+		t.Skip("set NEXUS_LIVE_BIN to a real nexus binary (the sprites broker is spawned from it)")
+	}
+	stateDir := t.TempDir()
+	drv, err := sprites.New(sprites.Config{StateDir: stateDir, Broker: &broker.Manager{
+		StateDir: stateDir, Launcher: broker.ExecLauncher{Exe: bin, StateDir: stateDir}, ReadyTimeout: 60 * time.Second,
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

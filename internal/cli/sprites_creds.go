@@ -15,8 +15,6 @@ import (
 	"github.com/IniZio/nexus/internal/core/service"
 )
 
-const spritesGitHubTTLNotice = "note: GH_TOKEN projected from the host token; no TTL (host token, not minted short-lived)."
-
 // spritesSecretNames collects requested secret env names from --secret,
 // egress.secrets and the claude-code agent; unsupported kinds fail closed.
 func spritesSecretNames(cfg config.Config, f sandboxCreateFlags) ([]string, error) {
@@ -34,7 +32,7 @@ func spritesSecretNames(cfg config.Config, f sandboxCreateFlags) ([]string, erro
 	return sprites.NormalizeSecretNames(names)
 }
 
-// spritesEnvResolver resolves tier A secret values on the host at exec time.
+// spritesEnvResolver resolves real secret values on the host for the broker process.
 func spritesEnvResolver(ctx context.Context, names []string) (map[string]string, error) {
 	out := make(map[string]string, len(names))
 	for _, n := range names {
@@ -46,7 +44,7 @@ func spritesEnvResolver(ctx context.Context, names []string) (map[string]string,
 		case sprites.SecretGitHub:
 			v, err = hostGitHubToken(ctx)
 		default:
-			err = fmt.Errorf("sprites: secret kind %s unsupported on tier A", n)
+			err = fmt.Errorf("sprites: secret kind %s unsupported", n)
 		}
 		if err != nil {
 			return nil, err

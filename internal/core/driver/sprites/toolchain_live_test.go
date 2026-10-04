@@ -32,10 +32,7 @@ func TestToolchainLive_Sprites(t *testing.T) {
 		}
 	}
 
-	drv, err := sprites.New(sprites.Config{StateDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	drv := liveBrokerDriver(t, t.TempDir())
 	id := domain.NewSandboxID()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

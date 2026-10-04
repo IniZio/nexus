@@ -51,7 +51,7 @@ func TestLifecycleBrokerOrder(t *testing.T) {
 	f := &fakeAPI{}
 	d, m, fl, id := lcDriver(t, f, nil)
 	ctx := context.Background()
-	spec := Spec{OpenEgress: true, CredMode: CredModeBroker, Sync: SyncPush, Repo: "git@github.com:a/b.git", SecretNames: []string{SecretGitHub}}
+	spec := Spec{OpenEgress: true, Sync: SyncPush, Repo: "git@github.com:a/b.git", SecretNames: []string{SecretGitHub}}
 	if err := d.Provision(ctx, id, spec); err != nil {
 		t.Fatal(err)
 	}
@@ -97,32 +97,10 @@ func TestLifecycleBrokerOrder(t *testing.T) {
 	}
 }
 
-func TestLifecycleTierANoBrokerCalls(t *testing.T) {
-	f := &fakeAPI{}
-	d, _, fl, id := lcDriver(t, f, nil)
-	ctx := context.Background()
-	if err := d.Provision(ctx, id, Spec{OpenEgress: true}); err != nil {
-		t.Fatal(err)
-	}
-	f.exists = true
-	if _, err := d.Start(ctx, driver.StartRequest{SandboxID: id}); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.Stop(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.Deprovision(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if fl.calls != 0 || idx(f.calls, "ensure") >= 0 {
-		t.Fatalf("tier A touched broker: %d %v", fl.calls, f.calls)
-	}
-}
-
 func TestProvisionEnsureFailureFailsAndRollsBack(t *testing.T) {
 	f := &fakeAPI{}
 	d, _, _, id := lcDriver(t, f, errors.New("spawn boom"))
-	err := d.Provision(context.Background(), id, Spec{OpenEgress: true, CredMode: CredModeBroker, Sync: SyncPush, Repo: "git@github.com:a/b.git"})
+	err := d.Provision(context.Background(), id, Spec{OpenEgress: true, Sync: SyncPush, Repo: "git@github.com:a/b.git"})
 	if err == nil || !strings.Contains(err.Error(), "broker") {
 		t.Fatalf("err = %v", err)
 	}
@@ -137,7 +115,7 @@ func TestProvisionEnsureFailureFailsAndRollsBack(t *testing.T) {
 func TestProvisionEnsureFailurePreexistingKept(t *testing.T) {
 	f := &fakeAPI{createErr: errors.New("x")}
 	d, _, fl, id := lcDriver(t, f, nil)
-	_ = d.Provision(context.Background(), id, Spec{OpenEgress: true, CredMode: CredModeBroker})
+	_ = d.Provision(context.Background(), id, Spec{OpenEgress: true})
 	if fl.calls != 0 {
 		t.Fatal("Ensure ran before CreateSprite succeeded")
 	}
@@ -145,8 +123,11 @@ func TestProvisionEnsureFailurePreexistingKept(t *testing.T) {
 
 func TestBrokerModeNilBrokerFailsClosed(t *testing.T) {
 	f := &fakeAPI{}
-	d, _ := newTestDriver(t, f)
-	err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{OpenEgress: true, CredMode: CredModeBroker})
+	d, err := New(Config{API: f, StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = d.Provision(context.Background(), domain.NewSandboxID(), Spec{OpenEgress: true})
 	if err == nil || !strings.Contains(err.Error(), "no broker configured") {
 		t.Fatalf("err = %v", err)
 	}
@@ -155,11 +136,8 @@ func TestBrokerModeNilBrokerFailsClosed(t *testing.T) {
 func TestBrokerPushCloneAndPrepUsePlaceholder(t *testing.T) {
 	f := &fakeAPI{}
 	d, _, _, id := lcDriver(t, f, nil)
-	d.cfg.EnvResolver = func(_ context.Context, names []string) (map[string]string, error) {
-		return map[string]string{SecretGitHub: fakeSecret}, nil
-	}
 	ctx := context.Background()
-	spec := Spec{OpenEgress: true, CredMode: CredModeBroker, Sync: SyncPush, GitToken: fakeSecret,
+	spec := Spec{OpenEgress: true, Sync: SyncPush,
 		Repo: "https://user:" + fakeSecret + "@github.com/a/b.git", SecretNames: []string{SecretGitHub}}
 	if err := d.Provision(ctx, id, spec); err != nil {
 		t.Fatal(err)
@@ -196,7 +174,7 @@ func TestBrokerPushCloneAndPrepUsePlaceholder(t *testing.T) {
 func TestBrokerModePolicyExcludesSecretHosts(t *testing.T) {
 	f := &fakeAPI{}
 	d, _, _, id := lcDriver(t, f, nil)
-	spec := Spec{CredMode: CredModeBroker, Sync: SyncPush, Repo: "https://github.com/a/b.git",
+	spec := Spec{Sync: SyncPush, Repo: "https://github.com/a/b.git",
 		AllowedHosts: []string{"api.anthropic.com", "platform.claude.com", "GitHub.com", "api.github.com", "example.com"}}
 	if err := d.Provision(context.Background(), id, spec); err != nil {
 		t.Fatal(err)
@@ -219,5 +197,34 @@ func TestBrokerModePolicyExcludesSecretHosts(t *testing.T) {
 				t.Errorf("policy rule for secret host %s", r.Domain)
 			}
 		}
+	}
+}
+
+type ctxLauncher struct {
+	hasDeadline bool
+	id          domain.SandboxID
+	dir         string
+	t           *testing.T
+}
+
+func (l *ctxLauncher) Spawn(ctx context.Context, _ string) error {
+	_, l.hasDeadline = ctx.Deadline()
+	return broker.WriteState(l.dir, l.id.String(), liveBrokerState(l.t))
+}
+
+func TestEnsureBrokerNoSeparateCap(t *testing.T) {
+	dir := t.TempDir()
+	id := domain.NewSandboxID()
+	l := &ctxLauncher{id: id, dir: dir, t: t}
+	m := &broker.Manager{StateDir: dir, Launcher: l, ReadyTimeout: time.Minute}
+	d, err := New(Config{API: &fakeAPI{}, StateDir: dir, Broker: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ensureBroker(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if l.hasDeadline {
+		t.Fatal("ensureBroker imposed its own deadline; Manager.ReadyTimeout must be the only bound")
 	}
 }

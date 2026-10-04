@@ -75,7 +75,7 @@ func runSpritesBroker(ctx context.Context, args []string, d spritesBrokerDeps) e
 	if err != nil {
 		return err
 	}
-	cc := broker.CredsConfig{SandboxID: id, Secrets: secrets}
+	cc := broker.CredsConfig{SandboxID: id, Secrets: secrets, AllowedBranches: spec.AllowedBranches}
 	for _, s := range secrets {
 		if s.Name == sprites.SecretClaudeOAuth {
 			prof := cred.MustProfileByName(cred.ClaudeCodeProfileName)

@@ -34,13 +34,11 @@ type Config struct {
 	Org      string
 	StateDir string
 	API      API
-	// EnvResolver resolves Spec.SecretNames to values at exec time (never persisted).
-	EnvResolver EnvResolver
-	// Broker supplies the per-sandbox credential broker for CredMode "broker".
+	// Broker supplies the per-sandbox credential broker (every sprite is brokered).
 	Broker *broker.Manager
 }
 
-// Spec is the per-sandbox provisioning record. GitToken is never persisted.
+// Spec is the per-sandbox provisioning record. Real tokens are never stored.
 type Spec struct {
 	Repo            string   `json:"repo,omitempty"`
 	CloneDir        string   `json:"clone_dir,omitempty"`
@@ -50,11 +48,10 @@ type Spec struct {
 	SecretNames     []string `json:"secret_names,omitempty"`
 	Presets         []string `json:"presets,omitempty"`
 	Sync            string   `json:"sync,omitempty"`
-	// CredMode selects credential handling: "" is tier A, CredModeBroker routes via the broker.
-	CredMode string `json:"cred_mode,omitempty"`
 	// GitHubRepo is the owner/name the broker binds GH_TOKEN to; empty means no GH_TOKEN is brokered.
 	GitHubRepo string `json:"github_repo,omitempty"`
-	GitToken   string `json:"-"`
+	// AllowedBranches are the git ref patterns the broker lets the sprite push; empty denies every push.
+	AllowedBranches []string `json:"allowed_branches,omitempty"`
 }
 
 // Driver is the Sprites substrate. Keep-alive and the Tasks API are not
@@ -130,7 +127,7 @@ func checkName(name string) error {
 var ErrSpriteExists = errors.New("sprites: sprite already exists")
 
 // Provision creates the sprite, applies egress policy, clones the
-// repo (push mode only), and persists the spec (without GitToken).
+// repo (push mode only), and persists the spec (names only, no secret values).
 func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (err error) {
 	name := SpriteName(id)
 	if err := checkName(name); err != nil {
@@ -148,10 +145,9 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 		s.AllowedHosts = append(slices.Clone(s.AllowedHosts), PushHosts...)
 	}
 	s.SecretNames = names
-	if s.CredMode == CredModeBroker {
-		// Secret hosts are reachable only through the relay tunnel (D3).
-		s.AllowedHosts = StripSecretHosts(s.AllowedHosts)
-	}
+	s.Repo = stripURLCreds(s.Repo)
+	// Secret hosts are reachable only through the relay tunnel.
+	s.AllowedHosts = StripSecretHosts(s.AllowedHosts)
 	if s.Presets, err = NormalizePresets(s.Presets); err != nil {
 		return err
 	}
@@ -182,18 +178,16 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 		}
 		return fmt.Errorf("sprites: create %s: %w", name, err)
 	}
-	if s.CredMode == CredModeBroker {
-		if d.cfg.Broker == nil {
-			return errNoBroker
-		}
-		// The broker process reads the spec, so persist it before Ensure.
-		if err := d.writeSpec(id, s); err != nil {
-			return err
-		}
-		brokerUp = true
-		if err := d.ensureBroker(ctx, id); err != nil {
-			return err
-		}
+	if d.cfg.Broker == nil {
+		return errNoBroker
+	}
+	// The broker process reads the spec, so persist it before Ensure.
+	if err := d.writeSpec(id, s); err != nil {
+		return err
+	}
+	brokerUp = true
+	if err := d.ensureBroker(ctx, id); err != nil {
+		return err
 	}
 	if !s.OpenEgress {
 		if p := BuildPolicy(append(slices.Clone(s.AllowedHosts), GoToolchainHosts...), s.IncludeDefaults, false); p != nil {
@@ -230,42 +224,28 @@ func (d *Driver) clone(ctx context.Context, id domain.SandboxID, name string, s 
 	argv := []string{"git"}
 	env := map[string]string{"GIT_TERMINAL_PROMPT": "0"}
 	repo := SSHToHTTPS(s.Repo)
-	if s.CredMode == CredModeBroker {
-		// Broker mode: the env carries only placeholders plus proxy/CA vars; the
-		// helper echoes the placeholder and the host broker swaps in the real token.
-		benv, err := d.brokerEnv(ctx, id, s, env)
-		if err != nil {
-			return err
-		}
-		env = benv
-		repo = stripURLCreds(repo)
-		argv = append(argv, "-c", CredentialHelperKey+"="+CredentialHelperValue)
-	} else if s.GitToken != "" {
-		// Weaker than Sprites Connectors: the token sits in the clone process env only.
-		env["GH_TOKEN"] = s.GitToken
-		argv = append(argv, "-c", `credential.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f`)
+	// The env carries only placeholders plus proxy/CA vars; the helper echoes
+	// the placeholder and the host broker swaps in the real token.
+	env, err := d.brokerEnv(ctx, id, s, env)
+	if err != nil {
+		return err
 	}
+	repo = stripURLCreds(repo)
+	argv = append(argv, "-c", CredentialHelperKey+"="+CredentialHelperValue)
 	argv = append(argv, "clone", "--", repo, CloneDir)
 	var stderr bytes.Buffer
 	code, err := d.api.Exec(ctx, name, ExecRequest{Argv: argv, Env: env, Stderr: &stderr})
 	if err != nil {
-		return fmt.Errorf("sprites: clone: %s", scrub(err.Error(), s.GitToken))
+		return fmt.Errorf("sprites: clone: %s", err.Error())
 	}
 	if code != 0 {
-		msg := scrub(stderr.String(), s.GitToken)
+		msg := stderr.String()
 		if len(msg) > stderrTail {
 			msg = msg[len(msg)-stderrTail:]
 		}
 		return fmt.Errorf("sprites: git clone exited %d: %s", code, strings.TrimSpace(msg))
 	}
 	return nil
-}
-
-func scrub(s, token string) string {
-	if token == "" {
-		return s
-	}
-	return strings.ReplaceAll(s, token, "***")
 }
 
 func (d *Driver) writeSpec(id domain.SandboxID, s Spec) error {
@@ -316,10 +296,7 @@ func (d *Driver) Deprovision(ctx context.Context, id domain.SandboxID) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
-	var stopErr error
-	if d.brokerMode(id) {
-		stopErr = d.stopBroker(id)
-	}
+	stopErr := d.stopBroker(id)
 	exists, err := d.api.SpriteExists(ctx, name)
 	if err != nil {
 		return errors.Join(stopErr, fmt.Errorf("sprites: deprovision %s: %w", name, err))
@@ -362,10 +339,8 @@ func (d *Driver) Start(ctx context.Context, req driver.StartRequest) (string, er
 	if !ok {
 		return "", fmt.Errorf("sprites: sandbox %s not provisioned", req.SandboxID)
 	}
-	if d.brokerMode(req.SandboxID) {
-		if err := d.ensureBroker(ctx, req.SandboxID); err != nil {
-			return "", err
-		}
+	if err := d.ensureBroker(ctx, req.SandboxID); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(d.dir(req.SandboxID), 0o700); err != nil {
 		return "", fmt.Errorf("sprites: start: %w", err)
@@ -378,10 +353,7 @@ func (d *Driver) Start(ctx context.Context, req driver.StartRequest) (string, er
 
 // Stop clears the running marker; idempotent. The sprite is kept: it auto-suspends.
 func (d *Driver) Stop(_ context.Context, id domain.SandboxID) error {
-	var stopErr error
-	if d.brokerMode(id) {
-		stopErr = d.stopBroker(id)
-	}
+	stopErr := d.stopBroker(id)
 	if err := os.Remove(d.marker(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.Join(stopErr, fmt.Errorf("sprites: clear running marker: %w", err))
 	}
@@ -393,18 +365,9 @@ func (d *Driver) Exec(ctx context.Context, id domain.SandboxID, opts driver.Exec
 		return 0, errors.New("sprites: exec: empty argv")
 	}
 	spec, specErr := d.Spec(id)
-	var env map[string]string
-	if specErr == nil && spec.CredMode == CredModeBroker {
-		var err error
-		if env, err = d.brokerEnv(ctx, id, spec, opts.Env); err != nil {
-			return 0, err
-		}
-	} else {
-		projected, err := d.projectedEnv(ctx, spec.SecretNames)
-		if err != nil {
-			return 0, err
-		}
-		env = mergeEnv(projected, opts.Env)
+	env, err := d.brokerEnv(ctx, id, spec, opts.Env)
+	if err != nil {
+		return 0, err
 	}
 	req := ExecRequest{
 		Argv:   opts.Argv,

@@ -537,5 +537,5 @@ config loader rejects such a file at parse time.
 
 Sprites sandboxes default to deny. Go module/toolchain hosts are allowed;
 `storage.googleapis.com` opens only during the post-seed warm; `--preset docker` adds an
-apt window plus Docker Hub hosts. Credentials there are env-projected (tier A), not
-brokered. See `delegate-sprites.md`.
+apt window plus Docker Hub hosts. Credentials there are brokered (placeholders in the sprite, real
+tokens stay on the host). See `delegate-sprites.md`.

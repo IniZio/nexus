@@ -24,7 +24,7 @@ import (
 
 func isolationNotice(i driver.Isolation) string {
 	if i == driver.IsolationGuest {
-		return "isolation: guest (whole sprite is the boundary; credentials projected into it are agent-visible)"
+		return "isolation: guest (whole sprite is the boundary; egress policy is the only gate)"
 	}
 	return "isolation: " + string(i)
 }
@@ -40,7 +40,7 @@ var newSpritesDriver = func() (driver.Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return registry.New(registry.Sprites, sprites.Config{StateDir: root, EnvResolver: spritesEnvResolver, Broker: spritesBrokerManager(root)})
+	return registry.New(registry.Sprites, sprites.Config{StateDir: root, Broker: spritesBrokerManager(root)})
 }
 
 // spritesBrokerManager builds the production broker manager. The executable is
@@ -212,7 +212,7 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		}
 		return errSandbox(verb, cause)
 	}
-	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, SecretNames: secretNames, Presets: presets, Sync: syncMode, CredMode: sprites.CredModeBroker, GitHubRepo: ghRepo}
+	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, SecretNames: secretNames, Presets: presets, Sync: syncMode, GitHubRepo: ghRepo}
 	if err := prov.Provision(ctx, sb.ID, spec); err != nil {
 		return rollback(err)
 	}
@@ -223,8 +223,5 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		fmt.Sprintf("created sandbox %s (%s) on sprite%s", sb.Handle(), sb.ID, spritesRepoSuffix(repo)))
 	fmt.Fprintln(out.Stderr(), isolationNotice(drv.Capabilities().Isolation))
 	fmt.Fprintln(out.Stderr(), sprites.CredentialsNotice)
-	if slices.Contains(secretNames, sprites.SecretGitHub) {
-		fmt.Fprintln(out.Stderr(), spritesGitHubTTLNotice)
-	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/sprites"
+	"github.com/IniZio/nexus/internal/core/driver/sprites/broker"
 	"github.com/IniZio/nexus/internal/core/perimeter/cred"
 	"github.com/IniZio/nexus/internal/core/service"
 	"github.com/IniZio/nexus/internal/herdragent"
@@ -59,8 +60,13 @@ func TestDelegateDoneLive_Sprites(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	emitDelegateDoneEvent = func(ctx context.Context, ev hubclient.Event) { _ = journal.Emit(ctx, ev) }
 
-	drv, err := sprites.New(sprites.Config{StateDir: t.TempDir(), EnvResolver: func(context.Context, []string) (map[string]string, error) {
-		return map[string]string{sprites.SecretClaudeOAuth: tok}, nil
+	bin := os.Getenv("NEXUS_LIVE_BIN")
+	if bin == "" {
+		t.Skip("set NEXUS_LIVE_BIN to a real nexus binary (the sprites broker is spawned from it)")
+	}
+	stateDir := t.TempDir()
+	drv, err := sprites.New(sprites.Config{StateDir: stateDir, Broker: &broker.Manager{
+		StateDir: stateDir, Launcher: broker.ExecLauncher{Exe: bin, StateDir: stateDir}, ReadyTimeout: 60 * time.Second,
 	}})
 	if err != nil {
 		t.Fatal(err)

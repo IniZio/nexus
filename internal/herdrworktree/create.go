@@ -24,7 +24,7 @@ type CreateArgs struct {
 	VCPUs           uint32   `json:"vcpus,omitempty"            jsonschema:"MUST NOT be set — not supported by the herdr worktree-sandbox path; any value here returns an error"`
 	AllowedBranches []string `json:"allowed_branches,omitempty" jsonschema:"MUST NOT be set — branch policy is derived from the worktree; any value here returns an error"`
 	Backend         string   `json:"backend,omitempty"          jsonschema:"optional sandbox backend (e.g. sprites); precedence: this arg > repo .nexus/config.yaml backend > NEXUS_BACKEND > default"`
-	Sync            string   `json:"sync,omitempty"             jsonschema:"optional worktree sync mode for the sprites backend: bundle (default; git bundle over exec, no credentials) or push (clone origin in the sprite and push a task branch with a GH_TOKEN projected from the host; allows github.com egress)"`
+	Sync            string   `json:"sync,omitempty"             jsonschema:"optional worktree sync mode for the sprites backend: bundle (default; git bundle over exec, no credentials) or push (clone origin in the sprite and push a task branch with a GH_TOKEN brokered through the host so the sprite sees only a placeholder; allows github.com egress)"`
 	Posture         string   `json:"-"`
 	BriefPath       string   `json:"brief_path,omitempty"       jsonschema:"absolute host path to a brief file; copied into the worktree as .brief.md and excluded from commits (optional)"`
 }

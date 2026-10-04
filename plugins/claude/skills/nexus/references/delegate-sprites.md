@@ -18,10 +18,28 @@ Prerequisite: a Sprites API token.
 ## Trust tier
 
 - Isolation: `guest`. The whole sprite is the boundary; egress policy is the only gate.
-- Credentials: tier A, env-projected and **agent-visible**. `CLAUDE_CODE_OAUTH_TOKEN` is
-  projected automatically for agent `claude-code`. `GH_TOKEN` is projected only on
-  request or in push mode; it is the host token with no TTL.
-- Tier B (broker; token never enters the sprite) is not implemented.
+- Credentials: **brokered only**. Real tokens never enter the sprite (env, argv, files,
+  `/proc`). There is no env-projection tier and no fallback to one.
+  - The sprite sees placeholders: `CLAUDE_CODE_OAUTH_TOKEN` (agent `claude-code`) and
+    `GH_TOKEN` (push mode or `--secret GH_TOKEN`) hold fixed placeholder strings.
+  - A detached host process (`nexus __sprites-broker <id>`) holds one long exec to the
+    sprite and runs a relay (`nexus-agent sprite-relay`) on `127.0.0.1:3128`, set as
+    `HTTPS_PROXY`. Secret hosts (`api.anthropic.com`, `platform.claude.com`,
+    `github.com`, `api.github.com`) are tunnelled over that exec to the host broker,
+    which MITMs the request and swaps the placeholder for the real token. Other hosts
+    dial direct under the sprite egress policy. Secret hosts are dropped from the
+    sprite's direct allowlist.
+  - The broker CA is installed into the sprite trust store (needs
+    `update-ca-certificates` or `update-ca-trust`, run via `sudo -n` when the exec user
+    is not root) and `NODE_EXTRA_CA_CERTS`. A guest without either tool fails
+    provisioning.
+  - Fail closed: if the broker is dead, exec respawns it once (wait <= 10s), else the
+    exec is refused. Stdin EOF or a lost tunnel kills the relay; the secret hosts then
+    become unreachable, never direct.
+  - GitHub binding (D5): `GH_TOKEN` is bound to one repo, `--repo` or else the worktree
+    origin. With neither, no `GH_TOKEN` is brokered.
+  - `nexus sandbox create` prints `credentials: brokered (placeholders in sprite; real
+    tokens stay on host)`.
 
 ## Sync modes
 
@@ -30,7 +48,7 @@ Prerequisite: a Sprites API token.
 | Mode | Source of truth | Needs | Teardown |
 |---|---|---|---|
 | `bundle` (default) | host worktree | no origin, no creds | exports agent commits to the host worktree ff-only; refuses unexported or uncommitted work unless `force` |
-| `push` (opt-in) | origin | `GH_TOKEN`; clones origin over HTTPS (ssh origin auto-converted) | requires the task branch pushed |
+| `push` (opt-in) | origin | brokered `GH_TOKEN` (repo-bound); clones origin over HTTPS (ssh origin auto-converted) | requires the task branch pushed |
 
 ## Dispatch and completion
 

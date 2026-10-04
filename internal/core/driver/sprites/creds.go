@@ -9,19 +9,19 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"time"
 )
 
-// Tier A credential projection: values are resolved host-side per exec and
-// merged into the exec env only. They are agent-visible; only names persist.
+// Secret kinds the broker can bind. Only names persist; real values never
+// reach the sprite (see the sprites delegation reference).
 const (
 	SecretClaudeOAuth = "CLAUDE_CODE_OAUTH_TOKEN"
 	SecretGitHub      = "GH_TOKEN"
 
-	CredentialsNotice = "credentials: tier A (agent-visible env)"
+	CredentialsNotice = "credentials: brokered (placeholders in sprite; real tokens stay on host)"
 )
 
-// EnvResolver returns env values for the requested secret names.
+// EnvResolver returns host-side real values for the requested secret names; the
+// broker process consumes it, the driver never does.
 type EnvResolver func(ctx context.Context, names []string) (map[string]string, error)
 
 var supportedSecrets = []string{SecretClaudeOAuth, SecretGitHub}
@@ -36,7 +36,7 @@ func NormalizeSecretNames(names []string) ([]string, error) {
 			n = SecretGitHub
 		}
 		if !slices.Contains(supportedSecrets, n) {
-			return nil, fmt.Errorf("sprites: secret kind %s unsupported on tier A (supported: %s)", n, strings.Join(supportedSecrets, ", "))
+			return nil, fmt.Errorf("sprites: secret kind %s unsupported (supported: %s)", n, strings.Join(supportedSecrets, ", "))
 		}
 		if !slices.Contains(out, n) {
 			out = append(out, n)
@@ -46,17 +46,7 @@ func NormalizeSecretNames(names []string) ([]string, error) {
 	return out, nil
 }
 
-func (d *Driver) projectedEnv(ctx context.Context, names []string) (map[string]string, error) {
-	if len(names) == 0 {
-		return nil, nil
-	}
-	if d.cfg.EnvResolver == nil {
-		return nil, fmt.Errorf("sprites: secrets %s requested but no resolver configured", strings.Join(names, ","))
-	}
-	return d.cfg.EnvResolver(ctx, names)
-}
-
-// mergeEnv layers explicit over projected over base.
+// mergeEnv layers later maps over earlier ones.
 func mergeEnv(layers ...map[string]string) map[string]string {
 	out := map[string]string{}
 	for _, l := range layers {
@@ -67,21 +57,16 @@ func mergeEnv(layers ...map[string]string) map[string]string {
 	return out
 }
 
-// CredModeBroker routes credentials through the host-side broker: the guest
-// only ever sees placeholders.
-const CredModeBroker = "broker"
-
-// brokerEnv builds the broker-mode exec env from the broker's GuestEnv. It
-// fails closed: a dead broker that cannot be ensured never falls back to tier A.
+// brokerEnv builds the exec env from the broker's GuestEnv (placeholders and
+// proxy vars only). It fails closed: a dead broker that cannot be ensured
+// refuses the exec.
 func (d *Driver) brokerEnv(ctx context.Context, id domain.SandboxID, spec Spec, caller map[string]string) (map[string]string, error) {
 	m := d.cfg.Broker
 	if m == nil {
 		return nil, errors.New("sprites: broker mode but no broker configured")
 	}
 	if !m.Alive(id.String()) {
-		ectx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		if err := m.Ensure(ectx, id.String()); err != nil || !m.Alive(id.String()) {
+		if err := m.Ensure(ctx, id.String()); err != nil || !m.Alive(id.String()) {
 			return nil, fmt.Errorf("sprites: credential broker for %s is not running; refusing to exec: %v", id, err)
 		}
 	}

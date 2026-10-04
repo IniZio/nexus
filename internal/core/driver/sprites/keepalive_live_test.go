@@ -25,10 +25,7 @@ func TestKeepaliveLive(t *testing.T) {
 	if tok == "" {
 		t.Skip("set SPRITES_TOKEN")
 	}
-	drv, err := sprites.New(sprites.Config{StateDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	drv := liveBrokerDriver(t, t.TempDir())
 	id := domain.NewSandboxID()
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()

@@ -19,10 +19,7 @@ func TestDockerPresetLive_Sprites(t *testing.T) {
 	if os.Getenv("SPRITES_TOKEN") == "" && os.Getenv("SPRITES_API_TOKEN") == "" {
 		t.Skip("set SPRITES_TOKEN")
 	}
-	drv, err := sprites.New(sprites.Config{StateDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	drv := liveBrokerDriver(t, t.TempDir())
 	id := domain.NewSandboxID()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()

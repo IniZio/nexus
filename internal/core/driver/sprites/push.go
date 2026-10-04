@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -13,7 +14,7 @@ import (
 
 // Sync modes: bundle (default) moves work as git bundles over exec and needs
 // no credentials; push clones origin in the sprite and pushes a task branch
-// with the tier A GH_TOKEN.
+// through the host broker (placeholder GH_TOKEN only).
 const (
 	SyncBundle = "bundle"
 	SyncPush   = "push"
@@ -76,30 +77,56 @@ fi
 git config "branch.$b.remote" origin
 git config "branch.$b.merge" "refs/heads/$b"`
 
+// validPushBranch applies git check-ref-format rules plus no glob characters:
+// the mitm allowlist matches branches as globs, so a metacharacter would widen it.
+func validPushBranch(b string) error {
+	bad := func(why string) error { return fmt.Errorf("branch %q invalid: %s", b, why) }
+	switch {
+	case b == "" || b == "@":
+		return bad("empty")
+	case strings.HasPrefix(b, "-"):
+		return bad("leading -")
+	case strings.HasSuffix(b, "/") || strings.HasSuffix(b, ".") || strings.HasSuffix(b, ".lock"):
+		return bad("bad suffix")
+	case strings.Contains(b, "..") || strings.Contains(b, "@{"):
+		return bad("contains .. or @{")
+	}
+	for _, r := range b {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune("*?[]\\~^:", r) {
+			return bad("forbidden character")
+		}
+	}
+	for _, c := range strings.Split(b, "/") {
+		if c == "" || strings.HasPrefix(c, ".") || strings.HasSuffix(c, ".lock") {
+			return bad("bad path component")
+		}
+	}
+	return nil
+}
+
 // PreparePushBranch checks out the task branch in the cloned sprite repo
 // (from origin/<branch> when it exists, else from the clone's HEAD) and wires
 // its upstream and the env-only credential helper.
 func (d *Driver) PreparePushBranch(ctx context.Context, id domain.SandboxID, guestDir, branch string) error {
-	if guestDir == "" || branch == "" || strings.HasPrefix(branch, "-") {
+	if guestDir == "" || branch == "" {
 		return fmt.Errorf("sprites push prepare: guest dir and branch required")
 	}
-	var tok string
-	genv := map[string]string{"GIT_TERMINAL_PROMPT": "0"}
-	if spec, serr := d.Spec(id); serr == nil && spec.CredMode == CredModeBroker {
-		benv, err := d.brokerEnv(ctx, id, spec, genv)
-		if err != nil {
+	if err := validPushBranch(branch); err != nil {
+		return fmt.Errorf("sprites push prepare: %w", err)
+	}
+	spec, specErr := d.Spec(id)
+	if want := []string{"refs/heads/" + branch}; specErr == nil && !slices.Equal(spec.AllowedBranches, want) {
+		spec.AllowedBranches = want
+		if err := d.writeSpec(id, spec); err != nil {
 			return fmt.Errorf("sprites push prepare: %w", err)
 		}
-		genv = benv
-	} else {
-		env, err := d.projectedEnv(ctx, []string{SecretGitHub})
-		if err != nil {
+		if err := d.stopBroker(id); err != nil {
 			return fmt.Errorf("sprites push prepare: %w", err)
 		}
-		if env != nil {
-			tok = env[SecretGitHub]
-		}
-		genv["GH_TOKEN"] = tok
+	}
+	genv, err := d.brokerEnv(ctx, id, spec, map[string]string{"GIT_TERMINAL_PROMPT": "0"})
+	if err != nil {
+		return fmt.Errorf("sprites push prepare: %w", err)
 	}
 	stderr := &tailBuffer{max: copyStderrCap}
 	code, err := d.api.Exec(ctx, SpriteName(id), ExecRequest{
@@ -108,10 +135,10 @@ func (d *Driver) PreparePushBranch(ctx context.Context, id domain.SandboxID, gue
 		Stderr: stderr,
 	})
 	if err != nil {
-		return fmt.Errorf("sprites push prepare: %s", scrub(err.Error(), tok))
+		return fmt.Errorf("sprites push prepare: %s", err.Error())
 	}
 	if code != 0 {
-		return fmt.Errorf("sprites push prepare: exit %d: %s", code, scrub(string(bytes.TrimSpace(stderr.buf)), tok))
+		return fmt.Errorf("sprites push prepare: exit %d: %s", code, string(bytes.TrimSpace(stderr.buf)))
 	}
 	if hasGuestGoMod(ctx, d, id, guestDir) {
 		return d.warmGo(ctx, id, guestDir)

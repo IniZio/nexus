@@ -103,11 +103,11 @@ func brokerCreate(t *testing.T, f sandboxCreateFlags, origin string) (sprites.Sp
 	return spec, api, stderr.String()
 }
 
-func TestSpritesCreateDefaultsToBrokerMode(t *testing.T) {
-	spec, api, _ := brokerCreate(t, sandboxCreateFlags{repoURL: "https://github.com/a/b.git", syncMode: "push",
+func TestSpritesCreateIsAlwaysBrokered(t *testing.T) {
+	spec, api, stderr := brokerCreate(t, sandboxCreateFlags{repoURL: "https://github.com/a/b.git", syncMode: "push",
 		allowHosts: []string{"github.com", "api.anthropic.com", "example.com"}}, "")
-	if spec.CredMode != sprites.CredModeBroker {
-		t.Fatalf("CredMode = %q, want broker", spec.CredMode)
+	if !strings.Contains(stderr, "credentials: brokered") || strings.Contains(stderr, "tier A") || strings.Contains(stderr, "projected") {
+		t.Errorf("stderr = %q", stderr)
 	}
 	if spec.GitHubRepo != "a/b" || !slices.Contains(spec.SecretNames, sprites.SecretGitHub) {
 		t.Errorf("GitHubRepo=%q secrets=%v", spec.GitHubRepo, spec.SecretNames)

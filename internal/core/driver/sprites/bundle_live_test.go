@@ -33,10 +33,7 @@ func TestBundleSyncLive_NoRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	drv, err := sprites.New(sprites.Config{StateDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	drv := liveBrokerDriver(t, t.TempDir())
 	id := domain.NewSandboxID()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()

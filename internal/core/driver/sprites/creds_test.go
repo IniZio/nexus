@@ -17,41 +17,28 @@ import (
 
 const fakeSecret = "sk-ant-oat-FAKE-secret-value"
 
-func credDriver(t *testing.T, f *fakeAPI) (*Driver, string) {
-	t.Helper()
-	dir := t.TempDir()
-	d, err := New(Config{API: f, StateDir: dir, EnvResolver: func(_ context.Context, names []string) (map[string]string, error) {
-		m := map[string]string{}
-		for _, n := range names {
-			m[n] = fakeSecret
-		}
-		return m, nil
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return d, dir
-}
-
-func TestExecMergesProjectedEnv(t *testing.T) {
+func TestExecEnvIsPlaceholdersOnly(t *testing.T) {
 	f := &fakeAPI{}
-	d, _ := credDriver(t, f)
+	d, _ := newTestDriver(t, f)
 	id := domain.NewSandboxID()
 	if err := d.Provision(context.Background(), id, Spec{OpenEgress: true, SecretNames: []string{"GITHUB_TOKEN", SecretClaudeOAuth}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(context.Background(), id, driver.ExecOptions{Argv: []string{"claude"}, Env: map[string]string{"GH_TOKEN": "explicit"}}); err != nil {
+	if _, err := d.Exec(context.Background(), id, driver.ExecOptions{Argv: []string{"claude"}, Env: map[string]string{"GH_TOKEN": fakeSecret}}); err != nil {
 		t.Fatal(err)
 	}
 	env := f.execs[len(f.execs)-1].Env
-	if env[SecretClaudeOAuth] != fakeSecret || env["GH_TOKEN"] != "explicit" || env["GOTOOLCHAIN"] != "auto" {
+	if env["GH_TOKEN"] != placeholder || env["GOTOOLCHAIN"] != "auto" || env["HTTPS_PROXY"] == "" {
 		t.Fatalf("env = %v", env)
+	}
+	if blob := fmt.Sprint(f.execs); strings.Contains(blob, fakeSecret) {
+		t.Fatalf("real token leaked: %s", blob)
 	}
 }
 
 func TestSpecPersistsNamesOnly(t *testing.T) {
 	f := &fakeAPI{}
-	d, dir := credDriver(t, f)
+	d, dir := newTestDriver(t, f)
 	id := domain.NewSandboxID()
 	if err := d.Provision(context.Background(), id, Spec{OpenEgress: true, SecretNames: []string{SecretClaudeOAuth}}); err != nil {
 		t.Fatal(err)
@@ -71,25 +58,13 @@ func TestSpecPersistsNamesOnly(t *testing.T) {
 
 func TestProvisionUnsupportedSecretFailsClosed(t *testing.T) {
 	f := &fakeAPI{}
-	d, _ := credDriver(t, f)
+	d, _ := newTestDriver(t, f)
 	err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{SecretNames: []string{"AWS_SECRET_ACCESS_KEY"}})
-	if err == nil || !strings.Contains(err.Error(), "secret kind AWS_SECRET_ACCESS_KEY unsupported on tier A") {
+	if err == nil || !strings.Contains(err.Error(), "secret kind AWS_SECRET_ACCESS_KEY unsupported") {
 		t.Fatalf("err = %v", err)
 	}
 	if len(f.created) != 0 {
 		t.Fatal("sprite created despite unsupported secret")
-	}
-}
-
-func TestExecNoSecretsNoResolverOK(t *testing.T) {
-	f := &fakeAPI{}
-	d, _ := newTestDriver(t, f)
-	id := domain.NewSandboxID()
-	if err := d.Provision(context.Background(), id, Spec{OpenEgress: true}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Exec(context.Background(), id, driver.ExecOptions{Argv: []string{"true"}}); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -112,13 +87,7 @@ func brokerDriver(t *testing.T, f *fakeAPI, fl *fakeLauncher) (*Driver, *broker.
 	t.Helper()
 	dir := t.TempDir()
 	m := &broker.Manager{StateDir: dir, Launcher: fl, ReadyTimeout: 200 * time.Millisecond}
-	d, err := New(Config{API: f, StateDir: dir, Broker: m, EnvResolver: func(_ context.Context, names []string) (map[string]string, error) {
-		m := map[string]string{}
-		for _, n := range names {
-			m[n] = fakeSecret
-		}
-		return m, nil
-	}})
+	d, err := New(Config{API: f, StateDir: dir, Broker: m})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +97,7 @@ func brokerDriver(t *testing.T, f *fakeAPI, fl *fakeLauncher) (*Driver, *broker.
 	orig := fl.onSpawn
 	st := liveBrokerState(t)
 	fl.onSpawn = func(string) error { return broker.WriteState(m.StateDir, id.String(), st) }
-	if err := d.Provision(context.Background(), id, Spec{OpenEgress: true, CredMode: CredModeBroker, SecretNames: []string{SecretGitHub, SecretClaudeOAuth}}); err != nil {
+	if err := d.Provision(context.Background(), id, Spec{OpenEgress: true, SecretNames: []string{SecretGitHub, SecretClaudeOAuth}}); err != nil {
 		t.Fatal(err)
 	}
 	fl.onSpawn, fl.calls = orig, 0

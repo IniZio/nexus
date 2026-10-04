@@ -44,7 +44,7 @@ func TestSpritesBrokerBadIDDoesNotRun(t *testing.T) {
 }
 
 func TestSpritesBrokerSecretsInConfigNotEnvOrArgv(t *testing.T) {
-	spec := sprites.Spec{Repo: "https://github.com/acme/widget.git", SecretNames: []string{sprites.SecretGitHub}}
+	spec := sprites.Spec{Repo: "https://github.com/acme/widget.git", SecretNames: []string{sprites.SecretGitHub}, AllowedBranches: []string{"refs/heads/task/x"}}
 	var got broker.RunConfig
 	d := spritesBrokerTestDeps(t, spec, func(_ context.Context, c broker.RunConfig) error { got = c; return nil })
 	if err := runSpritesBroker(context.Background(), []string{spritesBrokerTestID}, d); err != nil {
@@ -56,6 +56,9 @@ func TestSpritesBrokerSecretsInConfigNotEnvOrArgv(t *testing.T) {
 	s := got.Creds.Secrets[0]
 	if s.Name != "GH_TOKEN" || s.Value != "REAL-GH_TOKEN" || s.GitHubRepo != "acme/widget" {
 		t.Fatalf("secret = %+v", s)
+	}
+	if len(got.Creds.AllowedBranches) != 1 || got.Creds.AllowedBranches[0] != "refs/heads/task/x" {
+		t.Fatalf("allowed branches = %v", got.Creds.AllowedBranches)
 	}
 	if got.Sprite != sprites.SpriteName(got.Creds.SandboxID) || got.StateDir != d.stateDir || got.Exec == nil {
 		t.Fatalf("cfg = %+v", got)

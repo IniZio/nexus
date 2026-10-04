@@ -335,7 +335,7 @@ func registerDelegateTools(srv *gosdk.Server, svc SandboxService) {
 			"image_ref, memory_mib and vcpus are rejected (the worktree-sandbox path has no flags for them); " +
 			"allowed_branches MUST NOT be set — branch policy is derived from the worktree. " +
 			"Optional backend selects the sandbox backend; precedence: this argument, then the repo's .nexus/config.yaml backend, then NEXUS_BACKEND, then the default; an unknown backend is rejected before any herdr call. " +
-			"Optional sync (sprites backend) is bundle (default: git bundle over exec, no credentials, commits imported on teardown) or push (clone origin in the sprite, push a task branch with a GH_TOKEN projected from the host; github.com egress allowed; teardown requires the branch pushed). " +
+			"Optional sync (sprites backend) is bundle (default: git bundle over exec, no credentials, commits imported on teardown) or push (clone origin in the sprite, push a task branch with a brokered GH_TOKEN (placeholder in the sprite); github.com egress allowed; teardown requires the branch pushed). " +
 			"Returns {workspace_id, worktree_path, branch, handle, sandbox_id, output} on success.",
 	}, func(ctx context.Context, _ *gosdk.CallToolRequest, args WorktreeCreateArgs) (*gosdk.CallToolResult, any, error) {
 		result, err := CreateWorktreeSandbox(ctx, args, worktreeRunners())

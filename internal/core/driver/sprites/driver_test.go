@@ -3,11 +3,13 @@ package sprites
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	sdk "github.com/superfly/sprites-go"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
 	"github.com/IniZio/nexus/internal/core/driver/registry"
+	"github.com/IniZio/nexus/internal/core/driver/sprites/broker"
 )
 
 type fakeAPI struct {
@@ -80,14 +83,25 @@ func (f *fakeAPI) Exec(_ context.Context, _ string, req ExecRequest) (int32, err
 	return f.exitCode, f.execErr
 }
 
+// newTestDriver builds a driver whose broker launcher always yields a live
+// broker state, so Provision/Start/Exec behave as in production (every sprite
+// is brokered).
 func newTestDriver(t *testing.T, f *fakeAPI) (*Driver, string) {
 	t.Helper()
+	d, m := newBrokeredDriver(t, f)
+	return d, m.StateDir
+}
+
+func newBrokeredDriver(t *testing.T, f API) (*Driver, *broker.Manager) {
+	t.Helper()
 	dir := t.TempDir()
-	d, err := New(Config{API: f, StateDir: dir})
+	m := &broker.Manager{StateDir: dir, ReadyTimeout: 200 * time.Millisecond, StopGrace: time.Second}
+	m.Launcher = &fakeLauncher{onSpawn: func(id string) error { return broker.WriteState(dir, id, liveBrokerState(t)) }}
+	d, err := New(Config{API: f, StateDir: dir, Broker: m})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return d, dir
+	return d, m
 }
 
 func TestSpriteName(t *testing.T) {
@@ -113,7 +127,7 @@ func TestProvisionClosedEgress(t *testing.T) {
 	f := &fakeAPI{}
 	d, _ := newTestDriver(t, f)
 	id := domain.NewSandboxID()
-	if err := d.Provision(context.Background(), id, Spec{AllowedHosts: []string{"github.com"}}); err != nil {
+	if err := d.Provision(context.Background(), id, Spec{AllowedHosts: []string{"github.com", "example.com"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(f.calls, ","); got != "create,policy,exec" {
@@ -127,14 +141,10 @@ func TestProvisionClosedEgress(t *testing.T) {
 	if last.Domain != "*" || last.Action != "deny" {
 		t.Fatalf("last rule = %+v, want deny *", last)
 	}
-	var sawAllow bool
 	for _, r := range rules {
-		if r.Domain == "github.com" && r.Action == "allow" {
-			sawAllow = true
+		if r.Domain == "github.com" {
+			t.Fatalf("secret host github.com in direct policy: %+v", rules)
 		}
-	}
-	if !sawAllow {
-		t.Fatalf("github.com not allowed: %+v", rules)
 	}
 }
 
@@ -149,12 +159,12 @@ func TestProvisionOpenEgressNoPolicy(t *testing.T) {
 	}
 }
 
-func TestProvisionCloneTokenNeverLeaks(t *testing.T) {
+func TestProvisionCloneUsesPlaceholderOnly(t *testing.T) {
 	const tok = "ghs_SECRETTOKEN123"
 	f := &fakeAPI{}
 	d, dir := newTestDriver(t, f)
 	id := domain.NewSandboxID()
-	if err := d.Provision(context.Background(), id, Spec{Repo: "https://github.com/o/r.git", Sync: SyncPush, GitToken: tok}); err != nil {
+	if err := d.Provision(context.Background(), id, Spec{Repo: "https://x-access-token:" + tok + "@github.com/o/r.git", Sync: SyncPush}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.execs) != 1 {
@@ -167,13 +177,12 @@ func TestProvisionCloneTokenNeverLeaks(t *testing.T) {
 	if strings.Contains(argv, tok) {
 		t.Fatalf("token in argv: %q", argv)
 	}
-	for _, v := range f.execs[0].Env {
-		if v == tok {
-			goto envOK
-		}
+	if blob := fmt.Sprintf("%+v", f.execs); strings.Contains(blob, tok) {
+		t.Fatalf("token in recorded exec: %s", blob)
 	}
-	t.Fatal("token not delivered via env")
-envOK:
+	if f.execs[0].Env["GH_TOKEN"] != placeholder {
+		t.Fatalf("env = %v", f.execs[0].Env)
+	}
 	b, err := os.ReadFile(filepath.Join(dir, "sprites", id.String(), "spec.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -184,19 +193,15 @@ envOK:
 }
 
 func TestProvisionCloneFailureRollsBack(t *testing.T) {
-	const tok = "ghs_SECRETTOKEN123"
 	for name, f := range map[string]*fakeAPI{
-		"exit code": {exitCode: 128, stderr: "fatal: auth failed for " + tok},
-		"transport": {execErr: errors.New("boom " + tok)},
+		"exit code": {exitCode: 128, stderr: "fatal: auth failed"},
+		"transport": {execErr: errors.New("boom")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			d, _ := newTestDriver(t, f)
-			err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{Repo: "https://x/y.git", Sync: SyncPush, GitToken: tok})
+			err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{Repo: "https://x/y.git", Sync: SyncPush})
 			if err == nil {
 				t.Fatal("want error")
-			}
-			if strings.Contains(err.Error(), tok) {
-				t.Fatalf("token in error: %v", err)
 			}
 			if len(f.deleted) != 1 || f.deleted[0] != f.created[0] {
 				t.Fatalf("rollback: created=%v deleted=%v", f.created, f.deleted)

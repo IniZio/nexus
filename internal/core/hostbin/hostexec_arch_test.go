@@ -56,7 +56,7 @@ var hostExecAllowlist = map[string]map[string]string{
 		"internal/test/repro": "test tooling",
 	},
 	"gh": {
-		"internal/cli": "gh auth token fallback for sprites tier-A GH_TOKEN (optional)",
+		"internal/cli": "gh auth token fallback for the sprites broker GH_TOKEN (optional)",
 	},
 	"git": {
 		"internal/cli":                      "git worktree/clone integration (optional)",

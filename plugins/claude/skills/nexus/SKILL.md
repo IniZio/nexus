@@ -36,7 +36,7 @@ question. Each reference is self-contained; open only what you need.
 | Egress policy: `egress.policy` / `egress.secrets` / `egress.allow`, brokering model, provider patterns, verification probes, `--allow-host`, per-ecosystem hosts, open-egress posture of worktree sandboxes | `references/egress.md` |
 | Delegate work into a worktree sandbox: MCP tool map, push rule, completion heuristic, teardown order, RAM cost (`/nexus:nexus-delegate`) | `references/delegate.md` |
 | Delegation loop step by step, MCP and CLI spellings, builder failure modes | `references/delegate-loop.md` |
-| Delegate to a Sprites sandbox: `backend` selection, `nexus sprites login`, trust tier, `sync` bundle vs push, sprites done marker, REFUSED pane, limits | `references/delegate-sprites.md` |
+| Delegate to a Sprites sandbox: `backend` selection, `nexus sprites login`, brokered-credential trust model, `sync` bundle vs push, sprites done marker, REFUSED pane, limits | `references/delegate-sprites.md` |
 | Brief authoring for the in-guest agent — standing orders (auto-prepended by `delegate_agent_dispatch`; paste by hand otherwise), required content, commit discipline | `references/delegate-briefs.md` |
 | Developing nexus inside nexus: worktree/workspace setup, nested virt via `.nexus/config.yaml`, pane monitoring, checkpoint, in-guest verify traps, reclaim convention, gotchas index | `references/self-hosting.md` |
 

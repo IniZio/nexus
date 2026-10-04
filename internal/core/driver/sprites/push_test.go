@@ -2,12 +2,14 @@ package sprites
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/IniZio/nexus/internal/core/domain"
+	"github.com/IniZio/nexus/internal/core/driver/sprites/broker"
 )
 
 func TestNormalizeSyncMode(t *testing.T) {
@@ -41,8 +43,8 @@ func TestProvisionSyncModePersistence(t *testing.T) {
 		for _, r := range f.policies[0].Rules {
 			hosts = append(hosts, r.Domain)
 		}
-		if got := strings.Contains(strings.Join(hosts, ","), "api.github.com"); got != (want == SyncPush) {
-			t.Fatalf("%q: github egress = %v (%v)", in, got, hosts)
+		if strings.Contains(strings.Join(hosts, ","), "github.com") {
+			t.Fatalf("%q: github.com in direct egress (tunnelled only): %v", in, hosts)
 		}
 	}
 	if err := (&Driver{}).Provision(context.Background(), domain.NewSandboxID(), Spec{Sync: "x"}); err == nil {
@@ -66,19 +68,20 @@ func TestPreparePushBranchAndUnpushed(t *testing.T) {
 	git(t, root, "clone", "-q", origin, guest)
 
 	api := &localExecAPI{}
-	d, err := New(Config{StateDir: t.TempDir(), API: api, EnvResolver: func(_ context.Context, names []string) (map[string]string, error) {
-		if len(names) != 1 || names[0] != SecretGitHub {
-			t.Fatalf("names = %v", names)
-		}
-		return map[string]string{SecretGitHub: secret}, nil
-	}})
-	if err != nil {
+	d, m := newBrokeredDriver(t, api)
+	id := domain.NewSandboxID()
+	if err := broker.WriteState(m.StateDir, id.String(), liveBrokerState(t)); err != nil {
 		t.Fatal(err)
 	}
-	id := domain.NewSandboxID()
 	ctx := context.Background()
+	if err := d.writeSpec(id, Spec{Sync: SyncPush}); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.PreparePushBranch(ctx, id, guest, "task/x"); err != nil {
 		t.Fatal(err)
+	}
+	if sp, err := d.Spec(id); err != nil || len(sp.AllowedBranches) != 1 || sp.AllowedBranches[0] != "refs/heads/task/x" {
+		t.Fatalf("broker push allowlist not persisted: %+v, %v", sp.AllowedBranches, err)
 	}
 	if got := git(t, guest, "rev-parse", "--abbrev-ref", "HEAD"); got != "task/x" {
 		t.Fatalf("branch = %s", got)
@@ -114,12 +117,51 @@ func TestPreparePushBranchAndUnpushed(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(guest2, "w")); err != nil {
 		t.Fatalf("existing remote branch not checked out: %v", err)
 	}
+	sawPlaceholder := false
 	for _, r := range api.reqs {
-		if strings.Contains(strings.Join(r.Argv, " "), secret) {
-			t.Fatal("token on argv")
+		if strings.Contains(strings.Join(r.Argv, " "), secret) || strings.Contains(fmt.Sprint(r.Env), secret) {
+			t.Fatal("real token in recorded exec")
 		}
+		if v, ok := r.Env["GH_TOKEN"]; ok && v != placeholder {
+			t.Fatalf("GH_TOKEN = %q, want placeholder", v)
+		}
+		if r.Env["GH_TOKEN"] == placeholder {
+			sawPlaceholder = true
+		}
+	}
+	if !sawPlaceholder {
+		t.Fatal("no exec carried the placeholder")
 	}
 	if err := d.PreparePushBranch(ctx, id, guest, "-bad"); err == nil {
 		t.Fatal("option-like branch accepted")
+	}
+}
+
+func TestPreparePushBranchRejectsUnsafeNames(t *testing.T) {
+	api := &localExecAPI{}
+	d, m := newBrokeredDriver(t, api)
+	id := domain.NewSandboxID()
+	if err := broker.WriteState(m.StateDir, id.String(), liveBrokerState(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.writeSpec(id, Spec{Sync: SyncPush}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"feat/*", "a?b", "x[1]", "-x", "a..b", "a\\b", "a@{b", "a b", "a~b", "a^b", "a:b", "a/", "a.lock", "a//b", "a/.b", "a\x01b", "@", "a.", "/a"} {
+		if err := d.PreparePushBranch(context.Background(), id, t.TempDir(), bad); err == nil {
+			t.Errorf("branch %q accepted", bad)
+		}
+	}
+	if sp, err := d.Spec(id); err != nil || len(sp.AllowedBranches) != 0 {
+		t.Fatalf("allowlist touched: %+v, %v", sp.AllowedBranches, err)
+	}
+	if len(api.reqs) != 0 {
+		t.Fatalf("exec ran for rejected branch: %d", len(api.reqs))
+	}
+}
+
+func TestValidPushBranch(t *testing.T) {
+	if err := validPushBranch("feat/ok-1"); err != nil {
+		t.Fatal(err)
 	}
 }

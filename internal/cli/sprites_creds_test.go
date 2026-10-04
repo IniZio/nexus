@@ -18,7 +18,7 @@ func TestSpritesSecretNames(t *testing.T) {
 		t.Fatalf("no request: %v, %v", got, err)
 	}
 	_, err = spritesSecretNames(config.Config{}, sandboxCreateFlags{secrets: []string{"STRIPE_KEY@api.stripe.com"}})
-	if err == nil || !strings.Contains(err.Error(), "secret kind STRIPE_KEY unsupported on tier A") {
+	if err == nil || !strings.Contains(err.Error(), "secret kind STRIPE_KEY unsupported") {
 		t.Fatalf("err = %v", err)
 	}
 }
