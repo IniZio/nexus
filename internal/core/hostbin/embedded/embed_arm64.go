@@ -18,4 +18,5 @@ func init() {
 		panic(err)
 	}
 	hostbin.RegisterEmbedded(sub)
+	hostbin.RegisterEmbeddedAgent("arm64", sub)
 }

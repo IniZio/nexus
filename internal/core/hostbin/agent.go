@@ -120,3 +120,30 @@ func agentDecompressRaw(emb fs.FS) ([]byte, error) {
 	defer dec.Close()
 	return io.ReadAll(io.LimitReader(dec, maxArtifactBytes))
 }
+
+// agentEmbedded maps GOARCH to an FS holding nexus-agent.zst (+ .sha256) for that arch.
+var agentEmbedded = map[string]fs.FS{}
+
+// RegisterEmbeddedAgent registers the embedded linux/<arch> agent FS.
+// Called by package hostbin/embedded's init.
+func RegisterEmbeddedAgent(arch string, f fs.FS) { agentEmbedded[arch] = f }
+
+// AgentFor returns the embedded linux/<arch> nexus-agent bytes. Non-amd64 hosts
+// embed the amd64 agent in addition to their own so it can be shipped to amd64
+// guests (Fly sprites).
+func AgentFor(arch string) ([]byte, error) { return agentFor(agentEmbedded, arch) }
+
+func agentFor(m map[string]fs.FS, arch string) ([]byte, error) {
+	emb, ok := m[arch]
+	if !ok {
+		return nil, fmt.Errorf("%w: no embedded nexus-agent for GOARCH %q; run `make artifacts`", ErrNotFound, arch)
+	}
+	if _, err := fs.Stat(emb, NexusAgent+".zst"); err != nil {
+		return nil, fmt.Errorf("%w: embedded nexus-agent for GOARCH %q is empty; run `make artifacts`", ErrNotFound, arch)
+	}
+	sha, err := fs.ReadFile(emb, NexusAgent+".sha256")
+	if err != nil {
+		return agentDecompressRaw(emb)
+	}
+	return decompressEmbedded(emb, NexusAgent, strings.TrimSpace(string(sha)))
+}

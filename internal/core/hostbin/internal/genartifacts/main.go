@@ -29,6 +29,7 @@ func main() {
 	agentTag := flag.String("agent-tag", "dev", "build tag embedded in nexus-agent via -X main.agentBuildTag")
 	agentPkg := flag.String("agent-pkg", "./cmd/nexus-agent", "Go package path for nexus-agent")
 	skipAgent := flag.Bool("skip-agent", false, "skip building nexus-agent (leave existing files untouched)")
+	agentOnly := flag.Bool("agent-only", false, "build only nexus-agent into -out (no pinned binaries, no stale cleanup)")
 	localDir := flag.String("local-dir", "", "directory of locally-built binaries; <dir>/<goarch>/<name> or <dir>/<name> used instead of network fetch")
 	virtiofsdDir := flag.String("virtiofsd-dir", os.Getenv("VIRTIOFSD_DIR"), "local dir with pre-built virtiofsd (verified against pin sha256)")
 	flag.Parse()
@@ -40,6 +41,14 @@ func main() {
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "genartifacts: mkdir %s: %v\n", *out, err)
 		os.Exit(1)
+	}
+
+	if *agentOnly {
+		if err := buildAgent(*out, *goarch, *agentTag, *agentPkg); err != nil {
+			fmt.Fprintf(os.Stderr, "genartifacts: build nexus-agent: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	pins := hostbin.Pins()

@@ -3,6 +3,7 @@ package hostbin
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -215,5 +216,36 @@ func TestEmbeddedAgentSHA256(t *testing.T) {
 	}
 	if got := r2.EmbeddedAgentSHA256(); got != "" {
 		t.Errorf("EmbeddedAgentSHA256() absent = %q, want empty", got)
+	}
+}
+
+func TestAgentForTable(t *testing.T) {
+	raw := []byte("fake-agent-binary")
+	zst := mustZstd(raw)
+	m := map[string]fs.FS{
+		"amd64": fstest.MapFS{
+			"nexus-agent.zst":    {Data: zst},
+			"nexus-agent.sha256": {Data: []byte(mustHexSHA256(raw) + "\n")},
+		},
+		"arm64": fstest.MapFS{"PLACEHOLDER": {Data: []byte("x")}},
+		"s390x": fstest.MapFS{
+			"nexus-agent.zst":    {Data: zst},
+			"nexus-agent.sha256": {Data: []byte("deadbeef\n")},
+		},
+	}
+	got, err := agentFor(m, "amd64")
+	if err != nil || string(got) != string(raw) {
+		t.Fatalf("amd64: got %q err %v", got, err)
+	}
+	for _, arch := range []string{"riscv64", "arm64", ""} {
+		if _, err := agentFor(m, arch); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%q: want ErrNotFound, got %v", arch, err)
+		}
+	}
+	if _, err := agentFor(m, "s390x"); !errors.Is(err, ErrChecksumMismatch) {
+		t.Errorf("s390x: want ErrChecksumMismatch, got %v", err)
+	}
+	if _, err := AgentFor("nonexistent-arch"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("AgentFor unknown: %v", err)
 	}
 }
