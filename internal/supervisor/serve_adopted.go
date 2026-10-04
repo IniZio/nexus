@@ -48,6 +48,9 @@ type serveAdoptedInput struct {
 // Does not return until supervisor shuts down.
 func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	cfg, st, svc, drv, sb := in.cfg, in.st, in.svc, in.drv, in.sb
+	if err := refuseHibernated(sb); err != nil {
+		return err
+	}
 
 	// ── Wait for any previous supervisor to actually exit before binding the
 	// canonical IPC socket path — it still owns that inode until its own
@@ -112,7 +115,9 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	agentHealthFn := agentHealthFunc(func(hctx context.Context) AgentHealth {
 		return checkAgentHealth(hctx, drv, sb.ID)
 	})
-	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, agentHealthFn, binaryHash)
+	hibCtl := newHibernateCtl(svc, drv, cfg.SandboxRef)
+	hibCtl.setDisks(hibernateDiskPaths(cfg.DiskPath, cfg.ExtraDisks))
+	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, agentHealthFn, binaryHash, hibCtl)
 	if err != nil {
 		return fmt.Errorf("supervisor: %s: bind IPC socket %s: %w", in.logPrefix, sockPath, err)
 	}
@@ -139,7 +144,8 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	}
 	diskIndices = backfillRootDiskIndex(diskIndices, cfg.Ephemeral)
 	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, diskIndices)
-	go gov.Run(ctx)
+	govRun := newGovRunner(ctx, gov.Run)
+	hibCtl.bindGovernor(govRun.Quiesce, govRun.Resume)
 
 	for _, r := range in.refreshers {
 		r.Register(sb.ID)
@@ -165,7 +171,7 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	startGitSSHRelay(ctx, cfg.SocketDir, sb, nil)
 
 	// ── port-forward supervisor ──────────────────────────────────────────────
-	startPortForwardSupervisor(ctx, cfg.SandboxRef, sb, agent.NewClient(drv, sb.ID), svc)
+	startPortForwardSupervisor(ctx, cfg.SandboxRef, sb, agent.NewClient(drv, sb.ID), svc, cfg.StateDir)
 
 	pid := os.Getpid()
 	pidfile := PidfilePath(cfg.StateDir)
@@ -191,7 +197,14 @@ func serveAdoptedSupervisor(ctx context.Context, in serveAdoptedInput) error {
 	}
 
 	vmDeadCh := drv.RuntimeDeathCh(sb.ID)
-	cause := awaitShutdown(ctx, stopCh, detachCh, vmDeadCh)
+	cause := awaitShutdownHib(ctx, stopCh, detachCh, vmDeadCh, ipcH.HibernatedCh)
+	if cause == shutdownByVMDeath && hibCtl.waitSettled(ctx) {
+		cause = shutdownByHibernate
+	}
+	if cause == shutdownByHibernate {
+		slog.Info(in.logPrefix+".exited", "sandboxRef", cfg.SandboxRef, "cause", "hibernated")
+		return nil
+	}
 	if cause == shutdownByDetach {
 		slog.Info(in.logPrefix+".detached", "sandboxRef", cfg.SandboxRef)
 		return nil

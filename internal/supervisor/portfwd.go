@@ -87,6 +87,63 @@ type portForwardSupervisor struct {
 	bindErrs        map[uint16]error                           // last host-bind failure per port; retried every tick
 	reporter        func(ctx context.Context, pairs []guestHostPair)
 	lastReportedMap map[uint16]uint16 // guest→host snapshot of last report; nil = never reported
+	mapFile         string            // persisted guest→host mapping; empty disables persistence
+	remembered      map[uint16]uint16 // guest→host ports to rebind first; mirrors mapFile
+}
+
+// portMapFileName is the persisted guest→host mapping in the sandbox state
+// dir, so a supervisor respawned after resume rebinds the same host ports.
+const portMapFileName = "portfwd-map.json"
+
+func loadPortMap(path string) map[uint16]uint16 {
+	m := make(map[uint16]uint16)
+	if path == "" {
+		return m
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return m
+	}
+	var raw map[string]uint16
+	if err := json.Unmarshal(data, &raw); err != nil {
+		slog.Warn("supervisor.portfwd.map_corrupt", "path", path, "err", err)
+		return m
+	}
+	for k, v := range raw {
+		if g, err := strconv.ParseUint(k, 10, 16); err == nil && v != 0 {
+			m[uint16(g)] = v
+		}
+	}
+	return m
+}
+
+// savePortMap writes the mapping atomically with mode 0600.
+func savePortMap(path string, m map[uint16]uint16) error {
+	raw := make(map[string]uint16, len(m))
+	for g, h := range m {
+		raw[strconv.Itoa(int(g))] = h
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".portfwd-map-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) //nolint:errcheck // no-op after successful rename
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // core/portfwd defines no entry-status constants; internal/cli/portfwd_state.go matches these strings.
@@ -105,6 +162,7 @@ func startPortForwardSupervisor(
 	sb domain.Sandbox,
 	client guestExecer,
 	dialer portForwardDialer,
+	sandboxStateDir string,
 ) {
 	ref := portfwd.SandboxRef{
 		ID:     sb.ID.String(),
@@ -126,6 +184,10 @@ func startPortForwardSupervisor(
 		listeners:  make(map[uint16]net.Listener),
 		reporter:   makePortForwardReporter(sandboxRef),
 	}
+	if sandboxStateDir != "" {
+		sup.mapFile = filepath.Join(sandboxStateDir, portMapFileName)
+		sup.remembered = loadPortMap(sup.mapFile)
+	}
 	go sup.run(ctx)
 	slog.Info("supervisor.portfwd.started",
 		"sandboxID", sb.ID,
@@ -140,17 +202,23 @@ func (p *portForwardSupervisor) run(ctx context.Context) {
 	defer tick.Stop()
 	defer p.teardownAll()
 
+	// Reconcile once at start: after a resume, remembered ports rebind now
+	// instead of one tick interval later.
+	step := func() {
+		if err := p.reconcile(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("supervisor.portfwd.reconcile_err",
+				"sandboxRef", p.sandboxRef,
+				"err", err,
+			)
+		}
+	}
+	step()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			if err := p.reconcile(ctx); err != nil && ctx.Err() == nil {
-				slog.Warn("supervisor.portfwd.reconcile_err",
-					"sandboxRef", p.sandboxRef,
-					"err", err,
-				)
-			}
+			step()
 		}
 	}
 }
@@ -164,6 +232,9 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 	lsnrs, err := p.discoverBounded(ctx, refs[0])
 	if err != nil {
 		return fmt.Errorf("discover: %w", err)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err() // cancelled: bind/persist nothing, teardownAll owns cleanup
 	}
 
 	result := portfwd.FilterListeners(lsnrs, nil)
@@ -203,7 +274,22 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 		if _, ok := p.listeners[l.Port]; ok {
 			continue
 		}
-		lis, lisErr := listenFn("tcp", "127.0.0.1:0")
+		var lis net.Listener
+		var lisErr error
+		if prev, ok := p.remembered[l.Port]; ok {
+			lis, lisErr = listenFn("tcp", "127.0.0.1:"+strconv.Itoa(int(prev)))
+			if lisErr != nil {
+				slog.Warn("supervisor.portfwd.rebind_taken",
+					"sandboxRef", p.sandboxRef,
+					"guestPort", l.Port,
+					"hostPort", prev,
+					"err", lisErr,
+				)
+			}
+		}
+		if lis == nil {
+			lis, lisErr = listenFn("tcp", "127.0.0.1:0")
+		}
 		if lisErr != nil {
 			p.bindErrs[l.Port] = lisErr
 			slog.Warn("supervisor.portfwd.listen_err",
@@ -223,9 +309,24 @@ func (p *portForwardSupervisor) reconcile(ctx context.Context) error {
 			"hostPort", hostPort,
 		)
 		go p.acceptLoop(ctx, lis, l.Port)
+		p.remember(l.Port, hostPort)
 	}
 
 	return p.writeState(result.Forwardable)
+}
+
+// remember records guest→host and persists it when it changed.
+func (p *portForwardSupervisor) remember(guest, host uint16) {
+	if p.mapFile == "" || p.remembered[guest] == host {
+		return
+	}
+	if p.remembered == nil {
+		p.remembered = make(map[uint16]uint16)
+	}
+	p.remembered[guest] = host
+	if err := savePortMap(p.mapFile, p.remembered); err != nil {
+		slog.Warn("supervisor.portfwd.map_save_err", "sandboxRef", p.sandboxRef, "path", p.mapFile, "err", err)
+	}
 }
 
 // discoverBounded abandons DiscoverOne on timeout: a guest exec that ignores ctx

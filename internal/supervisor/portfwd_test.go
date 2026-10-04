@@ -439,6 +439,33 @@ func TestRun_DiscoveryTimeoutDoesNotWedgeLoop(t *testing.T) {
 	}
 }
 
+// TestRun_ReconcilesImmediatelyOnStart: a supervisor respawned by resume must
+// rebind remembered ports without waiting a full tick interval.
+func TestRun_ReconcilesImmediatelyOnStart(t *testing.T) {
+	backend := &blockingBackend{calls: make(chan struct{}, 16), release: make(chan struct{})}
+	defer close(backend.release)
+	sup := &portForwardSupervisor{
+		sandboxRef:      "test/sb1",
+		backend:         backend,
+		disc:            &portfwd.Discoverer{Backend: backend},
+		dialer:          fakeDialer{},
+		stateDir:        t.TempDir(),
+		interval:        time.Hour,
+		discoverTimeout: 200 * time.Millisecond,
+		listeners:       make(map[uint16]net.Listener),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); sup.run(ctx) }()
+	// run() writes into the TempDir; wait for it to exit before cleanup.
+	defer func() { cancel(); <-done }()
+	select {
+	case <-backend.calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reconcile within 5s of run() with a 1h interval")
+	}
+}
+
 func TestReconcile_DiscoverTimeoutReturnsError(t *testing.T) {
 	backend := &blockingBackend{
 		calls:   make(chan struct{}, 16),

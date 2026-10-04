@@ -269,6 +269,17 @@ type Config struct {
 	// Zero means no watchdog pipe (non-ephemeral mode; persistent perimeter
 	// supervisors are intentionally long-lived after CLI exit).
 	ParentPipeFD int
+
+	// RestoreFrom, when non-empty, makes this boot a hibernate RESUME: the
+	// supervisor calls service.ResumeHibernated against this snapshot dir
+	// instead of svc.Start, then runs the normal loop. RestoreMode is the
+	// driver.RestoreMode ("" = copy); NoColdFallback fails the spawn instead
+	// of cold-starting when the snapshot restore fails. These travel in argv
+	// only: WriteSpawnSpec clears them so a later plain start never inherits
+	// a stale resume request.
+	RestoreFrom    string
+	RestoreMode    string
+	NoColdFallback bool
 }
 
 // PidfilePath returns the canonical path of the supervisor.pid file.
@@ -641,7 +652,9 @@ func RunDetached(cfg Config) error {
 		// comma-ok needed here, unlike agentClientFor's interface-typed driver.
 		return checkAgentHealth(hctx, drv, preSB.ID)
 	})
-	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, agentHealthFn, binaryHash)
+	hibCtl := newHibernateCtl(svc, hibernatorOf(drv), cfg.SandboxRef)
+	hibCtl.setDisks(hibernateDiskPaths(cfg.DiskPath, cfg.ExtraDisks))
+	ipcH, err := serveIPC(ctx, sockPath, svc, cfg.SandboxRef, allowEgressFn, handoffFn, agentHealthFn, binaryHash, hibCtl)
 	if err != nil {
 		return fmt.Errorf("supervisor: bind IPC socket %s: %w", sockPath, err)
 	}
@@ -680,8 +693,11 @@ func RunDetached(cfg Config) error {
 	// CHDriver already has its own per-call StartTimeout for the API-socket
 	// readiness poll; SpawnDetached's ReadyTimeout gates the integration test.
 	slog.Info("supervisor.starting", "sandboxRef", cfg.SandboxRef)
-	sb, err := svc.Start(ctx, cfg.SandboxRef)
+	sb, err := startOrResume(ctx, svc, st, cfg, func(cctx context.Context, id domain.SandboxID) (int64, error) {
+		return agent.SetGuestClock(cctx, agent.NewClient(drv, id), time.Now())
+	})
 	if err != nil {
+		writeFailureReason(cfg.StateDir, err)
 		return fmt.Errorf("supervisor: start sandbox %s: %w", cfg.SandboxRef, err)
 	}
 	slog.Info("supervisor.vm_running", "sandboxRef", cfg.SandboxRef)
@@ -710,7 +726,7 @@ func RunDetached(cfg Config) error {
 	// 127.0.0.1:P on the host, and proxies via vsock:3001. The laptop-side
 	// local-agent-startup verb then SSH-forwards those host ports to the laptop.
 	if agentClient != nil {
-		startPortForwardSupervisor(ctx, cfg.SandboxRef, sb, agentClient, svc)
+		startPortForwardSupervisor(ctx, cfg.SandboxRef, sb, agentClient, svc, cfg.StateDir)
 	}
 
 	// ── 5a. Start auto-resize governor ───────────────────────────────────────
@@ -750,7 +766,8 @@ func RunDetached(cfg Config) error {
 	}
 	diskIndices = backfillRootDiskIndex(diskIndices, cfg.Ephemeral)
 	wireGovernorAxes(gov, resizer, resizer, cfg.GovBounds, diskIndices)
-	go gov.Run(ctx)
+	govRun := newGovRunner(ctx, gov.Run)
+	hibCtl.bindGovernor(govRun.Quiesce, govRun.Resume)
 
 	// ── 5b-mcp. Wire MCP OAuth Refreshers ───────────────────────────────────
 	// Build and register per-server OAuth refreshers for shared HTTP MCP
@@ -1042,8 +1059,13 @@ func RunDetached(cfg Config) error {
 	// channel (returned when no runtime is registered yet) is safe — nil is
 	// never ready in a select.
 	vmDeadCh := drv.RuntimeDeathCh(sb.ID)
-	cause := awaitShutdown(ctx, stopCh, detachCh, vmDeadCh)
+	cause := awaitShutdownHib(ctx, stopCh, detachCh, vmDeadCh, ipcH.HibernatedCh)
+	if cause == shutdownByVMDeath && hibCtl.waitSettled(ctx) {
+		cause = shutdownByHibernate
+	}
 	switch {
+	case cause == shutdownByHibernate:
+		slog.Info("supervisor.hibernated", "sandboxRef", cfg.SandboxRef)
 	case cfg.Ephemeral && cause == shutdownByStopVerb:
 		// Builder finished: the caller sent POST /supervisor/stop to signal
 		// that the build is complete. This is the normal exit path in ephemeral
@@ -1066,6 +1088,10 @@ func RunDetached(cfg Config) error {
 	// svc.Remove both call driver.Stop, which is exactly what must NOT happen
 	// here. Only defers already registered above (pidfile, IPC socket via
 	// removeOwnSocket, signal context cancel) run on the way out.
+	if cause == shutdownByHibernate {
+		slog.Info("supervisor.exited", "sandboxRef", cfg.SandboxRef, "cause", "hibernated")
+		return nil
+	}
 	if cause == shutdownByDetach {
 		slog.Info("supervisor.detached", "sandboxRef", cfg.SandboxRef,
 			"action", "VM and perimeter left running for a replacement supervisor")
@@ -1164,6 +1190,9 @@ const (
 	// is distinct from shutdownBySignal so the teardown switch can skip the
 	// UNI-TEARDOWN driver call entirely and write the honest reason instead.
 	shutdownByVMDeath
+	// shutdownByHibernate means /supervisor/hibernate succeeded: the record is
+	// Hibernated and the VMM is stopped. Exit without svc.Stop or reconcile.
+	shutdownByHibernate
 )
 
 // awaitShutdown blocks until the OS signal context is cancelled (SIGTERM /
@@ -1175,12 +1204,26 @@ const (
 // detachCh and vmDeadCh may be nil (a nil channel never becomes ready in a
 // select, so either degrades gracefully for callers that don't need them).
 func awaitShutdown(ctx context.Context, stopCh, detachCh, vmDeadCh <-chan struct{}) shutdownCause {
+	return awaitShutdownHib(ctx, stopCh, detachCh, vmDeadCh, nil)
+}
+
+// awaitShutdownHib is awaitShutdown plus hibernatedCh: closed after a
+// successful /supervisor/hibernate response, it yields shutdownByHibernate.
+func awaitShutdownHib(ctx context.Context, stopCh, detachCh, vmDeadCh, hibernatedCh <-chan struct{}) shutdownCause {
 	select {
+	case <-hibernatedCh:
+		return shutdownByHibernate
 	case <-stopCh:
 		return shutdownByStopVerb
 	case <-detachCh:
 		return shutdownByDetach
 	case <-vmDeadCh:
+		// Both ready: select is random, but a completed hibernate wins.
+		select {
+		case <-hibernatedCh:
+			return shutdownByHibernate
+		default:
+		}
 		return shutdownByVMDeath
 	case <-ctx.Done():
 		return shutdownBySignal
@@ -1969,4 +2012,10 @@ type supervisorResizer interface {
 	resize.MemoryResizer
 	resize.CPUResizer
 	resize.DiskResizer
+}
+
+// hibernatorOf returns drv as a driver.Hibernator, or nil when unsupported.
+func hibernatorOf(drv driver.Driver) driver.Hibernator {
+	h, _ := drv.(driver.Hibernator)
+	return h
 }

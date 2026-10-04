@@ -197,6 +197,10 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		adoptHandoffSockFlag = fs.String("adopt-handoff-sock", "", "adopt mode: Unix STREAM socket to listen on for the handoff offer (empty = boot mode)")
 		// reacquireFlag: selects re-acquire mode. See RunReacquire's doc comment.
 		reacquireFlag = fs.Bool("reacquire", false, "re-acquire mode: rebuild the perimeter for a live VM whose supervisor died (no handoff; empty = boot mode)")
+		// restore*: hibernate-resume request for this spawn (HB-9).
+		restoreFrom    = fs.String("restore-from", "", "resume mode: hibernate snapshot dir to restore from (empty = plain boot)")
+		restoreMode    = fs.String("restore-mode", "", "resume mode: copy|ondemand (empty = copy)")
+		noColdFallback = fs.Bool("no-cold-fallback", false, "resume mode: fail instead of cold-starting when the snapshot restore fails")
 	)
 	// liveMounts accumulates repeated --mount flags (one per virtiofs share).
 	// These must be re-attached on every supervisor boot: the guest cmdline
@@ -284,6 +288,10 @@ func parseSupervisorFlags(args []string) (cfg supervisor.Config, adoptHandoffSoc
 		VirtiofsdPath: *virtiofsd,
 		Ephemeral:     *ephemeral,
 		ParentPipeFD:  *parentPipeFD,
+
+		RestoreFrom:    *restoreFrom,
+		RestoreMode:    *restoreMode,
+		NoColdFallback: *noColdFallback,
 	}
 	return cfg, *adoptHandoffSockFlag, *reacquireFlag, nil
 }

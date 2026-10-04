@@ -38,6 +38,7 @@ func WriteSpawnSpec(stateDir string, cfg Config) error {
 	}
 	cfg.ParentPipeFD = 0
 	cfg.Ephemeral = false
+	cfg.RestoreFrom, cfg.RestoreMode, cfg.NoColdFallback = "", "", false
 	cfg.StateDir = stateDir
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

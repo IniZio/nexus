@@ -187,6 +187,17 @@ func BuildSupervisorArgv(cfg SpawnConfig) []string {
 	if cfg.Reacquire {
 		args = append(args, "--reacquire")
 	}
+	// RestoreFrom / RestoreMode / NoColdFallback: hibernate-resume request,
+	// per spawn (never persisted to spawn.json).
+	if cfg.RestoreFrom != "" {
+		args = append(args, "--restore-from", cfg.RestoreFrom)
+	}
+	if cfg.RestoreMode != "" {
+		args = append(args, "--restore-mode", cfg.RestoreMode)
+	}
+	if cfg.NoColdFallback {
+		args = append(args, "--no-cold-fallback")
+	}
 	return args
 }
 

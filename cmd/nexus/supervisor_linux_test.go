@@ -161,6 +161,11 @@ func TestParseSupervisorFlags_EveryConfigFieldSurvives(t *testing.T) {
 		// travel in argv; the fd list is index-parallel to the slot list.
 		CacheDiskSlots:    []string{"/var/lib/nexus/caches/buildkit.ext4"},
 		CacheDiskLeaseFDs: []int{4},
+		// Restore*: per-spawn hibernate-resume request (HB-9); argv-only, never
+		// persisted to spawn.json.
+		RestoreFrom:    "/state/hibernate",
+		RestoreMode:    "ondemand",
+		NoColdFallback: true,
 		// MCPOAuthRefreshConfigs: spawn.json-only field (refresh tokens must NOT
 		// appear in argv because argv is ps-visible). Populated here so Step 1
 		// (no-zero-field guard) passes; excluded from Step 2's argv DeepEqual

@@ -315,6 +315,10 @@ type ipcHandles struct {
 	// /supervisor/handoff request whose replacement confirmed: exit without
 	// tearing the VM down.
 	DetachCh <-chan struct{}
+	// HibernatedCh is closed after a successful /supervisor/hibernate response
+	// is written: exit without touching the (already hibernated) record. Nil
+	// when no hibernate controller was supplied.
+	HibernatedCh <-chan struct{}
 	// Listener is the bound Unix listener backing sockPath.
 	Listener *net.UnixListener
 	// BindStat is os.Stat(sockPath) taken immediately after this listener
@@ -352,7 +356,7 @@ type ipcHandles struct {
 // nil agentHealth causes the handler to return 503 rather than guessing —
 // per the fail-closed rail, an absent health-check capability must never be
 // read by a caller as "assume healthy".
-func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string, allowEgress allowEgressFunc, handoff handoffFunc, agentHealth agentHealthFunc, binaryHash string) (ipcHandles, error) {
+func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string, allowEgress allowEgressFunc, handoff handoffFunc, agentHealth agentHealthFunc, binaryHash string, hib ...*hibernateCtl) (ipcHandles, error) {
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return ipcHandles{}, fmt.Errorf("ipc: listen %s: %w", sockPath, err)
@@ -511,6 +515,14 @@ func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string
 		_ = json.NewEncoder(w).Encode(EgressAllowResponse{OK: true})
 	})
 
+	var hibFn hibernateFunc
+	var hibMark func()
+	var hibExit <-chan struct{}
+	if len(hib) > 0 && hib[0] != nil {
+		hibFn, hibMark, hibExit = hib[0].Do, hib[0].markResponded, hib[0].ExitCh()
+	}
+	mux.HandleFunc(ipcHibernatePath, hibernateHandler(hibFn, hibMark))
+
 	srv := &http.Server{Handler: mux}
 
 	// Serve in background; shut down when ctx is cancelled.
@@ -525,7 +537,7 @@ func serveIPC(ctx context.Context, sockPath string, _ *service.Service, _ string
 		ln.Close()
 	}()
 
-	return ipcHandles{StopCh: stopCh, DetachCh: detachCh, Listener: unixLn, BindStat: bindStat}, nil
+	return ipcHandles{StopCh: stopCh, DetachCh: detachCh, HibernatedCh: hibExit, Listener: unixLn, BindStat: bindStat}, nil
 }
 
 // removeOwnSocket unlinks sockPath only if it still refers to the same
