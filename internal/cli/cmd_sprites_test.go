@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os/exec"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -91,9 +93,9 @@ func TestSpritesCreateUsageErrorOnPositionals(t *testing.T) {
 	}
 }
 
-func TestSpritesCreateRequiresRepo(t *testing.T) {
+func TestSpritesCreatePushRequiresRepo(t *testing.T) {
 	out := NewOutput(&bytes.Buffer{}, &bytes.Buffer{}, false)
-	err := runSpritesCreate(context.Background(), sandboxCreateFlags{positionals: []string{"p/n"}}, out, nil)
+	err := runSpritesCreate(context.Background(), sandboxCreateFlags{positionals: []string{"p/n"}, syncMode: "push"}, out, nil)
 	var ue *UsageError
 	if !errors.As(err, &ue) {
 		t.Fatalf("err=%v, want *UsageError", err)
@@ -149,5 +151,29 @@ func TestSpritesCreateUnknownPreset(t *testing.T) {
 	err := runSpritesCreate(context.Background(), f, out, nil)
 	if !errors.Is(err, sprites.ErrUnknownPreset) && (err == nil || !strings.Contains(err.Error(), "podman")) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHerdrSpritesCreateOrigin(t *testing.T) {
+	old := herdrExecCommandContext
+	t.Cleanup(func() { herdrExecCommandContext = old })
+	run := func(sync string) (argv []string, err error) {
+		herdrExecCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			if name == "git" {
+				return exec.CommandContext(ctx, "false")
+			}
+			argv = args
+			return exec.CommandContext(ctx, "true")
+		}
+		ctx := context.WithValue(context.Background(), herdrSyncKey{}, sync)
+		err = herdrSpritesCreate(ctx, &bytes.Buffer{}, "p/n", t.TempDir())
+		return
+	}
+	argv, err := run("")
+	if err != nil || slices.Contains(argv, "--repo") {
+		t.Fatalf("bundle no-origin: argv=%v err=%v", argv, err)
+	}
+	if _, err := run("push"); err == nil {
+		t.Fatal("push no-origin: want error")
 	}
 }

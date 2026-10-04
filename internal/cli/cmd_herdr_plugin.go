@@ -4317,12 +4317,17 @@ func herdrSpritesCreate(ctx context.Context, w io.Writer, handle, worktree strin
 	if err != nil {
 		return fmt.Errorf("sprites create: resolve executable: %w", err)
 	}
+	push := herdrSyncFrom(ctx) == sprites.SyncPush
 	repo, err := herdrExecCommandContext(ctx, "git", "-C", worktree, "remote", "get-url", "origin").Output()
-	if err != nil || strings.TrimSpace(string(repo)) == "" {
-		return fmt.Errorf("sprites create: worktree %s has no origin remote (sprites clones it before the seed)", worktree)
+	origin := strings.TrimSpace(string(repo))
+	if push && (err != nil || origin == "") {
+		return fmt.Errorf("sprites create: worktree %s has no origin remote (push mode clones it in the sprite)", worktree)
 	}
-	createArgv := []string{"sandbox", "create", handle, "--repo", strings.TrimSpace(string(repo))}
-	if herdrSyncFrom(ctx) == sprites.SyncPush {
+	createArgv := []string{"sandbox", "create", handle}
+	if err == nil && origin != "" {
+		createArgv = append(createArgv, "--repo", origin)
+	}
+	if push {
 		createArgv = append(createArgv, "--sync", sprites.SyncPush)
 	}
 	cmd := herdrExecCommandContext(ctx, exe, createArgv...)

@@ -154,7 +154,7 @@ func TestProvisionCloneTokenNeverLeaks(t *testing.T) {
 	f := &fakeAPI{}
 	d, dir := newTestDriver(t, f)
 	id := domain.NewSandboxID()
-	if err := d.Provision(context.Background(), id, Spec{Repo: "https://github.com/o/r.git", GitToken: tok}); err != nil {
+	if err := d.Provision(context.Background(), id, Spec{Repo: "https://github.com/o/r.git", Sync: SyncPush, GitToken: tok}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.execs) != 1 {
@@ -191,7 +191,7 @@ func TestProvisionCloneFailureRollsBack(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			d, _ := newTestDriver(t, f)
-			err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{Repo: "https://x/y.git", GitToken: tok})
+			err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{Repo: "https://x/y.git", Sync: SyncPush, GitToken: tok})
 			if err == nil {
 				t.Fatal("want error")
 			}
@@ -377,5 +377,48 @@ func TestRegistryNew(t *testing.T) {
 	}
 	if _, ok := d.(*Driver); !ok {
 		t.Fatalf("driver is %T", d)
+	}
+}
+
+func TestProvisionBundleNeverClones(t *testing.T) {
+	for _, repo := range []string{"", "git@github.com:o/r.git"} {
+		f := &fakeAPI{}
+		d, _ := newTestDriver(t, f)
+		id := domain.NewSandboxID()
+		if err := d.Provision(context.Background(), id, Spec{Repo: repo}); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.execs) != 0 {
+			t.Fatalf("repo %q: execs = %d, want 0", repo, len(f.execs))
+		}
+		b, err := os.ReadFile(d.specPath(id))
+		if err != nil || !strings.Contains(string(b), `"clone_dir":"`+CloneDir+`"`) {
+			t.Fatalf("spec=%s err=%v, want CloneDir %s", b, err, CloneDir)
+		}
+	}
+}
+
+func TestProvisionPushClonesHTTPS(t *testing.T) {
+	f := &fakeAPI{}
+	d, _ := newTestDriver(t, f)
+	if err := d.Provision(context.Background(), domain.NewSandboxID(), Spec{Repo: "git@github.com:o/r.git", Sync: SyncPush}); err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Join(f.execs[0].Argv, " ")
+	if !strings.Contains(argv, "https://github.com/o/r.git") || strings.Contains(argv, "git@") {
+		t.Fatalf("argv = %q", argv)
+	}
+}
+
+func TestSSHToHTTPS(t *testing.T) {
+	for in, want := range map[string]string{
+		"git@github.com:o/r.git":       "https://github.com/o/r.git",
+		"ssh://git@github.com/o/r.git": "https://github.com/o/r.git",
+		"https://github.com/o/r.git":   "https://github.com/o/r.git",
+		"/local/path":                  "/local/path",
+	} {
+		if got := SSHToHTTPS(in); got != want {
+			t.Errorf("%s: got %s want %s", in, got, want)
+		}
 	}
 }

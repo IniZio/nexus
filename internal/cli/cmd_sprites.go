@@ -87,10 +87,17 @@ func spritesRepo(f sandboxCreateFlags) (string, error) {
 	return "", fmt.Errorf("--repo <git-url|owner/name> is required")
 }
 
+func spritesRepoSuffix(repo string) string {
+	if repo == "" {
+		return ""
+	}
+	return " (repo " + repo + ")"
+}
+
 func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, svc *service.Service) error {
 	const verb = "sandbox create"
 	if len(f.positionals) != 1 {
-		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> --repo <git-url|owner/name> [--allow-host <host>] [--preset docker] [--sync bundle|push] [--egress open|closed] [--label KEY=VALUE] [--rm]"}
+		return &UsageError{Msg: "sandbox create: usage: sandbox create <project>/<name> [--repo <git-url|owner/name>] [--allow-host <host>] [--preset docker] [--sync bundle|push] [--egress open|closed] [--label KEY=VALUE] [--rm]"}
 	}
 	project, name, err := domain.ParseHandle(f.positionals[0])
 	if err != nil {
@@ -106,10 +113,6 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 			return errSandbox(verb, registry.Unsupported(registry.Sprites, flag))
 		}
 	}
-	repo, err := spritesRepo(f)
-	if err != nil {
-		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("%s: %v", verb, err)}
-	}
 	presets, err := sprites.NormalizePresets(f.presets)
 	if err != nil {
 		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("%s: --preset: %v", verb, err)}
@@ -118,6 +121,11 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 	syncMode, err := sprites.NormalizeSyncMode(f.syncMode)
 	if err != nil {
 		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("%s: --sync: %v", verb, err)}
+	}
+
+	repo, rerr := spritesRepo(f)
+	if rerr != nil && syncMode == sprites.SyncPush {
+		return &UsageError{Code: sandboxErrCodeInvalidArgument, Msg: fmt.Sprintf("%s: --sync push: %v", verb, rerr)}
 	}
 
 	var cfg config.Config
@@ -176,7 +184,7 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		return rollback(err)
 	}
 	out.EmitSuccess("sandbox.created", toSandboxInfoJSON(sb),
-		fmt.Sprintf("created sandbox %s (%s) on sprite (repo %s)", sb.Handle(), sb.ID, repo))
+		fmt.Sprintf("created sandbox %s (%s) on sprite%s", sb.Handle(), sb.ID, spritesRepoSuffix(repo)))
 	fmt.Fprintln(out.Stderr(), isolationNotice(drv.Capabilities().Isolation))
 	fmt.Fprintln(out.Stderr(), sprites.CredentialsNotice)
 	if slices.Contains(secretNames, sprites.SecretGitHub) {

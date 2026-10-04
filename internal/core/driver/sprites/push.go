@@ -39,6 +39,20 @@ func NormalizeSyncMode(m string) (string, error) {
 	return "", fmt.Errorf("sprites: sync mode %q unsupported (want %s or %s)", m, SyncBundle, SyncPush)
 }
 
+// SSHToHTTPS rewrites git@host:path and ssh://git@host/path to https; sprites
+// hold no ssh keys. Other URLs pass through.
+func SSHToHTTPS(u string) string {
+	if rest, ok := strings.CutPrefix(u, "ssh://git@"); ok {
+		return "https://" + rest
+	}
+	if rest, ok := strings.CutPrefix(u, "git@"); ok {
+		if host, path, ok := strings.Cut(rest, ":"); ok && !strings.Contains(host, "/") {
+			return "https://" + host + "/" + path
+		}
+	}
+	return u
+}
+
 const pushPrepScript = `set -e
 cd "$1"; b=$2
 git check-ref-format --branch "$b" >/dev/null

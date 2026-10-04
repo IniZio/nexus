@@ -119,8 +119,8 @@ func checkName(name string) error {
 	return nil
 }
 
-// Provision creates the sprite, applies egress policy, optionally clones the
-// repo, and persists the spec (without GitToken).
+// Provision creates the sprite, applies egress policy, clones the
+// repo (push mode only), and persists the spec (without GitToken).
 func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (err error) {
 	name := SpriteName(id)
 	if err := checkName(name); err != nil {
@@ -169,10 +169,13 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 			return err
 		}
 	}
-	if s.Repo != "" {
+	switch {
+	case s.Sync == SyncPush && s.Repo != "":
 		if err := d.clone(ctx, name, s); err != nil {
 			return err
 		}
+		s.CloneDir = CloneDir
+	case s.Sync == SyncBundle:
 		s.CloneDir = CloneDir
 	}
 	return d.writeSpec(id, s)
@@ -186,7 +189,7 @@ func (d *Driver) clone(ctx context.Context, name string, s Spec) error {
 		env["GH_TOKEN"] = s.GitToken
 		argv = append(argv, "-c", `credential.helper=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f`)
 	}
-	argv = append(argv, "clone", "--", s.Repo, CloneDir)
+	argv = append(argv, "clone", "--", SSHToHTTPS(s.Repo), CloneDir)
 	var stderr bytes.Buffer
 	code, err := d.api.Exec(ctx, name, ExecRequest{Argv: argv, Env: env, Stderr: &stderr})
 	if err != nil {
