@@ -118,6 +118,10 @@ func checkName(name string) error {
 	return nil
 }
 
+// ErrSpriteExists marks a Provision that hit HTTP 409: the sprite pre-existed
+// and is not owned by this call, so callers must never delete it remotely.
+var ErrSpriteExists = errors.New("sprites: sprite already exists")
+
 // Provision creates the sprite, applies egress policy, clones the
 // repo (push mode only), and persists the spec (without GitToken).
 func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (err error) {
@@ -158,6 +162,7 @@ func (d *Driver) Provision(ctx context.Context, id domain.SandboxID, s Spec) (er
 		// 409: the name belongs to a sprite this call did not create; never delete it.
 		if ae := sdk.IsAPIError(err); ae != nil && ae.StatusCode == http.StatusConflict {
 			preexisting = true
+			return fmt.Errorf("sprites: create %s: %w: %w", name, ErrSpriteExists, err)
 		}
 		return fmt.Errorf("sprites: create %s: %w", name, err)
 	}

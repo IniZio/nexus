@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -33,7 +34,7 @@ func SpritesGuestArgv() []string {
 	return append([]string(nil), sprites.ShellArgv...)
 }
 
-func newSpritesDriver() (driver.Driver, error) {
+var newSpritesDriver = func() (driver.Driver, error) {
 	root, err := store.DefaultRoot()
 	if err != nil {
 		return nil, err
@@ -173,7 +174,12 @@ func runSpritesCreate(ctx context.Context, f sandboxCreateFlags, out *Output, sv
 		return errSandbox(verb, err)
 	}
 	rollback := func(cause error) error {
-		_ = svc.Remove(context.WithoutCancel(ctx), sb.ID.String())
+		if errors.Is(cause, sprites.ErrSpriteExists) {
+			// Pre-existing sprite: drop only the local record, never the remote sprite.
+			_ = svc.ForgetRecord(context.WithoutCancel(ctx), sb.ID.String())
+		} else {
+			_ = svc.Remove(context.WithoutCancel(ctx), sb.ID.String())
+		}
 		return errSandbox(verb, cause)
 	}
 	spec := sprites.Spec{Repo: repo, AllowedHosts: hosts, OpenEgress: open, SecretNames: secretNames, Presets: presets, Sync: syncMode, GitToken: tok}

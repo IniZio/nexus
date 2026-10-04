@@ -509,6 +509,19 @@ func (s *Service) reapBuilders(ctx context.Context, all []domain.Sandbox) {
 	}
 }
 
+// ForgetRecord deletes only the local sandbox record. It never calls the driver,
+// so a substrate resource nexus does not own (a pre-existing remote sprite) survives.
+func (s *Service) ForgetRecord(ctx context.Context, ref string) error {
+	sb, err := s.resolve(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if err := s.store.Delete(ctx, sb.ID); err != nil {
+		return fmt.Errorf("service: forget %s: %w", sb.ID, err)
+	}
+	return nil
+}
+
 // GetByLabels returns all sandboxes whose Labels map contains every key=value
 // pair in labels (AND-semantics). An empty labels argument matches nothing.
 func (s *Service) GetByLabels(ctx context.Context, labels map[string]string) ([]domain.Sandbox, error) {
