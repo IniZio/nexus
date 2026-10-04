@@ -532,3 +532,10 @@ config loader rejects such a file at parse time.
   repo (`gh pr create/view/list/status/checkout`) also work via the shape allowlist
   (see github-pr.md). Documents outside the allowlist — cross-repo queries, non-PR
   mutations, `gh api graphql` calls for non-PR operations — are still denied (403).
+
+## Sprites backend posture
+
+Sprites sandboxes default to deny. Go module/toolchain hosts are allowed;
+`storage.googleapis.com` opens only during the post-seed warm; `--preset docker` adds an
+apt window plus Docker Hub hosts. Credentials there are env-projected (tier A), not
+brokered. See `delegate-sprites.md`.
