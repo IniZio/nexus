@@ -161,6 +161,27 @@ func buildOneImage(
 	label string,
 ) (digest string, serialPath string, execLog string) {
 	t.Helper()
+	digest, serialPath, execLog, err := buildOneImageE(t, ctx, chBin, kernelPath, builderRootfs, imgCache, storeRoot, workspaceDir, cacheDisks, label)
+	if err != nil {
+		t.Fatalf("%s: BuildInVM: %v", label, err)
+	}
+	return digest, serialPath, execLog
+}
+
+// buildOneImageE is buildOneImage but returns the BuildInVM error instead of
+// failing the test, so a caller can kill the builder VM mid-build.
+func buildOneImageE(
+	t *testing.T,
+	ctx context.Context,
+	chBin, kernelPath string,
+	builderRootfs string,
+	imgCache *image.Cache,
+	storeRoot string,
+	workspaceDir string,
+	cacheDisks []builder.CacheDiskSpec,
+	label string,
+) (digest string, serialPath string, execLog string, buildErr error) {
+	t.Helper()
 
 	socketDir, err := os.MkdirTemp("/tmp", "g8-"+label+"-")
 	if err != nil {
@@ -267,9 +288,9 @@ func buildOneImage(
 			t.Logf("=== %s builder serial log ===\n%s", label, serial)
 		}
 		t.Logf("=== %s builder exec log ===\n%s", label, execBuf.String())
-		t.Fatalf("%s: BuildInVM: %v", label, err)
+		return "", serialPath, execBuf.String(), err
 	}
-	return d, serialPath, execBuf.String()
+	return d, serialPath, execBuf.String(), nil
 }
 
 // createDebianWorkspace creates a minimal workspace directory with a

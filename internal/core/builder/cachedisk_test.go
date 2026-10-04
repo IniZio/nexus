@@ -225,7 +225,7 @@ func TestCacheDiskDirtyMarker_RoundTrip(t *testing.T) {
 }
 
 // TestCacheDisk_DirtyLease_WipesOnNextReuse is the TBD-1 mutation-proof
-// regression test. It reproduces the exact scenario from the D-DC-31 debugfs
+// regression test. It reproduces the exact scenario from the builder-oom-crashloop debugfs
 // forensics: a builder VM writes real data into an ecosystem cache disk, then
 // dies without ever confirming a clean sync (the guest-SIGKILL case — no
 // in-guest or host teardown code runs). The NEXT lease of that same slot must
@@ -245,9 +245,6 @@ func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
 	}
 	if _, err := exec.LookPath("debugfs"); err != nil {
 		t.Skip("debugfs not available (install e2fsprogs)")
-	}
-	if _, err := exec.LookPath("e2fsck"); err != nil {
-		t.Skip("e2fsck not available (install e2fsprogs)")
 	}
 
 	ctx := context.Background()
@@ -270,7 +267,7 @@ func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
 		return strings.Contains(string(out), "pre-crash cache payload")
 	}
 
-	t.Run("dirty lease is recovered by e2fsck on next reuse", func(t *testing.T) {
+	t.Run("dirty lease is quarantined on next reuse", func(t *testing.T) {
 		dataDir := t.TempDir()
 
 		specs, release, err := SelectCacheDisks(ctx, dataDir, []string{"npm"})
@@ -315,18 +312,18 @@ func TestCacheDisk_DirtyLease_WipesOnNextReuse(t *testing.T) {
 			t.Fatalf("stat after reuse: %v", err)
 		}
 		ino2 := fi2.Sys().(*syscall.Stat_t).Ino
-		// A journaled ext4 left behind by an unclean death is recoverable:
-		// e2fsck must repair and hand back the SAME image with its layers.
-		if ino2 != ino1 {
-			t.Error("disk was recreated (inode changed): e2fsck should have recovered the valid ext4")
+		// Metadata-valid is not data-intact: a dirty slot is never reused.
+		if ino2 == ino1 {
+			t.Error("dirty disk was reused (inode unchanged)")
 		}
-		if !markerPresent(t, spec2.ImagePath) {
-			t.Error("pre-crash payload lost: e2fsck recovery must preserve disk contents")
+		if markerPresent(t, spec2.ImagePath) {
+			t.Error("pre-crash payload visible in the new slot: dirty data was reused")
 		}
-		// The recovered lease must itself be fenced dirty again, not silently
-		// treated as already clean.
+		if q, _ := filepath.Glob(spec.ImagePath + ".quarantine-*"); len(q) != 1 {
+			t.Errorf("quarantined copies = %v, want 1", q)
+		}
 		if !cacheDiskIsDirty(spec2.ImagePath) {
-			t.Error("dirty marker must remain set after e2fsck recovery")
+			t.Error("fresh slot must be fenced dirty")
 		}
 	})
 

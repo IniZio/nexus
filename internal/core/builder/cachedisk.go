@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/IniZio/nexus/internal/core/hostbin"
 )
 
 // BuildkitCacheDiskMaxGiB caps governor growth of the builder VM's buildkit
@@ -24,43 +21,6 @@ import (
 const BuildkitCacheDiskMaxGiB uint32 = 40
 
 const cacheDiskSizeBytes int64 = 10 * 1024 * 1024 * 1024 // default sparse size for new per-ecosystem cache disks
-
-// ErrE2fsckUnavailable is returned by the default fsck runner when e2fsprogs
-// is not installed; the caller falls back to wiping the dirty disk.
-var ErrE2fsckUnavailable = errors.New("cachedisk: e2fsck not found on PATH")
-
-// fsckCacheDisk repairs a cache disk left dirty by an unclean builder death.
-// Package-level so tests can simulate recover / fail / missing without a
-// real image. nil = recovered and safe to reuse.
-var fsckCacheDisk = func(imgPath string) error { return runE2fsck(imgPath) }
-
-// runE2fsck runs `e2fsck -f -p`: exit 0 (clean) and 1 (errors corrected) are
-// recoveries; ≥2 (uncorrected / needs manual repair) or a timeout is a
-// failure. The builder cache ext4 uses ordered-data journaling, so an OOM- or
-// SIGKILL-ed VM normally leaves nothing worse than a journal replay.
-func runE2fsck(imgPath string) error {
-	e2fsckPath, err := hostbin.Resolve(context.Background(), hostbin.E2fsck)
-	if err != nil {
-		return ErrE2fsckUnavailable
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, e2fsckPath, "-f", "-p", imgPath)
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("cachedisk: e2fsck timed out on %s: %w", imgPath, ctx.Err())
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			if exitErr.ExitCode() == 1 {
-				return nil
-			}
-			return fmt.Errorf("cachedisk: e2fsck failed on %s (exit %d): %w", imgPath, exitErr.ExitCode(), err)
-		}
-		return fmt.Errorf("cachedisk: e2fsck on %s: %w", imgPath, err)
-	}
-	return nil
-}
 
 type ecosystemEntry struct { // canonical guest mount path and optional subpaths for one ecosystem cache
 	mountPath string
@@ -127,23 +87,13 @@ func ensureCacheDiskAt(ctx context.Context, cacheDir, ecosystemKey string, entry
 		if fi, statErr := os.Stat(imgPath); statErr == nil && fi.Size() > cacheDiskSizeBytes {
 			preservedSize = fi.Size()
 		}
-		// Fenced dirty (D-DC-31): reuse only if e2fsck proves the layer data is
-		// intact; otherwise wipe to avoid serving a poisoned cache.
-		if fsckErr := fsckCacheDisk(imgPath); fsckErr == nil {
-			log.Printf("cachedisk: %s slot %d left dirty by a prior unclean death; e2fsck recovered it, reusing cache (%s)",
-				ecosystemKey, slot, imgPath)
-			return spec, nil
-		} else {
-			reason := "e2fsck failed"
-			if errors.Is(fsckErr, ErrE2fsckUnavailable) {
-				reason = "e2fsck not found"
-			}
-			log.Printf("cachedisk: %s slot %d left dirty by a prior unclean death; %s; wiping cache (%s) and recreating at %d bytes",
-				ecosystemKey, slot, reason, imgPath, preservedSize)
+		// Fenced dirty: never reused; see doc/design/builder-cache-dirty-quarantine.md.
+		qPath, qErr := quarantineCacheDisk(imgPath)
+		if qErr != nil {
+			return CacheDiskSpec{}, fmt.Errorf("cachedisk: quarantine dirty %s: %w", ecosystemKey, qErr)
 		}
-		if err := os.Remove(imgPath); err != nil {
-			return CacheDiskSpec{}, fmt.Errorf("cachedisk: wipe dirty %s: %w", ecosystemKey, err)
-		}
+		log.Printf("cachedisk: %s slot %d left dirty by a prior unclean death; quarantined to %s, starting with an empty cache",
+			ecosystemKey, slot, qPath)
 	}
 
 	tmpSrc, err := os.MkdirTemp("", "nexus-cachedisk-src-*")
@@ -160,6 +110,28 @@ func ensureCacheDiskAt(ctx context.Context, cacheDir, ecosystemKey string, entry
 		return CacheDiskSpec{}, fmt.Errorf("cachedisk: %w", err)
 	}
 	return spec, nil
+}
+
+// quarantineCacheDisk renames a dirty image aside as <img>.quarantine-<unix>,
+// drops its dirty marker, and deletes older quarantined copies of the slot.
+func quarantineCacheDisk(imgPath string) (string, error) {
+	olds, err := filepath.Glob(imgPath + ".quarantine-*")
+	if err != nil {
+		return "", err
+	}
+	qPath := fmt.Sprintf("%s.quarantine-%d", imgPath, time.Now().Unix())
+	if err := os.Rename(imgPath, qPath); err != nil {
+		return "", err
+	}
+	if err := markCacheDiskClean(imgPath); err != nil {
+		return "", err
+	}
+	for _, o := range olds {
+		if o != qPath {
+			_ = os.Remove(o)
+		}
+	}
+	return qPath, nil
 }
 
 func dirtyMarkerPath(imgPath string) string { // sidecar fencing-marker path for a cache disk image
