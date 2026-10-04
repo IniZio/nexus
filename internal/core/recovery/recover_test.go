@@ -1445,3 +1445,35 @@ func TestRecover_Paused_SubstrateLost_ClearsNetnsFields(t *testing.T) {
 	}
 	assertNetnsFieldsZeroed(t, updated)
 }
+
+// A Hibernated sandbox has no VM by design; recovery must leave it and its
+// snapshot untouched (never substrate-lost / memory_lost).
+func TestRecover_Hibernated_Untouched(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	dir := t.TempDir()
+	snap := filepath.Join(dir, "snap", "COMMITTED")
+	if err := os.MkdirAll(filepath.Dir(snap), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snap, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := createSandbox(t, ctx, env.st, domain.Hibernated, func(s *domain.Sandbox) { s.HibernateDir = dir; s.SnapshotBytes = 7 })
+
+	report, err := env.rec.Recover(ctx)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	out := findOutcome(t, report, sb.ID)
+	if out.Kind != OutcomeUnchanged || !strings.Contains(out.Reason, "hibernated") {
+		t.Errorf("got %s %q", out.Kind, out.Reason)
+	}
+	got, _ := env.st.Get(ctx, sb.ID)
+	if got.State != domain.Hibernated || got.StopReason != "" || got.HibernateDir != dir || got.SnapshotBytes != 7 {
+		t.Errorf("record changed: %+v", got)
+	}
+	if _, err := os.Stat(snap); err != nil {
+		t.Errorf("snapshot touched: %v", err)
+	}
+}

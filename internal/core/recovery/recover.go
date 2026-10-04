@@ -621,6 +621,17 @@ func (r *Recoverer) applyAbsent(rec *domain.Sandbox, out *SandboxOutcome) (wrote
 		return false, false
 	}
 
+	// A hibernated sandbox has no VMM or supervisor by design. Never classify
+	// that as substrate loss; the committed snapshot is the sandbox's memory.
+	if rec.State == domain.Hibernated {
+		*out = SandboxOutcome{
+			ID:     rec.ID,
+			Kind:   OutcomeUnchanged,
+			Reason: "hibernated; no VM expected; snapshot kept",
+		}
+		return false, false
+	}
+
 	// --rm rule: marker absent + VM absent + RemoveOnExit → honour the removal
 	// request, but ONLY if the lifecycle machine says removal is valid from
 	// the sandbox's stored state. The only removal edge is Running →
