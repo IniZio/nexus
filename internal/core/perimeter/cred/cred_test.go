@@ -1,6 +1,7 @@
 package cred_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -410,5 +411,28 @@ func TestRevokeOneHostKeepsPlaceholderAliveForOthers(t *testing.T) {
 	b.Revoke(sid, "api.github.com")
 	if _, ok := b.Resolve(rec.Placeholder); ok {
 		t.Error("Resolve after all-hosts revoke: want false")
+	}
+}
+
+func TestRegisterPlaceholderWith(t *testing.T) {
+	b := cred.NewBroker()
+	sb := newSandboxID(7)
+	ph := strings.Repeat("ab", 32)
+	if err := b.RegisterPlaceholderWith(sb, "github.com", "real", ph); err != nil {
+		t.Fatal(err)
+	}
+	if tok, ok := b.ResolveScoped(ph, sb, "github.com"); !ok || tok != "real" {
+		t.Fatalf("resolve = %q, %v", tok, ok)
+	}
+	if err := b.RegisterPlaceholderWith(sb, "github.com", "real2", ph); err != nil {
+		t.Fatalf("same-scope re-register: %v", err)
+	}
+	if err := b.RegisterPlaceholderWith(sb, "other.com", "x", ph); err == nil {
+		t.Fatal("collision with another scope must fail")
+	}
+	for _, bad := range []string{"", "abc", strings.Repeat("AB", 32), strings.Repeat("zz", 32)} {
+		if err := b.RegisterPlaceholderWith(sb, "h.com", "x", bad); err == nil {
+			t.Fatalf("bad placeholder %q accepted", bad)
+		}
 	}
 }
