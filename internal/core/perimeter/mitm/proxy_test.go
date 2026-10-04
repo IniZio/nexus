@@ -742,10 +742,11 @@ func newGitHubAllowedRepoProxy(t *testing.T, upstreamAddr string) (srv *httptest
 	}
 
 	cfg := mitm.Config{
-		SandboxID:    sid,
-		AllowedHosts: []string{"github.com", "api.github.com", "uploads.github.com"},
-		Broker:       broker,
-		AllowedRepo:  "acme/myrepo",
+		SandboxID:       sid,
+		AllowedHosts:    []string{"github.com", "api.github.com", "uploads.github.com"},
+		Broker:          broker,
+		AllowedRepo:     "acme/myrepo",
+		AllowedBranches: []string{"refs/heads/nexus/**"},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, network, upstreamAddr)
@@ -841,26 +842,27 @@ func TestD36_AllowedAPIPaths(t *testing.T) {
 	cases := []struct {
 		method string
 		path   string
+		body   string
 	}{
-		{http.MethodGet, "/user"},
-		{http.MethodGet, "/repos/acme/myrepo"},
-		{http.MethodGet, "/repos/acme/myrepo/pulls"},
-		{http.MethodPost, "/repos/acme/myrepo/pulls"},
-		{http.MethodGet, "/repos/acme/myrepo/releases"},
-		{http.MethodPost, "/repos/acme/myrepo/releases"},
-		{http.MethodGet, "/repos/acme/myrepo/releases/12345"},
-		{http.MethodPatch, "/repos/acme/myrepo/releases/12345"},
-		{http.MethodDelete, "/repos/acme/myrepo/releases/12345"},
+		{http.MethodGet, "/user", ""},
+		{http.MethodGet, "/repos/acme/myrepo", ""},
+		{http.MethodGet, "/repos/acme/myrepo/pulls", ""},
+		{http.MethodPost, "/repos/acme/myrepo/pulls", ""},
+		{http.MethodGet, "/repos/acme/myrepo/releases", ""},
+		{http.MethodPost, "/repos/acme/myrepo/releases", `{"tag_name":"v1","target_commitish":"nexus/feat"}`},
+		{http.MethodGet, "/repos/acme/myrepo/releases/12345", ""},
+		{http.MethodPatch, "/repos/acme/myrepo/releases/12345", `{"body":"notes"}`},
+		{http.MethodDelete, "/repos/acme/myrepo/releases/12345", ""},
 		// Babysit-loop PR reads (D-BABYSIT-1).
-		{http.MethodGet, "/repos/acme/myrepo/pulls/1"},
-		{http.MethodGet, "/repos/acme/myrepo/pulls/1/reviews"},
-		{http.MethodGet, "/repos/acme/myrepo/pulls/1/comments"},
+		{http.MethodGet, "/repos/acme/myrepo/pulls/1", ""},
+		{http.MethodGet, "/repos/acme/myrepo/pulls/1/reviews", ""},
+		{http.MethodGet, "/repos/acme/myrepo/pulls/1/comments", ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			t.Parallel()
-			req, _ := http.NewRequest(tc.method, "http://api.github.com"+tc.path, http.NoBody)
+			req, _ := http.NewRequest(tc.method, "http://api.github.com"+tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Authorization", "Bearer "+recAPI.Placeholder)
 			resp, err := client.Do(req)
 			if err != nil {
@@ -1441,6 +1443,7 @@ func TestD36_LegitimateDotsAllowed(t *testing.T) {
 		method      string
 		path        string
 		placeholder string
+		body        string
 	}
 	cases := []tcase{
 		// GET /repos/acme/myrepo/releases/12345 — numeric release ID.
@@ -1458,6 +1461,7 @@ func TestD36_LegitimateDotsAllowed(t *testing.T) {
 			method:      http.MethodPatch,
 			path:        "/repos/acme/myrepo/releases/12345",
 			placeholder: recAPI.Placeholder,
+			body:        `{"body":"notes"}`,
 		},
 		// uploads.github.com upload with version-string in asset name (query param,
 		// not a path segment — path itself is clean).
@@ -1523,7 +1527,7 @@ func TestD36_LegitimateDotsAllowed(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			req, _ := http.NewRequest(tc.method, "http://"+tc.host+tc.path, http.NoBody)
+			req, _ := http.NewRequest(tc.method, "http://"+tc.host+tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Authorization", "Bearer "+tc.placeholder)
 			resp, err := client.Do(req)
 			if err != nil {
@@ -2228,19 +2232,20 @@ func TestD38_GhStack_RESTAllowed(t *testing.T) {
 	cases := []struct {
 		method string
 		path   string
+		body   string
 	}{
-		{http.MethodGet, "/repos/acme/myrepo/stacks"},
-		{http.MethodPost, "/repos/acme/myrepo/stacks"},
-		{http.MethodPost, "/stacks/42/add"},
-		{http.MethodPost, "/stacks/42/unstack"},
-		{http.MethodPatch, "/repos/acme/myrepo/pulls/42"},
+		{http.MethodGet, "/repos/acme/myrepo/stacks", ""},
+		{http.MethodPost, "/repos/acme/myrepo/stacks", ""},
+		{http.MethodPost, "/stacks/42/add", ""},
+		{http.MethodPost, "/stacks/42/unstack", ""},
+		{http.MethodPatch, "/repos/acme/myrepo/pulls/42", `{"base":"main"}`},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			t.Parallel()
-			req, _ := http.NewRequest(tc.method, "http://api.github.com"+tc.path, http.NoBody)
+			req, _ := http.NewRequest(tc.method, "http://api.github.com"+tc.path, strings.NewReader(tc.body))
 			resp, err := client.Do(req)
 			if err != nil {
 				t.Fatalf("client.Do: %v", err)
@@ -3641,4 +3646,135 @@ func TestProxy_SecretHostSuffix_SwapsInferenceHost(t *testing.T) {
 			t.Errorf("evil host: upstream Authorization = %q, want %q (suffix matched incorrectly)", got, want)
 		}
 	})
+}
+
+// TestSP16_GitHubRESTRefWrites verifies that REST calls able to create or move
+// refs (release create/update with target_commitish) or retarget a PR (base)
+// are body-inspected against AllowedBranches, failing closed.
+func TestSP16_GitHubRESTRefWrites(t *testing.T) {
+	t.Parallel()
+
+	const relPath = "/repos/acme/myrepo/releases"
+	big := `{"tag_name":"v1","target_commitish":"nexus/feat","body":"` + strings.Repeat("a", 70*1024) + `"}`
+
+	cases := []struct {
+		name     string
+		branches []string
+		method   string
+		path     string
+		body     string
+		want     int
+	}{
+		{"release-target-allowed", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/feat"}`, 200},
+		{"release-target-allowed-refs-prefix", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"refs/heads/nexus/feat"}`, 200},
+		{"release-target-main", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"main"}`, 403},
+		{"release-target-other-branch", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/other"}`, 403},
+		{"release-target-sha", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"0123456789abcdef0123456789abcdef01234567"}`, 403},
+		{"release-target-missing", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"tag_name":"v1"}`, 403},
+		{"release-target-missing-draft", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"tag_name":"v1","draft":true}`, 403},
+		{"release-allowed-branches-empty", nil, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/feat"}`, 403},
+		{"release-malformed-json", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"tag_name":`, 403},
+		{"release-empty-body", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, ``, 403},
+		{"release-oversized", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, big, 403},
+		{"release-duplicate-keys", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath, `{"target_commitish":"main","target_commitish":"nexus/feat"}`, 403},
+		{"release-patch-target-main", []string{"refs/heads/nexus/feat"}, http.MethodPatch, relPath + "/12345", `{"target_commitish":"main"}`, 403},
+		{"release-patch-target-allowed", []string{"refs/heads/nexus/feat"}, http.MethodPatch, relPath + "/12345", `{"target_commitish":"nexus/feat","draft":false}`, 200},
+		{"release-patch-publish-no-target", []string{"refs/heads/nexus/feat"}, http.MethodPatch, relPath + "/12345", `{"draft":false}`, 403},
+		{"release-patch-notes-only", []string{"refs/heads/nexus/feat"}, http.MethodPatch, relPath + "/12345", `{"body":"notes"}`, 200},
+		{"release-patch-malformed", []string{"refs/heads/nexus/feat"}, http.MethodPatch, relPath + "/12345", `nope`, 403},
+		{"pr-patch-title", []string{"refs/heads/nexus/feat"}, http.MethodPatch, "/repos/acme/myrepo/pulls/42", `{"title":"t","body":"b","state":"closed","maintainer_can_modify":true}`, 200},
+		{"pr-patch-base", []string{"refs/heads/nexus/feat"}, http.MethodPatch, "/repos/acme/myrepo/pulls/42", `{"title":"t","base":"main"}`, 200},
+		{"pr-patch-unknown-key", []string{"refs/heads/nexus/feat"}, http.MethodPatch, "/repos/acme/myrepo/pulls/42", `{"title":"t","head":"x"}`, 403},
+		{"pr-patch-base-case", []string{"refs/heads/nexus/feat"}, http.MethodPatch, "/repos/acme/myrepo/pulls/42", `{"HEAD":"x"}`, 403},
+		{"pr-patch-query-base", []string{"refs/heads/nexus/feat"}, http.MethodPatch, "/repos/acme/myrepo/pulls/42?base=main", `{"title":"t"}`, 403},
+		{"release-query-override", []string{"refs/heads/nexus/feat"}, http.MethodPost, relPath + "?target_commitish=main&tag_name=v9", `{"tag_name":"v1","target_commitish":"nexus/feat"}`, 403},
+		{"release-target-ancestor", []string{"refs/heads/nexus/**"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/feat~5"}`, 403},
+		{"release-target-dotdot", []string{"refs/heads/nexus/**"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/feat/../../main"}`, 403},
+		{"release-target-caret", []string{"refs/heads/nexus/**"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/feat^"}`, 403},
+		{"release-target-tags", []string{"refs/heads/nexus/**"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"refs/tags/x"}`, 403},
+		{"release-target-doubleslash", []string{"refs/heads/nexus/**"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus//x"}`, 403},
+		{"release-target-reflog", []string{"refs/heads/nexus/**"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/feat@{1}"}`, 403},
+		{"release-target-trailing-lock", []string{"refs/heads/nexus/**"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/feat.lock"}`, 403},
+		{"release-target-glob-valid", []string{"refs/heads/nexus/**"}, http.MethodPost, relPath, `{"tag_name":"v1","target_commitish":"nexus/feat"}`, 200},
+		{"pr-patch-malformed", []string{"refs/heads/nexus/feat"}, http.MethodPatch, "/repos/acme/myrepo/pulls/42", `{`, 403},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream, authCh := captureAuthUpstream(t)
+			broker := cred.NewBroker()
+			sid := newSandboxID(96)
+			rec, err := broker.RegisterPlaceholder(sid, "api.github.com", "ghp_sp16")
+			if err != nil {
+				t.Fatalf("RegisterPlaceholder: %v", err)
+			}
+			srv := newTestProxy(t, mitm.Config{
+				SandboxID:       sid,
+				AllowedHosts:    []string{"api.github.com"},
+				Broker:          broker,
+				AllowedBranches: tc.branches,
+				PathPolicies: mitm.PathPolicies{
+					rec.Placeholder: {"api.github.com": {GitHub: &mitm.GitHubPolicy{Owner: "acme", Name: "myrepo"}}},
+				},
+			}, upstream.Listener.Addr().String())
+			req, _ := http.NewRequest(tc.method, "http://api.github.com"+tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+			resp, err := proxyClient(srv.URL).Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Errorf("want %d, got %d", tc.want, resp.StatusCode)
+			}
+			_, got := receiveOrTimeout(authCh)
+			if tc.want == 403 && got {
+				t.Errorf("denied request reached upstream")
+			}
+		})
+	}
+}
+
+// TestSP16_MethodOverrideHeadersDenied verifies method-override headers are
+// rejected on api.github.com under the built-in GitHub policy.
+func TestSP16_MethodOverrideHeadersDenied(t *testing.T) {
+	t.Parallel()
+	for _, h := range []string{"X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override"} {
+		t.Run(h, func(t *testing.T) {
+			t.Parallel()
+			upstream, authCh := captureAuthUpstream(t)
+			broker := cred.NewBroker()
+			sid := newSandboxID(95)
+			rec, err := broker.RegisterPlaceholder(sid, "api.github.com", "ghp_sp16h")
+			if err != nil {
+				t.Fatalf("RegisterPlaceholder: %v", err)
+			}
+			srv := newTestProxy(t, mitm.Config{
+				SandboxID:       sid,
+				AllowedHosts:    []string{"api.github.com"},
+				Broker:          broker,
+				AllowedBranches: []string{"refs/heads/nexus/**"},
+				PathPolicies: mitm.PathPolicies{
+					rec.Placeholder: {"api.github.com": {GitHub: &mitm.GitHubPolicy{Owner: "acme", Name: "myrepo"}}},
+				},
+			}, upstream.Listener.Addr().String())
+			req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/repos/acme/myrepo/pulls", strings.NewReader(`{}`))
+			req.Header.Set("Authorization", "Bearer "+rec.Placeholder)
+			req.Header.Set(h, "DELETE")
+			resp, err := proxyClient(srv.URL).Do(req)
+			if err != nil {
+				t.Fatalf("client.Do: %v", err)
+			}
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			if resp.StatusCode != 403 {
+				t.Errorf("want 403, got %d", resp.StatusCode)
+			}
+			if _, got := receiveOrTimeout(authCh); got {
+				t.Errorf("denied request reached upstream")
+			}
+		})
+	}
 }

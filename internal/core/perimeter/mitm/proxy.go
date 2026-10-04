@@ -487,6 +487,28 @@ func New(cfg Config) (*Proxy, error) {
 				// GitHub built-in: method-aware, allDigits, canonical prefixes.
 				// gitHubPathAllowed is called verbatim — NOT rewritten as a glob.
 				allowed = gitHubPathAllowed(host, req.Method, req.URL.Path, pol.GitHub.Owner, pol.GitHub.Name)
+				if allowed && host == "api.github.com" {
+					for _, h := range []string{"X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override"} {
+						if req.Header.Get(h) != "" {
+							allowed = false
+						}
+					}
+				}
+				if allowed && host == "api.github.com" {
+					if kind := restBodyGuardKind(req.Method, req.URL.Path, pol.GitHub.Owner, pol.GitHub.Name); kind != bodyGuardNone {
+						const maxBody = 64 * 1024
+						if req.URL.RawQuery != "" {
+							// Query params can override body fields server-side.
+							allowed = false
+						}
+						var raw []byte
+						if req.Body != nil {
+							raw, _ = io.ReadAll(io.LimitReader(req.Body, maxBody+1))
+							req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(raw), req.Body))
+						}
+						allowed = allowed && len(raw) <= maxBody && restBodyAllowed(kind, raw, cfg.AllowedBranches)
+					}
+				}
 			default:
 				for _, gp := range pol.Patterns {
 					if gp.matchPath(req.Method, req.URL.Path) {
@@ -1282,6 +1304,114 @@ func gitHubPathAllowed(host, method, path, owner, repo string) bool {
 		// Should not be reached; policy map keys guard the call site.
 		return false
 	}
+}
+
+type bodyGuard int
+
+const (
+	bodyGuardNone bodyGuard = iota
+	bodyGuardReleaseCreate
+	bodyGuardReleaseUpdate
+	bodyGuardPRUpdate
+)
+
+// restBodyGuardKind classifies api.github.com requests (already path-allowed)
+// whose JSON body must be inspected (SP-16).
+func restBodyGuardKind(method, p, owner, repo string) bodyGuard {
+	repoBase := "/repos/" + owner + "/" + repo
+	switch {
+	case method == http.MethodPost && p == repoBase+"/releases":
+		return bodyGuardReleaseCreate
+	case method == http.MethodPatch && strings.HasPrefix(p, repoBase+"/releases/") &&
+		!strings.HasPrefix(p, repoBase+"/releases/assets/"):
+		return bodyGuardReleaseUpdate
+	case method == http.MethodPatch && strings.HasPrefix(p, repoBase+"/pulls/"):
+		return bodyGuardPRUpdate
+	}
+	return bodyGuardNone
+}
+
+// restBodyAllowed applies the SP-16 body rules. A release may only create or
+// retarget a tag at an explicitly named branch in allowed; a PR PATCH may only
+// carry title/body/state/base/maintainer_can_modify. Fail closed.
+func restBodyAllowed(kind bodyGuard, raw []byte, allowed []string) bool {
+	if hasDuplicateTopLevelJSONKeys(raw) {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return false
+	}
+	// Normalise key case: never trust a differing-case spelling.
+	norm := make(map[string]json.RawMessage, len(fields))
+	for k, v := range fields {
+		norm[strings.ToLower(k)] = v
+	}
+	if len(norm) != len(fields) {
+		return false
+	}
+	switch kind {
+	case bodyGuardPRUpdate:
+		for k := range norm {
+			switch k {
+			case "title", "body", "state", "base", "maintainer_can_modify":
+			default:
+				return false
+			}
+		}
+		return true
+	case bodyGuardReleaseCreate, bodyGuardReleaseUpdate:
+		tc, hasTarget := norm["target_commitish"]
+		if !hasTarget {
+			// Omitted target defaults to the default branch (unknown here).
+			// An update that touches neither tag nor publish state creates no ref.
+			if kind == bodyGuardReleaseUpdate {
+				_, tag := norm["tag_name"]
+				_, draft := norm["draft"]
+				return !tag && !draft
+			}
+			return false
+		}
+		var target string
+		if err := json.Unmarshal(tc, &target); err != nil || target == "" {
+			return false
+		}
+		branch := strings.TrimPrefix(target, "refs/heads/")
+		if !plainBranchName(branch) {
+			return false
+		}
+		ref := "refs/heads/" + branch
+		for _, pattern := range allowed {
+			if refMatchesGlob(pattern, ref) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// plainBranchName reports whether name is a plain branch name per
+// git check-ref-format (no revision expressions, refs/ prefixes or SHAs).
+func plainBranchName(name string) bool {
+	if name == "" || name[0] == '-' || name[0] == '/' || strings.HasSuffix(name, "/") ||
+		strings.HasSuffix(name, ".") || strings.HasSuffix(name, ".lock") ||
+		strings.HasPrefix(name, "refs/") || strings.Contains(name, "..") || strings.Contains(name, "@{") {
+		return false
+	}
+	if n := len(name); (n == 40 || n == 64) && strings.Trim(name, "0123456789abcdefABCDEF") == "" {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(" ~^:\\?*[", r) {
+			return false
+		}
+	}
+	for _, c := range strings.Split(name, "/") {
+		if c == "" || c[0] == '.' || strings.HasSuffix(c, ".lock") {
+			return false
+		}
+	}
+	return true
 }
 
 // hasDuplicateTopLevelJSONKeys reports whether data contains repeated keys at

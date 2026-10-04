@@ -209,6 +209,16 @@ from the guest works with `github.com` under `policy` only. The redirect target
 `codeload.github.com` is never policy-gated, so list it under `allow` if the download follows
 the redirect.
 
+**REST ref writes follow the push branch pin.** On the built-in GitHub policy for `api.github.com`,
+`POST /releases` and `PATCH /releases/{id}` are body-inspected: `target_commitish` must be a plain
+branch name (optionally `refs/heads/`-prefixed; no `~`, `^`, `..`, `@{`, SHA, or other `refs/`
+prefix) matching the allowed push branches. A missing target or empty branch list is 403. A release
+may create a tag with any name, but only pointing at the tip of an allowed branch; tags are not
+otherwise pushable. `PATCH /pulls/{n}` accepts only `title`, `body`, `state`, `base`,
+`maintainer_can_modify` (`base` is allowed so gh-stack can retarget PRs). Any query string on these
+guarded requests, `X-HTTP-Method-Override`/`X-HTTP-Method`/`X-Method-Override` headers on
+`api.github.com`, and malformed, duplicate-key or over-64KB bodies are 403.
+
 **Hard rule:** never add `/graphql` under `api.github.com` paths. The path ACL is not the
 enforcement layer for `/graphql` — the MITM AST-shape body allowlist controls which GraphQL
 documents are permitted. Listing `/graphql` in paths widens the REST path ACL without changing
