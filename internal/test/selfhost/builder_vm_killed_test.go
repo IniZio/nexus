@@ -2,13 +2,6 @@
 
 package selfhost
 
-// Regression: a builder VM killed mid-build (SIGKILL of its cloud-hypervisor)
-// must never poison later builds. The dirty buildkit cache slot is quarantined
-// and the next build starts from an empty cache and succeeds.
-//
-//	TMPDIR=/var/tmp go test -tags integration -run TestBuilderVMKilledMidBuild \
-//	  ./internal/test/selfhost/ -v -timeout 30m
-
 import (
 	"context"
 	"fmt"
