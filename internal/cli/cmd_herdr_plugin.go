@@ -3639,7 +3639,7 @@ func herdrSpaceAgentCheckFallbackPane(
 ) (string, error) {
 	paneID := binding.GuestPaneID
 	content, ok := herdrPaneReadFn(ctx, herdrBin, paneID)
-	if !ok || !strings.Contains(content, guestShellFallbackMarker) {
+	if !ok || !herdragent.HostShellMarked(content) {
 		return paneID, nil
 	}
 	fmt.Fprintf(w, "space-agent: pane %s is a fallback host shell; opening a fresh guest pane\n", paneID)
@@ -3649,7 +3649,7 @@ func herdrSpaceAgentCheckFallbackPane(
 	}
 	binding.GuestPaneID = freshID
 	_ = HerdrSpacePut(ctx, storeRoot, *binding)
-	if content2, ok2 := herdrPaneReadFn(ctx, herdrBin, freshID); ok2 && strings.Contains(content2, guestShellFallbackMarker) {
+	if content2, ok2 := herdrPaneReadFn(ctx, herdrBin, freshID); ok2 && herdragent.HostShellMarked(content2) {
 		return freshID, &CodedError{Code: ErrCodeInternalError,
 			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor resolution (nexus doctor; NEXUS_CLOUD_HYPERVISOR_PATH)", freshID)}
 	}
@@ -3729,7 +3729,7 @@ func herdrPluginSpaceAgent(ctx context.Context, ref, brief string, autonomous, f
 	 *    prompt is what distinguishes the guest shell from the host pane the
 	 *    plugin was opened from.
 	 */
-	if content, ok := herdrPaneReadFn(ctx, herdrBin, paneID); ok && strings.Contains(content, guestShellFallbackMarker) {
+	if content, ok := herdrPaneReadFn(ctx, herdrBin, paneID); ok && herdragent.HostShellMarked(content) {
 		return &CodedError{Code: ErrCodeInternalError,
 			Msg: fmt.Sprintf("space-agent: pane %s is a fallback host shell; check cloud-hypervisor resolution (nexus doctor; NEXUS_CLOUD_HYPERVISOR_PATH)", paneID)}
 	}

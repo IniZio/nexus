@@ -20,6 +20,7 @@ import (
 	"github.com/IniZio/nexus/internal/core/config"
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/core/driver/registry"
 	"github.com/IniZio/nexus/internal/core/store"
 	"github.com/IniZio/nexus/internal/herdragent"
 )
@@ -42,6 +43,26 @@ type sandboxDialer interface {
 var herdrGuestShellExecFn herdrExecFn = syscall.Exec
 
 var herdrGuestShellExitFn = os.Exit
+
+// errGuestShellRefused: a sandbox-bound pane could not reach its guest and must
+// not become a host shell; callers hold the pane and exit non-zero.
+var errGuestShellRefused = errors.New("guest shell refused: sandbox unreachable")
+
+// herdrGuestShellHandleRefusal holds the pane and exits non-zero on a refusal.
+func herdrGuestShellHandleRefusal(err error) bool {
+	if !errors.Is(err, errGuestShellRefused) {
+		return false
+	}
+	herdrGuestShellHoldFn()
+	herdrGuestShellExitFn(1)
+	return true
+}
+
+// herdrGuestShellHoldFn keeps a refused pane open so its message stays readable.
+var herdrGuestShellHoldFn = func() {
+	var b [1]byte
+	_, _ = os.Stdin.Read(b[:])
+}
 
 var herdrSkipInstallProbeForTest bool
 
@@ -286,6 +307,11 @@ func herdrDefaultShellCore(
 		return execFn(sh, append([]string{sh}, shellArgs...), os.Environ())
 	}
 
+	refuse := func(reason string) error {
+		fmt.Fprintf(herdrFallbackStderrFn(), "%s %s; no host shell opened (an agent here would run on the host)\n", herdragent.GuestShellRefusedMarker, reason)
+		return errGuestShellRefused
+	}
+
 	execUnboundShell := func() error {
 		if next := herdrGuestShellNext(getenv); next != "" {
 			if err := execFn(next, append([]string{next}, shellArgs...), os.Environ()); err != nil {
@@ -354,8 +380,12 @@ func herdrDefaultShellCore(
 	if svc != nil {
 		sb, sbErr := svc.Get(ctx, binding.SandboxHandle)
 		if sbErr != nil {
+			if binding.IsWorktreeManaged() {
+				return refuse(fmt.Sprintf("sandbox %s lookup failed: %v", binding.SandboxHandle, sbErr))
+			}
 			return execHostShell()
 		}
+		closed := binding.IsWorktreeManaged() || (sb.Backend != "" && sb.Backend != registry.CloudHypervisor)
 		/**
 		 * A Stopped worktree sandbox is the normal state after its last pane
 		 * closed (herdrWtTeardownFn stops rather than removes). Opening a pane
@@ -367,14 +397,23 @@ func herdrDefaultShellCore(
 		if sb.State == domain.Stopped && binding.IsWorktreeManaged() {
 			fmt.Fprintf(os.Stderr, "nexus-guest-shell: sandbox %s is stopped; starting it ...\n", binding.SandboxHandle)
 			if startErr := herdrWtStartFn(ctx, binding.SandboxHandle); startErr != nil {
+				if closed {
+					return refuse(fmt.Sprintf("start %s: %v", binding.SandboxHandle, startErr))
+				}
 				fmt.Fprintf(os.Stderr, "nexus-guest-shell: start %s: %v; opening host shell\n", binding.SandboxHandle, startErr)
 				return execHostShell()
 			}
 			if sb, sbErr = svc.Get(ctx, binding.SandboxHandle); sbErr != nil {
+				if closed {
+					return refuse(fmt.Sprintf("sandbox %s lookup failed: %v", binding.SandboxHandle, sbErr))
+				}
 				return execHostShell()
 			}
 		}
 		if sb.State != domain.Running {
+			if closed {
+				return refuse(fmt.Sprintf("sandbox %s not running (state=%v)", binding.SandboxHandle, sb.State))
+			}
 			fmt.Fprintf(herdrFallbackStderrFn(), "%s sandbox not running (state=%v)\n", guestShellFallbackMarker, sb.State)
 			return execHostShell()
 		}
@@ -383,6 +422,9 @@ func herdrDefaultShellCore(
 			conn, dialErr := d.DialGuest(dialCtx, binding.SandboxHandle, driver.AgentControlPort)
 			cancel()
 			if dialErr != nil {
+				if closed {
+					return refuse(fmt.Sprintf("guest of %s not dialable: %v", binding.SandboxHandle, dialErr))
+				}
 				slog.Warn("nexus-guest-shell: guest not dialable; falling back to host shell", "err", dialErr)
 				fmt.Fprintf(herdrFallbackStderrFn(), "%s %v\n", guestShellFallbackMarker, dialErr)
 				return execHostShell()
@@ -492,7 +534,9 @@ func RunHerdrGuestShell() {
 		svc = s
 	}
 
-	if err := herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexusBin, herdrGuestShellExecFn); err != nil {
+	if err := herdrDefaultShellCore(ctx, os.Getenv, storeRoot, svc, nexusBin, herdrGuestShellExecFn); herdrGuestShellHandleRefusal(err) {
+		return
+	} else if err != nil {
 		slog.Warn("nexus-guest-shell: exec failed; retrying host shell", "err", err)
 	}
 	sh := os.Getenv("SHELL")

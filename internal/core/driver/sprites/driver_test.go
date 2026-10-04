@@ -354,6 +354,7 @@ func TestCapabilities(t *testing.T) {
 
 func TestNewRequiresToken(t *testing.T) {
 	const tok = "tok_SHOULDNOTLEAK"
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("SPRITES_TOKEN", "")
 	t.Setenv("SPRITES_API_TOKEN", "")
 	if _, err := New(Config{StateDir: t.TempDir()}); err == nil {

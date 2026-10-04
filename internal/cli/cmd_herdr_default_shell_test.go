@@ -13,6 +13,7 @@ import (
 
 	"github.com/IniZio/nexus/internal/core/domain"
 	"github.com/IniZio/nexus/internal/core/driver"
+	"github.com/IniZio/nexus/internal/herdragent"
 )
 
 type fakeDefaultShellGetter struct {
@@ -1356,7 +1357,7 @@ func stubWtStart(t *testing.T, f *fakeStartingGetter, startErr error) {
 
 // A Stopped WORKTREE sandbox is what the last-pane stop leaves behind; opening
 // a guest pane again must start it and exec into the guest, not drop to a host
-// shell. A non-worktree binding keeps the old fall-open behaviour.
+// shell. A failed start of a worktree sandbox refuses; a non-worktree binding keeps the old fall-open behaviour.
 //
 // Mutation proof: delete the Stopped→Start block → state stays Stopped →
 // host shell → argv0 "/bin/bash" ≠ "/fake/nexus" → RED.
@@ -1405,10 +1406,12 @@ func TestHerdrDefaultShell_StoppedWorktreeSandboxIsStarted(t *testing.T) {
 	failing := &fakeStartingGetter{sb: domain.Sandbox{State: domain.Stopped}}
 	stubWtStart(t, failing, errors.New("boot failed"))
 	cap = &capturedExec{}
-	if err := runCore(context.Background(), getenv, root, failing, cap.fn); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := runCore(context.Background(), getenv, root, failing, cap.fn); !errors.Is(err, errGuestShellRefused) {
+		t.Fatalf("err = %v; a worktree sandbox that fails to start must refuse, not open a host shell", err)
 	}
-	assertHostShell(t, cap, "/bin/bash")
+	if cap.calls != 0 {
+		t.Fatalf("host shell exec'd (%q) after failed start", cap.argv0)
+	}
 }
 
 func TestHerdrDefaultShell_StoppedNonWorktreeSandboxStaysHost(t *testing.T) {
@@ -1557,4 +1560,63 @@ func TestHerdrSetPaneLabel(t *testing.T) {
 		t.Fatalf("got %+v", r)
 	}
 	herdrSetPaneLabel(context.Background(), struct{}{}, "h", "p9") // no SetLabel: no panic
+}
+
+func TestGuestShellRefusesHostShellForUndialableSandbox(t *testing.T) {
+	cases := map[string]struct {
+		binding HerdrSpaceBinding
+		backend string
+	}{
+		"sprites backend":  {testBinding, "sprites"},
+		"worktree managed": {HerdrSpaceBinding{HerdrWorkspaceID: "wXX", SandboxHandle: "ac3/testbox", WorktreeManaged: true}, ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			makeBindings(t, root, []HerdrSpaceBinding{tc.binding})
+			svc := &fakeDialableGetter{
+				fakeDefaultShellGetter: fakeDefaultShellGetter{sb: domain.Sandbox{State: domain.Running, Backend: tc.backend}},
+				dialErr:                errors.New(`backend "sprites": sprites: no API token`),
+			}
+			var buf strings.Builder
+			old := herdrFallbackStderrFn
+			herdrFallbackStderrFn = func() io.Writer { return &buf }
+			defer func() { herdrFallbackStderrFn = old }()
+			getenv := func(k string) string {
+				if k == "HERDR_WORKSPACE_ID" {
+					return "wXX"
+				}
+				return ""
+			}
+			cap := &capturedExec{}
+			err := runCore(context.Background(), getenv, root, svc, cap.fn)
+			if !errors.Is(err, errGuestShellRefused) {
+				t.Fatalf("err = %v; want errGuestShellRefused", err)
+			}
+			if cap.calls != 0 {
+				t.Fatalf("exec called %d times (host shell opened): %s", cap.calls, cap.argv0)
+			}
+			if !strings.Contains(buf.String(), herdragent.GuestShellRefusedMarker) || !herdragent.HostShellMarked(buf.String()) {
+				t.Fatalf("stderr lacks refusal marker: %q", buf.String())
+			}
+		})
+	}
+}
+
+func TestGuestShellRefusalExitsNonZeroWithoutHostShell(t *testing.T) {
+	var exited, held, execs int
+	oe, oh, ox := herdrGuestShellExitFn, herdrGuestShellHoldFn, herdrGuestShellExecFn
+	herdrGuestShellExitFn = func(c int) { exited = c }
+	herdrGuestShellHoldFn = func() { held++ }
+	herdrGuestShellExecFn = func(string, []string, []string) error { execs++; return nil }
+	defer func() { herdrGuestShellExitFn, herdrGuestShellHoldFn, herdrGuestShellExecFn = oe, oh, ox }()
+	if herdrGuestShellHandleRefusal(errors.New("other")) {
+		t.Fatal("non-refusal handled")
+	}
+	if !herdrGuestShellHandleRefusal(errGuestShellRefused) {
+		t.Fatal("refusal not handled")
+	}
+	if exited != 1 || held != 1 || execs != 0 {
+		t.Fatalf("exit=%d held=%d host execs=%d", exited, held, execs)
+	}
 }

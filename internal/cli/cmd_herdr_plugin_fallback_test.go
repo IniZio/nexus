@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/IniZio/nexus/internal/herdragent"
 )
 
 func TestSpaceAgentFailsFastOnFallbackPane(t *testing.T) {
@@ -88,5 +90,27 @@ func TestSpaceAgentReplacesFallbackPane(t *testing.T) {
 	}
 	if binding.GuestPaneID != "pane-fresh" {
 		t.Errorf("binding.GuestPaneID = %q, want pane-fresh", binding.GuestPaneID)
+	}
+}
+
+func TestSpaceAgentFailsFastOnRefusedPane(t *testing.T) {
+	storeRoot := t.TempDir()
+	binding := HerdrSpaceBinding{HerdrWorkspaceID: "w-refused", SandboxHandle: "proj/box", GuestPaneID: "pane-refused"}
+	if err := HerdrSpacePut(context.Background(), storeRoot, binding); err != nil {
+		t.Fatal(err)
+	}
+	oldRead := herdrPaneReadFn
+	herdrPaneReadFn = func(context.Context, string, string) (string, bool) {
+		return herdragent.GuestShellRefusedMarker + " guest not dialable", true
+	}
+	defer func() { herdrPaneReadFn = oldRead }()
+	oldOpen := herdrOpenGuestShellPaneFn
+	herdrOpenGuestShellPaneFn = func(context.Context, string, string, string, string, bool) (string, error) {
+		return "pane-fresh", nil
+	}
+	defer func() { herdrOpenGuestShellPaneFn = oldOpen }()
+	var buf strings.Builder
+	if _, err := herdrSpaceAgentCheckFallbackPane(context.Background(), "/bin/herdr", "proj/box", &binding, storeRoot, &buf); err == nil {
+		t.Fatal("dispatch must not proceed into a refused pane")
 	}
 }

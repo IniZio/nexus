@@ -327,6 +327,17 @@ No flags. Args: `<sandbox-ref> [-- <cmd> [args...]]`
 
 ---
 
+### ## sprites
+
+Summary: Manage the stored Sprites API token (login|logout)
+
+Subcommands:
+
+- `sprites login` — Read a token from stdin (raw, or a `SPRITES_TOKEN=...` line) and store it at `$XDG_CONFIG_HOME/nexus/sprites/token` (0600). Never echoes it. Environment variables take precedence.
+- `sprites logout` — Remove the stored token.
+
+---
+
 ### ## ssh
 
 Summary: Dial a sandbox's sshd over vsock (use as SSH ProxyCommand with --stdio)

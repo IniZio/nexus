@@ -538,6 +538,7 @@ func (b *Backend) permMode() string {
 // fallbackMarkers are strings emitted by nexus-guest-shell when it falls back to the host.
 var fallbackMarkers = []string{
 	herdragent.GuestShellFallbackMarker,
+	herdragent.GuestShellRefusedMarker,
 	"not a nexus space",
 	"no nexus sandbox binding",
 }

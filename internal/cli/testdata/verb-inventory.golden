@@ -27,6 +27,7 @@ run
 sandbox
 sandbox agent-upgrade
 shell
+sprites
 ssh
 start
 stop

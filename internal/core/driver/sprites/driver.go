@@ -67,13 +67,10 @@ func New(cfg Config) (*Driver, error) {
 	if api == nil {
 		token := cfg.Token
 		if token == "" {
-			token = os.Getenv("SPRITES_TOKEN")
+			token = ResolveToken()
 		}
 		if token == "" {
-			token = os.Getenv("SPRITES_API_TOKEN")
-		}
-		if token == "" {
-			return nil, errors.New("sprites: no API token; set SPRITES_TOKEN or SPRITES_API_TOKEN")
+			return nil, errors.New("sprites: no API token; set SPRITES_TOKEN (or SPRITES_API_TOKEN), or run `nexus sprites login`")
 		}
 		org := cfg.Org
 		if org == "" {
