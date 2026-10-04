@@ -42,11 +42,15 @@ func (c *RunConfig) logf(f string, a ...any) {
 // removed on every exit (fail closed).
 func Run(ctx context.Context, cfg RunConfig) error {
 	id := cfg.Creds.SandboxID.String()
-	if _, err := Dir(cfg.StateDir, id); err != nil {
+	dir, err := Dir(cfg.StateDir, id)
+	if err != nil {
 		return err
 	}
 	if cfg.Exec == nil || cfg.Sprite == "" {
 		return errors.New("broker: Exec and Sprite are required")
+	}
+	if cfg.Creds.PersistDir == "" {
+		cfg.Creds.PersistDir = dir
 	}
 	creds, err := NewCreds(cfg.Creds)
 	if err != nil {
@@ -179,6 +183,11 @@ func serveOnce(ctx context.Context, cfg RunConfig, creds *Creds, st State, id st
 		<-execDone
 	}()
 
+	// broker.json means "exec may use the proxy": publish it only once the
+	// guest relay is listening (it writes its pidfile after Listen).
+	if err := waitRelayReady(ctx, cfg, execDone, sess); err != nil {
+		return err
+	}
 	if err := WriteState(cfg.StateDir, id, st); err != nil {
 		return err
 	}
@@ -190,5 +199,36 @@ func serveOnce(ctx context.Context, cfg RunConfig, creds *Creds, st State, id st
 	case err := <-execDone:
 		execDone <- err // let the deferred drain proceed
 		return err
+	}
+}
+
+const relayReadyTimeout = 30 * time.Second
+
+// waitRelayReady polls the guest pidfile until the relay is up, failing early
+// when the relay exec or the tunnel dies.
+func waitRelayReady(ctx context.Context, cfg RunConfig, execDone chan error, sess interface{ Closed() <-chan struct{} }) error {
+	deadline := time.NewTimer(relayReadyTimeout)
+	defer deadline.Stop()
+	for {
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		code, err := cfg.Exec(pctx, cfg.Sprite, ExecRequest{
+			Argv: []string{"sh", "-c", `[ -s "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null`, "sh", GuestPidfile},
+		})
+		cancel()
+		if err == nil && code == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-execDone:
+			execDone <- err
+			return fmt.Errorf("broker: relay exited before ready: %w", err)
+		case <-sess.Closed():
+			return errors.New("broker: tunnel closed before relay ready")
+		case <-deadline.C:
+			return fmt.Errorf("broker: guest relay not listening after %s", relayReadyTimeout)
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 }

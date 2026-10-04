@@ -31,11 +31,16 @@ type CredsConfig struct {
 	Secrets   []Secret
 	// CACertPEM/CAKeyPEM optionally seed the CA (both or neither).
 	CACertPEM, CAKeyPEM []byte
+	// PersistDir, when set, keeps the CA keypair and the name->placeholder map
+	// (never real tokens) across restarts: created on first use, reused after.
+	PersistDir string
 	// RefreshStore, when set, is a dedicated OAuth store path. A refresher is
 	// built per host of the secret named RefreshSecret, with the broker as the
 	// SetRealToken setter.
 	RefreshStore  string
 	RefreshSecret string
+	// AllowedBranches are the git ref patterns a push may update; empty denies every push.
+	AllowedBranches []string
 	// Transport overrides the upstream transport (tests).
 	Transport *http.Transport
 }
@@ -66,14 +71,31 @@ func NewCreds(cfg CredsConfig) (*Creds, error) {
 	policies := mitm.PathPolicies{}
 	var refreshHosts []string
 
+	var persisted map[string]string
+	if cfg.PersistDir != "" {
+		persisted = loadPlaceholders(cfg.PersistDir)
+		if len(cfg.CACertPEM) == 0 && len(cfg.CAKeyPEM) == 0 {
+			cfg.CACertPEM, cfg.CAKeyPEM = loadCA(cfg.PersistDir)
+		}
+	}
+	placeholders := map[string]string{}
+
 	for _, s := range cfg.Secrets {
 		if s.Name == "" || s.Value == "" || len(s.Hosts) == 0 {
 			return nil, fmt.Errorf("broker: secret %q needs name, value and hosts", s.Name)
 		}
-		rec, err := br.RegisterPlaceholder(cfg.SandboxID, s.Hosts[0], s.Value)
+		var rec cred.PlaceholderRecord
+		var err error
+		if ph, ok := persisted[s.Name]; ok {
+			err = br.RegisterPlaceholderWith(cfg.SandboxID, s.Hosts[0], s.Value, ph)
+			rec = cred.PlaceholderRecord{Placeholder: ph}
+		} else {
+			rec, err = br.RegisterPlaceholder(cfg.SandboxID, s.Hosts[0], s.Value)
+		}
 		if err != nil {
 			return nil, err
 		}
+		placeholders[s.Name] = rec.Placeholder
 		for _, h := range s.Hosts[1:] {
 			if err := br.RegisterPlaceholderForHost(cfg.SandboxID, rec.Placeholder, h); err != nil {
 				return nil, err
@@ -109,21 +131,30 @@ func NewCreds(cfg CredsConfig) (*Creds, error) {
 	}
 
 	proxy, err := mitm.New(mitm.Config{
-		SandboxID:     cfg.SandboxID,
-		AllowedHosts:  hosts,
-		SecretHosts:   hosts,
-		Broker:        br,
-		PathPolicies:  policies,
-		SeedCACertPEM: cfg.CACertPEM,
-		SeedCAKeyPEM:  cfg.CAKeyPEM,
-		Transport:     cfg.Transport,
+		SandboxID:       cfg.SandboxID,
+		AllowedHosts:    hosts,
+		SecretHosts:     hosts,
+		Broker:          br,
+		PathPolicies:    policies,
+		AllowedBranches: cfg.AllowedBranches,
+		SeedCACertPEM:   cfg.CACertPEM,
+		SeedCAKeyPEM:    cfg.CAKeyPEM,
+		Transport:       cfg.Transport,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("broker: mitm proxy: %w", err)
 	}
-	caPEM, _, err := proxy.CAKeyPair()
+	caPEM, caKey, err := proxy.CAKeyPair()
 	if err != nil {
 		return nil, err
+	}
+	if cfg.PersistDir != "" {
+		if err := saveCA(cfg.PersistDir, caPEM, caKey); err != nil {
+			return nil, fmt.Errorf("broker: persist CA: %w", err)
+		}
+		if err := savePlaceholders(cfg.PersistDir, placeholders); err != nil {
+			return nil, fmt.Errorf("broker: persist placeholders: %w", err)
+		}
 	}
 
 	c := &Creds{Handler: proxy, Env: env, CACertPEM: caPEM, Hosts: hosts}

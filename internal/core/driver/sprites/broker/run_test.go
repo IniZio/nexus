@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	osexec "os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -250,6 +252,41 @@ func TestTrustScriptFailsWithoutCATool(t *testing.T) {
 	}
 }
 
+// runTrustScript runs trustScript with fake sudo and update-ca-certificates on
+// PATH; the fake sudo only records its argv, so nothing privileged runs.
+func runTrustScript(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	log := filepath.Join(bin, "sudo.log")
+	for name, body := range map[string]string{
+		"sudo":                   "#!/bin/sh\necho \"$*\" >> " + log + "\n",
+		"update-ca-certificates": "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := osexec.Command("/bin/sh", "-c", trustScript, "sh", "/x/ca.pem")
+	cmd.Env = []string{"PATH=" + bin}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("trust script: %v %s", err, out)
+	}
+	b, _ := os.ReadFile(log)
+	return string(b)
+}
+
+func TestTrustScriptUsesSudoWhenNotRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root")
+	}
+	got := runTrustScript(t)
+	for _, want := range []string{"-n mkdir -p /usr/local/share/ca-certificates", "-n cp /x/ca.pem /usr/local/share/ca-certificates/nexus-broker.crt", "-n update-ca-certificates"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sudo log missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestInstallErrorsWhenNoCATool(t *testing.T) {
 	f := newFakeSprite()
 	noCA := func(ctx context.Context, s string, req ExecRequest) (int32, error) {
@@ -263,4 +300,42 @@ func TestInstallErrorsWhenNoCATool(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "trust") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// broker.json must not appear until the guest relay is listening, or an exec
+// right after Ensure races a closed proxy port.
+func TestRunPublishesStateOnlyAfterRelayReady(t *testing.T) {
+	cfg, f := runFixture(t)
+	id := cfg.Creds.SandboxID.String()
+	var mu sync.Mutex
+	probes := 0
+	inner := cfg.Exec
+	cfg.Exec = func(ctx context.Context, sprite string, req ExecRequest) (int32, error) {
+		if len(req.Argv) > 4 && req.Argv[4] == GuestPidfile && strings.Contains(req.Argv[2], "kill -0") {
+			mu.Lock()
+			probes++
+			n := probes
+			mu.Unlock()
+			if n < 3 {
+				if _, err := ReadState(cfg.StateDir, id); err == nil {
+					t.Error("broker.json published before relay ready")
+				}
+				return 1, nil
+			}
+			return 0, nil
+		}
+		return inner(ctx, sprite, req)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg) }()
+	<-f.sessions
+	waitFor(t, "broker.json", func() bool { _, err := ReadState(cfg.StateDir, id); return err == nil })
+	mu.Lock()
+	if probes < 3 {
+		t.Errorf("probes = %d, want >= 3", probes)
+	}
+	mu.Unlock()
+	cancel()
+	<-done
 }

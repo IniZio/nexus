@@ -31,10 +31,13 @@ type ExecRequest struct {
 // ExecFunc runs to completion and returns the remote exit code.
 type ExecFunc func(ctx context.Context, sprite string, req ExecRequest) (int32, error)
 
-const trustScript = `if command -v update-ca-certificates >/dev/null 2>&1; then
-  mkdir -p /usr/local/share/ca-certificates && cp "$1" /usr/local/share/ca-certificates/nexus-broker.crt && update-ca-certificates
+// Sprites exec as an unprivileged user with passwordless sudo: the trust-store
+// refresh must run privileged or update-ca-certificates silently skips /etc/ssl/certs.
+const trustScript = `S=; [ "$(id -u)" = 0 ] || S="sudo -n"
+if command -v update-ca-certificates >/dev/null 2>&1; then
+  $S mkdir -p /usr/local/share/ca-certificates && $S cp "$1" /usr/local/share/ca-certificates/nexus-broker.crt && $S update-ca-certificates
 elif command -v update-ca-trust >/dev/null 2>&1; then
-  mkdir -p /etc/pki/ca-trust/source/anchors && cp "$1" /etc/pki/ca-trust/source/anchors/nexus-broker.crt && update-ca-trust
+  $S mkdir -p /etc/pki/ca-trust/source/anchors && $S cp "$1" /etc/pki/ca-trust/source/anchors/nexus-broker.crt && $S update-ca-trust
 else
   echo "neither update-ca-certificates nor update-ca-trust found: cannot trust the broker CA (git ignores NODE_EXTRA_CA_CERTS)" >&2
   exit 1
